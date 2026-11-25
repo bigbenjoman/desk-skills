@@ -2109,6 +2109,15 @@ put(I.T, I.env, 'fixrr', { port: 5640, conc: '3 / 5', beat: 1, perms: grant, que
 const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno'), rRr = reposFx.find((r) => r.name === 'fixrr');
 const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW })), qRr = lines(Q.repoScreen(rRr, { now: NOW }));
 const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
+// One cell of a repo Queue row, trimmed, cut where the header puts its column: WAITING is there only
+// while a row shows a time, and TICKET widens to the longest key, so no column has a fixed place.
+const QUEUE_COLS = ['TICKET', 'STATE', 'WAITING', 'WHAT IT NEEDS', 'STARTS', 'SHIPS', 'TITLE'];
+const cellOf = (ls, key, name) => {
+  const h = ls.find((l) => /TICKET +STATE /.test(l)) ?? '';
+  const cols = QUEUE_COLS.map((c) => [c, h.indexOf(c)]).filter(([, i]) => i >= 0);
+  const at = cols.findIndex(([c]) => c === name);
+  return at < 0 ? null : fxRow(ls, key).slice(cols[at][1], cols[at + 1]?.[1]).trim();
+};
 t('DS-279 (DS-280 AC2) a red PR the merge driver reruns is merging, and names the check and the rerun next',
   `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, e2e failed · rerun 1 of 2 next.');
 t('DS-279 a red PR nothing reruns needs you: fix or re-run it, with no merge grant or with §3 ci-rerun not yes',
@@ -2208,20 +2217,21 @@ const r280 = Q.loadRepos(NOW).find((r) => r.name === 'ds280');
 const q280 = lines(Q.repoScreen(r280, { now: NOW, width: 200 }));
 const row280 = (key) => fxRow(q280, key);
 // WHAT IT NEEDS and STARTS of a row, each trimmed, at 200 columns (NEED_W 52).
-const cells280 = (key) => { const l = row280(key); return [l.slice(31, 83).trim(), l.slice(83, 96).trim()]; };
+const cells280 = (key) => [cellOf(q280, key, 'WHAT IT NEEDS'), cellOf(q280, key, 'STARTS')];
+const wait280 = (key) => cellOf(q280, key, 'WAITING');
 // WHAT IT NEEDS is 52 columns on a row, so a longer reason is cut there and read whole on the ticket page.
 // The row names the rerun to come, so one rerun had reads "rerun 2 of 2" until the driver runs it.
 t('DS-280 AC1 a red PR with one rerun had: Merging, the check, and when the next is due',
   `${/M-1 +▸ merging/.test(row280('M-1'))} ${cells280('M-1')[0]}`, `true #901 · Lint failed · rerun 2 of 2 at ${new Date(due280).toTimeString().slice(0, 5)}`);
 t('DS-280 AC1 once its cooldown passes, the same rerun is next, not a different count',
-  fxRow(lines(Q.repoScreen(r280, { now: due280 + 60000, width: 200 })), 'M-1').slice(31, 83).trim(), '#901 · Lint failed · rerun 2 of 2 next');
+  cellOf(lines(Q.repoScreen(r280, { now: due280 + 60000, width: 200 })), 'M-1', 'WHAT IT NEEDS'), '#901 · Lint failed · rerun 2 of 2 next');
 t('DS-280 AC2 two red before any rerun: Merging, leading with the checks, never a pass count',
-  `${/M-2 +▸ merging +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
+  `${/M-2 +▸ merging +\S+ +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
 t('DS-280 AC3 both reruns spent and no fix try yet: Merging, a worker repairs it next',
-  `${/M-3 +▸ merging +#903 · red after 2 reruns: Lint · a worker/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, red after 2 reruns: Lint · a worker repairs it next.');
+  `${/M-3 +▸ merging +\S+ +#903 · red after 2 reruns: Lint · a worker/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, red after 2 reruns: Lint · a worker repairs it next.');
 t('DS-280 more than two red checks lead with the count and the first', Q.needText(r280, { t: { ...ds280['M-2'], pr_status: { ...ds280['M-2'].pr_status, checks: [lint, backend, { ...red, name: 'e2e' }] } }, k: 'merging', pr: true }),
   '#902 · 3 checks failed: Lint +2 · rerun 1 of 2 next');
-t('DS-280 AC4 STARTS says how long a PR has been in Merging', cells280('M-4')[1], 'for 2h 5m');
+t('DS-280 AC4 (issue-1419 AC2) WAITING says how long a PR has been in Merging, and STARTS that it started', `${wait280('M-4')} | ${cells280('M-4')[1]}`, '2h 5m | started');
 
 // ---- #1417: a PR red only on an outside reviewer's gate while that reviewer is down (gate-reviewer.mjs's
 // open outage) waits on the reviewer: no "failed", no rerun named, its rerun count left as it is.
@@ -2278,21 +2288,22 @@ t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r2
 const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
 t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
   Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');
-t('DS-280 AC5 STARTS says how long a ticket has been in Needs you', `${/N-5 +◆ needs you/.test(row280('N-5'))} ${cells280('N-5')[1]}`, 'true for 1d 1h');
+t('DS-280 AC5 (issue-1419 AC2) WAITING says how long a ticket has been in Needs you, and STARTS holds no time', `${/N-5 +◆ needs you/.test(row280('N-5'))} ${wait280('N-5')} | ${cells280('N-5')[1]}`, 'true 1d 1h | —');
 t('DS-280 AC6 no change for 2 hours: WHAT IT NEEDS ends saying so', cells280('M-6')[0], '#906 · check 1 running, 2h 30m · no change for 2h');
 t('DS-280 AC7 a check that changed 30 minutes ago: no note', `${cells280('M-4')[0]} | ${q280.filter((l) => /no change/.test(l)).length}`, '#904 · check 1 running, 30m · 2 of 3 done | 1');
 t('DS-280 a stamp of another group, before the next pass, shows no age', (() => {
   put(I.T, I.env, 'ds280b', { port: 5660, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds280b', concurrency: 3, supervised: true, tickets: { 'M-9': { ...ds280['M-4'], group: { g: 'running', at: ago194(300) } } } } });
-  return fxRow(lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds280b'), { now: NOW, width: 200 })), 'M-9').slice(83, 96).trim();
-})(), 'started');
+  const ls = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds280b'), { now: NOW, width: 200 }));
+  return `${cellOf(ls, 'M-9', 'STARTS')} ${cellOf(ls, 'M-9', 'WAITING')}`;
+})(), 'started null');
 const raw280 = async (key) => {
   const s = screen({ kind: 'repo', slug: 'acme__ds280' }, 200, () => NOW);
   await sleep(20);
   const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
   s.ui.finish(0);
-  return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
+  return coloured(l).filter((c) => /^\d+[dhm]( \d+[hm])?$/.test(c.split(':')[1] ?? '')).join();
 };
-t('DS-280 AC6 and DS-421 a Merging age of 2 hours or more is amber, whether or not a check changed since', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:for 3h | 38;5;180:for 2h 5m');
+t('DS-280 AC6 and DS-421 a Merging age of 2 hours or more is amber, whether or not a check changed since', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:3h | 38;5;180:2h 5m');
 t('DS-280 AC9 behind only a PR that needs you: Waiting, saying so, and starting after it', `${/V-504 +· waiting/.test(row280('V-504'))} ${cells280('V-504').join(' | ')}`,
   'true behind #698, which needs you | after #698');
 t('DS-280 AC10 held behind it and asking its own question: Needs you, for its question, on its row and its page', `${/V-510 +◆ needs you/.test(row280('V-510'))} ${cells280('V-510')[0]} | ${rail279('V-510', r280)}`,
@@ -2325,18 +2336,18 @@ const ds421 = {
 };
 put(I.T, I.env, 'ds421', { port: 5670, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds421', concurrency: 3, supervised: true, tickets: ds421 } });
 const q421 = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds421'), { now: NOW, width: 200 }));
-const starts421 = (key) => fxRow(q421, key).slice(83, 96).trim();
-t('DS-421 AC1 after a restart a PR pushed 10 days ago reads 10 days, not the time since', starts421('R-1'), 'for 10d');
-t('DS-421 AC2 a migrated PR keeps its age', starts421('R-2'), 'for 10d');
-t('DS-421 AC3 a new head counts from its push', starts421('R-3'), 'for 20m');
+const starts421 = (key) => cellOf(q421, key, 'WAITING');
+t('DS-421 AC1 after a restart a PR pushed 10 days ago reads 10 days, not the time since', starts421('R-1'), '10d');
+t('DS-421 AC2 a migrated PR keeps its age', starts421('R-2'), '10d');
+t('DS-421 AC3 a new head counts from its push', starts421('R-3'), '20m');
 const raw421 = async (key) => {
   const s = screen({ kind: 'repo', slug: 'acme__ds421' }, 200, () => NOW);
   await sleep(20);
   const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
   s.ui.finish(0);
-  return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
+  return coloured(l).filter((c) => /^\d+[dhm]( \d+[hm])?$/.test(c.split(':')[1] ?? '')).join();
 };
-t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:for 2h 5m | 38;5;210:for 10d');
+t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:2h 5m | 38;5;210:10d');
 
 // ---- DS-655: a worker still reviewing its draft PR is running, whatever pr_status its last done stint
 // left, and its Merging clock starts once it finishes, not at a head it pushed while reviewing.
@@ -2356,8 +2367,23 @@ const q655 = lines(Q.repoScreen(r655, { now: NOW, width: 200 }));
 t('DS-655 AC1 a running worker with its draft PR open is in Running, once, not Merging',
   `${/P-1 +● running/.test(fxRow(q655, 'P-1'))} ${q655.filter((l) => / P-1 /.test(l)).length} ${r655.prs.some((x) => x.t.key === 'P-1')}`, 'true 1 false');
 t('DS-655 AC2 once it finishes, its Merging age counts from entering Merging, not from the head pushed under review',
-  `${fxRow(q655, 'P-2').slice(83, 96).trim()} | ${fxRow(q655, 'P-4').slice(83, 96).trim()}`, 'for 3m | for 10d');
+  `${cellOf(q655, 'P-2', 'WAITING')} | ${cellOf(q655, 'P-4', 'WAITING')}`, '3m | 10d');
 t('DS-655 AC3 a fix try running on an open PR shows as it did: Running, a worker repairing it', /P-3 +● running +#953 · /.test(fxRow(q655, 'P-3')), true);
+
+// ---- issue-1419: TICKET fits the longest key plus a space, and a parked row's time is in WAITING, never STARTS.
+put(I.T, I.env, 'i1419', { port: 5680, conc: '3 / 5', beat: 1, perms: grant, queue: { batch: 'i1419', concurrency: 3, supervised: true, tickets: {
+  'issue-1381': { state: 'queued', lane: 'A' },
+  'issue-14190': { state: 'parked', lane: 'A', park: { question: 'which copy?' }, group: { g: 'needs', at: ago194(6 * 60 + 29) } },
+  'SV-1': { state: 'queued', lane: 'A' },
+} } });
+const q1419 = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'i1419'), { now: NOW, width: 200 }));
+const head1419 = q1419.find((l) => /TICKET +STATE /.test(l)) ?? '';
+t('issue-1419 AC1 TICKET is as wide as the longest key plus a space, so no key runs into its state',
+  `${head1419.indexOf('STATE') - head1419.indexOf('TICKET')} ${/issue-1381 +○ ready/.test(fxRow(q1419, 'issue-1381'))} ${/issue-14190 ◆ needs you/.test(fxRow(q1419, 'issue-14190'))} ${/SV-1 +○ ready/.test(fxRow(q1419, 'SV-1'))}`, '12 true true true');
+t('issue-1419 AC2 a parked row\'s time is in WAITING, between STATE and WHAT IT NEEDS, and STARTS holds none',
+  `${head1419.indexOf('WAITING') === head1419.indexOf('STATE') + 13} ${cellOf(q1419, 'issue-14190', 'WAITING')} | ${cellOf(q1419, 'issue-14190', 'STARTS')} | ${q1419.some((l) => / for \d+[dhm]/.test(l))}`, 'true 6h 29m | — | false');
+t('issue-1419 AC2 WAITING is as wide as its longest time, or its heading, plus two',
+  head1419.indexOf('WHAT IT NEEDS') - head1419.indexOf('WAITING'), 9);
 t('DS-655 the pass stamps the same groups desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds655', stateDir: r655.stateDir, queuePath: r655.queuePath, q: r655.q, now: NOW })),
   JSON.stringify({ 'P-1': 'running', 'P-2': 'merging', 'P-3': 'running', 'P-4': 'merging' }));
 t('DS-421 under 2 hours the age is uncoloured', await raw421('R-3'), '');

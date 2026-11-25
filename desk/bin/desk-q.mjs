@@ -74,7 +74,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
+import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
@@ -3210,7 +3210,7 @@ function inGroup(x, now) {
   const g = groupOf(x.k), at = Date.parse(x.t.group?.at ?? '');
   return ['merging', 'needs'].includes(g) && x.t.group?.g === g && Number.isFinite(at) ? Math.max(0, now - at) : null;
 }
-// The age STARTS shows: a Merging PR's from its head commit (pr_status head_at), which a driver restart
+// The age WAITING shows: a Merging PR's from its head commit (pr_status head_at), which a driver restart
 // or a migration does not reset and a new head does; else how long the row has been in its group. A
 // head its worker pushed while the row was in Running (`group.from`, since `from_at`) was pushed under
 // review: the age counts from when it entered Merging instead.
@@ -3224,7 +3224,7 @@ function ageOf(x, now) {
 export const AGE_RED_MS = 3 * 24 * 60 * 60 * 1000;
 
 // Each unfinished ticket's and unmerged PR's group, as a running pass reads the batch, for it to stamp
-// when a row entered its group (`group` on the ticket): the age STARTS shows, and the digest's stalled PRs.
+// when a row entered its group (`group` on the ticket): the age WAITING shows, and the digest's stalled PRs.
 export function groupsNow({ slug, stateDir, queuePath, q, now = Date.now() }) {
   const r = { slug, stateDir, queuePath, q, live: true, last: now };
   const ctx = holdContext(r);
@@ -3264,8 +3264,21 @@ function fitSegs(segs, max, w) {
 // WHAT IT NEEDS takes NEED_W while the title keeps TITLE_MIN; narrower than that, the title is cut
 // first, then the reason, down to NEED_MIN ("waits for a worker (12 of 12 busy)").
 const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
-// The columns before TITLE on a ticket row, less WHAT IT NEEDS.
+// The columns before TITLE on a ticket row, less WHAT IT NEEDS, with TICKET at its narrowest and no WAITING.
 const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
+// TICKET fits the longest key shown plus a space, and is never narrower than 10.
+const keyW = (keys) => Math.max(10, ...keys.map((k) => String(k).length + 1));
+// WAITING, between STATE and WHAT IT NEEDS, holds how long a row has sat in Merging, Needs you or Put
+// off, so STARTS holds only a start. It fits the longest such time shown, and is left out when none is.
+const WAIT_HEAD = 'WAITING';
+const waitW = (spans) => (spans.some(Boolean) ? Math.max(WAIT_HEAD.length, ...spans.map((s) => s.length)) + 2 : 0);
+// The repo Queue's widths: TICKET (`kw`), WAITING (`ww`), WHAT IT NEEDS (`nw`) and TITLE (`tw`).
+function queueWidths(width, keys, spans) {
+  const kw = keyW(keys), ww = waitW(spans), lead = ROW_LEAD + (kw - 10) + ww;
+  const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - lead - TITLE_MIN));
+  return { kw, ww, nw, tw: width == null ? 60 : Math.max(1, width - lead - nw) };
+}
+const queueHead = ({ kw, ww, nw }) => bold(`  ${rpad('#', 4)}  ${pad('TICKET', kw)}${pad('STATE', STATE_W)}${ww ? pad(WAIT_HEAD, ww) : ''}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`);
 // A repo's Queue in groups, each in queue order: what autopilot is moving first, then what needs the user.
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
@@ -3275,17 +3288,18 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // A Queue row for a counted item that is not a ticket row, in group `k`. A follow item's need leads
 // with where its ticket is, which the TICKET column already names, so WHAT IT NEEDS starts at its
 // first check. In a repo of several batches, TITLE names the item's batch; a step is the repo's, so
-// it names none. TICKET is the ticket the item is about: `item.ticket` where it has one, else its key
-// past a follow:, link:, unpromoted: or step: prefix.
-const itemKey = (t, item) => item.ticket ?? (/^(follow|link|unpromoted|step):/.test(t.key) ? t.key.replace(/^[a-z]+:/, '').split(':')[0] : t.key);
-const itemRowOf = (r, k, { now, nw, tw }) => ({ r: b, t, item }) => {
+// it names none. TICKET is the ticket the item is about (itemKey), the key a drop of a put-off item takes.
+// How long an item has waited, for WAITING, or ''.
+const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
+const itemRowOf = (r, k, { now, kw, ww, nw, tw }) => ({ r: b, t, item }) => {
   const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
   const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
   const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
   return segRow(null, [
-    [`  ${rpad('-', 4)}  ${pad(cut(itemKey(t, item), 9), 10)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    [`  ${rpad('-', 4)}  ${pad(itemKey(t, item), kw)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    ...(ww ? [[pad(itemWait(item, now), ww), null]] : []),
     ...fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
-    [pad(item.since != null ? `for ${span(now - item.since)}` : '', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
+    [pad('—', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
   ], null);
 };
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
@@ -3314,16 +3328,15 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   if (!r.q) {
     const setUp = `${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`;
     // A session's asks need the person with no batch yet: each is a row, as in a batch's Queue.
-    const nc = needsCount(r), nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
-    const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
+    const nc = needsCount(r);
     const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
     if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
-    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, nw, tw }))]);
-    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`)],
+    const all = groups.flatMap(([, , xs]) => xs);
+    const w = queueWidths(width, all.map(({ t, item }) => itemKey(t, item)), all.map(({ item }) => itemWait(item, now)));
+    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, ...w }))]);
+    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', queueHead(w)],
       rows, foot: ['', ...stateKey(groups.map(([, k]) => k), width)] };
   }
-  const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
-  const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
   // A repo of several batches dates and words each row by its own batch, `x.b`.
   const Fs = new Map((r.batches ?? [r]).map((b) => [b, forecastOf(b, { now, checkin })]));
   const F = Fs.get(r) ?? null;
@@ -3342,7 +3355,6 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
   const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
-  fit.push('', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
   const rows0 = [...r.rows, ...r.prs];
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r: of(x), x });
@@ -3351,26 +3363,32 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   // Needs you is Put off.
   const nc = needsCount(r), asked = new Set([...nc.rows, ...nc.stepRows]);
   const gk = (x) => (groupOf(x.k) === 'needs' && !asked.has(x) ? PUT_OFF : x.k);
-  // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
-  // says how long it has been there instead (ageOf), a Merging PR's amber or red by that age.
-  const starts = (x) => { const a = afterPrs(of(x), x), g = ageOf(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
-  const startsSgr = (x) => {
+  // Every counted item that is not a ticket row (a step, a follow-on check, an ask, a sign-in, …) is a
+  // Needs you row too, so the count above never names more than the table shows.
+  // A put-off item goes under Put off, grey, as a put-off ticket row does.
+  const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
+  // A row in Merging or Needs you says in WAITING how long it has been there (ageOf), a Merging PR's
+  // amber or red by that age.
+  const wait = (x) => { const g = ageOf(x, now); return g == null ? '' : span(g); };
+  const its = [...items, ...offItems];
+  const { kw, ww, nw, tw } = queueWidths(width, [...list.map((x) => x.t.key), ...its.map(({ t, item }) => itemKey(t, item))], [...list.map(wait), ...its.map(({ item }) => itemWait(item, now))]);
+  fit.push('', queueHead({ kw, ww, nw }));
+  // A ticket with a PR open has started and has no ship date of its own.
+  const starts = (x) => { const a = afterPrs(of(x), x); return x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
+  const waitSgr = (x) => {
     const g = of(x).live && groupOf(x.k) === 'merging' ? ageOf(x, now) : null;
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
   const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
   const row = (x) => segRow(x.t.key, [
-    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],
+    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, kw)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],
+    ...(ww ? [[pad(wait(x), ww), waitSgr(x)]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
     ...fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
-    [pad(starts(x), 13), startsSgr(x)], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
+    [pad(starts(x), 13), null], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
-  // Every counted item that is not a ticket row (a step, a follow-on check, an ask, a sign-in, …) is a
-  // Needs you row too, so the count above never names more than the table shows.
-  // A put-off item goes under Put off, grey, as a put-off ticket row does.
-  const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
-  const itemRow = (k) => itemRowOf(r, k, { now, nw, tw });
+  const itemRow = (k) => itemRowOf(r, k, { now, kw, ww, nw, tw });
   const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);
