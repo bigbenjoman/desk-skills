@@ -384,9 +384,11 @@ export const REBUILT_MARK = 'rebuilt_from_log';
 // The events of `batch` in the log past seq `since` that queue.json holds the outcome of: each one of a
 // ticket's, but for the auto-merge lines the pass folds from the merge log, and the history no queue field
 // holds (a merged PR's stages, a stuck interval, an ask's steps), each appended by its own writer, never
-// through queue.json.
-const UNPROJECTED = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck', ...ASK_EVENTS];
-const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !UNPROJECTED.includes(e.type));
+// through queue.json. ASK_EVENTS is read at call time: ticket-ledger.mjs imports this module, so loaded
+// from there first it is not yet initialised when this module's top level runs.
+const UNPROJECTED = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck'];
+const unprojected = (type) => UNPROJECTED.includes(type) || ASK_EVENTS.includes(type);
+const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !unprojected(e.type));
 
 // A rebuilt ticket's `holds`, which a writer lays only beside a held_by (queue-states.mjs holdsLaid).
 function tidyHolds(q) {
