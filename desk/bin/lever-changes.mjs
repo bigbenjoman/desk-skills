@@ -10,7 +10,7 @@
 //   import { leverDecision, recordLeverDecision, changeLine, overrideEvent, summaryLine } from './lever-changes.mjs'
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { shortName } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, reasonWording, isValued } from './lever-registry.mjs';
 import { leverStatesIn, trialId, inHoldback } from './levers-auto.mjs';
 
 export const CATEGORY = 'engineering';
@@ -143,12 +143,13 @@ export function summaryLine({ slug, states, events, registry = REGISTRY, minPerA
     if (s.state === 'off') continue;
     const id = trialId(slug, name, s);
     if (s.state === 'trial') {
-      parts.push(`${name} trial ${Math.min(drew(name, id, 'on'), drew(name, id, 'off'))}/${minPerArm[l.layer]}`);
+      // A lever with more than two arms counts its smallest value's tickets.
+      parts.push(`${name} trial ${Math.min(...(isValued(l) ? l.values : ['on', 'off']).map((a) => drew(name, id, a)))}/${minPerArm[l.layer]}`);
     } else if (inHoldback(s, l, now)) {
       parts.push(`${name} adopted (holdback ${drew(name, id, 'holdback')})`);
     } else if (s.state === 'overridden') {
       parts.push(`${name} overridden ${s.value ?? '?'}`);
-    } else parts.push(`${name} ${s.state}`);
+    } else parts.push(`${name} ${s.state}${s.value ? ` ${s.value}` : ''}`);
   }
   return `levers: ${parts.join(' · ') || 'none managed'}`;
 }

@@ -671,6 +671,39 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('AC10 the digest lists the pair adopt as the repo\'s new default', pairLines.some((l) => l.startsWith('adopted codex with review-reuse together in q10b, now its default')), true);
 }
 
+// ---- a lever with more than two arms: each value weighed against the baseline ------------------------------
+{
+  const { ENTRIES, loadRegistry } = await import('../desk/bin/lever-registry.mjs');
+  const { leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
+  const VR = loadRegistry({ ...ENTRIES, wrappers: { ...ENTRIES.wrappers, values: ['one-at-a-time', 'batched', 'mixed'], baseline: 'one-at-a-time' } });
+  const evalV = (repos) => evaluate({ repos, now: NOW, tz: 'UTC', root: join(T, `pooled-v-${++seq}`), frozen: false, fingerprints: FP, registry: VR });
+  // `n` rows on each value; `o[value](i)` gives each row's overrides.
+  const valueRows = (slug, n, o = {}) => ['one-at-a-time', 'batched', 'mixed'].flatMap((v) => Array.from({ length: n }, (_, i) => row(slug, v, initial(slug), o[v]?.(i) ?? {})));
+  const V1 = 'acme__valued';
+  evalV([repo(V1, valueRows(V1, 30, { batched: better.on }))]);
+  const v1 = wrappersRow(V1);
+  t('valued: each value is reported against the baseline', Object.keys(v1.values), ['batched', 'mixed']);
+  t('valued: each value carries its metric, cost and guardrails', Object.values(v1.values).every((x) => x.mechanism && x.cost && x.guardrails.length === 6 && x.n.on === 30 && x.n.off === 30), true);
+  t('valued: the value that beat the baseline adopts, the other holds', [v1.values.batched.decision, v1.values.mixed.decision], ['adopt', 'hold']);
+  t('valued: the lever adopts that value', [v1.decision, v1.state, v1.value, v1.baseline], ['adopt', 'adopted', 'batched', 'one-at-a-time']);
+  t('valued: the row\'s figures are that value\'s against the baseline', [v1.n.on, v1.n.off, v1.mechanism.est === v1.values.batched.mechanism.est], [30, 30, true]);
+  const v1t = transitionOf(V1);
+  t('valued: one transition to adopted, carrying the value', v1t.map((e) => [e.from, e.to, e.value]), [['trial', 'adopted', 'batched']]);
+  t('valued: the lever\'s state is read back with its adopted value', leverStatesIn(read(V1).events, VR).wrappers.value, 'batched');
+  const V2 = 'acme__valued-none';
+  evalV([repo(V2, valueRows(V2, 30))]);
+  const v2 = wrappersRow(V2);
+  t('valued: no value beats the baseline, so it holds on the baseline', [v2.decision, v2.state, v2.reason_code, transitionOf(V2).length], ['hold', 'trial', 'adopt_conditions_unmet', 0]);
+  t('valued: and the hold names the value and the baseline', /^(batched|mixed) against one-at-a-time: /.test(v2.reason), true);
+  const V3 = 'acme__valued-breach';
+  const parks = (i) => ({ parks: 4, parks_by_class: { 'agent mistake': 3 + (i % 3) } });
+  const calm = (i) => ({ parks: 1, parks_by_class: { 'agent mistake': i % 3 } });
+  evalV([repo(V3, valueRows(V3, 12, { 'one-at-a-time': calm, batched: calm, mixed: parks }))]);
+  const v3 = wrappersRow(V3);
+  t('valued: a guardrail breach on one value reverts the lever to its baseline', [v3.decision, v3.state, v3.value, v3.reason_code], ['revert', 'reverted', 'mixed', 'guardrail_fix_tries_parks']);
+  t('valued: the revert carries no value', transitionOf(V3).map((e) => [e.to, e.value ?? null]), [['reverted', null]]);
+}
+
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all checks passed');

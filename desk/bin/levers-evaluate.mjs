@@ -19,6 +19,12 @@
 // one listed as a pin mismatch, with an incomplete cost, or run on lever code other than the code
 // installed now (its recorded fingerprint) is left out and counted as excluded.
 //
+// A lever with more than two arms (lever-registry.mjs `values`) on trial is weighed value by value, each
+// against its baseline arm, by the same rule. It adopts the value with the best mechanism estimate among
+// those every adopt condition holds for, carried as the transition's `value`; a guardrail breach on any
+// value reverts it to the baseline; it reverts at the maximum sample only once no value can adopt. Its
+// row holds each value's figures under `values`, and the leading value's at the top level.
+//
 // It writes, under ~/.desk-autopilot/<slug>/: one lever-evals.jsonl row per lever evaluated, whatever
 // the decision; the rows each evaluation used in levers-evidence/<eval_id>.jsonl (kept 180 days), whose
 // sha256 the row holds; and transition, fp_reset, evidence_incomplete and needs_you events in the lever
@@ -33,7 +39,7 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints, isValued } from './lever-registry.mjs';
 import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId, holdbackEnd, pairTrial, ACTOR } from './levers-auto.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
@@ -189,6 +195,9 @@ export function withOutcomes(rows, batches, now = Date.now()) {
 
 // ---- which rows a lever's evaluation reads -------------------------------------------------------------
 const ARMS = { trial: ['on', 'off'], reverted: ['on', 'off'], adopted: ['adopted', 'holdback'] };
+// The arms a lever's evaluation in state `state` reads: a valued lever's values on trial or reverted
+// from one, its adopted and holdback arms once adopted.
+const armsOf = (l, state) => (isValued(l) && state !== 'adopted' ? l.values : ARMS[state]);
 // A ticket requeued after merging (batch-state.mjs reworked: its row's `reworked`) has no outcome until its
 // current round finishes: merged_at keeps only its first merge.
 export const outcomeIn = (r) => !r.reworked && (!!r.merged_at || OUTCOME_STATES.includes(r.state));
@@ -210,9 +219,13 @@ export function excludedWhy(r, lever, fp) {
 }
 
 // The rows of one repo's evaluation of `lever` in state `s`: those whose ticket drew one of the
-// state's two arms under its trial id and whose outcome is in, each with `on` and `excluded`.
-export function leverRows(rows, slug, lever, s, fp) {
-  const arms = ARMS[s.state];
+// state's arms under its trial id and whose outcome is in, each with `on` and `excluded`. A valued
+// lever's row carries its `arm` too, and is `on` on any value but the baseline; valueRows pairs each
+// value with the baseline.
+export function leverRows(rows, slug, lever, s, fp, registry = REGISTRY) {
+  const arms = armsOf(registry[lever], s.state);
+  const valued = isValued(registry[lever]) && s.state !== 'adopted';
+  const off = valued ? registry[lever].baseline : arms[1];
   const drew = rows.filter((r) => arms.includes(r.pin?.arms?.[lever]));
   let id;
   if (s.state === 'reverted') {
@@ -220,8 +233,10 @@ export function leverRows(rows, slug, lever, s, fp) {
     id = [...drew].sort((a, b) => Date.parse(a.admitted_at) - Date.parse(b.admitted_at)).at(-1)?.pin?.trial_ids?.[lever] ?? null;
   } else id = trialId(slug, lever, s);
   return drew.filter((r) => r.pin?.trial_ids?.[lever] === id && outcomeIn(r))
-    .map((r) => ({ ...r, slug: r.slug ?? slug, on: r.pin.arms[lever] === arms[0], excluded: excludedWhy(r, lever, fp) }));
+    .map((r) => ({ ...r, slug: r.slug ?? slug, on: r.pin.arms[lever] !== off, ...(valued ? { arm: r.pin.arms[lever] } : {}), excluded: excludedWhy(r, lever, fp) }));
 }
+// A valued lever's rows on `value` against its `baseline`, `on` marking the value's.
+const valueRows = (rows, value, baseline) => rows.filter((r) => r.arm === value || r.arm === baseline).map((r) => ({ ...r, on: r.arm === value }));
 
 // ---- estimates -------------------------------------------------------------------------------------------
 const strata = (rows) => {
@@ -354,6 +369,21 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   return hold(noAudit && unmet.length === 1 ? 'audit_missing' : 'adopt_conditions_unmet', unmet.join('; '), unmet.join('; '));
 }
 
+// The value a valued lever's evaluation acts on, from each value's weighing against the baseline
+// ({ <value>: { mechanism, d } }): of those that adopt, the best mechanism estimate (lowest, every
+// metric falling); else one reverting on a guardrail; else, once every value reverts at the maximum
+// sample, the first; else the best estimate among those holding.
+function leadValue(perValue) {
+  const all = Object.entries(perValue);
+  const best = (xs) => [...xs].sort(([, a], [, b]) => (a.mechanism?.est ?? Infinity) - (b.mechanism?.est ?? Infinity))[0][0];
+  const adopts = all.filter(([, x]) => x.d.decision === 'adopt');
+  if (adopts.length) return best(adopts);
+  const breach = all.find(([, x]) => x.d.decision === 'revert' && x.d.reason_code.startsWith('guardrail_'));
+  if (breach) return breach[0];
+  const holds = all.filter(([, x]) => x.d.decision !== 'revert');
+  return holds.length ? best(holds) : all[0][0];
+}
+
 // ---- one evaluation run ----------------------------------------------------------------------------------
 // The desk commits a set of rows' starts ran on, first and last by start time; null with none.
 function commitRange(rows) {
@@ -398,7 +428,7 @@ export function evaluate({
       if (r.states[lever] !== 'auto') continue;
       const s = r.byLever[lever];
       if (!EVALUATED.includes(s.state)) continue;
-      plan.push({ r, lever, s, rows: leverRows(r.outcomes.rows, r.slug, lever, s, fingerprints[lever] ?? null) });
+      plan.push({ r, lever, s, rows: leverRows(r.outcomes.rows, r.slug, lever, s, fingerprints[lever] ?? null, registry) });
     }
   }
   const pooledBy = {};
@@ -407,12 +437,17 @@ export function evaluate({
     if (!trials.length) continue;
     const rows = trials.flatMap((p) => p.rows.filter((x) => !x.excluded));
     const seed = `${today}|${lever}|pooled`;
-    pooledBy[lever] = {
-      v: 1, at, day: today, lever, repos: trials.map((p) => p.r.slug), n: counts(rows),
-      mechanism: mechanismEstimate(rows, lever, { seed: `${seed}|mechanism`, scope: 'pooled', registry }),
-      cost: costEstimate(rows, { seed: `${seed}|cost`, scope: 'pooled' }),
-      rows: trials.flatMap((p) => p.rows),
-    };
+    const pooled = (rs, sd) => ({
+      n: counts(rs),
+      mechanism: mechanismEstimate(rs, lever, { seed: `${sd}|mechanism`, scope: 'pooled', registry }),
+      cost: costEstimate(rs, { seed: `${sd}|cost`, scope: 'pooled' }),
+    });
+    const reg = registry[lever];
+    // A valued lever pools each value against its baseline.
+    const est = isValued(reg)
+      ? { baseline: reg.baseline, values: Object.fromEntries(reg.values.filter((v) => v !== reg.baseline).map((v) => [v, pooled(valueRows(rows, v, reg.baseline), `${seed}|${v}`)])) }
+      : pooled(rows, seed);
+    pooledBy[lever] = { v: 1, at, day: today, lever, repos: trials.map((p) => p.r.slug), ...est, rows: trials.flatMap((p) => p.rows) };
   }
 
   for (const r of prepared) {
@@ -441,10 +476,13 @@ export function evaluate({
       const used = p.rows.filter((x) => !x.excluded);
       const pooled = s.state === 'adopted' ? null : pooledBy[lever];
       const seed = `${evalId}`;
-      const mechanism = pooled ? pooled.mechanism : mechanismEstimate(used, lever, { seed: `${seed}|mechanism`, scope: 'repo', registry });
-      const cost = pooled ? pooled.cost : costEstimate(used, { seed: `${seed}|cost`, scope: 'repo' });
-      const guardrails = guardrailEstimates(used, { seed, minN });
-      const n = { ...counts(used), pooled_on: (pooled?.n ?? counts(used)).on, pooled_off: (pooled?.n ?? counts(used)).off, excluded: excludedCounts(p.rows) };
+      // One arm against its comparison: the pooled estimates for a trial, the repo's guardrails.
+      const weigh = (rs, pl, sd) => ({
+        mechanism: pl ? pl.mechanism : mechanismEstimate(rs, lever, { seed: `${sd}|mechanism`, scope: 'repo', registry }),
+        cost: pl ? pl.cost : costEstimate(rs, { seed: `${sd}|cost`, scope: 'repo' }),
+        guardrails: guardrailEstimates(rs, { seed: sd, minN }),
+        n: { ...counts(rs), pooled_on: (pl?.n ?? counts(rs)).on, pooled_off: (pl?.n ?? counts(rs)).off, excluded: excludedCounts(p.rows) },
+      });
       const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
       const priorReverts = priorRevertsOf(r.log.events, lever);
       const changedAt = s.at ? Date.parse(s.at) : null;
@@ -453,7 +491,26 @@ export function evaluate({
       const quality = reg.layer === 'quality-risk' && ['trial', 'reverted'].includes(s.state);
       const audits = quality ? auditCount(r.audits, s.state === 'trial' ? trialId(r.slug, lever, s) : p.rows[0]?.pin?.trial_ids?.[lever] ?? null) : null;
       const auditP0 = quality && s.state === 'reverted' && (r.log.events ?? []).filter((e) => e.lever === lever && e.id === s.id).some((e) => e.reason_code === 'audit_p0');
-      const d = decide({ state: s.state, n, minN, maxN: DECISION_RULE.max_per_arm, mechanism, cost, guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0 });
+      const decideOn = (w) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0 });
+      let w;
+      let d;
+      let perValue = null;
+      if (isValued(reg) && s.state !== 'adopted') {
+        // Each value against the baseline; the lead value's figures and decision stand for the lever.
+        perValue = Object.fromEntries(reg.values.filter((v) => v !== reg.baseline).map((v) => {
+          const wv = weigh(valueRows(used, v, reg.baseline), pooled?.values?.[v] ?? null, `${seed}|${v}`);
+          return [v, { ...wv, d: decideOn(wv) }];
+        }));
+        const value = leadValue(perValue);
+        ({ d, ...w } = perValue[value]);
+        d = { ...d, reason: `${value} against ${reg.baseline}: ${d.reason}`, value };
+      } else {
+        w = weigh(used, pooled, seed);
+        d = decideOn(w);
+        // A valued lever keeps the value it was adopted on when it settles.
+        if (isValued(reg) && s.value) d = { ...d, value: s.value };
+      }
+      const { mechanism, cost, guardrails, n } = w;
 
       // The evidence this evaluation used: the pooled rows for a lever on trial, else the repo's.
       const evidence = writeEvidence(r.state, evalId, pooled ? pooled.rows : p.rows);
@@ -490,7 +547,8 @@ export function evaluate({
           const nowState = leverStatesIn(events, registry)[lever];
           if (nowState.state !== s.state || nowState.id !== s.id) return null;
           return {
-            kind: 'transition', lever, from: s.state, to: d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at),
+            kind: 'transition', lever, from: s.state, to: d.to, ...(d.value && d.to !== 'reverted' && d.to !== 'frozen' ? { value: d.value } : {}),
+            actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at),
             n, mechanism, cost, guardrails, desk_commit_range: range, lever_fp: fingerprints[lever] ?? null, ...(holdback ? { holdback } : {}),
           };
         });
@@ -509,6 +567,7 @@ export function evaluate({
         ...base, state: to ?? s.state, ...(to ? { from: s.state } : {}), arm_share_7d: share, n, mechanism, cost, guardrails,
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
+        ...(perValue ? { value: d.value, baseline: reg.baseline, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });
     }

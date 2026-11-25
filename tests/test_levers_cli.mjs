@@ -298,5 +298,21 @@ rmSync(join(CONFIG, 'repos', ROW), { recursive: true, force: true });
 const ru = levers('decide', 'ai-agents', 'codex');
 t('usage: a missing choice exits 2', ru.status, 2);
 
+// A lever with more than two arms: on its arm on any value but the baseline, and counted per value.
+{
+  const { ENTRIES, loadRegistry } = await import('../desk/bin/lever-registry.mjs');
+  const { summaryLine } = await import('../desk/bin/lever-changes.mjs');
+  const VR = loadRegistry({ ...ENTRIES, wrappers: { ...ENTRIES.wrappers, values: ['one-at-a-time', 'batched', 'mixed'], baseline: 'one-at-a-time' } });
+  const trial = { state: 'trial', at: null, id: null };
+  const tid = `${DS}/wrappers/initial`;
+  const pinOn = (arm) => ({ key: 'V-1', levers: { set: [], arms: { wrappers: arm }, trial_ids: { wrappers: tid }, at: at(1) } });
+  t('valued: a ticket on a value other than the baseline is on the lever\'s arm', ['batched', 'mixed', 'one-at-a-time', 'on'].map((a) => onArm(pinOn(a), 'wrappers', trial, DS, [], VR)), [true, true, false, false]);
+  const assigns = ['batched', 'batched', 'mixed', 'one-at-a-time', 'one-at-a-time'].map((a, i) => ({ kind: 'assign', ticket: `V-${i}`, arms: { wrappers: a }, trial_ids: { wrappers: tid } }));
+  const sl = summaryLine({ slug: DS, states: { wrappers: 'auto' }, events: assigns, registry: VR });
+  t('valued: the summary line counts its smallest value', sl, 'levers: wrappers trial 1/30');
+  const kept = [{ kind: 'transition', lever: 'wrappers', from: 'trial', to: 'settled', value: 'batched', at: at(60), id: 'e1', actor: 'levers-auto', reason_code: 'holdback_ended', reason: 'x' }];
+  t('valued: a kept lever shows its value', summaryLine({ slug: DS, states: { wrappers: 'auto' }, events: kept, registry: VR }), 'levers: wrappers settled batched');
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

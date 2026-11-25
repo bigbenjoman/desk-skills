@@ -36,7 +36,8 @@
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
-//                                             row; with <lever>, on or off. A row unlike the last one the
+//                                             row; with <lever>, on or off, or a lever with more
+//                                             than two arms' value from the pin (DESK_LEVER_VALUES). A row unlike the last one the
 //                                             repo's lever log recorded is logged as a row_change. With
 //                                             `auto` in the row, a last `levers: …` line gives each managed
 //                                             lever's state in this repo (lever-changes.mjs summaryLine)
@@ -1007,6 +1008,16 @@ export function levers(env = process.env) {
   return parseLevers(env.DESK_LEVERS != null ? [env.DESK_LEVERS] : leverItems());
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
+// The arm a lever with more than two arms runs on for this worker: its value in DESK_LEVER_VALUES
+// (`<lever>=<value>`, space-separated), which spawn-worker.sh exports from the ticket's pin; null
+// where it carries none for `name`.
+function leverValue(name, env = process.env) {
+  for (const w of String(env.DESK_LEVER_VALUES ?? '').split(/\s+/)) {
+    const i = w.indexOf('=');
+    if (i > 0 && w.slice(0, i) === name && w.length > i + 1) return w.slice(i + 1);
+  }
+  return null;
+}
 // The model desk-review's Claude finder seats run on (`desk-env model finder`): the finder-model
 // lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset. The row
 // is parsed either way, so a malformed one is refused on both arms.
@@ -2516,13 +2527,16 @@ if (isMain) {
           if (!args[0]) process.exitCode = 1;
         }
         if (args[0]) {
-          console.log(leverOn(args[0], l) ? 'on' : 'off');
-          if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          // A lever with more than two arms prints the value this ticket's pin gave it.
+          const value = leverValue(args[0]);
+          console.log(value ?? (leverOn(args[0], l) ? 'on' : 'off'));
+          if (!value && !LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
           break;
         }
         console.log(`on: ${l.on.join(' ') || 'none'}`);
         console.log(`from: ${s.from === 'pin' ? 'this ticket\'s pin (DESK_LEVERS)' : `${row}, \`${s.row ?? 'none'}\``}`);
         for (const n of LEVERS) console.log(`${n}: ${s.states[n]}`);
+        if (process.env.DESK_LEVER_VALUES) console.log(`values: ${process.env.DESK_LEVER_VALUES} (this ticket's pin, DESK_LEVER_VALUES)`);
         const f = leversFrozen();
         if (f) console.log(`frozen: every trial in every repo is stopped, since ${f.at}${f.reason ? ` (${f.reason})` : ''}; desk-env levers thaw ends it`);
         if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (${row} names levers desk does not know; each is read as off; ${known})`);

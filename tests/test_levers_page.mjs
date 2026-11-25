@@ -303,6 +303,14 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC11 each guardrail', dl.Guardrails, 'fix tries ratio: ok, 90% range 0.8 to 1.2, margin 1.25');
   t('AC11 the commit range', dl['Commit range'], 'abc1234..def5678');
   t('AC11 the evidence file', dl['Evidence file'], '/x/levers-evidence/evl_preflight.jsonl');
+  // A lever with more than two arms names its lead value and its baseline in place of on and off.
+  const valuedEvals = evals.map((e) => (e.lever === 'preflight' ? { ...e, value: 'batched', baseline: 'one-at-a-time' } : e));
+  const valuedView = V.buildView({
+    ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(valuedEvals), [`${DS}/levers.jsonl`]: jsonl(log), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+    now: NOW2, tz: 'UTC', generatedAt: NOW2,
+  });
+  const vkept = section(P.renderPage(valuedView), 'ch-h').split('<details class="change">')[1].split('</details>')[0];
+  t('a valued lever: tickets per arm name its value and baseline', vkept.match(/<dt>Tickets per arm<\/dt><dd>(.*?)<\/dd>/)?.[1], '40 batched, 38 one-at-a-time');
   t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split('<details class="change">')[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
 }
 

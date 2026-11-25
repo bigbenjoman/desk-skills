@@ -3,7 +3,10 @@
 // trial arms when it is admitted, before anything about its outcome is known, and keeps them for life.
 // Each low-risk lever on trial is drawn on for half the repo's tickets, independently of the others, by
 // randomisation blocked within the repo and the ticket's triage size: every block of four tickets of one
-// size has each lever on for exactly two of them. A ticket with no triage size is a block of its own.
+// size has each lever on for exactly two of them. A lever with more than two arms (lever-registry.mjs
+// `values`) is drawn one of its values the same way, each value as often as the others in a block, so
+// a block then holds the least multiple of four that every such lever's value count divides. A ticket
+// with no triage size is a block of its own.
 //
 // A lever's state in a repo is the `to` of its latest transition, override or trip in the repo's lever log
 // (lever-log.mjs): off, trial, adopted, settled, reverted, frozen or overridden. With none recorded, a low-risk lever
@@ -26,7 +29,12 @@
 // its latest `pair` event for that trial (levers-evaluate.mjs writes them): adopted or settled is the
 // repo's default, both on; reverted ends the trial with the levers kept alone.
 //
-// The pin is the queue ticket's `levers: { set, arms, trial_ids, fp, block, at }` (lever-pin.mjs); one
+// A valued lever is in the set on any value but its baseline, and the pin's `values` names the value
+// each valued lever runs on: its arm on trial, its adopted value while kept or on its holdback's
+// adopted arm, else its baseline.
+//
+// The pin is the queue ticket's `levers: { set, arms, trial_ids, fp, block, at }`, with `values` where
+// it carries a valued lever (lever-pin.mjs); one
 // `assign` event in the lever log records the same draw, so exposure outlives the queue. A repo whose
 // row has no `auto` gets the row's set and no arm. A lever log that cannot be read, or holds a line that
 // does not parse, gets the row's set too, and one `needs_you` event says the repo cannot be assigned;
@@ -41,7 +49,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { leverStates, leversFrozen, queueFile, repoSlug, stateDir, SAFE_ID } from './desk-env.mjs';
-import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText } from './lever-registry.mjs';
+import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText, isValued } from './lever-registry.mjs';
 import { appendWith, isStateChange, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -52,6 +60,13 @@ import { writeQueueFile } from './queue-store.mjs';
 
 export const STATES = Object.freeze(['off', 'trial', 'adopted', 'settled', 'reverted', 'frozen', 'overridden']);
 export const BLOCK_SIZE = 4;
+const ON_OFF = Object.freeze(['on', 'off']);
+// The tickets in a block: BLOCK_SIZE, or its least multiple that each trialled low-risk lever's value
+// count divides, so every value is drawn equally often in a full block.
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+const blockSizeOf = (registry = REGISTRY) => Object.values(registry)
+  .filter((l) => l.layer === 'low-risk' && l.trialled && isValued(l))
+  .reduce((n, l) => (n * l.values.length) / gcd(n, l.values.length), BLOCK_SIZE);
 export const ACTOR = 'levers-auto';
 const WEEK_MS = 7 * 24 * 3_600_000;
 
@@ -60,7 +75,8 @@ const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
 
 // Each registry lever's state in a repo, from its lever log's events (oldest first):
 //   -> { <lever>: { state, at, id, value? } }, `at` and `id` those of the event that set it, null with
-//   none. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to. An
+//   none. A kept lever carries the `value` its adopt chose, where the event names one (a lever with
+//   more than two arms), through to settled. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to. An
 //   override whose `to` is `on` or `off` with that same `value` (levers.mjs decide) is overridden to it;
 //   one with no value (levers.mjs undo, back to a plain state) is that state. An override carrying
 //   `restores: { id, at }` (levers.mjs undo) takes the restored state's `id` and `at`, so a trial keeps its
@@ -77,7 +93,10 @@ export function leverStatesIn(events, registry = REGISTRY) {
     const state = pinned ? 'overridden' : STATES.includes(e.to) && !(e.to === 'trial' && !registry[e.lever].trialled) ? e.to : 'off';
     const value = pinned ? e.to : e.value;
     const from = e.kind === 'override' && e.restores && typeof e.restores === 'object' ? e.restores : { at: e.at, id: e.id };
-    out[e.lever] = { state, at: from.at ?? null, id: from.id ?? null, ...(state === 'overridden' ? { value: value === 'on' ? 'on' : 'off' } : {}) };
+    // A value carries from adopted to settled with no event naming it again.
+    const keptValue = typeof e.value === 'string' ? e.value : KEPT_STATES.includes(out[e.lever].state) ? out[e.lever].value : undefined;
+    const kept = KEPT_STATES.includes(state) && isValued(registry[e.lever]) && keptValue ? { value: keptValue } : {};
+    out[e.lever] = { state, at: from.at ?? null, id: from.id ?? null, ...(state === 'overridden' ? { value: value === 'on' ? 'on' : 'off' } : kept) };
   }
   return out;
 }
@@ -89,25 +108,31 @@ const blockSize = (size) => {
 };
 
 // The block the next ticket of `size` joins, from the repo's earlier assign events: the latest block
-// of that size while it has fewer than BLOCK_SIZE members, else the next one.
+// of that size while it has fewer than `n` members, else the next one.
 //   -> { id, members: [assign event] }
-function nextBlock(slug, key, size, assigns) {
+function nextBlock(slug, key, size, assigns, n = BLOCK_SIZE) {
   if (!size) return { id: `${slug}/unsized/${key}`, members: [] };
   const sized = assigns.filter((e) => e.size === size && typeof e.block === 'string');
   const last = sized.at(-1)?.block;
   const members = last ? sized.filter((e) => e.block === last) : [];
-  if (last && members.length < BLOCK_SIZE) return { id: last, members };
-  const n = last ? Number(last.split('/').pop()) + 1 : 1;
-  return { id: `${slug}/${size}/${Number.isFinite(n) ? n : sized.length + 1}`, members: [] };
+  if (last && members.length < n) return { id: last, members };
+  const next = last ? Number(last.split('/').pop()) + 1 : 1;
+  return { id: `${slug}/${size}/${Number.isFinite(next) ? next : sized.length + 1}`, members: [] };
 }
 
-// On or off for one lever on trial, so that a block of BLOCK_SIZE holds each arm BLOCK_SIZE / 2 times.
-function blockedArm(lever, members, random) {
-  const half = BLOCK_SIZE / 2;
-  const used = (arm) => members.filter((e) => e.arms?.[lever] === arm).length;
-  const on = Math.max(0, half - used('on'));
-  const off = Math.max(0, half - used('off'));
-  return random() < (on + off ? on / (on + off) : 0.5) ? 'on' : 'off';
+// One arm of `arms` (on and off, or a valued lever's values) for one lever on trial, so that a block
+// of `n` holds each arm n / arms.length times: each drawn in proportion to the places it has left.
+function blockedArm(lever, members, random, arms = ON_OFF, n = BLOCK_SIZE) {
+  const quota = n / arms.length;
+  const left = arms.map((a) => Math.max(0, quota - members.filter((e) => e.arms?.[lever] === a).length));
+  const total = left.reduce((x, y) => x + y, 0);
+  const u = random();
+  let acc = 0;
+  for (const [i, a] of arms.entries()) {
+    acc += left[i];
+    if (u < (total ? acc / total : (i + 1) / arms.length)) return a;
+  }
+  return arms.at(-1);
 }
 
 // The trial a ticket draws a lever's arm under: one per state the lever enters in the repo.
@@ -312,13 +337,18 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
   const set = [];
   const arms = {};
   const trialIds = {};
-  const b = frozen ? { id: null, members: [] } : nextBlock(slug, key, size, events.filter((e) => e.kind === 'assign'));
+  const leverValues = {};
+  const perBlock = blockSizeOf(registry);
+  const b = frozen ? { id: null, members: [] } : nextBlock(slug, key, size, events.filter((e) => e.kind === 'assign'), perBlock);
+  let blocked = false;
   for (const name of Object.keys(registry)) {
     const row = states[name];
     if (row === 'pinned') { set.push(name); continue; }
     if (row !== 'auto' || !preconditions(name, values, registry).eligible) continue;
     const l = registry[name];
     const s = byLever[name];
+    // A valued lever runs on its baseline unless drawn, or kept on, another value below.
+    if (isValued(l)) leverValues[name] = KEPT_STATES.includes(s.state) ? s.value ?? l.baseline : l.baseline;
     // Set by hand: pinned to its value, with no arm, whatever the freeze or the layer.
     if (s.state === 'overridden') {
       if (s.value === 'on') set.push(name);
@@ -331,31 +361,35 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
       continue;
     }
     if (s.state === 'trial') {
-      arms[name] = blockedArm(name, b.members, random);
+      blocked = true;
+      arms[name] = blockedArm(name, b.members, random, isValued(l) ? l.values : ON_OFF, perBlock);
       trialIds[name] = trialId(slug, name, s);
-      if (arms[name] === 'on') set.push(name);
+      if (isValued(l)) leverValues[name] = arms[name];
+      if (isValued(l) ? arms[name] !== l.baseline : arms[name] === 'on') set.push(name);
     } else if (inHoldback(s, l, now.getTime())) {
       arms[name] = random() < l.ramp.holdback ? 'holdback' : 'adopted';
       trialIds[name] = trialId(slug, name, s);
+      if (isValued(l) && arms[name] === 'holdback') leverValues[name] = l.baseline;
       if (arms[name] === 'adopted') set.push(name);
     } else if (KEPT_STATES.includes(s.state)) {
       set.push(name);
     }
   }
   // The block is the low-risk layer's: a quality-risk arm is drawn by its exposure, not in blocks.
-  const block = Object.values(arms).some((a) => a === 'on' || a === 'off') ? b.id : null;
+  const block = blocked ? b.id : null;
   const qd = qualityDraw({ slug, events, byLever, states, frozen, values, random, now, registry, inFlight });
   for (const n of qd.set) if (!set.includes(n)) set.push(n);
   Object.assign(arms, qd.arms);
   Object.assign(trialIds, qd.trialIds);
   const at = now.toISOString();
-  const pin = { set, arms, trial_ids: trialIds, fp: leverFingerprints(registry).fp, block, at };
+  const valued = Object.keys(leverValues).length ? { values: leverValues } : {};
+  const pin = { set, arms, trial_ids: trialIds, ...valued, fp: leverFingerprints(registry).fp, block, at };
   const drawn = Object.keys(arms).length;
   const event = {
     kind: 'assign', actor: ACTOR, reason_code: 'assigned_at_admission', at,
     reason: frozen ? `${key} was admitted while trials were frozen: kept levers only, no arm`
       : `${key} drew ${drawn ? Object.entries(arms).map(([n, a]) => `${n} ${a}`).join(', ') : 'no arm'} at admission`,
-    ticket: key, size, block, arms, trial_ids: trialIds, set,
+    ticket: key, size, block, arms, trial_ids: trialIds, set, ...valued,
   };
   return { pin, event };
 }
