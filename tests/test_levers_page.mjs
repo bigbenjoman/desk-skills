@@ -303,7 +303,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('labels: the recording note sits above the top of the plot', note.top < 12 && note.tf.endsWith('-100%)'), true);
   // A 10px label is about 7 chart units a character wide; the panels span 8% to 48% and 54% to 91%.
   const width = (s) => (s.length * 7 / 700) * 100;
-  const inside = (x, lo, hi) => x.tf === 'translate(0,-100%)' && x.left >= lo - 0.01 && x.left + width(x.s) <= hi + 0.01;
+  const inside = (x, lo, hi) => /^translate\(0,(-100%|0)\)$/.test(x.tf) && x.left >= lo - 0.01 && x.left + width(x.s) <= hi + 0.01;
   const values = (c) => spans(c).filter((x) => x.c === '#111827');
   const vs = values(ch);
   t('labels: the weekly values stay inside the left panel', vs.filter((x) => x.left < 50).every((x) => inside(x, 8, 48)), true);
@@ -317,6 +317,16 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('labels: under 3 weekly points the 30 days show by default', [/^ hidden>/.test(chartOf(c0, 'wbr')), /^>/.test(chartOf(c0, 'days'))].join(), 'true,true');
   t('labels: and its button is the pressed one', h.includes('<button type="button" data-show="days" aria-pressed="true">Last 30 days</button>'), true);
   t('labels: with its line of the heading', h.includes('<p class="muted small" data-view="wbr" hidden>') && h.includes('<p class="muted small" data-view="days">'), true);
+  const sparkPts = (html) => /<svg viewBox="0 0 220 32"[^]*?<polyline points="([^"]*)"/.exec(html.split('aria-label="Headline numbers"')[1])[1].split(' ').filter(Boolean).length;
+  t('labels: the tile sparkline follows the days too, rather than one weekly point', sparkPts(h) > 3, true);
+  t('labels: and the weeks once there are 3', sparkPts(hSix), 6);
+  // A dip: its label goes under the point, where the line into and out of it does not run.
+  const dip = structuredClone(six);
+  const dm = dip.panels.trends.metrics.cost;
+  dm.daily = dm.daily.map((p, i) => ({ ...p, value: [17, 18, 12, 18][i % 4] }));
+  const dd = spans(chartOf(P.renderPage(dip).split('<article class="card wbr"')[1].split('</article>')[0], 'days')).filter((x) => x.c === '#111827');
+  t('labels: a dip is labelled under its point', dd.some((x) => x.s === '$12.00' && x.tf === 'translate(0,0)'), true);
+  t('labels: a peak above it', dd.some((x) => x.s === '$18.00' && x.tf === 'translate(0,-100%)'), true);
 }
 
 // AC10: an effect with no verdict is grey, says too early, and has no direction word.

@@ -142,6 +142,9 @@ const BOT = H * 0.84;
 const LABEL_W = 7;
 // Below this many weekly points the trends open on the last 30 days, where a new lever shows sooner.
 const WEEKS_FOR_WBR = 3;
+// The view the trends open on, which the tiles' sparklines follow: 'wbr' once a metric has WEEKS_FOR_WBR
+// weekly points, 'days' before.
+const openOn = (metrics) => (Math.max(0, ...Object.values(metrics ?? {}).map((x) => (x.weekly ?? []).filter((p) => p.value != null).length)) >= WEEKS_FOR_WBR ? 'wbr' : 'days');
 function nice(lo, hi, minStep) {
   const span = hi - lo;
   const raw = Math.max(span / 4, minStep || 0) || Math.max(Math.abs(hi) / 4, 1);
@@ -180,11 +183,15 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
     if (v == null) { if (cur.length) o.segs.push(cur.join(' ')); cur = []; return; }
     cur.push(`${xAt(i).toFixed(1)},${y(v).toFixed(1)}`);
     o.dots.push({ x: xAt(i), y: y(v) });
-    // Centred over its point, but kept inside the panel so it never runs into the tick labels beside it.
+    // Centred on its point, but kept inside the panel so it never runs into the tick labels beside it;
+    // above the point, or under a dip (the line into and out of it runs above), room allowing.
     if (every === 1 || (n - 1 - i) % every === 0) {
       const s = m.v(v);
       const w = s.length * LABEL_W;
-      o.labels.push({ x: Math.max(x0, Math.min(xAt(i) - w / 2, x1 - w)), y: y(v) - 6, tf: 'translate(0,-100%)', s, c: C.ink });
+      const prev = vals[i - 1];
+      const next = vals[i + 1];
+      const dip = prev != null && prev > v && (next == null || next > v) && y(v) + 18 <= BOT;
+      o.labels.push({ x: Math.max(x0, Math.min(xAt(i) - w / 2, x1 - w)), y: dip ? y(v) + 6 : y(v) - 6, tf: dip ? 'translate(0,0)' : 'translate(0,-100%)', s, c: C.ink });
     }
   });
   if (cur.length) o.segs.push(cur.join(' '));
@@ -290,8 +297,8 @@ function summary(v) {
   return `<section aria-label="Summary" class="card summary"><p><b>${lead}</b> ${body}</p>${cta}</section>${notes(v.panels.status)}`;
 }
 
-function spark(metric, m) {
-  const vals = metric.weekly.map((p) => scaled(m, p.value));
+function spark(metric, m, shown) {
+  const vals = (shown === 'days' ? metric.daily : metric.weekly).map((p) => scaled(m, p.value));
   const base = scaled(m, metric.baseline.value);
   const all = [...vals.filter((x) => x != null), ...(base == null ? [] : [base])];
   if (!all.length) return '';
@@ -333,7 +340,7 @@ function tiles(v, today) {
       const tickets = (k) => (n[k] == null ? '' : `, ${n[k]} ticket${n[k] === 1 ? '' : 's'}`);
       const window = metric.first_recorded ? `Since ${dayLabel(metric.first_recorded)}${n.to_date == null ? '' : ` · ${n.to_date} ticket${n.to_date === 1 ? '' : 's'}`}` : 'Nothing recorded yet';
       const recent = `Last week ${fig(c.last_week)}${tickets('last_week')} · Yesterday ${fig(c.yesterday)}${tickets('yesterday')}`;
-      return { label: m.tile, value: fig(c.to_date), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: window, sub2: recent, spark: spark(metric, m) };
+      return { label: m.tile, value: fig(c.to_date), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: window, sub2: recent, spark: spark(metric, m, openOn(ms)) };
     };
     const items = leverItems(v);
     const first = items[0];
@@ -350,8 +357,7 @@ function trends(v) {
   const ms = p.metrics ?? {};
   const has = p.state !== 'empty' && Object.values(ms).some((m) => m.first_recorded);
   // The 6-week and 12-month view once a metric has WEEKS_FOR_WBR weekly points, the last 30 days before.
-  const weeks = Math.max(0, ...Object.values(ms).map((m) => (m.weekly ?? []).filter((p) => p.value != null).length));
-  const shown = weeks >= WEEKS_FOR_WBR ? 'wbr' : 'days';
+  const shown = openOn(ms);
   const pressed = (k) => `aria-pressed="${k === shown}"`;
   const hide = (k) => (k === shown ? '' : ' hidden');
   const toggle = `<div role="group" aria-label="Chart view" class="toggle"><button type="button" data-show="wbr" ${pressed('wbr')}>6 weeks &amp; 12 months</button><button type="button" data-show="days" ${pressed('days')}>Last 30 days</button></div>`;
