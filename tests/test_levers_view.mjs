@@ -388,6 +388,48 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('merged only: the cost panel counts every admitted ticket', v.panels.cost.weeks_before[0].admitted + v.panels.cost.weeks_before[1].admitted, 4);
 }
 
+// A ticket in several levers' evidence files is one row, its ticket-level fields from the newest
+// evaluation's copy, and never a lever's own exclusion: the fleet-wide trends and the cost panel leave
+// out only a ticket-wide reason (a pin mismatch, an incomplete cost).
+{
+  const rows = [row('DS-1', 2, { cost: 10 }), row('DS-2', 2, { cost: 20 }), row('DS-3', 2, { cost: 30 })];
+  const m = machine({ files: {
+    ...evidence(DS, rows, 'evl_2026-11-14_a.jsonl'),
+    // The last file by name, as a lever whose own code changed writes it: every ticket fp_reset.
+    ...evidence(DS, rows.map((r) => ({ ...r, excluded: 'fp_reset' })), 'evl_2026-11-14_wrappers.jsonl'),
+    ...evidence(DS, [{ ...row('DS-4', 2, { cost: 99 }), pin_mismatch: true, excluded: 'pin_mismatch' }], 'evl_2026-11-14_b.jsonl'),
+  } });
+  const v = view(m);
+  const c = v.panels.trends.metrics.cost.callouts;
+  t('dedupe: a lever\'s fp_reset leaves no ticket out of the cost trend', c.to_date, 20);
+  t('dedupe: nor out of the fix tries trend', v.panels.trends.metrics.fixes.callouts.to_date, 0);
+  t('dedupe: a pin mismatch is still left out', v.panels.cost.this_week.usd_per_admitted, 20);
+  t('dedupe: the data quality tally counts ticket-wide reasons only', j(v.panels.data_quality.excluded), '{"cost_incomplete":0,"pin_mismatch":1,"other":0}');
+  t('dedupe: each ticket once', v.panels.data_quality.tickets, 4);
+  // An older evaluation's copy sorts after the newer one by name: the newer copy still wins.
+  const m2 = machine({ files: {
+    ...evidence(DS, [row('DS-1', 2, { cost: 12 })], 'evl_new.jsonl'),
+    ...evidence(DS, [row('DS-1', 2, { cost: 0, complete: false, merged: null })], 'evl_old.jsonl'),
+  } });
+  const ev = (n) => join(m2.root, DS, 'levers-evidence', n);
+  utimesSync(ev('evl_old.jsonl'), new Date(NOW - 2 * DAY), new Date(NOW - 2 * DAY));
+  utimesSync(ev('evl_new.jsonl'), new Date(NOW - HOUR), new Date(NOW - HOUR));
+  t('dedupe: the newest evaluation\'s copy of a ticket wins, not the last file read', view(m2).panels.trends.metrics.cost.callouts.to_date, 12);
+}
+
+// The per accepted ticket trends are keyed by the day each ticket merged, so a slow ticket counts on
+// the day it finished rather than pulling its admission day up after the fact.
+{
+  const slow = { ...row('DS-1', 4, { cost: 40, fix: 2 }), merged_at: iso(1 * DAY) };
+  const v = view(machine({ files: evidence(DS, [slow, row('DS-2', 1, { cost: 10 })]) }));
+  const m = v.panels.trends.metrics;
+  t('merge day: yesterday counts the slow ticket that merged yesterday', m.cost.callouts.yesterday, 25);
+  t('merge day: and its fix tries', m.fixes.callouts.yesterday, 1);
+  t('merge day: the day it was admitted has no point', m.cost.daily.at(-4).value, null);
+  t('merge day: the trends say how many tickets each callout is over', j(m.cost.counts), '{"yesterday":2,"last_week":0,"mtd":2,"to_date":2}');
+  t('merge day: the trends name their window', j([m.cost.keyed_by, m.cost.first_recorded]), '["merged_at","2026-11-11"]');
+}
+
 // An unrecorded sample size is never worded as 0.
 {
   t('no n: the effect label', V.effectView({ lo90: -0.7, hi90: -0.4 }, null, 30).label, 'too early: sample not recorded, needs 30');

@@ -33,6 +33,7 @@ import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
+import { excludedWhy } from './levers-evaluate.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -221,23 +222,54 @@ const weekStart = (k) => addDays(k, -((new Date(keyMs(k)).getUTCDay() + 6) % 7))
 const monthOf = (k) => k.slice(0, 7);
 const addMonths = (m, n) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
 
+// ---- the per-ticket rows -----------------------------------------------------------------------------------
+// Each evidence file is one lever's evaluation: its copy of a ticket carries that lever's own fields, the
+// arm it drew (`on`, `arm`) and why that lever left it out (`excluded`, fp_reset when the lever's code
+// changed). The fleet-wide figures want the ticket itself, so each ticket is one row: the copy from the
+// newest evaluation (files read oldest first, by when each was written and then by name), with those
+// per-lever fields dropped and `excluded` only for a reason that holds for every lever (excludedWhy with
+// no lever: a pin mismatch, an incomplete cost). `day` is the day it was admitted, `merged_day` the day it
+// merged, in `tz`.
+const LEVER_FIELDS = ['on', 'arm', 'excluded'];
+function ticketRows(repos, tz) {
+  const files = repos.flatMap((r) => r.evidence.map((f) => ({ ...f, repo: r }))).sort((a, b) => (a.at ?? '').localeCompare(b.at ?? '') || (a.file ?? '').localeCompare(b.file ?? ''));
+  const byTicket = new Map();
+  for (const f of files) for (const row of f.rows) {
+    if (!row.key || !row.admitted_at || Number.isNaN(Date.parse(row.admitted_at))) continue;
+    const ticket = Object.fromEntries(Object.entries(row).filter(([k]) => !LEVER_FIELDS.includes(k)));
+    const why = excludedWhy(ticket, null, null);
+    const merged = row.merged_at && !Number.isNaN(Date.parse(row.merged_at)) ? dayKey(Date.parse(row.merged_at), tz) : null;
+    byTicket.set(`${row.slug ?? f.repo.slug}|${row.batch ?? ''}|${row.key}`, {
+      ...ticket, slug: row.slug ?? f.repo.slug, repo: f.repo.name, day: dayKey(Date.parse(row.admitted_at), tz), merged_day: merged, ...(why ? { excluded: why } : {}),
+    });
+  }
+  return [...byTicket.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([, v]) => v);
+}
+
 // ---- the four trend metrics -------------------------------------------------------------------------------
-const costed = (r) => r.cost_complete === true && !r.excluded && Number.isFinite(r.cost);
+// A ticket counts unless a ticket-wide reason leaves it out; that reason includes an incomplete cost, so
+// every metric reads the same tickets.
 const counted = (r) => !r.excluded;
+const costed = (r) => counted(r) && Number.isFinite(r.cost);
 // The per accepted ticket metrics read merged tickets only, the population their baseline counts;
-// an admitted ticket still in flight or never run would pull the mean down and read as a saving.
-const accepted = (r) => !!r.merged_at;
+// an admitted ticket still in flight or never run would pull the mean down and read as a saving. Each
+// is keyed by the day its ticket merged: keyed by admission, a day's point would hold only the tickets
+// quick enough to have merged so far, and read cheaper than it ends up.
+const accepted = (r) => !!r.merged_at && !!r.merged_day;
 const mean = (xs) => (xs.length ? xs.reduce((n, v) => n + v, 0) / xs.length : null);
 const usdMean = (rows) => mean(rows.filter(costed).map((r) => r.cost));
+const sumOver = (rows, k) => rows.reduce((a, r) => a + r[k], 0);
+// Each metric: the tickets it reads (`of` them is its value), and the field its days are keyed by.
 export const METRICS = Object.freeze({
-  cost: { title: 'Cost per ticket', unit: 'usd', of: (rows) => usdMean(rows.filter(accepted)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
-  tokens: { title: 'Tokens per ticket', unit: 'input tokens', of: (rows) => mean(rows.filter(accepted).filter(costed).filter((r) => Number.isFinite(r.input)).map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
+  cost: { title: 'Cost per ticket', unit: 'usd', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(costed), of: (rs) => mean(rs.map((r) => r.cost)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
+  tokens: { title: 'Tokens per ticket', unit: 'input tokens', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(costed).filter((r) => Number.isFinite(r.input)), of: (rs) => mean(rs.map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
   prompts: {
-    title: 'Permission prompts per start', unit: 'denials per start',
-    of: (rows) => { const s = rows.filter(counted).filter((r) => r.starts > 0 && Number.isFinite(r.denials)); const n = s.reduce((a, r) => a + r.starts, 0); return n ? s.reduce((a, r) => a + r.denials, 0) / n : null; },
+    title: 'Permission prompts per start', unit: 'denials per start', keyed_by: 'merged_at',
+    over: (rows) => rows.filter(accepted).filter(counted).filter((r) => r.starts > 0 && Number.isFinite(r.denials)),
+    of: (rs) => { const n = sumOver(rs, 'starts'); return n ? sumOver(rs, 'denials') / n : null; },
     base: (b) => (b?.denials != null && b?.starts ? b.denials / b.starts : null), basis: 'per start',
   },
-  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', of: (rows) => mean(rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)).map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
+  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)), of: (rs) => mean(rs.map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
 });
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : round(((a - b) / b) * 100, 1));
 const val = (v) => round(v, 4);
@@ -246,7 +278,8 @@ const val = (v) => round(v, 4);
 // ending this month, its baseline and its nine callouts. A point with no tickets, or before the first
 // recorded day, is null.
 function trend(metric, rows, base, today, first) {
-  const at = (pred) => rows.filter((r) => pred(r.day));
+  const mine = metric.over(rows);
+  const at = (pred) => mine.filter((r) => pred(r.merged_day));
   const point = (pred, before) => (first == null || before < first ? null : val(metric.of(at(pred))));
   const yesterday = addDays(today, -1);
   const daily = Array.from({ length: 30 }, (_, i) => addDays(yesterday, i - 29)).map((d) => ({ date: d, value: point((x) => x === d, d) }));
@@ -258,8 +291,13 @@ function trend(metric, rows, base, today, first) {
   const lastWeek = weekly.at(-1).value;
   const mtd = monthly.at(-1).value;
   const toDate = first == null ? null : val(metric.of(at((x) => x < today)));
+  const lastWeekStart = addDays(thisWeek, -WEEK_DAYS);
+  const counts = {
+    yesterday: at((x) => x === yesterday).length, last_week: at((x) => x >= lastWeekStart && x < thisWeek).length,
+    mtd: at((x) => monthOf(x) === month && x < today).length, to_date: at((x) => x < today).length,
+  };
   return {
-    title: metric.title, unit: metric.unit, first_recorded: first,
+    title: metric.title, unit: metric.unit, first_recorded: first, keyed_by: metric.keyed_by, counts,
     baseline: { value: base == null ? null : val(base), basis: metric.basis },
     daily, weekly, monthly,
     callouts: {
@@ -300,13 +338,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const today = dayKey(now, tz);
   const weekAgo = now - WEEK_DAYS * DAY_MS;
 
-  // Per-ticket outcome rows: the latest evaluation's copy of each ticket.
-  const byTicket = new Map();
-  for (const r of repos) for (const f of r.evidence) for (const row of f.rows) {
-    if (!row.key || !row.admitted_at || Number.isNaN(Date.parse(row.admitted_at))) continue;
-    byTicket.set(`${row.slug ?? r.slug}|${row.batch ?? ''}|${row.key}`, { ...row, slug: row.slug ?? r.slug, repo: r.name, day: dayKey(Date.parse(row.admitted_at), tz) });
-  }
-  const rows = [...byTicket.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([, v]) => v);
+  const rows = ticketRows(repos, tz);
   const rowErrors = errs(repos.map((r) => r.evidence));
   const first = rows.length ? rows.map((r) => r.day).sort()[0] : null;
 
@@ -466,11 +498,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }, errs(repos.map((r) => r.audit), repos.map((r) => r.log), repos.map((r) => r.evals)));
 
   // P8 data quality.
-  const excluded = { cost_incomplete: 0, pin_mismatch: 0, fp_reset: 0, other: 0 };
-  for (const r of rows) {
-    if (r.excluded) excluded[Object.hasOwn(excluded, r.excluded) ? r.excluded : 'other'] += 1;
-    else if (r.cost_complete !== true) excluded.cost_incomplete += 1;
-  }
+  // Ticket-wide reasons only: a lever's own (fp_reset) is that lever's evaluation's, on its row.
+  const excluded = { cost_incomplete: 0, pin_mismatch: 0, other: 0 };
+  for (const r of rows) if (r.excluded) excluded[Object.hasOwn(excluded, r.excluded) ? r.excluded : 'other'] += 1;
   const starts = rows.flatMap((r) => r.start_records ?? []);
   const dataQuality = panel(rows.length ? 'ok' : 'empty', {
     tickets: rows.length, excluded, excluded_total: Object.values(excluded).reduce((n, v) => n + v, 0),
@@ -484,7 +514,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const thisWeek = window(weekAgo, now);
   const perRepo = repos.map((r) => {
     const mine = thisWeek.filter((x) => x.slug === r.slug);
-    return { repo: r.name, admitted: mine.length, merged: mine.filter((x) => x.merged_at).length, usd_per_admitted: usdPer(mine), cost_incomplete: mine.filter((x) => !x.excluded && x.cost_complete !== true).length };
+    return { repo: r.name, admitted: mine.length, merged: mine.filter((x) => x.merged_at).length, usd_per_admitted: usdPer(mine), cost_incomplete: mine.filter((x) => x.excluded === 'cost_incomplete').length };
   });
   const savings = cells.flatMap((l) => l.cells.filter((c) => c.cost?.saving_usd).map((c) => ({ lever: l.lever, repo: c.repo, ...c.cost.saving_usd })));
   const cost = panel(thisWeek.length ? 'ok' : 'empty', {
