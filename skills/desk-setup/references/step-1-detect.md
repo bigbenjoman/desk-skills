@@ -434,7 +434,8 @@ How to turn what you find into rows:
   for the root), e.g. `` `apps/portal/apps/web: <email>` ``, and say what the user must hold: an
   existing user in that app's development auth instance (never production, never a new one) who
   already holds the grant its signed-in pages need, so a worker can sign in as them for screenshots.
-  The email is a fact only the user has: never guess one, and never take a password. `none` is a
+  The email is a fact only the user has: never guess one, and never take a password. A user the
+  repo's seed files create is read, not guessed: offer it as the Recommended option. `none` is a
   fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
   a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
   included.
@@ -523,7 +524,9 @@ How to turn what you find into rows:
 - **Handoff at context % on a 1M window.** Propose `20`, with one line of why: replaying 71
   orchestrator sessions, a fresh start at about 200k tokens saved 53% of the tokens re-read each
   turn, against 10% at 45% of a 1M window (450k). A whole number from `1` to `99`, `0` to turn it off
-  on 1M windows only, or empty to take the row above's value.
+  on 1M windows only, or empty to take the row above's value. Later, `node
+  ~/.claude/desk/bin/handoff-report.mjs` measures the thresholds sessions ran under and names the
+  cheapest within guardrails for either row.
 - **Design canvases directory.** Propose `docs/design/`, or the directory the repo already commits
   canvases in when the design scan found one. It is relative to the repo root and committed, so
   autopilot workers and the design agents read the same files; a shared artifact link alone is not

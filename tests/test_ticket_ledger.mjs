@@ -29,10 +29,17 @@ const VALID = {
   waiting: { on: 'mergeability', since: '2026-11-20T10:00:00Z', deadline: '2026-11-20T10:30:00Z', escalate_to: 'person' },
   waited: { on: 'mergeability' },
   pr_opened: { pr: 12, head_sha: SHA },
-  automerge_armed: { by: 'session x', pr: 12, head_sha: SHA },
-  automerge_disarmed: { by: 'merge-driver', pr: 12 },
+  automerge_armed: { by: 'session x', pr: 12, head_sha: SHA, line: 0 },
+  automerge_disarmed: { by: 'merge-driver', pr: 12, line: 1 },
   merged: { by: 'merge-driver', pr: 12, head_sha: SHA, base: 'main' },
-  finished: { pr: 12 },
+  merge_stages: { pr: 12, stages: { undraft: 4, merge: 2 } },
+  stuck: { cause: 'usage', start: '2026-11-20T10:00:00Z', end: null },
+  ask_raised: { ask: 'DS-1:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: null, arm: null },
+  ask_presented: { ask: 'DS-1:2026-11-20T10:00:00Z', via: 'digest', ref: null, notification: null, share: 0.25 },
+  ask_answered: { ask: 'DS-1:2026-11-20T10:00:00Z', by: 'person', session: null, latency_s: 90 },
+  ask_acted: { ask: 'DS-1:2026-11-20T10:00:00Z', round: 1 },
+  ask_tokens: { ask: 'DS-1:2026-11-20T10:00:00Z', step: 'raise', source: 'log', input: 1, output: 2, cache_read: 3, cache_write: 4, usd: 0.01, complete: true, approx: null },
+  finished: { pr: 12, fields: null },
   failed: { subtype: 'crash' },
   requeued: {},
   moved: { from: 'B1', to: 'B2' },
@@ -78,6 +85,19 @@ for (const [type, row] of Object.entries(L.TRANSITIONS)) {
   if (no !== undefined) t(`${type} from ${no ?? 'none'} is illegal`, j(L.legality(at(no), ev(type))), j({ legal: false, from: no }));
 }
 t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).legal, true);
+{
+  // A done ticket's PR can have auto-merge armed and disarmed, and the fold keeps the last merge-log line it folded.
+  const s = at('done');
+  t('DS-900 auto-merge armed on a done ticket is legal', L.legality(s, ev('automerge_armed')).legal, true);
+  const env = (seq, type, data) => ({ v: 1, seq, id: `m${seq}`, ...ev(type, data) });
+  const after = L.reduce([env(2, 'automerge_armed', { ...VALID.automerge_armed, line: 4 }), env(3, 'automerge_disarmed', { ...VALID.automerge_disarmed, line: 7 })], s);
+  t('DS-900 the fold keeps the last merge-log line folded, and the arm ended', j([after.tickets['DS-1'].merge_log, after.tickets['DS-1'].automerge]), j([7, null]));
+  const reseeded = L.reduce([env(4, 'seeded', VALID.seeded)], after);
+  t('DS-900 a seed keeps how far the merge log was folded', reseeded.tickets['DS-1'].merge_log, 7);
+  const merged = L.reduce([env(5, 'merged', VALID.merged), env(6, 'automerge_armed', { ...VALID.automerge_armed, pr: VALID.merged.pr, line: 9 })], s);
+  t('DS-900 an arm on the merged PR folded after its merge arms nothing, and is still counted folded',
+    j([merged.tickets['DS-1'].automerge, merged.tickets['DS-1'].merge_log]), j([null, 9]));
+}
 
 // AC1: three valid events append in order, each with a rising seq, its time and its writer.
 {
@@ -294,6 +314,59 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('a ticket that never waited has no waits field', 'waits' in L.project(L.reduce([seed('DS-3', { key: 'DS-3', state: 'queued' }, 1)]), 'B1').tickets['DS-3'], false);
   const seeded = L.reduce([seed('DS-4', { key: 'DS-4', state: 'triaged', waits: { handoff: { since: 'x', deadline: 'y', escalate_to: 'requeue' } } }, 1), env(2, ev('waited', { on: 'handoff' }, 'DS-4'))]);
   t('a wait seeded from queue.json is closed by its waited event', L.project(seeded, 'B1').tickets['DS-4'].waits, null);
+}
+
+// Ask events: legal from every state, leaving it as it was, and recorded on the ticket's asks, never in
+// its projection, so a queue rebuilt from the log and its diff against queue.json do not move. Each
+// check reads its value through get, so one that throws fails on its own.
+{
+  const get = (fn) => { try { return fn(); } catch (e) { return `threw: ${e.message}`; } };
+  const ASKS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_acted', 'ask_tokens'];
+  const ask = (type, data = VALID[type]) => ({ type, batch: 'B1', key: 'DS-1', data });
+  t('an ask event is legal from every state, none included, and leaves the state as it was', get(() => j([null, ...STATES].flatMap((from) => ASKS.filter((type) => {
+    const s = at(from);
+    const after = L.reduce([{ v: 1, seq: s.seq + 1, id: `a-${type}`, at: '2026-11-20T10:05:00Z', ...ask(type) }], s);
+    return !(type in L.TRANSITIONS) || !L.legality(s, ask(type)).legal || (after.tickets['DS-1']?.state ?? null) !== from;
+  }).map((type) => `${type} from ${from}`)))), '[]');
+  t('a blocking flag is taken as true, false or null', j([true, false, null].map((b) => L.invalid(ask('ask_raised', { ...VALID.ask_raised, blocking: b })))), '[null,null,null]');
+  t('a digest\'s share of its push is taken from 0 to 1, or null', j([0, 0.5, 1, null, 1.5, -0.1].map((share) => L.invalid(ask('ask_presented', { ...VALID.ask_presented, share })))),
+    j([null, null, null, null, 'ask_presented: field "share" is not a valid share', 'ask_presented: field "share" is not a valid share']));
+  t('an arm is taken as a name or null', j(['mixed', null, 3].map((arm) => L.invalid(ask('ask_raised', { ...VALID.ask_raised, arm })))), j([null, null, 'ask_raised: field "arm" is not a valid string']));
+  t('a presentation names its way', L.invalid(ask('ask_presented', { ...VALID.ask_presented, via: 'carrier pigeon' })), 'ask_presented: field "via" is not a valid via');
+  t('a step\'s tokens name a step there is, and dollars a figure at or above 0', j([L.invalid(ask('ask_tokens', { ...VALID.ask_tokens, step: 'ponder' })), L.invalid(ask('ask_tokens', { ...VALID.ask_tokens, usd: -1 }))]),
+    j(['ask_tokens: field "step" is not a valid tokenStep', 'ask_tokens: field "usd" is not a valid usd']));
+  t('a step that could not be read keeps no figures, as null', L.invalid(ask('ask_tokens', { ...VALID.ask_tokens, input: null, output: null, cache_read: null, cache_write: null, usd: null, complete: false })), null);
+  t('an answer names who gave it', L.invalid(ask('ask_answered', { ...VALID.ask_answered, by: 'someone' })), 'ask_answered: field "by" is not a valid answerer');
+  const parked = { key: 'DS-1', state: 'parked', park: { kind: 'question', question: 'which?', since: '2026-11-20T10:00:00Z' }, added_at: 'x' };
+  const base = L.reduce([seed('DS-1', parked, 1)]);
+  const withAsks = get(() => L.reduce(ASKS.map((type, i) => env(2 + i, ask(type))), base));
+  const disk = { batch: 'B1', concurrency: 2, tickets: {} };
+  t('the projection with ask events is the projection without them', get(() => j(L.project(withAsks, 'B1', disk))), j(L.project(base, 'B1', disk)));
+  t('so the diff against the queue on disk does not move', get(() => j(L.diffQueues({ ...disk, tickets: { 'DS-1': parked } }, L.project(withAsks, 'B1', disk)))),
+    j(L.diffQueues({ ...disk, tickets: { 'DS-1': parked } }, L.project(base, 'B1', disk))));
+  const id = 'DS-1:2026-11-20T10:00:00Z';
+  const a = get(() => withAsks.tickets['DS-1'].asks[id]);
+  t('the fold keeps the ask: its since, kind, blocking flag and arm, and when it was raised', get(() => j([a.since, a.kind, a.blocking, a.arm, a.raised_at])), j(['2026-11-20T10:00:00Z', 'question', null, null, '2026-11-20T10:00:02Z']));
+  t('each presentation, its answer and the act on it', get(() => j([a.presented, a.answered, a.acted])),
+    j([[{ via: 'digest', ref: null, notification: null, share: 0.25, at: '2026-11-20T10:00:03Z' }], { by: 'person', session: null, latency_s: 90, at: '2026-11-20T10:00:04Z' }, { round: 1, at: '2026-11-20T10:00:05Z' }]));
+  t('a step\'s tokens are kept on the ask by step and source, the first kept', get(() => j(L.reduce([env(12, ask('ask_tokens', { ...VALID.ask_tokens, input: 999 }))], withAsks).tickets['DS-1'].asks[id].tokens)),
+    j({ 'raise:log': { ...VALID.ask_tokens, at: '2026-11-20T10:00:06Z' } }));
+  t('a second answer to the same ask keeps the first', get(() => L.reduce([env(10, ask('ask_answered', { ...VALID.ask_answered, by: 'decider', latency_s: 500 }))], withAsks).tickets['DS-1'].asks[id].answered.by), 'person');
+  t('a presentation another way is added beside the first', get(() => j(L.reduce([env(11, ask('ask_presented', { ...VALID.ask_presented, via: 'push' }))], withAsks).tickets['DS-1'].asks[id].presented.map((p) => p.via))), '["digest","push"]');
+  t('a ticket seeded again keeps its asks', get(() => j(Object.keys(L.reduce([{ ...seed('DS-1', parked, 20), id: 'reseed-asks' }], withAsks).tickets['DS-1'].asks))), j([id]));
+  t('a snapshot written before asks folds an ask event', get(() => { const old = structuredClone(base); delete old.tickets['DS-1'].asks; return j(Object.keys(L.reduce([env(30, ask('ask_raised'))], old).tickets['DS-1'].asks)); }), j([id]));
+}
+
+// skip: an append leaves out each event the log folded under its lock already holds, and writes nothing
+// when that is all of them.
+{
+  const dir = repo();
+  const once = (state, e) => state.ids.includes(e.id);
+  L.append(dir, [{ ...ev('admitted'), id: 'x1' }], { skip: once });
+  const before = lines(dir);
+  t('the same event again is left out', L.append(dir, [{ ...ev('admitted'), id: 'x1' }], { skip: once }).length, 0);
+  t('and the log is unchanged', lines(dir), before);
+  t('beside a new one, only the new one is written', j(L.append(dir, [{ ...ev('admitted'), id: 'x1' }, { ...ev('triaged'), id: 'x2' }], { skip: once }).map((e) => [e.id, e.seq])), j([['x2', 2]]));
 }
 
 // The lock: an append waits for the ledger lock at most its wait, then throws and writes nothing.

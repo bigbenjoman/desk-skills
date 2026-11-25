@@ -4,7 +4,8 @@ description: >-
   Admits tickets into the autopilot batch the supervisor runs, after the same checks standing intake
   makes: a fresh triage, lane, blocking lint, open questions, size, and blockers outside the batch.
   Use when the user types "/desk-admit", or says "admit DS-123", "add these to the batch", "put this
-  in the supervisor's queue", "get this into autopilot". Not for planning a new batch with approvals
+  in the supervisor's queue", "get this into autopilot", or asks what to admit next ("a slot is free,
+  what should go in?", "candidates for the batch"). Not for planning a new batch with approvals
   (that is desk-autopilot) or working one ticket in this session (that is desk-ticket).
 argument-hint: "<TICKET>... [--front]"
 ---
@@ -15,10 +16,30 @@ One script makes every check and every write, after step 0 saves any design. **R
 else**: no queue, triage record or supervisor log, and do not load `desk-autopilot` except for an
 epic the script says to plan (step 1b). Never run `queue.mjs admit` yourself.
 
+## Candidates, when no ticket was named
+
+When the user asks what to admit rather than naming tickets, list the candidates first; never pick
+from the tracker by hand:
+
+```bash
+node ~/.claude/desk/bin/candidates.mjs
+```
+
+It lists §4 Jira project's unassigned, unstarted Bugs and self-contained Tasks (no open "is blocked
+by" link, and not a child of an epic whose feature batch is running) by §4 Priority, clean ones first.
+A ticket a merged PR or a commit on the default branch already names is shown as `already on main (PR
+#n)` and not offered; one missing its Acceptance criteria or Design section says so, and one naming a
+file a PR merged in the last 7 days changed names that PR as possible overlap. Show the list and ask
+which to admit, then run step 0 and step 1 for the ones chosen. It admits nothing itself. Exit 3 means
+the repo has no Jira tracker or project to list from: say so. With config §3b "Propose candidates for
+a free slot" on, the pass prints the same list under `free slot:` while a slot stays free.
+
 ## 0. Snapshot each design
 
 A worker has no Artifact tool, and an artifact private to one subscription cannot be read from
-another, so a ticket's Claude Design canvas is saved now, by this session, before it is admitted.
+another, so a ticket's Claude Design canvas, and any other claude.ai artifact its description links
+(a spec or notes page), is saved now, by this session, before it is admitted. `check` reads the
+description only, so an artifact linked only in a comment has its link moved there first.
 For each ticket the user named (an epic is skipped: its children are admitted on their own):
 
 ```bash
@@ -26,7 +47,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
 ```
 
 `ok`, or an `advisory`, needs nothing. Each `blocking` line names an artifact URL with no copy a
-worker can read: snapshot it with the Artifact tool, reading every file
+worker can read. **One made outside the user's organisation is read here too**: reading it asks
+whether Claude may read it for the rest of this conversation, and the user's yes covers every read
+of it after that, so read every such artifact in this call in one go, while they are here to answer.
+Snapshot it with the Artifact tool, reading every file
 `desk-autopilot/references/design-snapshot.md` (read it now) lists, a single-page artifact's page
 and what it loads included, into `out_dir: $DESK_STATE/designs/<TICKET>/` (`desk-env paths` prints
 `DESK_STATE`). Then record it, and check again:
@@ -55,6 +79,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory nami
 
 and admit them in step 1. Exit 4 names the first file the page loads from elsewhere: it is not a
 self-contained export, so ask once more for one that is, or for the artifact to be shared.
+
+What no session reads first (standing intake, a feature batch started headless, a ticket plan-batch
+seeds) is admitted parked on its unread artifact, and `/desk-needs-you` lists every such artifact in the
+repo, with the tickets each holds, as one item. Its `/desk-admit` is this step for all of them at once.
 
 ## 1. Admit
 
@@ -153,15 +181,30 @@ no design link is not the user's where the ticket's comments answer it: read the
 - **no design link**: a Figma or Claude Design URL in a comment from the designer (the product owner
   where Designer is `none`);
 - **no acceptance criteria**: criteria that follow from the ticket's text and those comments alone.
-  A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`).
+  A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`). Where the line
+  adds `triage drafted <n> from its goal and proposal`, it lists them: write them as they are, under
+  the note it quotes. Where it adds `its text states no testable outcome`, admit has put that one
+  ask on `/desk-needs-you`: say so, and do not ask it again below.
 - **no design link** where the line adds `triage found nothing renders` (its change is confined to
   tests, CI, tooling or config): no comment is needed. Write `No UI.` and the reason the line gives
   (`No UI. Triage found nothing renders: it changes …`) as the Design section.
 
+**Admit has already written what it could.** For a GitHub issue where config §3 `gh-issue-edit` is
+`yes`, and for a ticket in a ticket file, it writes the criteria triage drafted and `No UI.` itself,
+with `None.` under a missing Out of scope and §4 Unit tests (`desk-env cmds test-cmd`) under a missing
+Verification, prints the `ISSUE EDIT` (or `TICKET FILE EDIT`) block marked `posted`, lints the
+ticket again and places it on that: nothing is left to do for it. Where `gh-issue-edit` is not
+`yes`, a `desk drafted … but wrote nothing` line follows the block marked `awaiting approval`: at
+`ask`, show that block, ask, and on yes run the `gh issue edit … --body-file …` it names, then run
+step 1 again; at `no`, hand the person the sections to paste. On Jira, write `None.` under a missing
+Out of scope and the test command under a missing Verification with the rest below.
+
 Write each settled finding into the description through `desk-jira` (§3 `jira-edit`; with no
-tracker, the ticket file), before asking about any other: the `Acceptance criteria` section, a
-`Design` section holding the link, and the decision line reworded as decided, with a dated entry
-under `Decisions` naming the comment's author and date. Print the `JIRA EDIT` block as it goes and
+tracker, a GitHub issue through `gh issue edit` under §3 `gh-issue-edit`, since triage reads the
+issue, not a file; any other ticket, its ticket file), before asking about any other: the
+`Acceptance criteria` section, a `Design` section holding the link, and the decision line
+reworded as decided, with a dated entry under `Decisions` naming the comment's author and date.
+Print the `JIRA EDIT` (or `ISSUE EDIT`) block as it goes and
 read it back. With none left, run step 1 again for it. Only a finding no comment settles goes to the
 user, as below, saying which were folded in; once its answer is recorded the same way, run step 1 again.
 
@@ -186,7 +229,7 @@ below as `(Recommended)`, with its reason as the description:
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` (or `to its own slot <S>, named after its branch`, for a batch spanning several epics) | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
 | `is run by a session, not the supervisor` | If this session runs that batch, run the command the line names (`… --session`), never `queue.mjs admit` and never a message to yourself. Otherwise send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session admits them | Admit nothing here unless this session runs it |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
-| `no supervisor runs this repo's batches` (config §3b Batches run by is `session`) | If this session runs the repo's batches, run step 1 again with `--session`, which joins the finished batch. Otherwise start one: `/desk-autopilot <TICKET>...` in a session. The line is on `/desk-needs-you` too | |
+| `no supervisor runs this repo's batches` (config §3b Batches run by is `session`) | If this session runs the repo's batches, run step 1 again with `--session`, which joins the finished batch. Otherwise start one: `/desk-autopilot <TICKET>...` in a session. The line is on `/desk-needs-you` until the ticket is admitted. Run in the session whose pass last ran the batch, admit says `this session runs this repo's batches` instead and puts nothing on needs-you: run its `--session` command | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
 
 A `not triaged (usage limit, resets <time>): <TICKET>...` line is not a question: a triage hit the

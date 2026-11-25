@@ -262,6 +262,14 @@ t('DS-330 AC1 and records it in the driver\'s files', `${read(`sd/reruns-701-${H
 t('DS-330 AC1 rerun.sh exits 0', ran.status, 0);
 rerunSh('yes');
 t('DS-330 AC1 a second rerun inside the cooldown is not made', read('gh.log').split('\n').filter(Boolean).length, 2);
+// #1417: an outside reviewer's gate (a §4 State check of kind external) the only red check, as while that
+// reviewer is down: the driver's rerun makes no gh call and leaves the PR's rerun count where it was.
+const ext1417 = { gate: { pending: [], failedRuns: [], failedJobs: [], failing: [{ name: '🔐 Review gate', runId: '7' }], reasons: ['"🔐 Review gate" failure'],
+  stateFailing: [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot', runId: '7', why: 'no review from agent-pullbot at the head' }] } };
+const ran1417 = spawnSync('bash', [fileURLToPath(new URL('../desk/bin/rerun.sh', import.meta.url)), join(tmp, 'sd'), 'o/r', '951', HEAD], {
+  input: JSON.stringify(ext1417), encoding: 'utf8', env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RERUN_PERM: 'yes' } });
+t('#1417 AC2 the driver reruns no reviewer\'s gate check, and its rerun count is unchanged',
+  JSON.stringify([ran1417.status, read('gh.log').split('\n').filter(Boolean).length, read(`sd/reruns-951-${HEAD}`), /a state check: a rerun reads the same PR state, so it is not rerun/.test(ran1417.stdout)]), JSON.stringify([0, 2, '', true]));
 rmSync(tmp, { recursive: true, force: true });
 
 // DS-490: a check pending with its run completed (an orphaned job), or pending past the limit, is

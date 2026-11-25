@@ -3,7 +3,9 @@
 // questions and the decisions taken since the last digest, and one push notification naming the
 // counts. Every repo's pass calls checkin(); a machine-wide lock and the last digest's slot make the
 // first pass past a slot the only one to build it, and a slot no pass saw is covered by the next one.
-// Only a park reading `PRODUCTION BROKEN: …` is pushed between check-ins (urgentParks).
+// Only a park reading `PRODUCTION BROKEN: …` is pushed between check-ins (urgentParks), but for an ask
+// its question-handling arm pushes as it is handed on (question-arms.mjs); the page still lists that
+// one, but it is not fresh, so it sets off no second push.
 //
 //   digest.mjs checkin                                    this repo's check-in now, as JSON (the supervisor's idle ticks)
 //   digest.mjs answer <slug> <TICKET> "<answer>"          record it through that repo's answer.mjs
@@ -23,7 +25,8 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay, openUnknowns } from './batch-state.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
+import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
@@ -38,6 +41,8 @@ import { read as readLeverLog, appendChecked as appendCheckedLeverLog, isStateCh
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
 import { leversDir } from './levers-view.mjs';
 import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
+import { recordAsks, ledgerOnIn, askId, ASK_LEDGER_ENV } from './ask-ledger.mjs';
+import { pushedAsks, raisedOf } from './question-arms.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -132,13 +137,15 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = new Map();
   for (const t of Object.values(q?.tickets ?? {})) {
-    if (t.state !== 'parked' || isHeld(t)) continue;
+    if (t.state !== 'parked' || isHeld(t) || planFirst(t) || sessionClaim(t)) continue;
     const l = parkPutOff(register, t);
     if (l.status !== 'put_off') continue;
     const o = out.get(l.entry.key) ?? { question: l.entry.question, at: l.entry.at, by: l.entry.by ?? null, tickets: [] };
     o.tickets.push(t.key);
     out.set(l.entry.key, o);
   }
+  const pf = planFirstAsk(r, q, register);
+  if (pf?.l.status === 'put_off') out.set(pf.l.entry.key, { question: pf.lead, at: pf.l.entry.at, by: pf.l.entry.by ?? null, tickets: [...pf.keys] });
   return [...out.values()].map((o) => ({ ...o, tickets: o.tickets.sort() })).sort((a, b) => a.tickets[0].localeCompare(b.tickets[0]));
 }
 
@@ -185,6 +192,21 @@ export function jiraLine(slug, j) {
     : `${n} parked tickets are Done in Jira; their orchestrators can drop them: ${j.done.join(', ')}`;
 }
 
+// The key the one plan-first question of a batch is answered under: it names no single ticket.
+const PLAN_FIRST_KEY = 'plan-first';
+// One repo's plan-first tickets waiting unclaimed past their wait, as needs-you's one item: their keys,
+// its lead words, and whether the person put it off there (planFirstPutOff). Null with none.
+function planFirstAsk(r, q, register) {
+  const keys = Object.values(q?.tickets ?? {}).filter((t) => planFirstDue(t, planFirstWaitMs(r.slug))).map((t) => t.key);
+  return keys.length ? { keys, lead: planFirstWaits(keys), l: lookup(register, planFirstPutOff(keys)) } : null;
+}
+// One repo's parked tickets a live interactive session has claimed, in any lane: [{ ticket, session }].
+export function sessionWork(r) {
+  const q = readJson(r.queue, null);
+  return Object.values(q?.tickets ?? {}).filter((t) => sessionClaim(t)).map((t) => ({ ticket: t.key, session: t.park.claim.session }))
+    .sort((a, b) => a.ticket.localeCompare(b.ticket));
+}
+
 // One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
 // person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
 // settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged or held ticket's unanswered triage unknowns. Questions
@@ -208,9 +230,19 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   for (const h of handedByIntake(r.state)) {
     out.push({ ticket: h.ticket, kind: 'intake', text: `not admitted by intake: ${h.text}`, key: questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`), state: r.state });
   }
+  // Plan-first work a session works, or that has not waited unclaimed past its wait, asks nothing; what
+  // is past it is one question, as needs-you lists it, unless the person put that item off there.
+  const pf = planFirstAsk(r, q, register);
+  if (pf && pf.l.status !== 'put_off') {
+    const text = `${pf.lead}: ${pf.keys.join(', ')}. Start /desk-ticket ${pf.keys[0]} in the batch's session, which claims it${pf.l.status === 'changed' ? ` (${pf.l.line})` : ''}`;
+    const key = questionKey(r.slug, PLAN_FIRST_KEY, text);
+    if (!answered[key]) out.push({ ticket: pf.keys[0], kind: 'plan-first', text, key });
+  }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       if (settlesByScript(t)) continue;
+      // A park a live session claimed is that session's to settle, in any lane.
+      if (planFirst(t) || sessionClaim(t)) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;
@@ -318,11 +350,12 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
   const nl = levers.length;
   const nlc = levers.filter((l) => l.slug).length;
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl) {
+  const nses = groups.reduce((n, g) => n + (g.sessions?.length ?? 0), 0);
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl && !nses) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -333,7 +366,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -354,10 +387,16 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
         lines.push(`- [ ] \`${q.ticket}\` (${q.kind}): ${q.text}`);
         // The batch's own items have no ticket to answer: they go once a pass no longer lists them.
         lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it'
+          : q.kind === 'plan-first' ? '  no answer to record: it clears once a session claims them'
           : q.kind === 'archive' ? '  no answer to record: it clears once the PR is merged or closed'
           : q.kind === 'intake' ? `  fix the ticket, or run it in a desk-ticket session; to let intake try it again: \`DESK_AUTOPILOT_STATE=${q.state} node ${join(bin, 'intake.mjs')} forget ${q.ticket}\``
             : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
       }
+      lines.push('');
+    }
+    if (g.sessions?.length) {
+      lines.push('### Being worked in a session', '');
+      for (const s of g.sessions) lines.push(`- \`${s.ticket}\`: being worked in session ${s.session}`);
       lines.push('');
     }
     if (g.decisions.length) {
@@ -440,6 +479,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         slug: r.slug,
         batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
+        sessions: sessionWork(r).filter((s) => !done.has(s.ticket)),
         // A lever's adopt or revert is listed with its evidence under Levers instead.
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id) && !d.lever),
         checks: checks.filter(inWindow),
@@ -466,18 +506,55 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
+    const pushed = pushedQuestions(list, groups);
     const repoCount = new Set([
       ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug),
       ...levers.filter((l) => l.slug).map((l) => l.slug),
     ]).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const nl = levers.filter((l) => l.slug).length;
-    const push = nd || nm || nw || nl || fresh.length
+    const push = nd || nm || nw || nl || fresh.some((k) => !pushed.has(k))
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
-    return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
+    const ledger = presentAsks({ list, groups, fresh, pushed, page, push, now });
+    return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push, ledger };
   } finally { lock.release(); }
+}
+
+// The keys of the parks the page lists that were pushed already as their ask was handed on.
+function pushedQuestions(list, groups) {
+  return new Set(list.flatMap((r, i) => {
+    if (!(groups[i]?.questions ?? []).some((q) => q.kind === 'parked')) return [];
+    const asks = pushedAsks(r.state, r.queue);
+    if (!asks.size) return [];
+    const tickets = readJson(r.queue, null)?.tickets ?? {};
+    return (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && asks.has(askId(q.ticket, tickets[q.ticket]?.park?.since))).map((q) => q.key);
+  }));
+}
+
+// Each park the page lists fresh is an ask it presents (ask-ledger.mjs), raised where nothing raised it
+// before: written to its own repo's ticket ledger, under that ledger's lock, with that repo's ledger
+// lever on. `groups` are the page's, one per batch of `list`. Each carries its `share` of the page's
+// one push: 1 over the fresh parks across every repo the page lists that no push has presented, 0 for
+// one pushed already (`pushed`, keys) or with no push sent. -> the lines of any write that failed.
+function presentAsks({ list, groups, fresh, pushed, page, push, now }) {
+  const isFresh = new Set(fresh);
+  const sharing = groups.flatMap((g) => g.questions ?? []).filter((q) => q.kind === 'parked' && isFresh.has(q.key) && !pushed.has(q.key)).length;
+  const shareOf = (key) => (push && sharing && !pushed.has(key) ? Math.round((1 / sharing) * 1e6) / 1e6 : 0);
+  return list.flatMap((r, i) => {
+    const parks = (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && isFresh.has(q.key));
+    if (!parks.length) return [];
+    const q = readJson(r.queue, null);
+    const tickets = q?.tickets ?? {};
+    const steps = parks.flatMap(({ ticket, key }) => {
+      const p = tickets[ticket]?.park;
+      if (!p?.since) return [];
+      return [raisedOf({ ...tickets[ticket], key: ticket }, q),
+        { step: 'presented', key: ticket, since: p.since, via: 'digest', ref: page, notification: push?.key ?? null, share: shareOf(key) }];
+    });
+    return recordAsks(r.queue, steps, { on: ledgerOnIn(r.slug), by: 'digest', now });
+  });
 }
 
 // Pushed at once, outside the check-in times: each parked ticket whose question reads production broken.
@@ -509,10 +586,13 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
+  // answer.mjs reads that repo's config, not the caller's, where it has one; its ask is gated on that
+  // repo's ledger lever either way, which is off for a repo with no config.
+  const config = join(E.deskConfigRoot(), 'repos', slug, 'config.md');
   let out;
   try {
     out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, '--all', text], {
-      encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue, [ASK_LEDGER_ENV]: ledgerOnIn(slug) ? 'on' : 'off', ...(existsSync(config) ? { DESK_CONFIG: config } : {}) }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
   // A "not now" is not settled: the register hides it, and ask-again must be able to bring it back.
@@ -598,11 +678,14 @@ export function promote({ slug, range, text, dir = digestDir(), list = repos(), 
   return { ...a, marked };
 }
 
-// Takes a parked ticket's put-off question out of its repo's register, so it is asked again.
+// Takes a parked ticket's put-off question out of its repo's register, so it is asked again. A plan-first
+// ticket's is the one item its batch's plan-first tickets make.
 export function askAgain({ slug, ticket, list = repos() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
-  const question = readJson(r.queue, null)?.tickets?.[ticket]?.park?.question;
+  const t = readJson(r.queue, null)?.tickets?.[ticket];
+  if (planFirst(t)) return clearPutOff(planFirstPutOff([ticket]).question, r.state);
+  const question = t?.park?.question;
   if (!question) return { ok: false, why: `${ticket} has no parked question in ${slug}` };
   return clearPutOff(question, r.state);
 }

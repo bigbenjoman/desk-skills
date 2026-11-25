@@ -1,6 +1,6 @@
 // suite: check-in digest (slots, one digest per slot across repos, answers and overrides)
 // layer: L2
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync, symlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -210,6 +210,11 @@ t('DS-180 a search reply with issues is read', viaFake('{"issues":[{"key":"A-1"}
 t('DS-180 a reply with no issue list is a failure', viaFake('{"errorMessages":["bad"]}').why, 'desk-jira search returned no issue list (bad)');
 t('DS-180 a reply with more pages behind it is a failure', viaFake('{"issues":[],"nextPageToken":"x"}').ok, false);
 t('DS-180 a refused search says why', viaFake('', 'desk-jira: HTTP 401').why, 'desk-jira: HTTP 401');
+{
+  writeFileSync(fakeOut, '{"issues":[{"key":"A-1"}],"nextPageToken":"x"}');
+  const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_JIRA_OUT: fakeOut, FAKE_JIRA_ERR: '' };
+  t('#1394 a partial search takes the page and says more lies behind it', JSON.stringify(jiraSearch({ cwd: root, env, partial: true }, 'project = A', 1)), '{"ok":true,"issues":[{"key":"A-1"}],"more":true}');
+}
 
 // AC6: no desk config, or a Tracker that is not jira: every park listed, not-checked line; others checked.
 mkdirSync(join(root, 'cfg', 'repos', 'acme__nodone'), { recursive: true });
@@ -270,6 +275,150 @@ t('DS-280 AC8 the digest lists each Merging PR unchanged for 2h or more, how lon
   page11.slice(page11.indexOf('### Merging')).split('\n').slice(0, 5).join('\n'),
   '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): Lint failed · no change for 2h 10m\n- `M-3` [#3](https://github.com/acme/m/pull/3): e2e running · no change for 2h\n');
 t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s) with no change for 2h or more.'), true);
+
+// issue-1384: a page whose only news is work a session claimed still shows it, and counts it.
+{
+  const { renderPage } = await import('../desk/bin/digest.mjs');
+  const only = renderPage({ slot: '2026-11-25T08:00', since: null, groups: [{ slug: 'acme__w', questions: [], decisions: [], sessions: [{ ticket: 'W-1', session: 'sess-w' }] }] });
+  t('issue-1384 a page with only claimed work lists it under its heading, and counts it',
+    `${only.includes('Nothing to answer')} ${only.includes('### Being worked in a session')} ${only.includes('- `W-1`: being worked in session sess-w')} ${only.includes('; 1 being worked in a session.')}`, 'false true true true');
+}
+// The check-in presents each fresh park it lists as an ask, in that park's own repo's ticket ledger,
+// under that ledger's lock, where that repo's ledger lever is on.
+{
+  const { ledgerPaths, fold } = await import('../desk/bin/ticket-ledger.mjs');
+  const { readAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
+  const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+  const j = JSON.stringify;
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__ask'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__ask', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const since = '2026-10-29T06:00:00.000Z';
+  const ON = repo('acme__ask', { 'K-1': { key: 'K-1', state: 'parked', park: { kind: 'question', question: 'which tier?', since } }, 'K-2': { key: 'K-2', state: 'triaged', open_questions: 1 } });
+  const OFF = repo('acme__quiet', { 'Q-1': { key: 'Q-1', state: 'parked', park: { question: 'which colour?', since } } });
+  // Each batch named in its ledger, as its first queue write with the lever on would.
+  for (const r of [ON, OFF]) queueDifference(r.queue, { seed: true });
+  const ledgerOf = (r) => ledgerPaths(dirname(r.queue)).events;
+  const events = (r) => (existsSync(ledgerOf(r)) ? readFileSync(ledgerOf(r), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []).filter((e) => e.type.startsWith('ask_'));
+  const opts = { times: DEFAULT_TIMES, dir, list: [OFF, ON], bin: BIN, self: 'acme__quiet', promote: () => null, checkJira: () => null };
+  const d1 = await checkin({ ...opts, now: at('2026-10-29', '08:01') });
+  t('a fresh park listed by the check-in is raised and presented in its own repo\'s ledger, the calling repo being another; a triage question is no ask',
+    j(events(ON).map((e) => `${e.type} ${e.key} ${e.data.ask}`)), j([`ask_raised K-1 K-1:${since}`, `ask_presented K-1 K-1:${since}`]));
+  const p = events(ON)[1]?.data;
+  t('presented by the digest: its page, and the push that names it', j([p?.via, p?.ref, p?.notification]), j(['digest', d1.page, d1.push?.key]));
+  t('a repo whose ledger lever is off gets no ask, and nothing failed', j([events(ON).length, events(OFF).length, d1.ledger]), '[2,0,[]]');
+  t('the ask reads back from the fold', j(readAsks(fold(dirname(ON.queue))).map((a) => [a.key, a.presented.map((x) => x.via)])), j([['K-1', ['digest']]]));
+  // The next slot lists K-1 again, no longer fresh: nothing new. A park new to it, with that repo's
+  // ledger locked, is not written, and the check-in says so rather than failing.
+  writeFileSync(ON.queue, JSON.stringify({ batch: 'b', tickets: { 'K-1': { key: 'K-1', state: 'parked', park: { kind: 'question', question: 'which tier?', since } }, 'K-3': { key: 'K-3', state: 'parked', park: { kind: 'question', question: 'which plan?', since } } } }));
+  const text = () => (existsSync(ledgerOf(ON)) ? readFileSync(ledgerOf(ON), 'utf8') : '');
+  const before = text();
+  lock(ledgerPaths(dirname(ON.queue)).lock);
+  let d2, threw = null;
+  try { d2 = await checkin({ ...opts, now: at('2026-10-29', '17:01') }); } catch (e) { threw = e.message; }
+  unlock(ledgerPaths(dirname(ON.queue)).lock);
+  t('with the other repo\'s ledger locked, the check-in is still sent, writes nothing past that lock, and says which asks were not recorded',
+    threw === null && d2?.status === 'sent' && before !== '' && text() === before && d2?.ledger?.length === 1 && d2.ledger[0].startsWith("ask ledger: K-3's ask_raised, K-3's ask_presented could not be added to the ticket ledger"), true);
+
+  // An answer through the digest goes to the repo holding the ticket, and is gated on that repo's ledger
+  // lever, whatever the calling repo's is. answer.mjs runs queue.mjs from DESK_HOME's bin: this checkout's.
+  const home = join(root, 'deskhome-ask');
+  mkdirSync(home, { recursive: true });
+  symlinkSync(BIN, join(home, 'bin'));
+  const caller = (lever) => { const f = join(root, `caller-${lever}.md`); writeFileSync(f, `## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | \`acme/caller\` |\n${lever ? '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n' : ''}`); return f; };
+  const target = (slug, lever) => {
+    mkdirSync(join(root, 'cfg', 'repos', slug), { recursive: true });
+    writeFileSync(join(root, 'cfg', 'repos', slug, 'config.md'), `## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | \`acme/${slug}\` |\n${lever ? '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n' : ''}`);
+    const r = repo(slug, { 'W-1': { key: 'W-1', state: 'parked', park: { kind: 'question', question: 'which width?', since } } });
+    queueDifference(r.queue, { seed: true });
+    return r;
+  };
+  const kept = { DESK_HOME: process.env.DESK_HOME, DESK_CONFIG: process.env.DESK_CONFIG };
+  process.env.DESK_HOME = home;
+  const answered = (r, lever) => {
+    process.env.DESK_CONFIG = caller(lever);
+    const a = answer({ slug: r.slug, ticket: 'W-1', text: 'the wide one', dir, list: [r], bin: BIN, now: new Date('2026-10-29T18:00:00.000Z') });
+    return `${a.ok} ${events(r).filter((e) => e.type === 'ask_answered').length}`;
+  };
+  const offThere = answered(target('acme__offthere', false), true);
+  const onThere = answered(target('acme__onthere', true), false);
+  const bare = repo('acme__noconfig', { 'W-1': { key: 'W-1', state: 'parked', park: { kind: 'question', question: 'which width?', since } } });
+  queueDifference(bare.queue, { seed: true });
+  const noConfig = answered(bare, true);
+  for (const [k, v] of Object.entries(kept)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  t('a caller with the ledger on answering a ticket in a repo with it off records no ask there', offThere, 'true 0');
+  t('a caller with the ledger off answering a ticket in a repo with it on records the ask there', onThere, 'true 1');
+  t('a caller with the ledger on answering a ticket in a repo with no config records no ask there', noConfig, 'true 0');
+}
+
+// An ask its question-handling arm pushed as it was handed on is still listed, but not fresh: it sets
+// off no second push. The same park with the lever off pushes as before.
+{
+  const QA = await import('../desk/bin/question-arms.mjs');
+  const since = '2026-10-30T09:00:00.000Z';
+  const park = (arm) => ({ key: 'U-1', state: 'parked', lane: 'C', park: { kind: 'question', question: 'which banner?', since }, ...(arm ? { levers: { set: ['question-handling'], values: { 'question-handling': arm }, at: since } } : {}) });
+  const slot = async (r, d) => checkin({ times: DEFAULT_TIMES, now: at('2026-10-30', '17:01'), dir: d, list: [r], bin: BIN, self: r.slug, promote: () => null, checkJira: () => null });
+  const pushedR = repo('acme__pushed', { 'U-1': park('one-at-a-time') });
+  const q = JSON.parse(readFileSync(pushedR.queue, 'utf8'));
+  const { handItems } = await import('../desk/bin/decider.mjs');
+  handItems(pushedR.state, [{ item: { id: 'parked-U-1', ticket: 'U-1', kind: 'parked', text: 'which banner?', since }, why: 'test' }], at('2026-10-30', '10:00'));
+  const sent = QA.duePushes(pushedR.state, q, { queue: pushedR.queue, slug: pushedR.slug, now: at('2026-10-30', '10:00') });
+  QA.markPushed(pushedR.state, sent, { queue: pushedR.queue, now: at('2026-10-30', '10:00') });
+  t('the ask was pushed as it was handed on', sent.length, 1);
+  const pd = await slot(pushedR, join(root, 'digest-pushed'));
+  t('an ask pushed already is still listed on the page', readFileSync(pd.page, 'utf8').includes('`U-1` (parked): which banner?'), true);
+  t('but sets off no push of its own', `${pd.status} ${pd.questions} ${pd.push}`, 'sent 1 null');
+  const offR = repo('acme__offarm', { 'U-1': park(null) });
+  const od = await slot(offR, join(root, 'digest-offarm'));
+  t('with the lever off, the same fresh park pushes as before', od.push?.key, 'digest:2026-10-30T17:00');
+  // A park the digest raises first carries its question-handling arm, as one a hand-over raises would.
+  const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__armed'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__armed', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const armed = repo('acme__armed', { 'U-1': park('mixed') });
+  queueDifference(armed.queue, { seed: true });
+  await slot(armed, join(root, 'digest-armed'));
+  const raisedEv = readFileSync(join(dirname(armed.queue), 'ledger', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.type === 'ask_raised');
+  // Pushed, its register unwritten: the ledger's record of the push stands, and it pushes nothing.
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__unkept'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__unkept', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const unkept = repo('acme__unkept', { 'U-1': park('one-at-a-time') });
+  queueDifference(unkept.queue, { seed: true });
+  const { recordAsks } = await import('../desk/bin/ask-ledger.mjs');
+  recordAsks(unkept.queue, [{ step: 'presented', key: 'U-1', since, via: 'push', ref: 'ask:acme__unkept:x', notification: 'ask:acme__unkept:x' }], { on: true, now: at('2026-10-30', '10:00') });
+  const ud = await slot(unkept, join(root, 'digest-unkept'));
+  t('an ask the ledger records pushed, with no register, sets off no push either', `${ud.questions} ${ud.push}`, '1 null');
+  t('an ask the digest raises first carries its arm and blocking flag', JSON.stringify([raisedEv?.data.arm, raisedEv?.data.blocking]), JSON.stringify(['mixed', true]));
+}
+
+// Each ask a page presents carries its share of the page's one push: 1 over the fresh parks, across
+// every repo on the page, that no push presented; 0 for one pushed already, and 0 with no push sent.
+{
+  const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+  const { recordAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const since = '2026-10-31T09:00:00.000Z';
+  const parked = (key, arm) => ({ key, state: 'parked', lane: 'C', park: { kind: 'question', question: `${key}: which banner?`, since }, levers: { set: [], values: { 'question-handling': arm }, at: since } });
+  const ledgered = (slug, tickets, pushed = []) => {
+    mkdirSync(join(root, 'cfg', 'repos', slug), { recursive: true });
+    writeFileSync(join(root, 'cfg', 'repos', slug, 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+    const r = repo(slug, Object.fromEntries(tickets.map((x) => [x.key, x])));
+    queueDifference(r.queue, { seed: true });
+    recordAsks(r.queue, pushed.map((key) => ({ step: 'presented', key, since, via: 'push', ref: `ask:${slug}:${key}`, notification: `ask:${slug}:${key}` })), { on: true, now: at('2026-10-31', '10:00') });
+    return r;
+  };
+  const shares = (r) => readFileSync(join(dirname(r.queue), 'ledger', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    .filter((e) => e.type === 'ask_presented' && e.data.via === 'digest').map((e) => [e.key, e.data.share]).sort();
+  const slotOf = async (list, d) => checkin({ times: DEFAULT_TIMES, now: at('2026-10-31', '17:01'), dir: join(root, d), list, bin: BIN, self: list[0].slug, promote: () => null, checkJira: () => null });
+  const one = ledgered('acme__onepage', [parked('X-1', 'batched'), parked('Y-1', 'one-at-a-time'), parked('Z-1', 'one-at-a-time')], ['Y-1', 'Z-1']);
+  const d1 = await slotOf([one], 'digest-onepage');
+  t('a page listing a batched ask beside pushed ones: the batched ask carries the whole push, the pushed ones none', JSON.stringify([!!d1.push, shares(one)]), JSON.stringify([true, [['X-1', 1], ['Y-1', 0], ['Z-1', 0]]]));
+  const two = [ledgered('acme__page-a', [parked('A-1', 'batched')]), ledgered('acme__page-b', [parked('B-1', 'batched')])];
+  await slotOf(two, 'digest-twopage');
+  t('asks of two repos on one page share its push between them', JSON.stringify(two.map(shares)), JSON.stringify([[['A-1', 0.5]], [['B-1', 0.5]]]));
+  const quiet = ledgered('acme__nopush', [parked('Q-1', 'one-at-a-time')], ['Q-1']);
+  const dq = await slotOf([quiet], 'digest-nopush');
+  t('a page that sent no push gives its listings no share', JSON.stringify([dq.push, shares(quiet)]), JSON.stringify([null, [['Q-1', 0]]]));
+}
 
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);

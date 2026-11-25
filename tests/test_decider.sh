@@ -599,5 +599,88 @@ for n in 24 25; do sync "$n"; out=$(tick); settle; done
 check "DS-809 AC2: handed on and unanswered, a new base head starts one new session, and later passes none" '[ "$(calls)" = 2 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
+# ---- the ask ledger: with the ledger lever on, a park handed to the decider is raised and presented by
+# it, the decider's take is its answer, and a park handed to the person without a session is raised only
+printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+unset CLAUDE_CODE_SESSION_ID
+asks(){ node --input-type=module -e "
+import { fold } from '$B/ticket-ledger.mjs';
+import { readAsks } from '$B/ask-ledger.mjs';
+for (const a of readAsks(fold('$T'))) console.log([a.ask, a.kind, a.presented.map((p) => p.via + ':' + (p.ref ? 'ref' : '-')).join(',') || '-', a.answered ? [a.answered.by, a.answered.session, a.answered.latency_s === Math.round((Date.parse(a.answered.at) - Date.parse(a.since)) / 1000)].join(':') : '-'].join('|'));"; }
+askevents(){ grep -c "\"type\":\"$1\"" "$T/ledger/events.jsonl" 2>/dev/null || echo 0; }
+mark; rm -f "$T/state/handed.json"; echo "take J6" > "$T/claude.mode"
+queue '{"J6":{"key":"J6","state":"parked","lane":"A","park":{"kind":"question","question":"'"$REC"' (J6)","since":"2026-10-28T08:00:00Z"}},"C2":{"key":"C2","state":"parked","lane":"C","park":{"kind":"question","question":"which of two layouts?","since":"2026-10-28T09:00:00Z"}}}'
+# The batch named in its ledger, as its first queue write with the lever on would.
+node --input-type=module -e "import { queueDifference } from '$B/queue-ledger.mjs'; queueDifference('$DESK_QUEUE', { seed: true });"
+verdict '{"status":"show_person","code":11,"message":"PARKED","waiting":[],"parked":[{"key":"J6","question":"'"$REC"' (J6)"},{"key":"C2","question":"which of two layouts?"}],"notify":true,"push":[]}'
+out=$(tick); settle
+verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'
+out=$(tick)
+check "ask ledger: the decider's park is raised, presented by the decider, and answered by it, its latency from the park" 'asks | grep -qx "J6:2026-10-28T08:00:00Z|question|decider:ref|decider::true"'
+check "ask ledger: a park handed to the person without a session is raised, and neither presented nor answered" 'asks | grep -qx "C2:2026-10-28T09:00:00Z|question|-|-"'
+check "ask ledger: answer.mjs --taken and the reaped session's settle write one answer between them" '[ "$(askevents ask_answered)" = 1 ]'
+n=$(askevents ask_raised)
+verdict '{"status":"show_person","code":11,"message":"PARKED","waiting":[],"parked":[{"key":"C2","question":"which of two layouts?"}],"notify":true,"push":[]}'
+out=$(tick)
+check "ask ledger: a park listed again, still handed on, is not raised again" '[ "$n" = 2 ] && [ "$(askevents ask_raised)" = "$n" ]'
+
+# ---- question handling: an ask handed to the person is pushed where its ticket's arm says so --------
+# A notifier that works, and a time zone where the clock reads noon (the arms push nothing 22:00 to
+# 08:00), or 23:00 for the quiet-hours case.
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$2" "$3" >> "%s/notified"\nexit 0\n' "$T" > "$T/fakes/notify-send"; chmod +x "$T/fakes/notify-send"
+tz_at(){ local o=$(( $1 - 10#$(date -u +%H) )); [ "$o" -gt 12 ] && o=$((o - 24)); [ "$o" -lt -11 ] && o=$((o + 24)); if [ "$o" -ge 0 ]; then echo "Etc/GMT-$o"; else echo "Etc/GMT+$(( -o ))"; fi; }
+qtick(){ (cd "$T/repo" && TZ="$(tz_at "$1")" DESK_PLATFORM=linux node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
+arm(){ printf ',"levers":{"set":["question-handling"],"values":{"question-handling":"%s"},"at":"2026-10-28T00:00:00Z"}' "$1"; }
+cpark(){ printf '"%s":{"key":"%s","state":"parked","lane":"C","park":{"kind":"question","question":"%s: which of two layouts?","since":"2026-10-28T1%s:00:00Z"}%s}' "$1" "$1" "$1" "$2" "$3"; }
+cverdict(){ local ps=""; for k in "$@"; do ps="$ps${ps:+,}{\"key\":\"$k\",\"question\":\"$k: which of two layouts?\"}"; done; verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"PARKED\",\"waiting\":[],\"parked\":[$ps],\"notify\":true,\"push\":[]}"; }
+arms(){ node --input-type=module -e "
+import { fold } from '$B/ticket-ledger.mjs';
+import { readAsks } from '$B/ask-ledger.mjs';
+for (const a of readAsks(fold('$T')).filter((x) => x.key.startsWith('Q'))) console.log([a.key, a.arm ?? '-', a.blocking ?? '-', a.presented.map((p) => p.via).join(',') || '-'].join('|'));"; }
+rm -f "$T/state/handed.json" "$T/notified"
+queue "{$(cpark Q0 0 ""),$(cpark Q1 1 "$(arm one-at-a-time)"),$(cpark Q2 2 "$(arm mixed)"),\"R\":{\"key\":\"R\",\"state\":\"running\",\"lane\":\"A\"}}"
+node --input-type=module -e "import { queueDifference } from '$B/queue-ledger.mjs'; queueDifference('$DESK_QUEUE', { seed: true });"
+cverdict Q0 Q1 Q2; out=$(qtick 12)
+check "question handling: a one-at-a-time ask handed to the person is pushed at once" 'grep -qx "desk: acme__widgets|Q1: Q1: which of two layouts?" "$T/notified"'
+check "question handling: with the lever off, and on the mixed arm with another ticket running, nothing is pushed for it" '[ "$(grep -c "Q0\|Q2" "$T/notified")" = 0 ]'
+check "question handling: the pushed ask is presented by push; each raised records its arm and blocking flag, none with the lever off" \
+  '[ "$(arms | sort | paste -sd " " -)" = "Q0|-|-|- Q1|one-at-a-time|false|push Q2|mixed|false|-" ]'
+n=$(wc -l < "$T/notified"); out=$(qtick 12)
+check "question handling: the next pass, the ask still handed on, pushes nothing again" '[ "$(wc -l < "$T/notified")" = "$n" ]'
+queue "{$(cpark Q3 3 "$(arm mixed)"),$(cpark Q4 4 "$(arm one-at-a-time)")}"
+cverdict Q3 Q4; out=$(qtick 23)
+check "question handling: in quiet hours nothing is pushed" '! grep -q "Q3\|Q4" "$T/notified"'
+out=$(qtick 12)
+check "question handling: once quiet hours end, the next tick pushes what was handed on in them; a mixed ask with nothing else running is blocking" \
+  'grep -q "^desk: acme__widgets|Q3: Q3: which of two layouts?" "$T/notified" && grep -q "Q4: Q4: which of two layouts?" "$T/notified"'
+# Q5's ask was listed by a check-in digest before the decider handed it on.
+queue "{$(cpark Q5 5 "$(arm one-at-a-time)"),\"R\":{\"key\":\"R\",\"state\":\"running\",\"lane\":\"A\"}}"
+node --input-type=module -e "import { recordAsks } from '$B/ask-ledger.mjs'; recordAsks('$DESK_QUEUE', [{ step: 'presented', key: 'Q5', since: '2026-10-28T15:00:00Z', via: 'digest', ref: 'page.md' }], { on: true });"
+cverdict Q5; out=$(qtick 12)
+check "question handling: an ask a check-in digest listed first is not pushed when it is handed on" '! grep -q "Q5" "$T/notified" && handed | grep -q "^Q5|"'
+# The push register cannot be written: the push still goes out once, and the tick says so.
+queue "{$(cpark Q6 6 "$(arm one-at-a-time)"),\"R\":{\"key\":\"R\",\"state\":\"running\",\"lane\":\"A\"}}"
+mv "$T/state/ask-pushes.json" "$T/ask-pushes.kept"; mkdir "$T/state/ask-pushes.json"
+cverdict Q6; out=$(qtick 12); out=$(qtick 12)
+check "question handling: a push the register cannot record is sent once, and the tick carries on, saying so" \
+  '[ "$(grep -c "Q6: Q6" "$T/notified")" = 1 ] && grep -q "question-handling: Q6 pushed, but not recorded" "$LOG" && [ "$(handed | grep -c "^Q6|")" = 1 ]'
+out=$(qtick 23); out=$(qtick 12)
+check "question handling: nor is it sent again after a quiet-hours tick, the ledger's record of the push standing for the register" '[ "$(grep -c "Q6: Q6" "$T/notified")" = 1 ]'
+rmdir "$T/state/ask-pushes.json"; mv "$T/ask-pushes.kept" "$T/state/ask-pushes.json"
+# An idle batch: Q7 handed on in quiet hours, then ticks with no pass. One that finds the batch's lock
+# held sends nothing; the next sends it.
+queue "{$(cpark Q7 7 "$(arm one-at-a-time)")}"
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[{"key":"Q7","question":"Q7: which of two layouts?"}],"notify":true,"push":[]}'
+out=$(qtick 23); passes=$(grep -c "pass: exit" "$LOG")
+sleep 60 & holder=$!
+printf '{"pid":%s,"since":"%s"}' "$holder" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/state/supervisor.lock"
+out=$(qtick 12)
+check "question handling: an idle tick that finds the batch's lock held sends no ask" '! grep -q "Q7" "$T/notified" && [ "$(grep -c "pass: exit" "$LOG")" = "$passes" ]'
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -f "$T/state/supervisor.lock"
+out=$(qtick 12)
+check "question handling: the next idle tick sends it, once" '[ "$(grep -c "Q7: Q7" "$T/notified")" = 1 ] && [ "$(grep -c "pass: exit" "$LOG")" = "$passes" ]'
+out=$(qtick 12)
+check "question handling: and the one after sends it no more" '[ "$(grep -c "Q7: Q7" "$T/notified")" = 1 ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

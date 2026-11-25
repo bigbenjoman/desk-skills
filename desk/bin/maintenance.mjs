@@ -29,7 +29,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
-import { takeBorrowLock, otherQueues } from './borrow.mjs';
+import { takeBorrowLock, tryBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
 import { bootTime, runsInCloud } from './pass/shared.mjs';
 
@@ -364,6 +364,10 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
       to = p.sha;
       why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
     }
+    // A release the release watch rolled back keeps the previous one pinned until main carries the revert.
+    const watch = await releaseWatch();
+    const pinned = watch.pinBlocks({ dir, src, to });
+    if (pinned) return blocked(pinned, to);
 
     const o = othersRunning(selfQueue, { self: true, selfView, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
       label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
@@ -379,6 +383,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
+    watch.recordRelease(dir, { at, from: base, to: u.new, merges: u.merges });
     // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
     const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
     const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
@@ -388,15 +393,29 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
   } finally { lock.release(); }
 }
 
+// The release watch (release-watch.mjs), loaded when first used: it reads the per-ticket rows, whose
+// modules import this one.
+const releaseWatch = () => import('./release-watch.mjs');
+// Why the release watch's pin holds an install of origin/main, or null. Fetched only while a pin is set.
+function pinHolds(watch, dir, src = sourceCheckout()) {
+  if (!watch.readWatch(dir).pinned || !src || !existsSync(src)) return null;
+  const git = (...a) => run('git', ['-C', src, ...a], { timeout: FETCH_TIMEOUT_MS });
+  git('fetch', '-q', 'origin', 'main');
+  return watch.pinBlocks({ dir, src, to: git('rev-parse', '--verify', '-q', 'refs/remotes/origin/main').out || 'HEAD' });
+}
+
 // ---- one step ----------------------------------------------------------------------------------
-// The window's step, then, while no window is open, the auto-release's.
+// The window's step, then, while no window is open, the auto-release's and the release watch's.
 // -> {hold, lines, push}: hold is true while the window holds every new spawn.
 export async function maintenance(opts = {}) {
   const dir = opts.dir ?? maintDir();
   const at = opts.at ?? now();
   const m = await windowStep({ ...opts, dir, at });
   const lines = [...m.lines];
-  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
+  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) {
+    lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
+    lines.push(...(await releaseWatch()).watchRelease({ dir, src: sourceCheckout(), at }).lines);
+  }
   return { ...m, lines, push: releasePush({ dir }) };
 }
 
@@ -434,7 +453,7 @@ async function windowStep({ dir = maintDir(), running = [], stop = () => ({ ok: 
       record(dir, at, `window ${w.text} opened: draining, no new workers in any repo`);
       return { hold: true, lines: [drainLine(s, running, drainLimit(E.configValue('maintenance-drain')).minutes, at)] };
     }
-    return step(s, { dir, at, running, stop, selfQueue });
+    return step(s, { dir, at, running, stop, selfQueue, watch: await releaseWatch() });
   } finally { lock.release(); }
 }
 
@@ -444,7 +463,7 @@ function drainLine(s, running, limit, at) {
     (running.length ? `${running.length} running (${running.map((t) => t.key).join(', ')}), stopped at the ${limit} min limit, ${left} min from now` : 'none running here');
 }
 
-function step(s, { dir, at, running, stop, selfQueue }) {
+function step(s, { dir, at, running, stop, selfQueue, watch }) {
   const lines = [];
   const save = (patch) => { Object.assign(s, patch); writeState(dir, s); };
   const log = (text) => record(dir, at, text);
@@ -486,15 +505,37 @@ function step(s, { dir, at, running, stop, selfQueue }) {
   }
 
   if (s.phase === 'updating') {
-    const u = updateDesk();
-    if (!u.ok) {
-      log(`update failed: ${u.why}${u.old ? ` (installed version stays at ${short(u.old)})` : ''}`);
-      note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
-      return finish(`desk-skills update failed (${u.why}), so no restart`);
+    // The auto-release's lock, which a rollback takes too, so the update never interleaves with one.
+    // Held: the window waits a pass. One that cannot be made at all holds nothing, so the update runs.
+    const rl = tryBorrowLock({ dir, name: 'release.lock.d' });
+    if (!rl.ok && rl.held) {
+      lines.push(`maintenance: waiting to update desk-skills: a rollback or install holds its lock (pid ${rl.holder ?? '?'})`);
+      return { hold: true, lines };
     }
-    log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
-    lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
-    save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
+    try {
+      // A release the release watch rolled back keeps the previous one pinned here too: the window
+      // skips the update and still runs its reboot check.
+      const held = pinHolds(watch, dir);
+      if (held) {
+        log(`update skipped: ${held}`);
+        lines.push(`maintenance: desk-skills not updated: ${held}`);
+        save({ phase: 'checking' });
+      } else {
+        // The release before this one is what is installed, as the auto-release records it.
+        const base = readInstalled()?.commit ?? null;
+        const u = updateDesk();
+        if (!u.ok) {
+          log(`update failed: ${u.why}${u.old ? ` (installed version stays at ${short(u.old)})` : ''}`);
+          note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
+          return finish(`desk-skills update failed (${u.why}), so no restart`);
+        }
+        const from = base ?? u.old;
+        if (u.new !== from) watch.recordRelease(dir, { at, from, to: u.new, merges: u.merges });
+        log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
+        lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
+        save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
+      }
+    } finally { rl.release?.(); }
   }
 
   if (s.phase === 'checking') {
@@ -580,5 +621,6 @@ if (isMain) {
       setBaseFix: () => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
     });
   };
-  console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));
+  // Not awaited: the release watch's imports reach back into this module, which must finish loading first.
+  maintenance({ running, stop, selfQueue: qf }).then((r) => console.log(JSON.stringify(r)), (e) => { console.error(`maintenance: ${e.message}`); process.exit(1); });
 }

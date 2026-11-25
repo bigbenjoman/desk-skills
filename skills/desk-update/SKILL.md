@@ -49,10 +49,12 @@ git -C "$D" status --short                          # must be clean to pull
 git -C "$D" fetch -q && git -C "$D" log --oneline HEAD..origin/main
 ```
 
+Run each as its own call with `$D` written out: the form `orchestrator-sweep` allows unprompted.
+
 **Off `main`, pull and install nothing.** If the checkout is on any other branch (or a detached
 HEAD), skip the pull and every `./install.sh` in this run, and say which branch is checked out and
-how to get back: `git -C "$D" switch main`, once that branch's work is committed. A feature branch's
-upstream is not desk's release, and installing its files puts unmerged work in every session. §2
+how to get back: `git -C "$D" switch main`, once that branch's work is committed. A feature branch is
+not desk's release, and installing it puts unmerged work in every session. §2
 still reports, and §3 still commits upgrades on its own branch cut from `origin/main`.
 
 On `main`, if there are incoming commits and the tree is clean, `git -C "$D" pull --ff-only` and
@@ -118,12 +120,11 @@ off at 45% of a 1M window (its §2 "Handoff at context % on a 1M window" row at 
 a `45` row) and the offer has not been recorded as asked.
 
 The plugin pass is offered only where no plugin choice was ever made: `offer` exits 1 once this
-repo's `.claude/settings.local.json` has any `enabledPlugins` entry, so a repo the user has already
-been through is not asked again.
+repo's `.claude/settings.local.json` has any `enabledPlugins` entry.
 
 `skills-upstream plugins` compares the installed plugin folder with the marketplace's copy (or the
 version the marketplace pins) and lists what changed, e.g. `+LICENSE`, `~skills/x/SKILL.md`. Say
-plainly when a change is trivial (a licence file only) versus a changed skill.
+when a change is trivial (a licence file only) versus a changed skill.
 
 `UNBUMPED` means the marketplace copy changed but kept the installed version number.
 `claude plugin update` goes by version only, so it will answer "already at the latest version" and

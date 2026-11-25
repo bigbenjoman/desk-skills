@@ -41,11 +41,14 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait, rerun or refresh
+//   external-seen {key, pr, head, login, reviewedAtHead, last}   an outside reviewer's review read on a ready PR
+//   external-wait {key, pr, head, login, line}   the PR waits on that reviewer: `line` is its report line, which
+//                                       the pass prints unless that reviewer reads as down (gate-reviewer.mjs)
 import { baseHeldAt, fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { OUTAGE_MS, outageWait } from './deadlines.mjs';
 import { externalReview } from '../review-threads.mjs';
-import { FAILED } from '../gate.mjs';
+import { FAILED, externalPassed } from '../gate.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (key, line) => say(key, 'waiting', line);
@@ -56,6 +59,13 @@ export function* decideFixTries(s) {
   // A PR the outage step re-ran this pass, its hold cleared, waits for that run rather than a fix try.
   const snap = s.outage?.size ? s : { ...s, outage: null };
   for (const { t, s: p } of s.undrafted) {
+    // A ready PR whose outside reviewer's check passed at its head was reviewed there, cleanly: that
+    // reviewer is reviewing, whatever PR waits on it (gate-reviewer.mjs). The check's finish is that review's time.
+    const passed = p.state === 'OPEN' && p.isDraft === false && p.head ? externalPassed(p.checks, s.stateChecks) : null;
+    if (passed) {
+      const last = (p.checks ?? []).filter((c) => c.name === passed.name).map((c) => c.completed ?? c.completedAt).filter(Boolean).sort().at(-1) ?? null;
+      yield { type: 'external-seen', key: t.key, pr: p.pr, head: p.head, login: passed.login, reviewedAtHead: true, last };
+    }
     if (s.outageRerun?.includes(p.pr)) continue;
     yield* fixTry(t, p, snap);
   }
@@ -221,7 +231,9 @@ function* fixTry(t, p, s) {
   // Waiting on an outside reviewer leaves the person nothing to do, so an earlier stuck record goes.
   if (c.call === 'wait') {
     if (c.external && t.stuck && !s.dry) yield set(t.key, 'stuck=null');
-    yield out(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`);
+    // A wait on an outside reviewer is the pass's to report, once it knows whether that reviewer is down.
+    if (c.external) yield { type: 'external-wait', key: t.key, pr: n, head: p.head, login: c.login, line: `fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}` };
+    else yield out(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`);
     return;
   }
   // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
@@ -251,7 +263,7 @@ function* heldTry(t, p, s) {
   const fb = yield { type: 'feedback', key: t.key, pr: p.pr, gate: true };
   const atHead = !!fb && fb.head === p.head;
   const review = atHead ? fb.gateReview ?? fb.review : null;
-  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement }) : null;
+  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement, workerMay: s.workerMay }) : null;
   // The hold is recorded, and listed, only where nothing goes to the PR's findings.
   yield { type: 'gate-hold', key: t.key, on: !worked };
   if (!atHead) return;
@@ -266,7 +278,7 @@ function* heldTry(t, p, s) {
 // The review fix a ready PR's review at its head that is not clean gets (reviewFix), marked ready.
 function findingsFix(t, p, s, fb, reads) {
   const comments = () => reads.comments(fb.review.id);
-  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, outside: reads.outside, title: reads.title });
+  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, workerMay: s.workerMay, outside: reads.outside, title: reads.title });
   return rf?.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
 }
 
@@ -283,8 +295,12 @@ function* feedbackCall(t, p, s, waived, reads, settled = []) {
   const { judgement } = s;
   // A red check reading an outside reviewer's review goes ahead of desk's own review and feedback
   // routes: it waits for that reviewer at the head, then sends their findings (externalTry).
-  const external = (login) => externalReview(fb.payload, login);
+  // Each read of that reviewer is reported (external-seen), so the pass can tell it has stopped reviewing
+  // across the repo from one PR waiting on it (gate-reviewer.mjs).
+  const seen = [];
+  const external = (login) => { const r = externalReview(fb.payload, login); seen.push({ login, r }); return r; };
   const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external, clean: s.clean ?? null, resolvedNow: settled });
+  for (const { login, r } of seen) yield { type: 'external-seen', key: t.key, pr: n, head: p.head, login, reviewedAtHead: !!r?.reviewed && r.head === p.head, last: r?.last ?? null };
   if (ext !== undefined) return ext;
   if (fb.review) {
     const rf = findingsFix(t, p, s, fb, reads);
@@ -294,7 +310,7 @@ function* feedbackCall(t, p, s, waived, reads, settled = []) {
     : feedbackFix(t, { pr: n, head: p.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
   if (ff) return ff;
   // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
-  const gaps = fb.review ? personGapsCall(fb.review, { judgement }) : null;
+  const gaps = fb.review ? personGapsCall(fb.review, { judgement, workerMay: s.workerMay }) : null;
   if (gaps) return gaps;
   // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.

@@ -29,6 +29,10 @@ import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
+import * as MS from './merge-stages.mjs';
+import * as RM from './review-misses.mjs';
+import * as ST from './stuck-time.mjs';
+import { listBatches } from './batches.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -269,13 +273,14 @@ function trend(metric, rows, base, today, first) {
 
 // ---- the build ---------------------------------------------------------------------------------------------
 // What one evaluation row showed, with the honesty rules applied: its arms, mechanism effect, cost and
-// each guardrail's status.
+// each guardrail's status. A lever with more than two arms names its lead value and baseline as `arms`,
+// the arms its `on` and `off` counts are of.
 function evalEvidence(e, layerMin) {
   const minN = e.min_n ?? layerMin;
   const n = smallerArm(e.n);
   return {
     eval_id: e.eval_id ?? null, at: e.at ?? null, state: e.state ?? null,
-    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN },
+    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN, ...(e.value && e.baseline ? { arms: [e.value, e.baseline] } : {}) },
     effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, KEPT.includes(e.state)),
     guardrails: (e.guardrails ?? []).map((g) => ({ ...g, status: guardrailStatus(g, n, minN) })),
   };
@@ -513,9 +518,44 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest) },
     line,
   };
+}
+
+// Each repo's merged PR time by stage (merge-stages.mjs summary), for the repos with any recorded:
+// { repos: [{ name, prs, stages: { <stage>: { n, median, p75 } }, outage, learned }] }, `learned` the outside
+// reviewer's re-reviews and undraft-to-approval time before and after the learned review bar, or null.
+function mergeStagesPanel(configured, root) {
+  const names = shownNames(configured.map((r) => r.slug));
+  const repos = configured.map((r, i) => {
+    const st = MS.readStages(join(root, r.slug));
+    return { name: names[i], ...MS.summary(st), learned: RM.beforeAfter(st, RM.readLearned(join(root, r.slug)).since) };
+  }).filter((r) => r.prs);
+  return { repos };
+}
+
+// Each repo's latest per-arm ask report (levers-evaluate.mjs: tokens and dollars per ticket by step,
+// pushes and digests per ticket, the share defaulted, the median answer latency), for each lever whose
+// evaluation carries one: { repos: [{ name, lever, at, state, arms: { <arm>: report } }] }.
+function asksPanel(repos, latest) {
+  return {
+    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.ask_report && Object.keys(e.ask_report).length)
+      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, arms: e.ask_report }))),
+  };
+}
+
+// Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos
+// with a ticket stuck in either: { repos: [{ name, weeks: [this week's, last week's] }] }.
+function stuckTimePanel(configured, root, now) {
+  const names = shownNames(configured.map((r) => r.slug));
+  const liveOf = (slug) => { try { return ST.liveOf(listBatches(slug)); } catch { return null; } };
+  const repos = configured.map((r, i) => {
+    const live = liveOf(r.slug);
+    return { name: names[i], weeks: [0, 1].map((weeksAgo) => ST.weekSummary(join(root, r.slug), { now, weeksAgo, live })) };
+  })
+    .filter((r) => r.weeks.some((w) => w.tickets));
+  return { repos };
 }
 
 // What build.json records: when it built, how long it took, each input's age and every panel error.

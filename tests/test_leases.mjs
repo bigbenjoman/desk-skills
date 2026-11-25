@@ -4,14 +4,17 @@
 // The real CLI against a scratch lease directory, with real child processes as owners. A reused pid is
 // a live owner whose recorded start time is a fixture, and a lease's age is set by rewriting its times.
 // Every kind is on unless a case says otherwise (with no lease-kinds row, every kind is shadow).
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, releasePreviews, sampleLoad, slotPools, waitFields } from '../desk/bin/leases.mjs';
+import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, release, releasePreviews, sampleLoad, slotPools, tryAcquire, waitFields } from '../desk/bin/leases.mjs';
 import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
-import { previewLabel } from '../desk/bin/desk-env.mjs';
+import { previewLabel, psRows } from '../desk/bin/desk-env.mjs';
+import { lockFileHolders } from '../desk/bin/suite-wait.mjs';
+import { recordedCommit } from '../desk/bin/installed.mjs';
+import { profileProblems } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -732,6 +735,167 @@ try {
     t('DS-987 ps that cannot be read counts each admit by its pid alone, and the pool read does not fail',
       capacities({ ...capEnv(rows), psRows: () => { throw new Error('ps could not be read'); } }).light, 3);
     t('DS-987 a row that does not read is the floor alone',capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
+  }
+  // DS-983: run.sh's job tokens, a pool of test-lock-slots x test-cap behind the job-tokens row.
+  {
+    const jobRows = { 'job-tokens': 'on', 'test-lock-slots': '3', 'test-cap': '4' };
+    const jenv = (r) => ({ machineValue: (k) => r[k] ?? null, testLockSlots: () => Number(r['test-lock-slots']) });
+    const c = capacities(jenv(jobRows));
+    t('DS-983 AC2 job-tokens on, test-lock-slots 3 and test-cap 4: the broker reports a job pool of 12', [c.job, poolOf('slot', 'job', c).pool, poolOf('slot', 'job', c).capacity], [12, 'slot:job', 12]);
+    t('DS-983 a profile with no test-cap has one job token per heavy slot', capacities(jenv({ 'test-lock-slots': '3' })).job, 3);
+    // The lever as job-token.mjs reads it, from a fixture machine profile.
+    const lever = (rows) => spawnSync(process.execPath, [join(root, 'desk/bin/job-token.mjs'), 'lever'], { encoding: 'utf8', cwd: S, env: env({ DESK_MACHINE: rows ? machineWith(rows) : NO_MACHINE }) }).stdout.trim();
+    t('DS-983 AC1 with no job-tokens row the lever reads as off, and on only as on', [lever(null), lever({ 'test-cap': '4' }), lever(jobRows)], ['off', 'off', 'on']);
+    t('DS-983 AC6 a job-tokens row with an unknown value: the lever reads as off', lever({ 'job-tokens': 'maybe' }), 'off');
+    t('DS-983 AC6 and the machine profile check names the row', profileProblems({ sizing: { 'job-tokens': { value: 'maybe' } } }).join(' | '),
+      '`job-tokens` is "maybe": want on or off; job tokens stay off');
+    t('DS-983 AC6 a job-tokens row of on or off passes the check', ['on', 'off'].map((value) => profileProblems({ sizing: { 'job-tokens': { value } } }).length), [0, 0]);
+  }
+  // With the slot kind on, a lock run that names its queue waits its turn for its pool, oldest
+  // first. In-process against a scratch lease directory, real sleeping processes as owners, the light
+  // pool one slot unless a case grows it.
+  {
+    const qenv = (kinds = 'slot=on') => ({ machineValue: (k) => (k === 'lease-kinds' ? kinds : null), testLockSlots: () => 1, psRows });
+    const caps1 = { heavy: 1, light: 1, previewBuild: 1, mem: null };
+    const ask = (d, o, { wt = '/w/a', cmd = 'c1', express = false, final = false, now = Date.now, caps = caps1, kinds, lane = null } = {}) =>
+      tryAcquire({ kind: 'slot', key: 'light', units: 1, ttl: 600, label: `run ${o.pid}`, pid: o.pid, final, waited: final ? 60 : 0, queue: { worktree: wt, cmd, express } },
+        { env: qenv(kinds), dir: d, caps, now, lane });
+    const wants = (d) => (store(d).wants ?? []).map((w) => [w.owner.pid, w.left != null]);
+    const holdOne = (d) => { const h = owner(); return { h, lease: ask(d, h, { wt: '/w/h', cmd: 'hold' }).lease }; };
+    const free = (d, x) => release(x.lease.id, x.h.pid, { env: qenv(), dir: d });
+
+    // AC1, AC2: A then B wait; a slot frees, and B asking first is refused while A gets it.
+    {
+      const d = fresh(); const x = holdOne(d); const a = owner(); const b = owner();
+      const ra = ask(d, a); const rb = ask(d, b, { wt: '/w/b' });
+      t('DS-981 AC2 each waiter is told its place in the queue and how many hold the pool', [ra.at, rb.at],
+        [{ position: 1, waiting: 1, held: 1, capacity: 1 }, { position: 2, waiting: 2, held: 1, capacity: 1 }]);
+      t('DS-981 a granted run holds no place: the holder left none', wants(d), [[a.pid, false], [b.pid, false]]);
+      free(d, x);
+      const late = ask(d, b, { wt: '/w/b' });
+      t('DS-981 AC1 a slot frees and B, asking first, is refused: A waited longer', [late.lease, /served first/.test(late.refused), late.at?.position], [undefined, true, 2]);
+      t('DS-981 AC1 A gets it, and leaves the queue', [!!ask(d, a).lease, wants(d)], [true, [[b.pid, false]]]);
+    }
+    // AC3, AC6: a run gives up at its deadline, and the same worktree and command back within 120 s keeps its place.
+    {
+      const d = fresh(); const x = holdOne(d); const a = owner(); const b = owner(); const a2 = owner();
+      ask(d, a);
+      ask(d, b, { wt: '/w/b' });
+      const gave = ask(d, a, { final: true });
+      t('DS-981 AC6 a run that gives up is told its place then', gave.at, { position: 1, waiting: 2, held: 1, capacity: 1 });
+      t('DS-981 AC6 and its gave-up line names it', log(d).filter((e) => e.event === 'gave-up').map((e) => [e.position, e.waiting]), [[1, 2]]);
+      t('DS-981 AC3 its place is kept, served to nobody', wants(d), [[a.pid, true], [b.pid, false]]);
+      a.kill(); await exited(a);
+      t('DS-981 AC3 the queue skips it while it is gone: B is first', ask(d, b, { wt: '/w/b' }).at.position, 1);
+      const back = ask(d, a2, { now: () => Date.now() + 100_000 });
+      t('DS-981 AC3 the same worktree and command asking again within 120 s takes its place back', [back.at, wants(d)], [{ position: 1, waiting: 2, held: 1, capacity: 1 }, [[a2.pid, false], [b.pid, false]]]);
+      t('DS-981 AC3 the log says who took the place back from whom', log(d).filter((e) => e.event === 'rejoin').map((e) => [e.was.pid, e.owner.pid]), [[a.pid, a2.pid]]);
+      free(d, x);
+      t('DS-981 AC3 and it is served before B', [ask(d, b, { wt: '/w/b' }).lease, !!ask(d, a2).lease], [undefined, true]);
+    }
+    // AC3, AC4: a place past 120 s, or another command from the same worktree, joins at the back.
+    {
+      const d = fresh(); holdOne(d); const a = owner(); const b = owner(); const c = owner(); const a2 = owner();
+      ask(d, a, { final: true }); ask(d, b, { wt: '/w/b' });
+      t('DS-981 AC4 a different command from the same worktree joins at the back', ask(d, c, { cmd: 'c2' }).at, { position: 2, waiting: 2, held: 1, capacity: 1 });
+      const late = ask(d, a2, { now: () => Date.now() + 121_000 });
+      t('DS-981 AC3 past 120 s the place is gone, and the same command joins at the back', late.at?.position, 3);
+      t('DS-981 AC3 the dropped place is logged', log(d).filter((e) => e.event === 'drop').map((e) => e.owner.pid), [a.pid]);
+    }
+    // AC5: a waiter whose owner exits is skipped when the slot frees, and its place dropped.
+    {
+      const d = fresh(); const x = holdOne(d); const a = owner(); const b = owner();
+      ask(d, a); ask(d, b, { wt: '/w/b' });
+      a.kill(); await exited(a);
+      free(d, x);
+      t('DS-981 AC5 the slot goes to B, past the waiter whose owner exited', !!ask(d, b, { wt: '/w/b' }).lease, true);
+      t('DS-981 AC5 whose place is dropped, with why', [wants(d), log(d).filter((e) => e.event === 'drop').map((e) => [e.owner.pid, e.why])], [[], [[a.pid, 'owner exited']]]);
+    }
+    // AC7: small runs take the express lane oldest first among them; a free pool slot goes to the oldest waiter.
+    {
+      const d = fresh(); const x = holdOne(d); const big = owner(); const s1 = owner(); const s2 = owner();
+      let taken = 0; const lane = () => { taken++; return true; };
+      ask(d, big, { wt: '/w/big' });
+      ask(d, s1, { wt: '/w/s1', express: true });
+      const younger = ask(d, s2, { wt: '/w/s2', express: true, lane });
+      t('DS-981 AC7 the younger small run is refused the lane while an older one waits for it', [younger.lane, taken], [undefined, 0]);
+      t('DS-981 AC7 the oldest small run takes the lane, and leaves the queue', [ask(d, s1, { wt: '/w/s1', express: true, lane }).lane, taken, wants(d).map(([p]) => p)], [true, 1, [big.pid, s2.pid]]);
+      free(d, x);
+      const s2Again = ask(d, s2, { wt: '/w/s2', express: true, lane: () => false });
+      t('DS-981 AC7 the freed pool slot goes to the oldest pool waiter, not the small run asking first', [s2Again.lease, !!ask(d, big, { wt: '/w/big' }).lease], [undefined, true]);
+    }
+    // AC8: in shadow the queue is not used: every try is granted as today, and no place is kept.
+    {
+      const d = fresh(); const a = owner(); const b = owner();
+      const both = [ask(d, a, { kinds: 'slot=shadow' }), ask(d, b, { wt: '/w/b', kinds: 'slot=shadow' })];
+      t('DS-981 AC8 shadow grants each run with no queue', [both.map((r) => !!r.lease), both[1].shadow != null, store(d).wants], [[true, true], true, undefined]);
+      // A small run the full pool would refuse, the only express waiter: with the queue in use it would take the lane.
+      let taken = 0; const lane = () => { taken++; return true; };
+      const small = ask(d, owner(), { wt: '/w/s', express: true, kinds: 'slot=shadow', lane });
+      t('DS-981 AC8 shadow never offers the express lane: the run is granted from the pool as today', [!!small.lease, small.lane, small.shadow != null, taken], [true, undefined, true, 0]);
+    }
+    // AC9: admission lets one more run in above a full floor: A gets it, and B keeps waiting.
+    {
+      const d = fresh(); holdOne(d); const a = owner(); const b = owner();
+      ask(d, a); ask(d, b, { wt: '/w/b' });
+      let room = 1; const grown = () => ({ ...caps1, light: room });
+      room = 2;
+      t('DS-981 AC9 B, asking first once the pool grows by one, is refused: A waited longer', ask(d, b, { wt: '/w/b', caps: grown }).at, { position: 2, waiting: 2, held: 1, capacity: 2 });
+      t('DS-981 AC9 A gets the slot above the floor, read under the store lock', !!ask(d, a, { caps: grown }).lease, true);
+      t('DS-981 AC9 and B keeps waiting', [ask(d, b, { wt: '/w/b', caps: grown }).at, wants(d).map(([p]) => p)], [{ position: 1, waiting: 1, held: 2, capacity: 2 }, [b.pid]]);
+    }
+    // DS-998: with the kind on, a slot a run holds by its lock file with no lease counts as held.
+    {
+      const locks = fresh(); mkdirSync(join(locks, 'desk-light.lock.d'), { recursive: true });
+      const holder = owner();
+      writeFileSync(join(locks, 'desk-light.lock.d', 'pid'), `${holder.pid}\n`);
+      const outside = (p) => lockFileHolders(locks, p.pool).map((h) => ({ label: `the lock file ${h.file}`, owner: h.pid == null ? null : { pid: h.pid } }));
+      const askOn = (d, o, opts = {}) => tryAcquire({ kind: 'slot', key: 'light', units: 1, ttl: 600, label: `run ${o.pid}`, pid: o.pid, final: false, waited: 0, queue: { worktree: '/w/a', cmd: 'c1', express: false } },
+        { env: qenv(opts.kinds), dir: opts.dir ?? fresh(), caps: caps1, outside });
+      const a = owner();
+      const r = askOn(fresh(), a);
+      t('DS-998 AC1 every slot held by a lock file with no lease: the run is refused and waits', [r.lease, r.at, r.refused?.includes(`the lock file ${join(locks, 'desk-light.lock.d')} (pid ${holder.pid}, no lease)`)], [undefined, { position: 1, waiting: 1, held: 1, capacity: 1 }, true]);
+      const sh = askOn(fresh(), a, { kinds: 'slot=shadow' });
+      t('DS-998 in shadow the lock files are not read: granted with no would-refuse', [!!sh.lease, sh.shadow], [true, undefined]);
+      holder.kill(); await exited(holder);
+      t('DS-998 AC2 the holder has exited: its lock file holds nothing, and the run is granted', [lockFileHolders(locks, 'slot:light'), !!askOn(fresh(), a).lease], [[], true]);
+    }
+    {
+      const locks = fresh(); mkdirSync(locks, { recursive: true });
+      const live = owner(); const later = owner();
+      writeFileSync(join(locks, 'desk-test.lock.pid'), `${live.pid}\n`);
+      writeFileSync(join(locks, 'desk-test.lock.2.pid'), `${later.pid}\n`);
+      const old = (Date.now() - 3_600_000) / 1000;
+      utimesSync(join(locks, 'desk-test.lock.2.pid'), old, old); // written before its pid's process started: a reused pid
+      writeFileSync(join(locks, 'desk-test.lock.3.pid'), '999999\n');
+      mkdirSync(join(locks, 'desk-test.lock.4.d')); // taken, its pid not yet written
+      mkdirSync(join(locks, 'desk-test.lock.5.d')); writeFileSync(join(locks, 'desk-test.lock.5.d', 'pid'), '');
+      utimesSync(join(locks, 'desk-test.lock.5.d'), old, old); // its pid never written, over a minute ago
+      writeFileSync(join(locks, 'desk-test.lock.6.pid'), ''); // a holder file whose write failed
+      mkdirSync(join(locks, 'desk-light.lock.express.d')); writeFileSync(join(locks, 'desk-light.lock.express.d', 'pid'), `${live.pid}\n`);
+      t('DS-998 a flock holder file names its live run; a reused or dead pid, an empty holder file and an old mkdir slot with no pid hold nothing; a fresh one holds',
+        lockFileHolders(locks, 'slot:heavy').map((h) => [h.file.slice(locks.length + 1), h.pid]).sort(), [['desk-test.lock.4.d', null], ['desk-test.lock.pid', live.pid]]);
+      t('DS-998 the express lane sits outside the light pool', lockFileHolders(locks, 'slot:light'), []);
+      const none = fresh(); mkdirSync(none);
+      t('DS-998 with no lock file held, ps is not read', lockFileHolders(none, 'slot:heavy', { rows: () => { throw new Error('read ps'); } }), []);
+    }
+    // DS-998 AC4, AC5: a grant line names the release the run's script comes from (its recorded commit), or unknown.
+    {
+      const made = fresh(); mkdirSync(join(made, 'releases', 'abc123', 'bin'), { recursive: true });
+      const home = realpathSync(made); const rel = join(home, 'releases', 'abc123');
+      writeFileSync(join(rel, 'release.json'), JSON.stringify({ commit: 'abc123def' }));
+      t('DS-998 AC4 run from a release folder: its release.json commit', recordedCommit(home, join(rel, 'bin')), 'abc123def');
+      writeFileSync(join(home, 'installed.json'), JSON.stringify({ commit: 'fedcba987' }));
+      t('DS-998 AC4 outside a release folder: the installed commit', recordedCommit(home, join(root, 'desk', 'bin')), 'fedcba987');
+      writeFileSync(join(rel, 'release.json'), '{not json');
+      t('DS-998 AC5 a release record that does not read: none', [recordedCommit(home, join(rel, 'bin')), recordedCommit(fresh(), join(root, 'desk', 'bin'))], [null, null]);
+    }
+    // A store whose wants do not read is unreadable, so a lock run falls back to its lock files.
+    {
+      const d = fresh(); mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, 'leases.json'), JSON.stringify({ leases: [], wants: [{ pool: 'slot:light' }] }));
+      t('DS-981 wants that do not read make the store unreadable', cli(d, ['list']).code, 4);
+    }
   }
 } finally {
   for (const c of owners) c.kill();

@@ -85,9 +85,9 @@ if (a[0] === 'pr' && a[1] === 'list') {
     .map(([n, p]) => ({ number: Number(n), title: p.title ?? 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
-} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName') {
-  // GitHub's merge time, a PR's "mergedAt" or gh's unset time, and its branch, tab-separated.
-  out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? ''));
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName,baseRefName') {
+  // GitHub's merge time, a PR's "mergedAt" or gh's unset time, its branch and its base, tab-separated.
+  out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? '') + '\t' + (prs[a[2]]?.base ?? ''));
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
@@ -172,6 +172,8 @@ if (a[0] === 'pr' && a[1] === 'list') {
   fs.writeFileSync(F, JSON.stringify(prs));
 } else if (a[0] === 'pr' && a[1] === 'merge') {
   const p = prs[a[2]];
+  // gh.hang: a merge call that does not return for the seconds it holds (30 when empty), merging nothing before then.
+  if (fs.existsSync('$T/gh.hang')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, (Number(fs.readFileSync('$T/gh.hang', 'utf8')) || 30) * 1000);
   // "refuse": a PR GitHub will not merge, whatever its head.
   if (!p || p.state !== 'open' || p.refuse || at('--match-head-commit') !== p.sha) { console.error('merge refused'); process.exit(1); }
   p.state = 'merged';

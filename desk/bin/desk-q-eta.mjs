@@ -407,7 +407,12 @@ export function forecast({ rows, workers, history, now, checkin = false, epics =
       f[x.key] = now + draw(x) * (1 - stageDone(x.stage));
       slots[i] = Math.max(slots[i], f[x.key]);
     }
-    let pending = workers > 0 ? rows.filter((x) => x.k !== 'running') : [];
+    // A finished worker (`finishing`) holds no slot: it is dated where its stage left it.
+    for (const x of rows.filter((y) => y.k === 'finishing')) {
+      s[x.key] = now;
+      f[x.key] = now + draw(x) * (1 - stageDone(x.stage));
+    }
+    let pending = workers > 0 ? rows.filter((x) => !['running', 'finishing'].includes(x.k)) : [];
     while (pending.length) {
       const i = least(), free = slots[i];
       let best = null, bestT = Infinity;

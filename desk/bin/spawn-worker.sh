@@ -70,6 +70,16 @@ else
   echo "FAIL: $TICKET's levers pin could not be read — refusing to spawn" >&2
   exit 1
 fi
+# The value each lever with more than two arms runs on, from the same pin, as `desk-env levers
+# <lever>` prints it. A ticket with no pin, or none valued, carries none.
+unset DESK_LEVER_VALUES
+if [ -n "${DESK_LEVERS+x}" ]; then
+  if ! VALUES="$(node "$BIN/lever-pin.mjs" values "$TICKET" </dev/null)"; then
+    echo "FAIL: $TICKET's levers pin values could not be read — refusing to spawn" >&2
+    exit 1
+  fi
+  if [ -n "$VALUES" ]; then export DESK_LEVER_VALUES="$VALUES"; fi
+fi
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
@@ -529,6 +539,13 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# Caches on disk, in the repo's cache folder (desk-env paths), never a tmpfs /tmp: the Node compile
+# cache here, and with-lock.sh gives each test run a temporary folder there with the Jest cache in it.
+if mkdir -p "$DESK_CACHE_DIR/node-compile-cache" "$DESK_CACHE_DIR/jest" "$DESK_CACHE_DIR/runs" 2>/dev/null; then
+  export NODE_COMPILE_CACHE="$DESK_CACHE_DIR/node-compile-cache"
+else
+  echo "[spawn] cannot make $DESK_CACHE_DIR; $TICKET's caches stay in the temporary directory" >&2
+fi
 # The commit author and committer, from config §1 Git author name / email. A worker is refused
 # `git config` and `git -c`, so without these its commits carry the name and hostname email git
 # guesses. A row that is unset or `none` sets nothing; one desk cannot read is warned about and sets nothing.

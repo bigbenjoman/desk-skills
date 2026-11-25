@@ -55,8 +55,12 @@ if (sub === 'install') {
 }
 `);
 
+// A fake systemctl whose user manager answers only while $T/systemd exists, as on WSL with systemd=true.
+const FAKES = join(T, 'fakes');
+mkdirSync(FAKES, { recursive: true });
+writeFileSync(join(FAKES, 'systemctl'), `#!/bin/sh\n[ -f ${JSON.stringify(join(T, 'systemd'))} ] || { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n`, { mode: 0o755 });
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
-  DESK_SUPERVISOR_MJS: FAKE, DESK_PLATFORM: 'darwin', PATH: process.env.PATH };
+  DESK_SUPERVISOR_MJS: FAKE, DESK_PLATFORM: 'darwin', PATH: `${FAKES}:${process.env.PATH}` };
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 const minsAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
 const root = (name) => join(T, 'repos', name);
@@ -134,7 +138,15 @@ clearCalls();
 const other = run(['pr-ninja', 'supervisor', 'on'], { DESK_PLATFORM: 'win32' });
 t('AC8 on a computer that is neither macOS nor Linux, one line saying it needs launchd or systemd', `${other.code !== 0} ${other.err}`, 'true The supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer. Nothing changed.');
 t('AC8 and nothing changes: supervisor.mjs is never run', `${calls().length} ${stateOf('pr-ninja')}`, '0 none');
+// #1416: on Linux whose systemd user manager does not answer (WSL without systemd=true), on is refused
+// with why, and status says there is no supervisor rather than offering to turn it on.
+const wsl = run(['pr-ninja', 'supervisor', 'on'], { DESK_PLATFORM: 'linux' });
+t('#1416 AC3 on Linux with no systemd user manager, on says why it cannot run', `${wsl.code !== 0} ${wsl.err}`,
+  'true The supervisor needs systemctl --user to answer, and it does not here (on WSL, set systemd=true under [boot] in /etc/wsl.conf), so it cannot run on this computer. Nothing changed.');
+const wslStatus = run(['pr-ninja', 'supervisor'], { DESK_PLATFORM: 'linux' }).out;
+t('#1416 AC3 and nothing changes, and status offers no supervisor on', `${calls().length} ${stateOf('pr-ninja')} ${wslStatus.startsWith('pr-ninja: no supervisor.')} ${wslStatus.includes('supervisor on')}`, '0 none true false');
 // #735: on Linux the supervisor is a systemd timer, turned on and off as on macOS.
+writeFileSync(join(T, 'systemd'), '');
 const linux = run(['pr-ninja', 'supervisor', 'on'], { DESK_PLATFORM: 'linux' });
 t('#735 on Linux, on turns the supervisor on', `${linux.code} ${stateOf('pr-ninja')}`, '0 loaded');
 t('#735 on Linux, status reads it', /^pr-ninja: the supervisor is on: installed and loaded/.test(run(['pr-ninja', 'supervisor'], { DESK_PLATFORM: 'linux' }).out), true);

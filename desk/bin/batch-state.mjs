@@ -342,16 +342,17 @@ export function designGap(r) {
   if (r?.design_error) return `its design could not be read (${r.design_error})`;
   const d = r?.design;
   if (!d) return 'its design was never read: re-run triage';
-  const missing = unreadCanvases(r);
+  // Only its canvases: an unread spec or notes page parks on designPark, in any lane.
+  const missing = (d.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
   if (missing.length) return `its canvas is not on ${d.ref}: save ${missing.join(', ')} there (desk-design save), or snapshot it`;
   if (!(d.canvases ?? []).length) return d.figma ? 'its only design is a Figma frame, which a worker cannot read' : 'it links no Claude Design canvas';
   return null;
 }
 
-// The Claude Design canvases a triage record links that a worker cannot read: neither saved on the
-// base nor snapshotted.
+// The Claude Design canvases, and other claude.ai artifacts, a triage record links that a worker cannot
+// read: neither saved on the base nor snapshotted.
 export function unreadCanvases(r) {
-  return (r?.design?.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+  return [...(r?.design?.canvases ?? []), ...(r?.design?.artifacts ?? [])].filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
 }
 
 // The park for a ticket in any lane whose design no worker can read, or null: a session that can read
@@ -362,6 +363,11 @@ export function designPark(r) {
   return urls.length
     ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
     : null;
+}
+// The artifact URLs a designPark question names, or null for any other park.
+export function designParkUrls(question) {
+  const q = String(question ?? '');
+  return q.startsWith(DESIGN_PARK_PREFIX) ? q.slice(DESIGN_PARK_PREFIX.length).split(/:\s/)[0].split(/,\s*/).filter(Boolean) : null;
 }
 
 // Lane C always needs a person before code; lane D only while its design is not saved where a worker
@@ -531,6 +537,26 @@ export const personOnlyStep = (question) => String(question ?? '').split(/(?<=[.
 // one whose worker parked it in lane C or a canvas-less lane D, or one whose park's step the person
 // approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? '')) || !!t?.park?.session_step;
+
+// Plan-first work: a lane C ticket parked at triage on its lane (lanePark's words), with nothing ahead
+// of it, which only an interactive session takes on. A worker's own lane C park asks its own question,
+// and one whose lane challenge could not read the code asks the person to confirm it, so neither is.
+export const planFirst = (t) => t?.state === 'parked' && t.lane === 'C' && !isHeld(t) && !t.park?.session_step
+  && !blockersOf(t).length && String(t.park?.question ?? '').startsWith(laneParkHead('C', false));
+// The claim of the interactive session working a parked ticket in any lane (queue.mjs park --claimed-by),
+// or null. That session works it, so nobody else is asked to; a pass drops the claim once the session
+// has ended (pass.mjs). Once a pass finds uncommitted work behind it, the park's question says what to
+// do, so the claim is no longer the news.
+export const sessionClaim = (t) => (t?.state === 'parked' && !isHeld(t) && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// The claim of the interactive session working a plan-first ticket, or null.
+export const planFirstClaim = (t) => (planFirst(t) ? sessionClaim(t) : null);
+// Whether unclaimed plan-first work has waited past `ms` since it parked, so the person hears of it.
+export const planFirstDue = (t, ms, now = Date.now()) => planFirst(t) && !planFirstClaim(t)
+  && now - (Date.parse(t.park?.since ?? '') || 0) > ms;
+// The one item a batch's due plan-first tickets make, as needs-you lists it and the digest asks it: its
+// lead words, and the not-now key it is put off under, which the same tickets in any order keep.
+export const planFirstWaits = (keys) => `${keys.length} plan-first ticket${keys.length === 1 ? ' waits' : 's wait'} for a session`;
+export const planFirstPutOff = (keys) => ({ question: 'plan-first waiting', inputs: { waiting: [...keys].sort().join(', ') } });
 
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A

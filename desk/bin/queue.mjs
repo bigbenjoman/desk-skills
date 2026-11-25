@@ -28,6 +28,7 @@ import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs
 import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
+import { isSha } from './ticket-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -63,7 +64,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish', 'withdraw'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -269,6 +270,35 @@ function finish(q, key, n, pr) {
     ...(t.branch ? [] : [`branch=${pr.headRefName}`])]);
   save(q);
   return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
+}
+
+// withdraw <TICKET> "<why>": a fix try the pass queued (its `fix`, the ticket triaged for it) that no
+// worker has started, taken back, because what it was for is settled outside a worker (a gap the
+// orchestrating session closed, say). The ticket goes back to done on its PR and `fix` is cleared. The
+// try stays in `fix_tries`, marked `withdrawn` with why, so it counts against none of the PR's tries
+// (fix-tries.mjs ownCount); a withdrawn review try also holds its head (withdrawnAt), so no review try
+// is drafted there again until a push, a clean review or the person's fix moves it. Refused for a running worker (stop it first), for
+// a ticket with no queued fix try, and while a pass runs, which may be spawning it.
+function withdraw(q, key, why) {
+  const t = ticket(q, key);
+  if (t.state === 'running') throw new Error(`${key} is running: its fix try has started. Stop it (queue.mjs stop ${key}) if it is no longer wanted: nothing withdrawn`);
+  if (t.state !== 'triaged' || !t.fix || t.fix.finished) throw new Error(`${key} is ${t.state ?? 'in no state'}${t.fix ? '' : ' with no fix try'}, so no queued fix try is there to withdraw: nothing withdrawn`);
+  const pr = t.fix.pr ?? t.result?.pr ?? null;
+  if (pr == null) throw new Error(`${key}'s fix try names no PR to go back to: nothing withdrawn`);
+  // A pass under way may already have picked the try to spawn. Its state=running write refuses a
+  // ticket done since (set --unless state=done), so none starts; this says so before anything is changed.
+  if (passRunning()) throw new Error(`a pass is running, and may be spawning ${key}'s fix try: run queue.mjs withdraw ${key} again once it ends (a try it spawns meanwhile is stopped with queue.mjs stop ${key}): nothing withdrawn`);
+  const f = t.fix;
+  const at = new Date().toISOString();
+  const mark = { withdrawn: at, withdrawn_why: why };
+  // The entry the pass wrote for this try, as unrunFields (fix-tries.mjs) finds it.
+  const own = (x) => x.at === f.at && x.kind === f.kind && !x.finished;
+  const tries = t.fix_tries ?? [];
+  const kept = tries.some(own) ? tries.map((x) => (own(x) ? { ...x, ...mark } : x))
+    : [...tries, { try: f.try ?? null, head: f.head ?? null, kind: f.kind, what: f.what, at: f.at ?? at, ...mark }];
+  Object.assign(t, { state: 'done', fix: null, fix_tries: kept, updated_at: at });
+  save(q);
+  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn: no worker is spawned for it, it counts against none of the PR's tries${f.kind === 'review' ? `, and no review try is drafted again at its head ${String(f.head ?? '?').slice(0, 12)}` : ''}: ${why}`;
 }
 
 // A requeued ticket whose recorded PR is open on another branch goes back on that branch, so its worker
@@ -795,7 +825,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish', 'withdraw'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -1082,9 +1112,24 @@ switch (cmd) {
     break;
   }
 
+  // --unless <field>=<value>: written only while the ticket's field, read under the lock, is not that
+  // value. The pass's state=running write passes --unless state=done, so a try withdrawn (withdraw) after
+  // the pass read it as waiting is never marked running, and no worker starts.
   case 'set': {
-    const [key, ...pairs] = args;
-    applySet(ticket(q, key), pairs);
+    const [key, ...rest] = args;
+    const unless = [], pairs = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--unless') { unless.push(String(rest[++i] ?? '')); continue; }
+      pairs.push(rest[i]);
+    }
+    const t = ticket(q, key);
+    for (const u of unless) {
+      const eq = u.indexOf('=');
+      if (eq < 1) throw new Error(`set --unless wants <field>=<value>, not "${u}"`);
+      const field = u.slice(0, eq), value = u.slice(eq + 1);
+      if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
+    }
+    applySet(t, pairs);
     save(q);
     console.log(`${key}: ${pairs.join(' ')}`);
     break;
@@ -1160,6 +1205,14 @@ switch (cmd) {
 
   case 'finish': {
     console.log(finish(q, args[0], finishPr.n, finishPr));
+    break;
+  }
+
+  case 'withdraw': {
+    const [key, ...rest] = args;
+    const why = rest.join(' ').trim();
+    if (!key || !why) throw new Error('usage: queue.mjs withdraw <TICKET> "<why: what settled it, and where>"');
+    console.log(withdraw(q, key, why));
     break;
   }
 
@@ -1309,14 +1362,21 @@ switch (cmd) {
   // branch: a ticket that records no PR of its own (one built outside its worker) and has no worker
   // running is recorded done on it, as a pass records one shipped outside its worker, where the branch is
   // the ticket's or names its key. A title is not enough: another ticket's PR often names this key in it.
+  // The merge is kept on the ticket as `merge`: who recorded it (--by), the PR, the head commit it merged
+  // at (--head-sha) and the base it merged onto (--base), and when, which the ticket ledger records as one
+  // merged event (queue-ledger.mjs) and desk-q shows. A merge given no PR, from an older caller, is still
+  // recorded, with its PR missing, which the pass reports (pass/report.mjs mergeGapLine).
   case 'merged': {
     const flag = (name) => { const i = args.indexOf(name); return i === -1 ? null : { i, v: args[i + 1] ?? '' }; };
-    const prArg = flag('--pr');
-    const headArg = flag('--head');
-    const pr = prArg?.v ?? null;
-    const head = headArg?.v ?? null;
-    const [key, time] = args.filter((_, i) => ![prArg?.i, headArg?.i].some((f) => f != null && (i === f || i === f + 1)));
-    if (!key || (prArg && !/^\d+$/.test(pr)) || (headArg && !head)) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>] [--pr <n> [--head <branch>]]');
+    const got = Object.fromEntries(QUEUE_COMMANDS.merged.map((f) => [f, flag(f)]));
+    const pr = got['--pr']?.v ?? null;
+    const head = got['--head']?.v ?? null;
+    const sha = got['--head-sha']?.v ?? null;
+    const [key, time] = args.filter((_, i) => !Object.values(got).some((f) => f != null && (i === f.i || i === f.i + 1)));
+    if (!key || (pr != null && !/^\d+$/.test(pr)) || [head, got['--base']?.v, got['--by']?.v].some((v) => v === '' || v?.startsWith('--'))
+      || (sha != null && !isSha(sha))) {
+      throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>] [--pr <n> [--head <branch>] [--head-sha <sha>] [--base <branch>]] [--by <who>]');
+    }
     const t = ticket(q, key);
     const when = time ?? new Date().toISOString();
     if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
@@ -1334,9 +1394,15 @@ switch (cmd) {
         ...(foreign ? ['pr_status=null'] : []), `shipped_pr=${pr}`]);
     }
     t.merged_at ??= new Date(when).toISOString();
+    // A call naming no PR (the pass's own, finding the PR merged) never replaces a merge already recorded:
+    // it would wipe who merged which PR at which head, as merged_at keeps the first merge time.
+    if (pr != null || t.merge == null) {
+      t.merge = { by: got['--by']?.v ?? null, pr: pr == null ? null : Number(pr), head_sha: sha, base: got['--base']?.v ?? null, at: new Date(when).toISOString() };
+    }
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} merged at ${t.merged_at}`);
+    if (pr == null && t.merge.pr == null) console.log(`${key}'s merge is recorded with its PR missing: no --pr was given`);
     console.log(describeHistory(recordMerge({ state: stateDir(), queue: q, key, mergedPrs: () => ghMergedPrs(ghRepo()) })));
     const est = recordEstimateMerge(stateDir(), key, t.merged_at);
     if (est) console.log(`first estimate kept with its merge: could run to ${est.could_run_to}, merged ${Date.parse(est.merged_at) < Date.parse(est.could_run_to) ? 'before' : 'after'} it`);
