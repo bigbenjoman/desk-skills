@@ -61,8 +61,8 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory nami
 and admit them in step 1. Exit 4 names the first file the page loads from elsewhere: it is not a
 self-contained export, so ask once more for one that is, or for the artifact to be shared.
 
-A session that cannot answer that prompt (standing intake, any headless admit) never reads an
-artifact: it admits the ticket parked on it, and `/desk-needs-you` lists every such artifact in the
+What no session reads first (standing intake, a feature batch started headless, a ticket plan-batch
+seeds) is admitted parked on its unread artifact, and `/desk-needs-you` lists every such artifact in the
 repo, with the tickets each holds, as one item. Its `/desk-admit` is this step for all of them at once.
 
 ## 1. Admit
