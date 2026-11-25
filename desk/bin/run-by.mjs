@@ -33,8 +33,10 @@ const RETRY = 'node ~/.claude/desk/bin/supervisor.mjs install';
 // What runs the supervisor here: launchd on macOS, a systemd user timer on Linux, else nothing.
 export const backend = () => ({ darwin: 'launchd', linux: 'systemd' })[platform()] ?? null;
 // Whether this computer's systemd user manager answers (WSL without systemd=true does not).
-export const systemdReady = () => spawnSync('systemctl', ['--user', 'show-environment'], { encoding: 'utf8' }).status === 0;
+export const systemdReady = () => runOnce('systemctl', ['--user', 'show-environment']).status === 0;
 const ready = () => (backend() === 'systemd' ? (systemdReady() ? null : NO_SYSTEMD) : backend() ? null : NO_LAUNCHD);
+// Whether a supervisor can run on this computer at all.
+export const canSupervise = () => !ready();
 
 // The repo's agent: its label (the systemd units' names add .service and .timer), launchd's domain, and
 // whether it is loaded. supervisor.mjs installs under this label and desk-q reads it once per refresh.

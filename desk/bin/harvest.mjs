@@ -124,8 +124,22 @@ export function tailText(path, bytes, size = statSync(path).size) {
   return buf.toString('utf8');
 }
 
+// Whether the worker said it finished, read as lastStage reads stages: an AUTOPILOT_DONE marker.
+function saidDone(logText) {
+  for (const line of logText.split('\n')) {
+    if (!line.includes('AUTOPILOT_DONE')) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (markersIn(saidBy(d)).some(([k]) => k === 'AUTOPILOT_DONE')) return true;
+  }
+  return false;
+}
+// A last stage that is the final one and says it is done: "9/9 done".
+const finalStageDone = (s) => /^(\d+)\/\1\s+done\b/i.test(s?.label ?? '');
+
 // A worker log's last stage marker (lastStage) since its last spawn (the desk_spawn line written
-// before each spawn or resume), from its last STAGE_TAIL bytes only, or null with no log or no marker
+// before each spawn or resume), with `done: true` once the worker said it finished (saidDone, or a
+// final stage marked done), from its last STAGE_TAIL bytes only, or null with no log and neither
 // there: an earlier round's stage is not where this worker is. Kept until the log grows, so a
 // refresh rereads nothing. desk-q's status table and queue.mjs get both read a worker's stage here.
 export function logStage(path) {
@@ -138,7 +152,10 @@ export function logStage(path) {
   // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
   if (st.size > STAGE_TAIL) text = text.slice(text.indexOf('\n') + 1);
   const spawned = text.lastIndexOf('{"type":"desk_spawn"');
-  const s = lastStage(spawned < 0 ? text : text.slice(spawned));
+  const round = spawned < 0 ? text : text.slice(spawned);
+  const last = lastStage(round);
+  const done = saidDone(round) || finalStageDone(last);
+  const s = done ? { stage: null, label: null, at: null, ...last, done } : last;
   if (logStages.size > 256) logStages.clear();
   logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
   return s;
