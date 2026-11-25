@@ -377,7 +377,7 @@ function runSeat(repo, task, seat, rec, parts, opts, dir, secrets, env) {
       const settings = join(parent, 'settings.json');
       writeSettings(repo, task, wt, settings, secrets);
       readOnlySettings(settings);
-      run = runClaude(seated, seat, wt, settings, opts, dir, { env, extraArgs: ['--append-system-prompt', parts.lena] });
+      run = runClaude(seated, { ...seat, system: parts.lena }, wt, settings, opts, dir, { env });
       answer = run.ok ? String(run.reply ?? '') : '';
     }
     Object.assign(result, { cost: run.cost ?? null, tokens: run.tokens ?? null, ran_at: run.ranAt ?? null, why: run.why ?? null, ...run.extra });
