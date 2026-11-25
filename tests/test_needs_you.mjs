@@ -4175,7 +4175,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 {
   const { fold, ledgerPaths } = await import('../desk/bin/ticket-ledger.mjs');
   const { readAsks } = await import('../desk/bin/ask-ledger.mjs');
-  const since = minsAgo(90);
+  // From the clock now, not NOW: this block runs minutes into the suite, and the latency it checks
+  // is measured against the real time of the answer.
+  const since = new Date(Date.now() - 90 * 60000).toISOString();
   const repoDir = (name) => join(env.DESK_HOME, 'repos', `acme__${name}`);
   put('asked', { port: 5910, beat: 1, supervised: true, levers: 'ledger', tickets: { 'K-1': { state: 'parked', lane: 'A', park: { question: 'Which tier?', since } } } });
   put('unasked', { port: 5920, beat: 1, supervised: true, tickets: { 'U-1': { state: 'parked', lane: 'A', park: { question: 'Which tier?', since } } } });
