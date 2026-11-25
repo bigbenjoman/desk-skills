@@ -3136,10 +3136,11 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
 
   // AC6 first: with no open blockers, put off with nine behind it, it is listed with the count, as today.
   put('ds716a', { port: 4716, beat: 1, supervised: true, tickets: { 'S-1': { state: 'running', lane: 'A' }, 'C-1': laneC(null), ...nine('C-1') } });
-  const off = N.record({ word: 'ds716a', ticket: 'C-1', action: 'not-now' });
-  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.t.key === 'C-1');
+  // A lane C park is its batch's plan-first item (issue-1384), which keeps this rule.
+  const off = N.record({ word: 'ds716a', ticket: 'plan-first', action: 'not-now' });
+  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.planFirst?.includes('C-1'));
   t('DS-716 AC6 a lane C park with no open blockers, put off with 9 behind it, is listed with the count',
-    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it/.test(c1?.need ?? '')}`, 'true session 9 true');
+    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it, so it is listed though you put it off/.test(c1?.need ?? '')} ${off.line.includes('It is still listed while 3 or more tickets wait behind it (9 do now).')}`, 'true plan-first 9 true true');
   // AC1 and AC2: held behind its unmerged sibling, it is not listed, and desk-q shows it waiting behind it.
   edit('ds716a', (ts) => { ts['C-1'].held_by = 'S-1'; });
   const a = N.collect({ word: 'ds716a' });
@@ -4081,13 +4082,21 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const open1 = N.record({ word: 'pf1384b', ticket: 'plan-first', action: 'open' });
   t('issue-1384 AC2 open on one names no others', /it claims G-1\.$/.test(open1.line), true);
   // The digest asks what needs-you lists, and a not-now there puts the digest's question off too.
-  const { putOffQuestions } = await import('../desk/bin/digest.mjs');
+  const { putOffQuestions, askAgain } = await import('../desk/bin/digest.mjs');
   const dr = { slug: 'acme__pf1384b', state: join(env.HOME, '.desk-autopilot', 'acme__pf1384b'), queue: join(env.DESK_HOME, 'repos', 'acme__pf1384b', 'queue.json') };
   const asked = () => digestQuestions(dr).filter((x) => x.kind === 'plan-first' || ['G-1', 'G-2'].includes(x.ticket)).map((x) => `${x.kind}:${x.text.split(':')[0]}`).join();
   t('issue-1384 the digest asks the one plan-first question needs-you lists', asked(), 'plan-first:1 plan-first ticket waits for a session');
   N.record({ word: 'pf1384b', ticket: 'plan-first', action: 'not-now' });
   t('issue-1384 a not-now in needs-you puts the digest\'s plan-first question off, and lists it as put off',
     `${asked() || 'none'} ${putOffQuestions(dr).map((x) => `${x.question}=${x.tickets.join()}`).join()}`, 'none 1 plan-first ticket waits for a session=G-1');
+  t('issue-1384 the digest\'s ask-again on it brings the plan-first item back in both',
+    `${askAgain({ slug: 'acme__pf1384b', ticket: 'G-1', list: [dr] }).ok} ${asked()} ${N.collect({ word: 'pf1384b' }).items.some((i) => i.kind === 'plan-first')}`,
+    'true plan-first:1 plan-first ticket waits for a session true');
+  // Every unclaimed one past the wait is in the one item, a ticket holding others behind it included.
+  put('pf1384c', { port: 4702, beat: 1, planFirstWait: 4, tickets: { 'H-1': lane(600), 'H-2': lane(500), 'H-9': behind('H-9', 'H-2') } });
+  const three = N.collect({ word: 'pf1384c' }).items;
+  t('issue-1384 AC2 a plan-first ticket with one held behind it is in the one item, which counts it',
+    `${three.map((i) => i.t.key).join()} ${three[0]?.planFirst?.join()} ${three[0]?.behind} ${/1 ticket waits behind this/.test(three[0]?.need ?? '')}`, 'plan-first H-1,H-2 1 true');
 }
 
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started

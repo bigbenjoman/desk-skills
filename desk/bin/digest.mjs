@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, planFirstClaim, planFirstDue, planFirstWaits, planFirstPutOff, heldBehindOf } from './batch-state.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, planFirstClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
@@ -133,7 +133,7 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = new Map();
   for (const t of Object.values(q?.tickets ?? {})) {
-    if (t.state !== 'parked' || isHeld(t) || planFirstOwnAsk(r, q, t) === false) continue;
+    if (t.state !== 'parked' || isHeld(t) || planFirst(t)) continue;
     const l = parkPutOff(register, t);
     if (l.status !== 'put_off') continue;
     const o = out.get(l.entry.key) ?? { question: l.entry.question, at: l.entry.at, by: l.entry.by ?? null, tickets: [] };
@@ -191,13 +191,9 @@ export function jiraLine(slug, j) {
 // The key the one plan-first question of a batch is answered under: it names no single ticket.
 const PLAN_FIRST_KEY = 'plan-first';
 // One repo's plan-first tickets waiting unclaimed past their wait, as needs-you's one item: their keys,
-// its lead words, and whether the person put it off there (planFirstPutOff). Null with none. One that
-// holds tickets behind it asks its own park question, as needs-you lists it.
-const planFirstGrouped = (r, q, t) => planFirstDue(t, planFirstWaitMs(r.slug)) && !heldBehindOf(q, t.key).size;
-// Whether a plan-first ticket asks its own park question: null for any other ticket.
-const planFirstOwnAsk = (r, q, t) => (planFirst(t) ? planFirstDue(t, planFirstWaitMs(r.slug)) && !planFirstGrouped(r, q, t) : null);
+// its lead words, and whether the person put it off there (planFirstPutOff). Null with none.
 function planFirstAsk(r, q, register) {
-  const keys = Object.values(q?.tickets ?? {}).filter((t) => planFirstGrouped(r, q, t)).map((t) => t.key);
+  const keys = Object.values(q?.tickets ?? {}).filter((t) => planFirstDue(t, planFirstWaitMs(r.slug))).map((t) => t.key);
   return keys.length ? { keys, lead: planFirstWaits(keys), l: lookup(register, planFirstPutOff(keys)) } : null;
 }
 // One repo's plan-first tickets an interactive session has claimed: [{ ticket, session }].
@@ -241,7 +237,7 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       if (settlesByScript(t)) continue;
-      if (planFirstOwnAsk(r, q, t) === false) continue;
+      if (planFirst(t)) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;
@@ -636,11 +632,14 @@ export function promote({ slug, range, text, dir = digestDir(), list = repos(), 
   return { ...a, marked };
 }
 
-// Takes a parked ticket's put-off question out of its repo's register, so it is asked again.
+// Takes a parked ticket's put-off question out of its repo's register, so it is asked again. A plan-first
+// ticket's is the one item its batch's plan-first tickets make.
 export function askAgain({ slug, ticket, list = repos() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
-  const question = readJson(r.queue, null)?.tickets?.[ticket]?.park?.question;
+  const t = readJson(r.queue, null)?.tickets?.[ticket];
+  if (planFirst(t)) return clearPutOff(planFirstPutOff([ticket]).question, r.state);
+  const question = t?.park?.question;
   if (!question) return { ok: false, why: `${ticket} has no parked question in ${slug}` };
   return clearPutOff(question, r.state);
 }
