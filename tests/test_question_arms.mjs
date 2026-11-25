@@ -2,8 +2,8 @@
 // layer: L1
 // covers: desk/bin/question-arms.mjs desk/bin/lever-pin.mjs
 // The module in process against fixture queues and a scratch batch state folder: which asks each arm
-// pushes, quiet hours, and the push register the digest reads. With the lever off for a ticket,
-// nothing changes.
+// pushes, quiet hours, the push register the digest reads, and when a recommended call applies by
+// default at the check-in. With the lever off for a ticket, nothing changes.
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -77,6 +77,27 @@ t('nothing else running: blocking', QA.raised(item('A'), P, queue(parked('A', 'o
   QA.queuePushes(s, [item('O')], q, { slug: 'acme__widgets', now: new Date(2026, 10, 25, 21, 59) });
   t('queued just before quiet hours and not sent by then: dropped, left to the digest', QA.duePushes(s, q, new Date(2026, 10, 25, 22, 0)), []);
   t('08:00 is outside quiet hours', QA.queuePushes(s, [item('O')], q, { slug: 'acme__widgets', now: new Date(2026, 10, 26, 8, 0) }).length && QA.duePushes(s, q, new Date(2026, 10, 26, 8, 0)).length, 1);
+}
+
+// ---- a recommended call applies by default at the check-in, on the batched arm only ---------------
+{
+  const TIMES = ['08:00', '17:00'];
+  // Parked at 09:00 local; the check-in after it is 17:00.
+  const since = new Date(2026, 10, 25, 9, 0).toISOString();
+  const tk = (arm) => ({ ...parked('D', arm), park: { kind: 'question', question: 'Two columns or one?', since } });
+  const call = (o = {}) => ({ question: 'Two columns or one?', options: ['two columns', 'one column'], chose: 'two columns', category: 'design', ...o });
+  const after = new Date(2026, 10, 25, 17, 5);
+  t('batched, a check-in since it parked: it applies', QA.defaultsAtCheckin(tk('batched'), call(), { times: TIMES, now: after }), true);
+  t('before that check-in: it does not yet', QA.defaultsAtCheckin(tk('batched'), call(), { times: TIMES, now: new Date(2026, 10, 25, 16, 59) }), false);
+  t('lever off: never', QA.defaultsAtCheckin(tk(null), call(), { times: TIMES, now: after }), false);
+  t('one-at-a-time and mixed: never', ['one-at-a-time', 'mixed'].map((a) => QA.defaultsAtCheckin(tk(a), call(), { times: TIMES, now: after })), [false, false]);
+  t('a product call never defaults', QA.defaultsAtCheckin(tk('batched'), call({ category: 'product' }), { times: TIMES, now: after }), false);
+  t('a call that spends money never defaults', QA.defaultsAtCheckin(tk('batched'), call({ question: 'Upgrade the plan, at $20 a month?', options: ['upgrade', 'stay'], chose: 'upgrade' }), { times: TIMES, now: after }), false);
+  t('a call about who owns something never defaults', QA.defaultsAtCheckin(tk('batched'), call({ question: 'Who owns the onboarding copy?', options: ['design', 'growth'], chose: 'design' }), { times: TIMES, now: after }), false);
+  t('no check-in times: never', QA.defaultsAtCheckin(tk('batched'), call(), { times: null, now: after }), false);
+  const logged = QA.defaultCall(call(), 'D', '2026-11-25T17:05:00.000Z');
+  t('the logged call says how to reverse it', /applied the recommendation by default at 2026-11-25T17:05:00.000Z\. To reverse it, override it here with one column, then answer D with that choice\.$/.test(logged.question), true);
+  t('and keeps the call itself', [logged.chose, logged.category, logged.options], ['two columns', 'design', ['two columns', 'one column']]);
 }
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

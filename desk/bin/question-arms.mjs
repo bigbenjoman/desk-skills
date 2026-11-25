@@ -1,7 +1,9 @@
 // How a parked ticket's question reaches the person, by the arm of the question-handling lever its
 // pin names (lever-registry.mjs). Every branch on the lever is here, so supervisor.mjs, digest.mjs and
 // pass.mjs carry none of it:
-//   batched        the ask waits for the check-in digest, as with the lever off
+//   batched        the ask waits for the check-in digest, as with the lever off; and a park that
+//                  recommends a call desk may not take for the worker applies it by default at the
+//                  first check-in after it parked (defaultsAtCheckin)
 //   one-at-a-time  each ask handed to the person (decider.mjs handItems) is pushed at once
 //   mixed          a blocking ask is pushed at once, the rest wait for the digest
 // A ticket whose pin names no value runs with the lever off, and nothing here changes what desk does
@@ -20,6 +22,8 @@ import { join } from 'node:path';
 import { leverValueFor } from './lever-pin.mjs';
 import { blockersOf, FINISHED } from './queue-states.mjs';
 import { askId, recordAsks } from './ask-ledger.mjs';
+import { nextCheckin, neverDefault } from './ask-defaults.mjs';
+import { askCategoryIn } from './decisions.mjs';
 import { PRODUCTION_BROKEN } from './promotion.mjs';
 
 const LEVER = 'question-handling';
@@ -113,3 +117,30 @@ export function markPushed(state, keys, { queue, now = new Date() } = {}) {
 
 // The asks pushed from batch state folder `state`, by ask id (<KEY>:<park.since>).
 export const pushedAsks = (state) => new Set(Object.keys(readRegister(state).pushed));
+
+// Whether call `d` (a parsed decision) must never apply by default: a product call, one a check-in
+// default never takes (ask-defaults.mjs neverDefault: money, legal, production, customer copy), or a
+// fact only the person holds, such as who owns something.
+const neverDefaults = (d) => {
+  const text = `${d.question} ${d.options.join(' ')}`;
+  return d.category === 'product' || neverDefault(text, d.chose) != null || askCategoryIn(`${text} ${d.chose}`) === 'user-fact';
+};
+
+// Whether ticket `t`'s park, recommending call `d` that desk may not take for the worker, applies it by
+// default at `now`: on the batched arm only, once a check-in time of `times` (digest.mjs checkinTimes)
+// has passed since it parked.
+export function defaultsAtCheckin(t, d, { times, now = new Date() } = {}) {
+  if (armOf(t) !== 'batched' || !t?.park?.since || !times?.length || neverDefaults(d)) return false;
+  const at = nextCheckin(times, new Date(t.park.since));
+  return !!at && at <= now;
+}
+
+// The answer the next worker reads for a call applied by default.
+export const defaultAnswer = (d) => `${d.chose}. This was the option the last worker recommended when it parked on this ${d.category} call. `
+  + 'Nobody answered it by the check-in after it parked, so desk applied it by default; the person can still reverse it. Build it and carry on rather than park on it again.';
+
+// The decision logged for it, in decisions.mjs's shape, with how to reverse it from the digest.
+export const defaultCall = (d, key, at) => ({
+  ...d,
+  question: `${d.question} Nobody answered by the check-in, so desk applied the recommendation by default at ${at}. To reverse it, override it here with ${d.options.filter((o) => o !== d.chose).join(' or ')}, then answer ${key} with that choice.`,
+});

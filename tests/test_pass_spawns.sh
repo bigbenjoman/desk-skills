@@ -2011,4 +2011,23 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "ask ledger: with the lever off, the same spawn and push as with it on write no ledger and the pass reports nothing of it" \
   '[ "$n" -ge 6 ] && [ "$(field AK-3 state)" = "\"running\"" ] && echo "$out" | grep -q "PUSH: AK-4: PRODUCTION BROKEN" && [ ! -e "$T/ak-off/ledger" ] && ! echo "$out" | grep -q "ask ledger"'
 
+# ---- question handling: on the batched arm, a park's recommended call desk may not take for the worker
+# applies by default once a check-in has passed since it parked; never with the lever off, nor a product
+# call. Each parked at 07:00Z five days ago, so the default 08:00 and 17:00 check-ins have passed.
+export DESK_CONFIG="$T/config-lg.md" DESK_QUEUE="$T/qh/queue.json" DESK_AUTOPILOT_STATE="$T/state-qh"; mkdir -p "$T/qh" "$T/state-qh/logs"
+q init qh; q set-batch concurrency=1
+QH_PIN='levers={"set":[],"values":{"question-handling":"batched"},"at":"2026-11-20T00:00:00Z"}'
+qh_park(){ q add "$1"; q set "$1" state=parked lane=A "park={\"kind\":\"question\",\"question\":\"$1: two columns or one?\",\"since\":\"2026-11-20T07:00:00Z\",\"recommends\":{\"question\":\"Two columns or one?\",\"options\":[\"two columns\",\"one column\"],\"chose\":\"two columns\",\"category\":\"$2\"}}" "${@:3}"; }
+qh_park QH-1 design "$QH_PIN"; qh_park QH-2 design; qh_park QH-3 product "$QH_PIN"
+out=$(node "$B/pass.mjs" 2>&1)
+check "question handling: a batched-arm design call applies its recommendation by default at the check-in, and is requeued" \
+  '[ "$(field QH-1 state)" != "\"parked\"" ] && [ "$(field QH-1 auto_answered.chose)" = "\"two columns\"" ] && grep -q "^two columns. This was the option the last worker recommended .* desk applied it by default" "$T/state-qh/briefings/QH-1.md" && echo "$out" | grep -qF "QH-1: nobody answered its design call by the check-in, so its recommended option (\"two columns\") applied by default"'
+check "question handling: it is logged as a decision taken by default, saying how to reverse it" \
+  'jq -e "select(.ticket == \"QH-1\" and .source == \"default\" and .chose == \"two columns\" and (.question | test(\"To reverse it, override it here with one column\")))" "$T/state-qh/decisions.jsonl" >/dev/null'
+check "question handling: and its ask is answered by default in the ticket ledger" \
+  '[ "$(jq -sc "[.[] | select(.type == \"ask_answered\" and .key == \"QH-1\") | .data.by]" "$T/qh/ledger/events.jsonl")" = "[\"default\"]" ]'
+check "question handling: with the lever off, and for a product call, nothing applies by default" \
+  '[ "$(field QH-2 state)" = "\"parked\"" ] && [ "$(field QH-3 state)" = "\"parked\"" ] && [ "$(field QH-2 auto_answered)" = null ] && ! grep -q "QH-[23]" "$T/state-qh/decisions.jsonl"'
+export DESK_CONFIG="$AK_CONFIG"
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
