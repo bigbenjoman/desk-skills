@@ -18,6 +18,8 @@
 // POST is unless it carries the app's Origin (Desk.app adds it to its window's stream request);
 // /api/snapshot reads the same model and revision. A WebSocket upgrade is refused: 403 from any Origin but the app's, 404
 // from it, since no route takes one yet.
+// GET /api/model is desk-q's: the listing the model was read from (desk-q-model.mjs modelWire), signed
+// with `Authorization: Bearer <the token file's token>` and no Origin or session cookie (desk-q-server.mjs).
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 //
 // Writes: every POST below runs one of desk's own commands, from WRITES, through execFile with no
@@ -79,7 +81,10 @@ function cookiesOf(req) {
   }
   return out;
 }
-const readToken = () => { try { return readFileSync(tokenFile(), 'utf8').trim() || null; } catch { return null; } };
+export const readToken = () => { try { return readFileSync(tokenFile(), 'utf8').trim() || null; } catch { return null; } };
+// The token a terminal reader (desk-q) sends as `Authorization: Bearer <token>`, or null for none.
+const MAX_BEARER = 256;
+const bearerOf = (req) => { const m = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? '')); return m && m[1].length <= MAX_BEARER ? m[1] : null; };
 
 // ---- writes ----------------------------------------------------------------------------------
 
@@ -94,6 +99,9 @@ const MAX_TEXT = 2000;
 const MAX_WRITE_BODY = 6 * MAX_TEXT + 1024;
 const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
 const READ_TIMEOUT_MS = 60 * 1000;
+// The oldest read model /api/model hands out before reading it again: the ages and stalls it holds move
+// with the clock, which the watcher does not see. desk-q's own open screen rereads as often.
+const MODEL_MAX_AGE_MS = 30 * 1000;
 const WRITES = { record: 'needs-you.mjs', answer: 'answer.mjs' };
 const STATUS = { 0: 200, 10: 202, 11: 409 };
 const binDir = () => (testHome() && process.env.DESK_UI_TEST_BIN) || HERE;
@@ -125,6 +133,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   // everyone out) from the same server refusing it again. It grants nothing.
   const boot = randomBytes(8).toString('hex');
   const feed = makeFeed(events);
+  const clock = events.now ?? Date.now; // the feed's, which dates each model it reads
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = type.startsWith('application/json') ? JSON.stringify(body) : String(body);
@@ -155,6 +164,17 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const m = await feed.current({ fresh: true });
     if (!m) throw new Error('no read model');
     return feed.snapshot(m);
+  }
+
+  // desk-q's listing (desk-q-model.mjs modelWire), read again once it is MODEL_MAX_AGE_MS old. With
+  // ?at= naming the one the reader holds, an unchanged listing is only { v, at, same: true }.
+  async function model(res, query) {
+    try {
+      let m = await feed.current();
+      if (m && clock() - m.at > MODEL_MAX_AGE_MS) m = await feed.current({ fresh: true });
+      if (!m?.wire) throw new Error('no read model');
+      return send(res, 200, query.has('at') && Number(query.get('at')) === m.at ? { v: m.wire.v, at: m.at, same: true } : m.wire);
+    } catch (e) { console.error(`desk-ui: model: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
   }
 
   function readBody(req, max = MAX_BODY) {
@@ -270,6 +290,17 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       const s = signIn();
       return send(res, 200, { loadToken: s.load }, undefined,
         { 'Set-Cookie': `${COOKIE}=${s.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}` });
+    }
+
+    // A terminal reader's own credential: the token file's token itself, never with an Origin (a browser
+    // sends one) or a session cookie as well, so it signs nobody in and evicts no window's session.
+    if (path === '/api/model' && req.headers.authorization !== undefined) {
+      if (from !== undefined) return refuse(res, 403, 'origin', 'A bearer token is for a terminal reader, which sends no Origin.');
+      if (cookiesOf(req).length) return refuse(res, 400, 'credentials', 'Send a bearer token or a session cookie, not both.');
+      if (method !== 'GET') return refuse(res, 405, 'method', 'GET only.');
+      const want = readToken(), got = bearerOf(req);
+      if (!want || !got || !same(got, want)) return refuse(res, 401, 'unauthorized', 'Not signed in.');
+      return model(res, new URLSearchParams(query));
     }
 
     const s = session(req);

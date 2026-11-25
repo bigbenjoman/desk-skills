@@ -700,6 +700,31 @@ export function loadRepos(now = Date.now(), word = null) {
   return all;
 }
 
+// loadRepos's listing as JSON, which desk-ui serves (GET /api/model) and desk-q reads back with
+// modelRepos into the same shape, so both print through the same views. A row names its ticket by key,
+// and the hold context, whose readers are functions, is read again from the files it names.
+export const MODEL_VERSION = 1;
+const rowKeys = (rows) => (rows ?? []).map(({ t, ...x }) => ({ ...x, key: t.key }));
+export function modelWire(repos, at) {
+  return { v: MODEL_VERSION, at, machine: repos[0]?.machine ?? null,
+    // A spread, not the queue itself: JSON would ask the archive behind its tickets for a toJSON.
+    repos: repos.map(({ ctx, machine, rows, prs, q, ...r }) => ({ ...r, q: q && { ...q, tickets: { ...q.tickets } }, rows: rowKeys(rows), prs: rowKeys(prs) })) };
+}
+// The listing a modelWire carries, or null for a version this code does not know or no repo.
+export function modelRepos(wire) {
+  if (wire?.v !== MODEL_VERSION || !Array.isArray(wire.repos) || !wire.repos.length) return null;
+  const machine = wire.machine ?? { running: 0, cap: machineCap(), others: [] };
+  return wire.repos.map((w) => {
+    const r = { ...w, machine };
+    if (r.q) attachArchive(r.q, r.queuePath);
+    const tie = (rows) => rows.map(({ key, ...x }) => ({ t: r.q.tickets[key], ...x }));
+    r.ctx = r.q ? holdContext(r) : NOBODY;
+    r.rows = tie(w.rows ?? []);
+    r.prs = tie(w.prs ?? []);
+    return r;
+  });
+}
+
 // What loadRepos reads, as one string of modification times and sizes, so an open screen rereads only
 // once it changes: the repos' configs, and each batch's queue folder and state folder with every entry
 // in it. A folder's own time moves as an entry in it is added, removed or replaced. Logs (logs/, any
@@ -3972,14 +3997,15 @@ function scopeWord(argv) {
 // One build: each git, launchctl and ps question it asks runs once (build-memo.mjs).
 export const run = (argv, opts) => oneBuild(() => runView(argv, opts));
 
-function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
+// `repos`: the listing already read (desk-ui's, modelRepos), in place of reading the files.
+function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s), repos: given = null } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
     + '       desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]';
   checkFlags(argv);
   const word = scopeWord(argv);
-  const repos = loadOrRefuse(now, word);
+  const repos = given ?? loadOrRefuse(now, word);
   if (argv.includes('--json')) return jsonCommand(repos, argv, now);
   const v = target(repos, argv);
   if (v.kind === 'levers') return leversCommand(argv, { now, opener, rebuild, say });
