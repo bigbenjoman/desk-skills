@@ -81,13 +81,14 @@ export function candidatesJqls(project, { field, names }) {
 
 // Words in a summary or label marking a decision, or access, key or infrastructure work outside the repo.
 const OUTSIDE = /\b(decide|decision|whether|policy|adopt(?:ion)?|licen[cs]e keys?|rotat(?:e|ion)|credentials?|access|IAM|WAF|DNS|infra(?:structure)?)\b/i;
-// The word that marks `issue` as a decision or work outside the repo, and where: { word, in } or null.
-export function outsideWork(issue) {
+// Why `issue` reads as a decision or work outside the repo, naming the word and where, or null.
+function outsideWork(issue) {
+  const why = (word, where) => `a decision or work outside the repo ("${word}" in its ${where})`;
   const s = OUTSIDE.exec(String(issue?.fields?.summary ?? ''));
-  if (s) return { word: s[1], in: 'summary' };
+  if (s) return why(s[1], 'summary');
   for (const l of [].concat(issue?.fields?.labels ?? [])) {
     const m = OUTSIDE.exec(String(l));
-    if (m) return { word: m[1], in: `label ${l}` };
+    if (m) return why(m[1], `label ${l}`);
   }
   return null;
 }
@@ -98,7 +99,7 @@ export function outsideWork(issue) {
 export function leftOut(issue, { queued = new Set(), liveEpics = new Set() } = {}) {
   if (queued.has(issue?.key)) return 'in a batch already';
   const out = outsideWork(issue);
-  if (out) return `a decision or work outside the repo ("${out.word}" in its ${out.in})`;
+  if (out) return out;
   if (!/^task$/i.test(issue?.fields?.issuetype?.name ?? '')) return null;
   const open = blockersFact(issue).filter((b) => b.category !== 'done').map((b) => b.key);
   if (open.length) return `blocked by ${open.join(', ')}`;
