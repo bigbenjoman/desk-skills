@@ -27,6 +27,8 @@ import { fileURLToPath } from 'node:url';
 import { quantile } from './desk-ci.mjs';
 import { GO, OWN_USE, armVendor } from './bench-quota.mjs';
 import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
+import { MODEL_PRICES, modelFamily } from './worker-cost.mjs';
+import { usdAt } from './cache-report.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]';
 export const NOT_SCORED = 'not scored';
@@ -140,6 +142,16 @@ const median = (values) => quantile(values, 0.5);
 
 // Input tokens of all kinds, for one run.
 export const allInput = (t) => ['uncached', 'cacheWrite', 'cacheRead'].reduce((s, k) => s + (Number(t[k]) || 0), 0);
+// A run's tokens as uncached input tokens of the same list price for its model's family: cache writes
+// at the 5-minute rate (the CLI's default cache), cache reads and output at theirs. Its base prices, never
+// a per-request tier: a run's tokens are summed over its requests. Null for a model MODEL_PRICES does
+// not price.
+export function inputEquivalent(t, model) {
+  const p = MODEL_PRICES[modelFamily(model)];
+  if (!p) return null;
+  const n = (k) => Number(t[k]) || 0;
+  return usdAt(p, { uncached: n('uncached'), w5m: n('cacheWrite'), w1h: 0, read: n('cacheRead'), output: n('output') }).total * 1e6 / p.input;
+}
 // joined.json's scores for one arm. -> { mean, n } | null
 export const meanScore = (list) => (list.length ? { mean: list.reduce((s, x) => s + x.score, 0) / list.length, n: list.length } : null);
 // <blind>/joined.json, or null before the join has run.
@@ -297,6 +309,13 @@ export function armFigures(tasks, arm, scores) {
   };
   const list = scores?.scores ?? [];
   const model = ran.map((r) => r.result?.model).find(Boolean);
+  // Every scored run, accepted or not: what a session costs whatever its outcome.
+  const scored = ran.filter((r) => SCORED.has(r.status));
+  const scoredTokens = scored.filter((r) => r.result?.tokens);
+  const equivalents = scoredTokens.map((r) => inputEquivalent(r.result.tokens, r.result.model ?? model));
+  const perRun = { over: scoredTokens.length, of: scored.length,
+    cacheWrite: median(scoredTokens.map((r) => Number(r.result.tokens.cacheWrite) || 0)),
+    equivalent: equivalents.length && equivalents.every((e) => e != null) ? median(equivalents) : null };
   const measured = ran.filter((r) => typeof r.checks?.passed === 'number');
   const state = (s) => ran.filter((r) => r.checks?.state === s).length;
   const checks = { passed: measured.reduce((s, r) => s + r.checks.passed, 0), of: measured.reduce((s, r) => s + r.checks.of, 0),
@@ -313,7 +332,7 @@ export function armFigures(tasks, arm, scores) {
     checks,
     notRun: runs.filter((r) => r.status === 'not run').map((r) => ({ task: r.task, why: r.why })),
     score: meanScore(list),
-    tokens, tokensOver: withTokens.length,
+    tokens, tokensOver: withTokens.length, perRun,
     quotaAccepted: byAccount(accepted),
     quotaAll: byAccount(ran),
   };
@@ -352,6 +371,9 @@ function rows(baseline) {
     ['Accepted tasks per 5-hour window', b ? '—' : none, (f) => f.value.perWindow],
     ...TOKEN_KINDS.map(([k, label]) => [`Median ${label} tokens per accepted task`, k === 'output' ? perTicket('output') : b ? '—' : none, tok(k)]),
     ['Input tokens of all kinds per accepted task (median)', perTicket('input'), tok('input')],
+    ['Median input-equivalent tokens per scored run (every kind at its list price, as uncached input)', b ? '—' : none,
+      (f) => (!f.perRun.over ? 'no scored run' : f.perRun.equivalent == null ? NOT_PRICED : `${num(f.perRun.equivalent)}${over(f.perRun.over, f.perRun.of)}`)],
+    ['Median cache-write tokens per scored run', b ? '—' : none, (f) => (!f.perRun.over ? 'no scored run' : `${num(f.perRun.cacheWrite)}${over(f.perRun.over, f.perRun.of)}`)],
     // Each allowance on its own line: an arm spends one vendor's, so the other's cell is a dash. The
     // baseline's quota is the signed-in Claude login's.
     ...allowances().flatMap(([vendor, label, note]) => {
