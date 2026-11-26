@@ -7,6 +7,21 @@ another phase's file. Paths such as `references/gotchas.md` are from the skill's
 
 ## Phase 4: refute
 
+**First, the anchor check: a finding whose `file:line` does not exist at head reaches no refuter.**
+Write the findings to the results file (its path is in *The verdict*), each with its `where` and no `result` yet,
+and run, from a checkout that holds the reviewed head:
+
+```bash
+node ~/.agents/skills/desk-review/bin/verdict.mjs --anchors <results> <full head sha>
+```
+
+It costs no tokens. Each finding citing a file not in the tree at head, or a line past that file's
+end, becomes `"result": "REJECTED"` with `"anchor": "missing"` and no `refuted_by`, in the file, and
+prints as `<id> REJECTED: anchor not found, …`. Refute only the findings still without a result. A
+finding with no `file:line`, or a path outside the repo, is left to its refuter, and so is anything
+fuzzier than a file or line that is not there: quoted code that has drifted is the refuter's call.
+The verdict's heading counts the anchor rejections.
+
 **The refuter is always the other vendor.** Claude's findings go to codex; codex's go to Claude.
 
 **Claude's findings: one codex call per finding**, prompt under ~800 characters, `file:line` named

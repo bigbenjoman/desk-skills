@@ -140,7 +140,9 @@ export function preflightScript(call) {
 
 // The preflight's call, moved into a throwaway checkout: the recorded worktree, canary and batch state
 // paths in the prompt, settings, agents and added directories become ones under `parent`, so the
-// replay is never granted the live batch's state.  -> { prompt, settings, agents, addDirs, wt, canary, state }
+// replay is never granted the live batch's state. The file the READ check reads, which the live
+// preflight deletes when it ends, is named as readFile (null with no READ check, or one outside the
+// moved state) for the replay to write.  -> { prompt, settings, agents, addDirs, wt, canary, state, readFile }
 export function movePreflight(call, parent) {
   const wt = join(parent, 'checkout');
   const canary = join(parent, 'outside', basename(call.inputs.canary));
@@ -149,7 +151,10 @@ export function movePreflight(call, parent) {
     const out = String(s).replaceAll(call.inputs.canary, canary).replaceAll(call.inputs.worktree, wt);
     return call.state ? out.replaceAll(call.state, state) : out;
   };
-  return { prompt: move(call.prompt), settings: move(call.settings), agents: move(call.agents), addDirs: (call.inputs.add_dirs ?? []).map(move), wt, canary, state };
+  const prompt = move(call.prompt);
+  const read = /^READ=OK or READ=BLOCKED — read the file (\S+) with your Read tool$/m.exec(prompt)?.[1] ?? null;
+  const readFile = read && read.startsWith(`${state}/`) && !read.includes('/../') ? read : null;
+  return { prompt, settings: move(call.settings), agents: move(call.agents), addDirs: (call.inputs.add_dirs ?? []).map(move), wt, canary, state, readFile };
 }
 
 function replayPreflight(call, o) {
@@ -159,6 +164,7 @@ function replayPreflight(call, o) {
     mkdirSync(m.wt, { recursive: true });
     mkdirSync(dirname(m.canary), { recursive: true });
     mkdirSync(m.state, { recursive: true });
+    if (m.readFile) { mkdirSync(dirname(m.readFile), { recursive: true }); writeFileSync(m.readFile, 'x\n'); }
     spawnSync('git', ['init', '-q', m.wt], { env: armEnv() });
     const settings = join(parent, 'settings.json');
     const agents = join(parent, 'agents.json');

@@ -1063,7 +1063,7 @@ P603="PR is open as a draft, but its Flows image check fails because ECR has no 
 for k in 4 5; do say "AUTOPILOT_PARK: $P603" "AUTOPILOT_IMAGES: $T/imgs-V-$k" > "$T/state-b/logs/V-$k.log"; q add "V-$k"; q set "V-$k" state=running lane=A "branch=fix/V-$k" "worktree=$T/wt/V-$k" "session_id=run-V-$k"; done
 : > "$T/built"; out=$(node "$B/pass.mjs" 2>&1); built 764 "$HB4"
 check "DS-402 AC2 a park only on a red Check builds check is recorded done on its PR" \
-  '[ "$(field V-4 state)" = "\"done\"" ] && [ "$(field V-4 result.pr)" = 764 ] && [ "$(field V-4 park)" = null ] && echo "$out" | grep -qF "V-4: PR #764 recorded done, not parked: its park waited only on \"Flows image\" red at ${HB4:0:9}"'
+  '[ "$(field V-4 state)" = "\"done\"" ] && [ "$(field V-4 result.pr)" = 764 ] && [ "$(field V-4 park)" = null ] && echo "$out" | grep -F "V-4: review read from the PR: " | grep -qF "; PR #764 recorded done, not parked: its park waited only on \"Flows image\" red at ${HB4:0:9}"'
 check "DS-402 AC2 and the same pass runs its build at the head" \
   '[ "$(cat "$T/built")" = "$(cd "$BCO" && pwd -P) $HB4 $HB4" ] && [ "$(field V-4 undraft.call)" = "\"build\"" ]'
 check "DS-402 AC2 its screenshots are read as a DONE worker's: the directory it printed is kept, and none there is recorded" \
@@ -1104,7 +1104,7 @@ mkdir -p "$T/state-m/logs"; q init m; q set-batch concurrency=5
 for k in 1 2; do mpark m "$k" "$T/state-m"; done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-509 AC1 AC3 a park asking only who merges its green, clean PR is recorded done on that PR, with the reason" \
-  '[ "$(field M-1 state)" = "\"done\"" ] && [ "$(field M-1 result.pr)" = 871 ] && [ "$(field M-1 park)" = null ] && echo "$out" | grep -qF "M-1: PR #871 recorded done, not parked: its park waited only on #871 merging, and #871 is green with a clean review at ${HM1:0:9}, so the undraft step takes it out of draft and the merge driver merges it"'
+  '[ "$(field M-1 state)" = "\"done\"" ] && [ "$(field M-1 result.pr)" = 871 ] && [ "$(field M-1 park)" = null ] && echo "$out" | grep -F "M-1: review read from the PR: " | grep -qF "; PR #871 recorded done, not parked: its park waited only on #871 merging, and #871 is green with a clean review at ${HM1:0:9}, so the undraft step takes it out of draft and the merge driver merges it"'
 check "DS-509 AC2 the park's post-merge steps are kept as its follow-on" \
   'field M-1 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
 check "DS-509 AC3 the same park on a PR with a red check is parked as today" \
@@ -1130,7 +1130,7 @@ q set M-7 'follow_on=[{"step":"Issue link not made: no grant: desk-jira link M-7
 export DESK_CONFIG="$T/config-m.md"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-509 AC4 once its rows let desk merge it, the parked merge question is recorded done on its PR, with the reason" \
-  '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -qF "M-3: PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
+  '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -F "M-3: review read from the PR: " | grep -qF "; PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
 check "DS-509 AC2 a park recorded done once its PR turns green keeps its words as the follow-on" \
   '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 result.pr)" = 874 ] && field M-4 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
 check "DS-557 a park whose follow-on holds only link steps keeps its own words after them, without the links line twice" \

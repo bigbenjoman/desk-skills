@@ -54,7 +54,7 @@ import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
+import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
@@ -130,7 +130,8 @@ import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owes
 const AS_JSON = process.argv.includes('--json');
 const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: EXIT.SHOW_PERSON, idle: EXIT.SHOW_PERSON, error: EXIT.SHOW_PERSON };
 // The queue's `pass` record, for desk-q: who ran the last pass and when, what held its spawns, how many
-// passes in a row have errored and the last error's first line, the last time a ticket started, merged
+// passes in a row have errored and the last error's first line, `idle_at` when the pass found the batch
+// idle (its loop stops on purpose then, so desk-q reads that stop as idle), the last time a ticket started, merged
 // or was released, and the tickets held and merged at that pass (a later pass that finds one no
 // longer held counts it released, and one newly merged counts it merged). `session_at` is the last
 // pass a session ran, kept through the supervisor's, so a session beside the supervisor shows. It is
@@ -316,6 +317,13 @@ const shOut = (cmd, args, { fresh, ...opts } = {}) => {
   if (kept !== undefined) return { ok: true, out: kept };
   try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
+};
+// shOut's output, or a throw naming `what` and the last line it printed. Declared here, before the
+// first phase runs: a phase's handlers run as the module loads.
+const readOrThrow = (what, cmd, args, opts) => {
+  const r = shOut(cmd, args, opts);
+  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
+  return r.out;
 };
 function refusedLine(args, refused, why) {
   const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
@@ -937,7 +945,7 @@ function advanceCloud(t) {
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
-  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
+  report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -960,6 +968,13 @@ function buildParkOf(t, question) {
 // §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
+// What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
+function prVerdict(pr) {
+  if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
+  try {
+    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
+  } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
+}
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
   try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
@@ -1065,6 +1080,7 @@ const ADVANCE_HANDLERS = {
   'pr-owner': (a) => {
     try { return prOwner(a.pr); } catch { return null; }
   },
+  'pr-verdict': (a) => prVerdict(a.pr),
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -1296,11 +1312,6 @@ for (const t of Object.values(queue().tickets)) {
 // holds (pass/parks.mjs decideClears). The reads its checks make, cached for the pass:
 const clearsCache = new Map();
 const cached = memo(clearsCache);
-const readOrThrow = (what, cmd, args, opts) => {
-  const r = shOut(cmd, args, opts);
-  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
-  return r.out;
-};
 const clearsRead = {
   pr: (n, repo = GH_REPO) => cached(`pr:${repo}#${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state,isDraft,mergedAt']))),
   // The latest run of each check, as the gate reads them (gate.mjs latestPerCheck).
@@ -1494,6 +1505,7 @@ const CLEARS_HANDLERS = {
     return checkCond(a.cond, { ...clearsRead, push: (p) => pushParked(t, p), file: (f) => existsSync(condPath(f, { worktree: t.worktree, state: STATE })) });
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
+  'pr-verdict': (a) => prVerdict(a.pr),
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
   'other-merged': (a, s) => {
     const t = s.tickets[a.key];
@@ -1691,7 +1703,7 @@ function finishPush(t) {
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
   keepSlot(slot, n);
   q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
-  report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
+  report.done.push(`${t.key}: ${prVerdict(n)}; PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
 }
 // The §3b check-in times, or null where the row cannot be read (the digest says why).
@@ -3801,7 +3813,8 @@ function fixTryStale(t) {
     : v.state === 'CLOSED' ? `PR #${f.pr} was closed unmerged`
     : headBound && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
   if (!ended) return false;
-  const line = `${t.key}: its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
+  // A PR still open (its head moved) leads with the review at that head; a merged or closed one has none to gate.
+  const line = `${t.key}: ${v.state === 'OPEN' ? `${prVerdict(f.pr)}; ` : ''}its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
   // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
   // done tickets' reading below.
@@ -6262,7 +6275,7 @@ const late = [...ledgerLate, ...recordPass((prev) => {
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, merge_gaps: mergeGapsEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
+  return { held: heldWhy, errors: 0, error: null, idle_at: idle ? PASS_AT : null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, merge_gaps: mergeGapsEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
 })];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.

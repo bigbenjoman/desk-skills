@@ -2,12 +2,12 @@
 // layer: L2
 // desk-review's verdict script: the counts, the vendor and the heading come from the finder and
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
-// the clean verdict. Pure: no git, no GitHub, no codex.
+// the clean verdict. No GitHub and no codex; git only in a scratch repo, for the anchor check.
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects, validateResults } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects, validateResults, checkAnchors, anchorLine } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
 import { scratch } from './scratch.mjs';
@@ -485,6 +485,83 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   const r2 = spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' })
   t('DS-422 AC5 --check exits 2 on a repo gate it cannot read a verdict with', `${r2.status} ${/exports no parseVerdict/.test(r2.stderr)}`, '2 true')
   rmSync(dir, { recursive: true, force: true })
+}
+
+// The anchor check: a finding whose file:line does not exist at head is rejected before any refuter call.
+{
+  const dir = scratch('verdict-anchors-')
+  const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+  const git = (...a) => spawnSync('git', a, { cwd: dir, env, encoding: 'utf8' })
+  git('init', '-q')
+  mkdirSync(join(dir, 'src'))
+  writeFileSync(join(dir, 'src/a.ts'), 'one\ntwo\nthree\n')
+  writeFileSync(join(dir, 'src/b.ts'), 'no newline at the end')
+  git('add', '.')
+  git('commit', '-q', '-m', 'init')
+  const head = git('rev-parse', 'HEAD').stdout.trim()
+  // A file added after the reviewed head is not there at head, even though it is on disk.
+  writeFileSync(join(dir, 'src/later.ts'), 'x\n')
+  const finding = (id, where, o = {}) => ({ id, seat: 'correctness', severity: 'P1', where, ...o })
+  const fixture = [finding('F1', 'src/gone.ts:3'), finding('F2', 'src/a.ts:4'), finding('F3', 'src/a.ts:3')]
+  // The refuter, stubbed around the check as Phase 4 runs it: only findings still without a result.
+  const refuted = []
+  const refute = (fs) => fs.map((x) => (x.result ? x : (refuted.push(x.id), { ...x, result: 'CONFIRMED', refuted_by: 'codex' })))
+  const { findings, rejected } = checkAnchors(fixture, head, { cwd: dir })
+  const after = refute(findings)
+  t('DS-1022 AC1 a finding citing a missing file is REJECTED, anchor missing', JSON.stringify([after[0].result, after[0].anchor, 'refuted_by' in after[0]]), '["REJECTED","missing",false]')
+  t('DS-1022 AC2 a finding citing a line past the end is REJECTED, anchor missing', JSON.stringify([after[1].result, after[1].anchor]), '["REJECTED","missing"]')
+  t('DS-1022 AC1/AC2 both print "anchor not found"', rejected.map((x) => anchorLine(x, head)).every((l) => l.includes('REJECTED: anchor not found')), true)
+  t('DS-1022 AC3 the valid finding is refuted as before, and the refuter is called once', `${refuted.join()} ${after[2].result} ${'anchor' in after[2]}`, 'F3 CONFIRMED false')
+  t('DS-1022 the fixture passed in is left as it was', fixture.every((x) => x.result == null), true)
+  const left = (where, o) => checkAnchors([finding('F1', where, o)], head, { cwd: dir }).rejected.length
+  t('DS-1022 the last line of a file with no final newline exists', left('src/b.ts:1'), 0)
+  t('DS-1022 a line range is anchored by its first line', [left('src/a.ts:2-9'), left('src/a.ts:5-9')].join(), '0,1')
+  t('DS-1022 line 0 is no line', left('src/a.ts:0'), 1)
+  t('DS-1022 a file added after head is not there at head', left('src/later.ts:1'), 1)
+  t('DS-1022 a directory is not a file', left('src:1'), 1)
+  t('DS-1022 ./ and the repo\'s absolute path name the same file', [left('./src/a.ts:1'), left(`${git('rev-parse', '--show-toplevel').stdout.trim()}/src/a.ts:1`)].join(), '0,0')
+  t('DS-1022 every spelling of a file that is there is there', ['src//a.ts:1', 'src/./a.ts:3', 'src/x/../a.ts:2', './/src/a.ts:1'].map((w) => left(w)).join(), '0,0,0,0')
+  t('DS-1022 a file named like another is not it', [left('src/a.t:1'), left('src/a.ts.bak:1'), left('a.ts:1')].join(), '1,1,1')
+  const top = git('rev-parse', '--show-toplevel').stdout.trim()
+  const fromSrc = (where) => checkAnchors([finding('F1', where)], head, { cwd: join(dir, 'src') }).rejected.length
+  t('DS-1022 a path is read from the repo\'s top, whatever directory the check runs in', [fromSrc('src/a.ts:3'), fromSrc(`${top}/src/a.ts:3`), fromSrc('a.ts:1'), fromSrc('src/a.ts:4')].join(), '0,0,1,1')
+  t('DS-1022 a doubled slash after the repo\'s absolute path is the same file', left(`${top}//src/a.ts:1`), 0)
+  writeFileSync(join(dir, 'src/empty.ts'), '')
+  writeFileSync(join(dir, 'src/[a].ts'), 'only\n')
+  git('add', '.')
+  git('commit', '-q', '-m', 'empty')
+  const head2 = git('rev-parse', 'HEAD').stdout.trim()
+  const at2 = (where) => checkAnchors([finding('F1', where)], head2, { cwd: dir }).rejected.length
+  t('DS-1022 an empty file has no line 1', at2('src/empty.ts:1'), 1)
+  t('DS-1022 a name with glob characters is read literally', [at2('src/[a].ts:1'), at2('src/[a].ts:2'), at2('src/*.ts:1')].join(), '0,1,1')
+  t('DS-1022 a finding with no file:line, a path outside the repo, a PREMISE or a refuted one is the refuter\'s',
+    [left('src/gone.ts'), left(undefined), left('/elsewhere/x.ts:1'), left('../x.ts:1'), left('src/gone.ts:1', { severity: 'PREMISE' }), left('src/gone.ts:1', { result: 'CONFIRMED', refuted_by: 'codex' })].join(), '0,0,0,0,0,0')
+  const thrown = (fn) => { try { fn(); return 'returned' } catch (e) { return e instanceof VerdictError ? 'refused' : `threw ${e}` } }
+  t('DS-1022 a head that is not a commit is refused, never every anchor missing', thrown(() => checkAnchors(fixture, 'f'.repeat(40), { cwd: dir })), 'refused')
+
+  // AC4: the verdict counts them, and reads them as the REJECTED findings they are.
+  const results = base({ findings: after })
+  t('DS-1022 AC4 the heading counts the anchor rejections', heading(results).includes('not clean: 1 P1 outstanding, findings rejected for a missing anchor: 2'), true)
+  t('DS-1022 AC4 the counts are untouched by them', marker(results).includes(' p0=0 p1=1 p2=0 '), true)
+  t('DS-1022 AC4 a clean review shows the count too', heading(base({ findings: after.slice(0, 2) })).startsWith('**desk-review, round 1: No P0, P1 or P2 findings; findings rejected for a missing anchor: 2 at'), true)
+  t('DS-1022 AC4 a clean review still reads clean to the gate', reads(base({ findings: after.slice(0, 2) })), true)
+  t('DS-1022 AC4 no anchor rejection, no count', heading(results).includes('anchor') && !heading(base({ findings: [after[2]] })).includes('anchor'), true)
+  t('DS-1022 anchor rejections leave the run cross-vendor', marker(base({ findings: after })).includes(' vendor=codex-cross '), true)
+  t('DS-1022 an anchor is only missing', refused(base({ findings: [{ ...after[0], anchor: 'stale' }] })), 'finding F1: anchor is "missing", set by the anchor check, or left out ("stale")')
+  t('DS-1022 a missing anchor is REJECTED', refused(base({ findings: [{ ...after[0], result: 'CONFIRMED' }] })), 'finding F1: a finding whose anchor is missing is REJECTED before any refuter call')
+  t('DS-1022 a missing anchor reached no refuter', refused(base({ findings: [{ ...after[0], refuted_by: 'codex' }] })), 'finding F1: a finding rejected for a missing anchor reached no refuter, so it has no refuted_by')
+  t('DS-1022 any other REJECTED finding still names its refuter', /refuted_by must be the refuter's vendor/.test(refused(base({ findings: [f({ result: 'REJECTED', refuted_by: undefined })] }))), true)
+
+  // The --anchors mode rewrites the results file and prints a line for each rejection.
+  const file = join(dir, 'results.json')
+  writeFileSync(file, JSON.stringify(base({ sha: head, findings: fixture })))
+  const run = spawnSync('node', [SCRIPT, '--anchors', file, head], { cwd: dir, encoding: 'utf8' })
+  const written = JSON.parse(readFileSync(file, 'utf8')).findings
+  t('DS-1022 --anchors exits 0', run.status, 0)
+  t('DS-1022 --anchors prints a line for each', run.stdout.split('\n').filter((l) => /^F[12] REJECTED: anchor not found, src\/(gone|a)\.ts:[34] does not exist at /.test(l)).length, 2)
+  t('DS-1022 --anchors rewrites the file', written.map((x) => x.anchor ?? '-').join(), 'missing,missing,-')
+  const bad = spawnSync('node', [SCRIPT, '--anchors', file, 'f'.repeat(40)], { cwd: dir, encoding: 'utf8' })
+  t('DS-1022 --anchors exits 2 on a head it cannot find', `${bad.status} ${/is not a commit/.test(bad.stderr)}`, '2 true')
 }
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')

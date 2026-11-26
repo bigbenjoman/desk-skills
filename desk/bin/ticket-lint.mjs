@@ -50,6 +50,8 @@ const quote = (s) => { const t = s.trim(); return t.length > 90 ? `${t.slice(0, 
 // "for the user to confirm" is behaviour; "(to confirm)" and "to be confirmed" leave a fact open.
 const OPEN = [/\bTBD\b/, /\bTBC\b/, /\bTODO\b/, /\bto be (?:decided|confirmed)\b/i, /\bdecide\b/i, /\bneeds? a decision\b/i,
   /\bproposals? for\b/i, /\(to confirm\)/i, /\bpending sign-?off\b/i];
+// A Design section line saying the change only prints to a terminal: as good as "No UI.".
+const TERMINAL_ONLY = /^\W*(?:terminal|cli|command[- ]line)(?: output)? only\b/i;
 const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\b/i;
 export const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
 // A Given/When/Then criterion: a line opening with Given (after a list mark, a list number or an AC1:
@@ -193,11 +195,12 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   }
 
   const design = sec(/^design\b/i);
-  const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)));
+  const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)))
+    || !!design?.lines.some((l) => TERMINAL_ONLY.test(prose(l.text)));
   // A Figma URL counts wherever the description has it. A Claude Design link counts only in the
   // Design section, where the saved-copy check and triage look for it.
   if (!noUi && !FIGMA_URL.test(t.text ?? '') && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
-    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." there');
+    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." (or "Terminal output only.") there');
   }
 
   if ('size' in t && !/sub-?task/i.test(t.type ?? '')) {
