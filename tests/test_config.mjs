@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, appPermissionGaps, appGapLines, parseConfigFile } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, appPermissionGaps, appGapLines, parseConfigFile, clerkSecretKeyIn, isClerkDevKey } from '../desk/bin/desk-env.mjs';
 import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -427,6 +427,15 @@ t('DS-804 a Test sign-in item that is not an email is INVALID', drift(`${conf()}
   const SHAPE = PERMREAD('its public_metadata.services is neither a list of names nor an object of flags');
   t('DS-1026 AC5 services as a string is could not read, not lacks', await run(NEED, holding('ADMIN')), SHAPE);
   t('DS-1026 AC5 services as a list of objects is could not read, not lacks', await run(NEED, holding([{ name: 'ADMIN' }])), SHAPE);
+  t('DS-1026 AC1 an item written ./apps/portal/ is the app\'s', (await run('`./apps/portal/: HELP_ARTICLES`', holding(['ADMIN']))).includes(' lacks HELP_ARTICLES in its Clerk'), true);
+  envOf('sk_test_abc\u0001');
+  t('DS-1026 AC4 a key holding a control character is not a development key, and is never printed', await run(NEED, holding(['ADMIN'])),
+    PERMREAD('apps/portal/.env.local\'s CLERK_SECRET_KEY is not a development instance\'s (sk_test_), so desk read nothing'));
+  envOf('sk_test_abc');
+  // the reading desk-pr's sign-in capture recipe imports, so drift and the capture agree on a file
+  t('DS-1026 the key is read through export, quotes and a trailing comment', JSON.stringify(['export CLERK_SECRET_KEY=sk_test_a', "CLERK_SECRET_KEY='sk_test_b'", 'CLERK_SECRET_KEY=sk_test_c # dev', 'OTHER=1'].map(clerkSecretKeyIn)),
+    JSON.stringify(['sk_test_a', 'sk_test_b', 'sk_test_c', null]));
+  t('DS-1026 only an sk_test_ key is a development one', JSON.stringify(['sk_test_abc', 'sk_live_abc', '', null].map(isClerkDevKey)), JSON.stringify([true, false, false, false]));
   writeFileSync(join(repoDir, 'apps/portal/.env.local'), 'NEXT_PUBLIC_APP=portal\n');
   t('DS-1026 no env file under the app holding the key is could not read', await run(NEED, holding(['ADMIN'])),
     PERMREAD('no §4 Env files item under apps/portal holds a CLERK_SECRET_KEY in the primary checkout'));

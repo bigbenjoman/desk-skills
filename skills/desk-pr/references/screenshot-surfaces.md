@@ -131,11 +131,14 @@ Clerk and names each permission it lacks `NOPERM`, or `PERMREAD` where it could 
 ```js
 import { readFileSync, chmodSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+// desk's own reading of the key and the user, the same `desk-env drift --app` checks permissions with
+const { clerkSecretKeyIn, isClerkDevKey, clerkUsersByEmail } = await import(resolve(homedir(), '.claude/desk/bin/desk-env.mjs'));
 
 const [port, path, out, email, envFile] = process.argv.slice(2);
-const key = /^CLERK_SECRET_KEY="?([^"\n]+)"?$/m.exec(readFileSync(envFile, 'utf8'))?.[1] ?? '';
-if (!key.startsWith('sk_test_')) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
+const key = clerkSecretKeyIn(readFileSync(envFile, 'utf8'));
+if (!isClerkDevKey(key)) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
 const clerk = async (method, p, body) => {
   const r = await fetch(`https://api.clerk.com/v1${p}`, {
     method,
@@ -145,7 +148,7 @@ const clerk = async (method, p, body) => {
   if (!r.ok) throw new Error(`clerk ${p}: ${r.status}`);
   return r.json();
 };
-const [user] = await clerk('GET', `/users?email_address=${encodeURIComponent(email)}`);
+const [user] = await clerkUsersByEmail(key, email);
 const { token } = await clerk('POST', '/sign_in_tokens', { user_id: user.id, expires_in_seconds: 300 });
 
 const { chromium } = createRequire(resolve('package.json'))('playwright');

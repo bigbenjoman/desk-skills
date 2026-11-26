@@ -2104,6 +2104,22 @@ export function appSetupGaps(parsed, root, dir) {
 }
 const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
+// Clerk on a development instance, shared by drift's permission check and desk-pr's sign-in capture
+// recipe (screenshot-surfaces.md), which imports these so both read an env file the same way.
+// clerkSecretKeyIn: the CLERK_SECRET_KEY an env file's text sets (`export`, quotes and a trailing
+// comment allowed), or null where it sets none. isClerkDevKey: a development key, `sk_test_` and key
+// characters only, so no control character reaches a request header or an error message.
+// clerkUsersByEmail: Clerk's users with that email; a refusal throws with its `status`.
+export const clerkSecretKeyIn = (text) => /^[ \t]*(?:export[ \t]+)?CLERK_SECRET_KEY[ \t]*=[ \t]*["']?([^"'\s#]*)/m.exec(text)?.[1] ?? null;
+export const isClerkDevKey = (key) => /^sk_test_[A-Za-z0-9_-]+$/.test(key ?? '');
+export async function clerkUsersByEmail(key, email, { fetch = globalThis.fetch } = {}) {
+  const r = await fetch(`https://api.clerk.com/v1/users?email_address=${encodeURIComponent(email)}`, {
+    headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw Object.assign(new Error(`Clerk answered ${r.status}`), { status: r.status });
+  return r.json();
+}
+
 // The §4 Test sign-in permissions one app names that its §4 Test sign-in user lacks in Clerk, read
 // with the CLERK_SECRET_KEY of the app's first §4 Env files item in the primary checkout (`root`) that
 // holds one, a development key (`sk_test_`) only. An app naming no permissions, or with no Test sign-in
@@ -2113,9 +2129,9 @@ export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.
   const app = appDirOf(dir);
   const named = configValuesIn(parsed, 'test-signin-permissions');
   if (!named || isNone(named)) return [];
-  const need = [...new Set(named.map(signinPermissionsOf).filter((x) => x?.dir === app).flatMap((x) => x.perms))];
+  const need = [...new Set(named.map(signinPermissionsOf).filter((x) => x && appDirOf(x.dir) === app).flatMap((x) => x.perms))];
   const signin = configValuesIn(parsed, 'test-signin');
-  const email = !need.length || !signin || isNone(signin) ? null : signin.map((x) => parseCommandItem(x)).find((x) => x.dir === app)?.cmd;
+  const email = !need.length || !signin || isNone(signin) ? null : signin.map((x) => parseCommandItem(x)).find((x) => appDirOf(x.dir) === app)?.cmd;
   if (!email) return [];
   const gap = (more) => [{ row: 'Test sign-in permissions', dir: app, email, need, ...more }];
   const env = configValuesIn(parsed, 'env-files');
@@ -2123,19 +2139,15 @@ export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.
   for (const f of env && !isNone(env) ? env.filter((f) => envFileUnder(app, f)) : []) {
     let text = '';
     try { text = readFileSync(join(root, f), 'utf8'); } catch { continue; }
-    const m = /^[ \t]*(?:export[ \t]+)?CLERK_SECRET_KEY[ \t]*=[ \t]*["']?([^"'\s#]*)/m.exec(text);
-    if (m) { envFile = f; key = m[1]; break; }
+    key = clerkSecretKeyIn(text);
+    if (key != null) { envFile = f; break; }
   }
   if (!envFile) return gap({ unread: `no §4 Env files item under ${app} holds a CLERK_SECRET_KEY in the primary checkout` });
-  if (!key.startsWith('sk_test_')) return gap({ unread: `${envFile}'s CLERK_SECRET_KEY is not a development instance's (sk_test_), so desk read nothing` });
+  if (!isClerkDevKey(key)) return gap({ unread: `${envFile}'s CLERK_SECRET_KEY is not a development instance's (sk_test_), so desk read nothing` });
   let users;
-  try {
-    const r = await fetch(`https://api.clerk.com/v1/users?email_address=${encodeURIComponent(email)}`, {
-      headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000),
-    });
-    if (!r.ok) return gap({ unread: `Clerk answered ${r.status}` });
-    users = await r.json();
-  } catch (e) { return gap({ unread: `Clerk could not be reached: ${String(e?.message ?? e).split('\n')[0]}` }); }
+  try { users = await clerkUsersByEmail(key, email, { fetch }); } catch (e) {
+    return gap({ unread: e?.status ? e.message : `Clerk could not be reached: ${String(e?.message ?? e).split('\n')[0]}` });
+  }
   if (!Array.isArray(users) || !users.length) return gap({ unread: 'Clerk has no user with that email' });
   // `services` absent holds nothing; a list of names, or an object of flags, holds the names set. Any
   // other shape is one desk cannot read, so it is PERMREAD, never a false "lacks".
