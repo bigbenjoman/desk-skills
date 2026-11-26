@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
+import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, ownJql, personOf, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -20,19 +20,24 @@ const CLEAN = 'h2. Acceptance criteria\n* Given x, when y, then z\nh2. Design\nN
 
 // reads: every ticket's description, merged PRs and commits keyed by ticket, and the recent PRs. The
 // search answers each priority tier's JQL with that tier's issues, one page of `max`.
-function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queued = [], liveEpics = [] }) {
-  const calls = { search: [], recent: 0 };
+// An issue's `assignee` is an account id; the search answers `assignee = currentUser()` as ME.
+const ME = 'acct-me';
+function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queued = [], liveEpics = [], open = [] }) {
+  const calls = { search: [], recent: 0, openPrs: 0 };
   return {
     calls,
     search: (jql, max, fields) => {
       calls.search.push({ jql, max, fields });
       const tier = /cf\[10300\] = "([^"]+)"/.exec(jql)?.[1];
       const rest = /is EMPTY OR/.test(jql);
-      const hits = issues.filter((i) => { const v = i.fields.customfield_10300?.value ?? null; return tier ? v === tier : rest ? !['P0', 'P1', 'P2'].includes(v) : true; });
+      const who = /assignee is EMPTY/.test(jql) ? null : /assignee = currentUser\(\)/.test(jql) ? ME : /assignee = "([^"]+)"/.exec(jql)?.[1];
+      const hits = issues.filter((i) => (i.fields.assignee?.accountId ?? null) === who)
+        .filter((i) => { const v = i.fields.customfield_10300?.value ?? null; return tier ? v === tier : rest ? !['P0', 'P1', 'P2'].includes(v) : true; });
       return { ok: true, issues: hits.slice(0, max), more: hits.length > max };
     },
     description: (k) => (k in desc ? { ok: true, text: desc[k] } : { ok: false, why: 'no such issue' }),
     mergedPrs: (k) => prs[k] ?? [],
+    openPrs: () => { calls.openPrs++; return open; },
     commits: (k) => commits[k] ?? [],
     recent: () => { calls.recent++; return recent; },
     queued: () => new Set(queued),
@@ -74,7 +79,7 @@ t('AC1 a value written with its option id is searched and ranked by its name', p
   t('AC1 the P2s are checked before any P4', got.offered.map((c) => c.key), ['ACME-36', 'ACME-35', 'ACME-34', 'ACME-32']);
   t('AC3 Bugs before Tasks at one priority, each newest first', got.offered.map((c) => c.type), ['Bug', 'Bug', 'Task', 'Task']);
   t('AC1 a priority at option-id form ranks by its name', got.offered.map((c) => c.rank), [2, 2, 2, 2]);
-  t('AC1 the P2 tier filled the list, so no P4 search ran', r.calls.search.map((c) => /cf\[10300\] = "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
+  t('AC1 the P2 tier filled the list, so no P4 search ran', r.calls.search.slice(1).map((c) => /cf\[10300\] = "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
 }
 {
   // Values the row does not list rank by their own text: P3 before P4, then Bugs, then newest, unset last.
@@ -179,7 +184,7 @@ t('AC4 a bare name matches it in any directory', overlapOf(new Set(['intake.mjs'
   const issues = Array.from({ length: 20 }, (_, i) => issue(`ACME-${100 + i}`, 'Bug', 'P1'));
   const r = readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) });
   const got = listCandidates({ project: 'ACME', priority: PRIORITY, reads: r, checkMax: 3 });
-  t('only the first checkMax are checked, the rest counted, and no lower tier searched', [got.offered.length, got.unchecked, got.more, r.calls.search.length], [3, 17, true, 2]);
+  t('only the first checkMax are checked, the rest counted, and no lower tier searched', [got.offered.length, got.unchecked, got.more, r.calls.search.length], [3, 17, true, 3]);
   t('the listing says so', renderLines(got, { project: 'ACME' }).at(-2), '17+ more not checked: only the first 15 by priority are');
 }
 {
@@ -202,6 +207,52 @@ t('a failed search is said', renderLines(listCandidates({ project: 'ACME', prior
   t('one after it lists again', slotLines({ state: S, now: now + CANDIDATES_EVERY_MS, list: lst }), ['free slot: run 2']);
   t('a dry pass keeps nothing', [slotLines({ state: S, now: now + 3 * CANDIDATES_EVERY_MS, dry: true, list: lst }), JSON.parse(readFileSync(join(S, 'candidates.json'), 'utf8')).lines], [['free slot: run 3'], ['run 2']]);
   t('the row is on only at on', ['on', 'ON', 'off', '', null, 'TODO'].map((v) => slotCandidatesOn(v)), [true, true, false, false, false, false]);
+}
+
+// #1484: the person's own unstarted assigned tickets come first, then the unassigned ones.
+const mine = (key, type, p, who = ME) => issue(key, type, p, { assignee: { accountId: who } });
+t('#1484 AC1 the own search asks for the §1 account id', ownJql('ACME', 'acct-1'), 'project = "ACME" AND issuetype in (Bug, Task) AND assignee = "acct-1" AND statusCategory = "To Do" ORDER BY created DESC');
+t('#1484 AC1 with no account id, the signed-in Jira user', ownJql('ACME', null), 'project = "ACME" AND issuetype in (Bug, Task) AND assignee = currentUser() AND statusCategory = "To Do" ORDER BY created DESC');
+t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0d2c', 'none', 'TODO', '', null].map((v) => personOf(v)), ['712020:0d2c', null, null, null, null]);
+{
+  const issues = [issue('ACME-60', 'Bug', 'P0'), mine('ACME-61', 'Task', 'P2'), mine('ACME-62', 'Bug', 'P1'), mine('ACME-63', 'Task', 'P0'),
+    mine('ACME-64', 'Task', 'P0', 'acct-someone-else'), issue('ACME-65', 'Task', 'P1')];
+  const r = readsOf({ issues, desc: { ...Object.fromEntries(issues.map((x) => [x.key, CLEAN])), 'ACME-62': 'h2. Design\nNo UI.' },
+    open: [{ number: 400, title: 'feat: something', headRefName: 'feat/ACME-63-started' }] });
+  const got = list(r);
+  t('#1484 AC1 the person\'s own come first, in priority order, a flagged one too, then the unassigned', got.offered.map((c) => [c.key, c.own]),
+    [['ACME-62', true], ['ACME-61', true], ['ACME-60', false], ['ACME-65', false]]);
+  t('#1484 AC1 one an open PR names is started, so left out', got.left, [{ key: 'ACME-63', why: 'started: open PR #400 names it' }]);
+  t('#1484 AC1 the open PRs are read once a listing', r.calls.openPrs, 1);
+  t('#1484 AC2 a ticket assigned to someone else is neither searched for nor offered', [r.calls.search.some((c) => c.jql.includes('acct-someone-else')), got.offered.some((c) => c.key === 'ACME-64'), got.left.some((l) => l.key === 'ACME-64')], [false, false, false]);
+  t('#1484 VERIFY the listing names them first, as ready to admit', renderLines(got, { project: 'ACME' }), [
+    'your unstarted assigned tickets in ACME, ready to admit:',
+    '  1. ACME-62  P1  Bug  ACME-62 summary — no Acceptance criteria',
+    '  2. ACME-61  P2  Task  ACME-61 summary',
+    'candidates for a free slot from ACME, by priority:',
+    '  3. ACME-60  P0  Bug  ACME-60 summary',
+    '  4. ACME-65  P1  Task  ACME-65 summary',
+    'left out: ACME-63 (started: open PR #400 names it)',
+    'admit one with /desk-admit <KEY>; this list admits nothing',
+  ]);
+  const only = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) }), ownOnly: true });
+  t('#1484 AC3 own only lists the person\'s own and searches nothing else', [only.offered.map((c) => c.key), renderLines(only, { project: 'ACME' })[0]], [['ACME-63', 'ACME-62', 'ACME-61'], 'your unstarted assigned tickets in ACME, ready to admit:']);
+  t('#1484 AC3 own only with none of the person\'s own says nothing', renderLines(listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues: [issue('ACME-66', 'Bug', 'P0')] }), ownOnly: true }), { project: 'ACME' }), []);
+  const unread = readsOf({ issues: [mine('ACME-67', 'Bug', 'P0')], desc: { 'ACME-67': CLEAN } });
+  unread.openPrs = () => null;
+  t('#1484 AC1 unread open PRs are said, not taken as none', list(unread).offered[0].flags, ['not checked for an open PR: the open PRs could not be read']);
+  t('#1484 the unassigned heading says when only the person\'s own are offered', renderLines(list(readsOf({ issues: [mine('ACME-68', 'Bug', 'P0')], desc: { 'ACME-68': CLEAN } })), { project: 'ACME' })[2], 'no unassigned candidates for a free slot from ACME');
+}
+{
+  // AC3: the idle pass asks for the person's own alone with §3b "Propose candidates" off, and a kept
+  // listing read the other way is read again.
+  const S = scratch('candidates-own-');
+  const asked = [];
+  const lst = ({ ownOnly } = {}) => { asked.push(ownOnly); return { lines: [ownOnly ? 'yours' : 'all'] }; };
+  const now = Date.parse('2026-11-26T12:00:00Z');
+  t('#1484 AC3 the pass names the person\'s own with the row off', slotLines({ state: S, now, ownOnly: true, list: lst }), ['free slot: yours']);
+  t('#1484 AC3 kept between passes', slotLines({ state: S, now: now + 1, ownOnly: true, list: lst }), ['free slot: yours']);
+  t('#1484 AC3 the row turned on reads again', [slotLines({ state: S, now: now + 2, list: lst }), asked], [['free slot: all'], [true, false]]);
 }
 
 // The command: no Jira tracker is exit 3, saying so.

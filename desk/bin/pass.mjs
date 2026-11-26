@@ -4320,12 +4320,13 @@ runSteps({
 }
 
 // ---- candidates for a free slot ---------------------------------------------
-// With config §3b "Propose candidates for a free slot" on, a standing batch the supervisor runs, with a
-// slot free and nothing ready to take it, lists what could be admitted (candidates.mjs slotLines). It
-// lists only: /desk-admit admits.
+// A standing batch the supervisor runs, with a slot free and nothing ready to take it, names the
+// person's own unstarted assigned tickets as ready to admit, and with config §3b "Propose candidates
+// for a free slot" on, the unassigned ones too (candidates.mjs slotLines). It lists only: /desk-admit
+// admits.
 if (onJira && !E.batchName() && queue().supervised === true && running.length < concurrency && !spawnable.length
-  && !lowMemory && !MAINT.hold && slotCandidatesOn()) {
-  epicLines.push(...slotLines({ state: STATE, dry: DRY }));
+  && !lowMemory && !MAINT.hold) {
+  epicLines.push(...slotLines({ state: STATE, dry: DRY, ownOnly: !slotCandidatesOn() }));
 }
 
 // ---- outside holds -------------------------------------------------------
