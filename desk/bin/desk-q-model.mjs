@@ -1838,6 +1838,8 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const slugOfName = (name) => costs.entries.find((e) => e.name === name && e.repo)?.repo ?? null;
   const covered = new Set(c.names.map((x) => slugOfName(x.name)).filter(Boolean));
   const useOnly = Object.keys(use?.repos ?? {}).filter((s) => !covered.has(s)).sort().map((s) => ({ name: repoName(repos, s), total: null, slug: s, useOnly: true }));
+  // A charged name, a repo with only list-price use, or the shared row: `slug` and `useOnly` are on some.
+  /** @type {any[]} */
   const lines = [...c.names.map((x) => ({ ...x, slug: slugOfName(x.name) })), ...useOnly, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
   const aw = Math.max(10, usd(c.total).length + 3);
