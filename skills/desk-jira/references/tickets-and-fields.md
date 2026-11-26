@@ -26,7 +26,8 @@ It prints one line per finding and exits 1 on any blocking one:
   lines in a `{code}` or `{noformat}` block under the criteria heading count, and are checked as
   prose criteria are; a block with no Given line does not); an open decision
   (TBD, TODO, decide, proposal for, needs a decision, or a question mark in Outcome, the criteria or
-  Out of scope); no design link and no `No UI.` line (any URL in the Design section counts, and a
+  Out of scope); no design link and no `No UI.` line (a Design section line `Terminal output only.`
+  counts as one; any URL in the Design section counts, and a
   Figma URL anywhere in the description; a Claude Design link counts only in the Design section,
   where the saved-copy check reads it); Size unset (not asked of a Subtask); a
   criterion that needs a Jira write, a live production run or an operator step; and `desk-design`'s

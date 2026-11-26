@@ -73,7 +73,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic, blockersFact } from './desk-q-eta.mjs';
-import { machineCap, lastBeat } from './borrow.mjs';
+import { machineCap, idlePass, lastBeat, liveBeat } from './borrow.mjs';
 import { addAsk, settleAdmitted } from './asks.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
@@ -86,7 +86,7 @@ import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, pr
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
-import { DRAFTED_NOTE, changesClause, draftedCriteria, fillTicket, noTestableOutcome } from './ticket-fill.mjs';
+import { DRAFTED_NOTE, changesClause, draftedCriteria, fillTicket, noTestableOutcome, numberedCriteria } from './ticket-fill.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -139,9 +139,12 @@ const rendersNothing = (r) => {
   if (r.renders !== false) return '';
   return ` — triage found nothing renders${changesClause(r)}; write "No UI." with that reason in its Design section, then admit it again`;
 };
-// No acceptance criteria: the ones triage drafted from the ticket's goal and proposal, to write as they
-// are, or that its text states no testable outcome, which only the person can settle.
+// No acceptance criteria: its own unlabelled Given/When/Then lines numbered, or the ones triage drafted
+// from the ticket's goal and proposal, to write as they are, or that its text states no testable
+// outcome, which only the person can settle.
 const criteriaDrafted = (r) => {
+  const own = numberedCriteria(r);
+  if (own) return `; write them as they are: ${own.map((c, i) => `AC${i + 1}: ${c}`).join(' · ')}`;
   const drafted = draftedCriteria(r);
   if (drafted?.length) return ` — triage drafted ${drafted.length} from its goal and proposal; write them as its Acceptance criteria, under "${DRAFTED_NOTE}", then admit it again: ${drafted.map((c, i) => `AC${i + 1}: ${c}`).join(' · ')}`;
   return noTestableOutcome(r) ? ' — its text states no testable outcome, so desk drafted none: the person writes them (asked on /desk-needs-you)' : '';
@@ -1097,7 +1100,14 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     say(`not triaged (usage limit${limit.resets ? `, resets ${limit.resets}` : ''}): ${these}: run /desk-admit ${these} again once the limit lifts`);
   }
   const theirs = admitted.length + epics.length - ours.length;
-  if (ours.length) say(`this session's next pass picks up ${ours.join(' ')}`);
+  // A session ends its loop once a pass finds the batch idle, and a lost loop runs none either: then
+  // nothing runs the next pass until this session restarts the loop.
+  const beat = lastBeat(state, E.queueFile());
+  const batchArg = E.batchName() ? ` --batch ${E.batchName()}` : '';
+  if (ours.length && (idlePass(q) || (beat && !liveBeat(beat)))) {
+    say(`restart this session's loop now: no pass runs this batch${beat?.pass != null ? ` since ${new Date(beat.pass).toISOString()}` : ''}, so nothing picks up ${ours.join(' ')} until it does. `
+      + `Run a pass (node ${join(HERE, 'pass.mjs')} --json${batchArg}), then keep the loop going as /desk-autopilot Stage 4 does, recording each next pass (node ${join(HERE, 'queue.mjs')} next-pass +<seconds>${batchArg})`);
+  } else if (ours.length) say(`this session's next pass picks up ${ours.join(' ')}`);
   // No supervisor runs a session-run repo's batches, so nothing is promised of one there.
   if (theirs && bySession) say(`no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session): ${ours.length ? `the other${theirs === 1 ? '' : 's'}` : theirs === 1 ? 'it' : 'they'} ${theirs === 1 ? 'waits' : 'wait'} for a session to run ${theirs === 1 ? 'its' : 'their'} batch (/desk-autopilot)`);
   else if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
@@ -1106,9 +1116,12 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   // waits on the person. Else the ask waits on those tickets being admitted (`settles: 'admit'`): the
   // admit that takes them drops it, below.
   const here = process.env.CLAUDE_CODE_SESSION_ID || null;
-  if (unrunKeys.length && here && lastBeat(state, E.queueFile())?.session === here) {
+  const runner = beat ? beat.loop ?? beat.session ?? null : null;
+  if (unrunKeys.length && here && (beat?.session === here || runner === here)) {
     say(`this session runs this repo's batches: admit ${unrunKeys.join(' ')} again with --session (node ${join(HERE, 'intake.mjs')} admit ${unrunKeys.join(' ')} --session); nothing is put on needs-you`);
   } else if (unrunKeys.length) {
+    // The session whose loop last ran the batch admits them and restarts that loop, when it is still open.
+    if (runner) say(`ask session ${runner}, whose loop ran this batch's last pass, by message (ListAgents, then SendMessage) to admit ${unrunKeys.join(' ')} with node ${join(HERE, 'intake.mjs')} admit ${unrunKeys.join(' ')} --session, which tells it to restart its loop`);
     const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime(), { until: unrunKeys, settles: 'admit' });
     say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${unrunKeys.join(' ')}`);
   }

@@ -631,8 +631,9 @@ t('DS-163 AC7 then each day to 6 days out, then the week by its Monday', [at(202
   'Wed 21 Oct | Sun 25 Oct | Week of Mon 26 Oct | Week of Mon 2 Nov');
 t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { now: FIXED }), Q.daysScreen(Q.loadRepos(FIXED), 'acme__tidy', { now: FIXED }));
 
-// The median of tidy's 12 size M durations, 4 to 10 h: the 7th of them sorted.
-const typicalM = '7.0';
+// The median of tidy's 12 size M durations, 4 to 10 h, each weighted by how recently it merged: its
+// newer merges are the shorter ones, so the 6th of them sorted.
+const typicalM = '6.0';
 t('DS-163 AC8 (DS-279 AC16) a ticket that needs your answer says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Needs your answer · ~${typicalM} h once answered`)), true);
 t('DS-163 AC8 (DS-217 AC8) a ticket held outside the batch names what holds it', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Held by EXT-5, outside this batch')), true);
 t('DS-163 AC8 workers set to 0 says nothing starts', /Workers set to 0: nothing starts +Z-1 title$/.test(barRow(tl('acme__zero'), 'Z-1')), true);
@@ -1081,9 +1082,10 @@ const Hn = screen({ kind: 'repo', slug: 'acme__hue' }, 24, () => FIXED);
 Hn.output.rows = 80; Hn.output.resize();
 await sleep(20);
 const narrow = lastFrame(Hn).filter((l) => /H-\d/.test(l));
-t('DS-181 AC4 a truncated row ends in … at the width, every colour closed before it', `${narrow.length} ${JSON.stringify(narrow.filter((l) => {
+// At 24 columns only # and TICKET fit whole, so each row is cut after TICKET, never inside STATE.
+t('DS-181 AC4 a truncated row ends in " …" after its last whole column, within the width, every colour closed before it', `${narrow.length} ${JSON.stringify(narrow.filter((l) => {
   const p = l.replace(ANSI, '');
-  return !(p.length === 24 && p.endsWith('…') && (l.match(/\x1b\[(3[0-8]|38;5;\d+)m/g) ?? []).length === (l.match(/\x1b\[39m/g) ?? []).length);
+  return !(/^[ ›] {4}[\d-] {2}H-\d …$/.test(p) && p.length <= 24 && (l.match(/\x1b\[(3[0-8]|38;5;\d+)m/g) ?? []).length === (l.match(/\x1b\[39m/g) ?? []).length);
 }))}`, '6 []');
 Hn.ui.finish(0);
 
@@ -1739,6 +1741,13 @@ t('#1416 AC1 a repo set to session whose batch is marked handed over: ● sessio
 const stop1416 = ov1416(['x1416']);
 t('#1416 AC2 its passes stopped with a ticket to move: the band says the session\'s loop stopped, names the session and not the supervisor',
   `${lines(stop1416).includes(' ✕ x1416: the loop in session sess-1416 has stopped, so no passes run. Run /desk-autopilot in x1416')} ${/supervisor/.test(stop1416)}`, 'true false');
+// #1486: a loop its session stopped because the last pass found the batch idle reads as idle in grey,
+// a ticket admitted since included, never the red band, and needs-you lists no stall for it.
+put(I.T, I.env, 'i1486', { port: 5299, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'i1486', concurrency: 2, supervised: true, pass: { by: 'session', at: minsAgo(50), idle_at: minsAgo(50) }, tickets: { 'SI-1': ready } } });
+const idle1486 = ov1416(['i1486']);
+t('#1486 AC2 a loop stopped on an idle batch: a grey "idle, loop stopped" line and an idle cell, not the red band',
+  `${/✕/.test(idle1486)} ${lines(idle1486).includes(' · i1486: idle, loop stopped. Tickets admitted since wait for its next pass: run /desk-autopilot in i1486.')} ${/^ {2}i1486 +■ idle · 50m /.test(rowOf(idle1486, 'i1486') ?? '')} ${Q.sessionStalled(Q.loadRepos(NOW).find((r) => r.name === 'i1486'))}`,
+  'false true true false');
 process.env.DESK_PLATFORM = 'linux';
 writeFileSync(join(I.T, 'bin', 'systemctl'), '#!/bin/sh\necho "Failed to connect to bus: No medium found" >&2\nexit 1\n', { mode: 0o755 });
 const wsl1416 = `${ov1416(['off', 'halt'])}\n${Q.repoScreen(at215('off'), { now: NOW })}`;
@@ -2768,6 +2777,20 @@ t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Buil
 // A page just past the 10-minute rebuild, waiting for the next supervisor tick, is no fault.
 L654 = await leversLine654({ line: WORKING654, age: 15 });
 t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
+// Home at 60, 80 and 120 columns keeps the Levers line whole where it fits, and cuts a
+// longer one after a whole field with " …", never inside one or after a separator.
+{
+  const NEEDS1485 = '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you │ Open Levers ↗';
+  const at1485 = async (columns) => {
+    levers654({ line: { ...WORKING654, state: 'needs_you', needs_you: 1 } });
+    const s = screen({ kind: 'overview', all: false }, columns, () => NOW);
+    await sleep(20);
+    s.ui.finish(0);
+    return lastFrame(s).map((l) => l.replace(ANSI, '')).find((l) => /^[○●▼▲] Levers /.test(l)) ?? '';
+  };
+  const want1485 = { 60: '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 …', 80: '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you …', 120: NEEDS1485 };
+  for (const columns of [60, 80, 120]) t(`issue-1485 AC2: home's Levers line at ${columns} columns`, await at1485(columns), want1485[columns]);
+}
 
 // v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves. The stub
 // finishes only once the screen has been read while it rebuilds, never on a timer: a draw of home's whole

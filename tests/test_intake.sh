@@ -651,6 +651,32 @@ mkdir -p "$T/state/tickets"; printf '# fix-ledger-rows\n\nSource: the user\n\nRe
 rec fix-ledger-rows A "\"renders\":false,\"lint\":[$LINT_UI]"
 out=$(admit fix-ledger-rows --session); rc=$?
 check "#1383 a ticket file gets No UI., None. and the test command written into it, and is admitted" '[ $rc -ne 11 ] && grep -qF "TICKET FILE EDIT fix-ledger-rows — posted" <<< "$out" && grep -qxF "No UI. Triage found nothing renders: it changes src/fix-ledger-rows.js." "$T/state/tickets/fix-ledger-rows.md" && grep -qxF "None." "$T/state/tickets/fix-ledger-rows.md" && [ "$(grep -c "^## Acceptance criteria" "$T/state/tickets/fix-ledger-rows.md")" = 1 ] && grep -q "^admitted fix-ledger-rows by hand" <<< "$out"'
+check "#1488 AC3 criteria already labelled are left unchanged" 'grep -qxF -- "- AC1: Given a refund, when it is issued, then the ledger has a row" "$T/state/tickets/fix-ledger-rows.md"'
+# #1488: Given/When/Then criteria with no AC labels, in a preformatted block outside any criteria heading,
+# are numbered in order under one, keeping their text, and the ticket is admitted.
+printf '# gwt-ledger\n\nSource: the user\n\nRefunds show in the ledger.\n\n```\nGiven a refund\nWhen it is issued\nThen the ledger has a row for it\n\nGiven two refunds\nwhen both are issued\nthen the ledger has two rows\n```\n\n## Design\nNo UI.\n' > "$T/state/tickets/gwt-ledger.md"
+LINT_GWT='{"severity":"blocking","rule":"criteria","numbered":["Given a refund When it is issued Then the ledger has a row for it"],"message":"no acceptance criteria section, but 1 Given/When/Then criteria with no AC labels (line 8): move them under an \"Acceptance criteria\" heading as AC1: … items"}'
+rec gwt-ledger A "\"renders\":false,\"drafted_criteria\":[],\"lint\":[$LINT_GWT]"
+out=$(admit gwt-ledger --session); rc=$?
+G="$T/state/tickets/gwt-ledger.md"
+check "#1488 AC1 unlabelled Given/When/Then blocks in a preformatted block are numbered AC1, AC2 under an Acceptance criteria heading, keeping their text" 'grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC1: Given a refund When it is issued Then the ledger has a row for it" && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC2: Given two refunds when both are issued then the ledger has two rows"'
+check "#1488 AC1 they are moved, not copied, and the emptied block goes" '[ "$(grep -c "Given" "$G")" = 2 ] && ! grep -q "^\`\`\`" "$G" && grep -qxF "Refunds show in the ledger." "$G"'
+check "#1488 AC1 the ticket is linted again and admitted, with no needs-you ask" '[ $rc -ne 11 ] && grep -qF "TICKET FILE EDIT gwt-ledger — posted" <<< "$out" && grep -q "^admitted gwt-ledger by hand" <<< "$out" && [ "$(jget "$T/state/triage/gwt-ledger.json" lint.length)" = 0 ] && ! grep -q "acceptance criteria for gwt-ledger" "$T/state/asks.json" 2>/dev/null'
+# In a list in another section, under an empty criteria heading, they are numbered under that heading;
+# prose and a shell block elsewhere stay as they are.
+printf '# gwt-inline\n\nSource: the user\n\nGiven that the ledger is slow, we cache it.\n\n```\nif [ -f x ]\nthen echo ok\nfi\n```\n\n## Proposal\n- Given a refund, when it is issued, then the ledger has a row\n- Given two refunds, when both are issued, then it has two\n\n## Acceptance criteria\n\n## Design\nNo UI.\n\n## Verification\nGiven a checkout, when tests run, then they pass.\n' > "$T/state/tickets/gwt-inline.md"
+rec gwt-inline A "\"renders\":false,\"lint\":[$LINT_GWT]"
+out=$(admit gwt-inline --session); rc=$?
+G="$T/state/tickets/gwt-inline.md"
+check "#1488 AC1 unlabelled criteria in a list are numbered under the empty criteria heading, once" '[ "$(grep -c "^## Acceptance criteria" "$G")" = 1 ] && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC1: Given a refund, when it is issued, then the ledger has a row" && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC2: Given two refunds, when both are issued, then it has two" && [ "$(grep -c "^- Given" "$G")" = 0 ]'
+check "#1488 a Given line with no then, a shell block and the Verification section are left alone" 'grep -qxF "Given that the ledger is slow, we cache it." "$G" && grep -qxF "then echo ok" "$G" && grep -A1 -xF "## Verification" "$G" | grep -qxF "Given a checkout, when tests run, then they pass." && grep -q "^admitted gwt-inline by hand" <<< "$out"'
+# A ticket lint passed, its criteria section filled, is never rewritten for Given/When/Then lines: not
+# under that heading, nor in its prose.
+printf '# gwt-filled\n\nSource: the user\n\nGiven a slow page, when it loads, then it shows a spinner.\n\n## Acceptance criteria\n- Given a refund, when it is issued, then the ledger has a row\n- The page loads in 2s\n\n## Design\nNo UI.\n' > "$T/state/tickets/gwt-filled.md"
+G="$T/state/tickets/gwt-filled.md"; before=$(cat "$G")
+rec gwt-filled A '"renders":false'
+out=$(admit gwt-filled --session); rc=$?
+check "#1488 filled criteria and a Given/When/Then line in the prose are left as written, and the ticket is admitted" '[ "$(cat "$G")" = "$before" ] && ! grep -qF "TICKET FILE EDIT gwt-filled" <<< "$out" && grep -q "^admitted gwt-filled by hand" <<< "$out"'
 check "#1383 desk-admit says admit writes what it drafted itself, and how to write it at gh-issue-edit ask" 'grep -q "^\*\*Admit has already written what it could.\*\*" "$SK" && grep -q "triage drafted <n> from its goal and proposal" "$SK" && grep -q "its text states no testable outcome" "$SK"'
 config yes '`none`'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
@@ -680,6 +706,14 @@ check "#1359 the ask waits on H-31 being admitted" '[ "$(jq -c ".asks[] | select
 out=$(admit H-31 --session); rc=$?
 check "#1331 the session that runs the batch (--session) joins the finished one, not a standing one" '[ $rc -eq 0 ] && [ "$(qget batch)" = s9 ] && [ "$(qget supervised)" = false ] && [ "$(qget tickets.H-31.state)" = triaged ] && grep -q "^this session.s next pass picks up H-31$" <<< "$out" && ! grep -q "supervisor" <<< "$out"'
 check "#1359 admitting it drops the ask to start a session for it, saying so" '! jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31\"))" "$T/state/asks.json" >/dev/null && grep -q "^needs-you: ask [0-9]* dropped, as H-31 is admitted, so no session needs starting for it$" <<< "$out"'
+# #1486: a pass that finds the batch idle ends its session's loop, though its beat still reads live, so a
+# --session admit then says to restart the loop rather than promising a next pass.
+NOWZ="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"version":1,"batch":"s9","supervised":false,"pass":{"by":"session","at":"%s","idle_at":"%s"},"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":null}}}}\n' "$NOWZ" "$NOWZ" > "$DESK_QUEUE"
+beat "$NOWZ"; rec H-35 A
+out=$(admit H-35 --session); rc=$?
+check "#1486 AC1 a --session admit into a batch its last pass found idle says to restart the loop, naming the pass and next-pass commands" '[ $rc -eq 0 ] && [ "$(qget tickets.H-35.state)" = triaged ] && grep -q "^restart this session.s loop now: no pass runs this batch since .*, so nothing picks up H-35 until it does\. Run a pass (node .*pass\.mjs --json), then keep the loop going as /desk-autopilot Stage 4 does, recording each next pass (node .*queue\.mjs next-pass +<seconds>)$" <<< "$out" && ! grep -q "next pass picks up" <<< "$out"'
+check "#1486 AC1 desk-admit restarts the loop on that line before the turn ends" 'grep -q "^\*\*A \`restart this session.s loop now\` line\*\*" "$SK"'
 # #1359: the beat names the Claude Code session whose pass wrote it; an admit refused in that session
 # says to run it again with --session and puts nothing on needs-you.
 done_q; rm -rf "$T/state/asks.json"; beat "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; f=$(ls "$T/state/orchestrators/"*.json); jq -c '. + {session: "sess-9"}' "$f" > "$f.t" && mv "$f.t" "$f"; rec H-34 A
@@ -687,6 +721,7 @@ out=$(CLAUDE_CODE_SESSION_ID=sess-9 admit H-34); rc=$?
 check "#1359 refused in the session that runs the batch: it says to admit it again with --session, and records no ask" '[ $rc -eq 11 ] && [ "$(qget tickets.H-34)" = undefined ] && grep -q "^this session runs this repo.s batches: admit H-34 again with --session (node .*intake.mjs admit H-34 --session); nothing is put on needs-you$" <<< "$out" && [ "$(jq ".asks | length" "$T/state/asks.json" 2>/dev/null || echo 0)" = 0 ]'
 out=$(CLAUDE_CODE_SESSION_ID=sess-other admit H-34)
 check "#1359 refused in any other session, the ask is recorded" 'jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-34 in a session\"))" "$T/state/asks.json" >/dev/null'
+check "#1486 AC1 and it names the session whose loop ran the batch, to ask by message to admit it with --session" 'grep -q "^ask session sess-9, whose loop ran this batch.s last pass, by message (ListAgents, then SendMessage) to admit H-34 with node .*intake.mjs admit H-34 --session, which tells it to restart its loop$" <<< "$out"'
 rm -f "$DESK_QUEUE"; rm -rf "$T/state/orchestrators"; rec H-33 A
 out=$(admit H-33 --session); rc=$?
 check "#1331 session-run with no batch at all: nothing admitted, even with --session, and it names /desk-autopilot" '[ $rc -eq 11 ] && [ ! -f "$DESK_QUEUE" ] && grep -qF "not admitted H-33: no supervisor runs this repo'"'"'s batches (config §3b \"Batches run by\" is session) and no batch is set up, so no batch is started for it" <<< "$out"'

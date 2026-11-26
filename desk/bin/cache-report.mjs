@@ -62,13 +62,17 @@ export function requestOf(d) {
   };
 }
 
+// Tokens `r` ({ uncached, w1h, w5m, read, output }) at the prices `p`, in dollars, the cache writes apart.
+export function usdAt(p, r) {
+  const write = (r.w1h * p.write1h + r.w5m * p.write5m) / 1e6;
+  return { write, total: write + (r.uncached * p.input + r.read * p.read + r.output * p.output) / 1e6 };
+}
+
 // A request's API-equivalent dollars, the cache writes apart, or null on a model with no price.
 export function requestUsd(r) {
   const base = MODEL_PRICES[modelFamily(r.model)];
   if (!base) return null;
-  const p = base.over && r.uncached + r.w1h + r.w5m + r.read > base.over.above ? base.over : base;
-  const write = (r.w1h * p.write1h + r.w5m * p.write5m) / 1e6;
-  return { write, total: write + (r.uncached * p.input + r.read * p.read + r.output * p.output) / 1e6 };
+  return usdAt(base.over && r.uncached + r.w1h + r.w5m + r.read > base.over.above ? base.over : base, r);
 }
 
 // Every .jsonl under a folder, subagent transcripts in session folders included.
