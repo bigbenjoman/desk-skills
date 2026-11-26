@@ -291,9 +291,10 @@ export function* decideAdvance(s) {
     'advanced', `${t.key} stopped for a planned reboot (${reboot}): queued to resume in its own session after the restart${stopped}`);
   } else if (built) {
     const checks = built.checks.map((x) => `"${x}"`).join(', ');
+    const review = yield { type: 'pr-verdict', key: t.key, pr: String(built.pr) };
     yield {
       type: 'done', key: t.key, pr: String(built.pr), summary: `parked only on ${checks}, which §4 Check builds clears: recorded done`,
-      line: `PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`,
+      line: `${review ? `${review}; ` : ''}PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`,
       // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
       sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
     };
@@ -302,9 +303,10 @@ export function* decideAdvance(s) {
     // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
     // for the person once the PR merges (needs-you), never a reason to hold it.
     const n = mergeOnly.pr;
+    const review = yield { type: 'pr-verdict', key: t.key, pr: String(n) };
     yield {
       type: 'done', key: t.key, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
-      line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${mergeOnly.grant}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
+      line: `${review ? `${review}; ` : ''}PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${mergeOnly.grant}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
       sets: [parkFollowOn(park, t.follow_on), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     };
     yield* linksOnDone(t, n);
@@ -441,7 +443,7 @@ export function* decideAdvance(s) {
     const held = !t.fix?.finished && ['instruction', 'renames'].includes(t.fix?.kind) ? t.fix.kind : null;
     if (prOpen && !held) {
       const review = yield { type: 'pr-verdict', key: t.key, pr };
-      yield { type: 'done', key: t.key, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify its merge state)${review ? `; ${review}` : ''}`, sets: [] };
+      yield { type: 'done', key: t.key, pr, summary: 'completed without printing a marker', line: `${review ? `${review}; ` : ''}PR #${pr} (no marker printed — PR exists on GitHub; verify its merge state)`, sets: [] };
     } else {
       yield { type: 'decisions', key: t.key, pr: null };
       if (prOpen) {

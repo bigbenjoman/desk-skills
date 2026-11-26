@@ -131,7 +131,7 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const noPr = 'AUTOPILOT_DONE: pr=none jira=none';
   t('issue-1477 a DONE naming no PR reads no verdict', types(advance(snap(ticket('D'), logOf('D', noPr, [said(noPr), RESULT])), { 'pr-verdict': () => { throw new Error('read with no PR'); } })).includes('pr-verdict'), false);
   const ended = snap(ticket('N-2'), logOf('N-2', '', [said('working'), RESULT]));
-  t('issue-1477 a worker that printed no marker has the PR\'s verdict on its line too', advance(ended, { 'open-pr': '31', 'pr-verdict': none }).find((a) => a.type === 'done')?.line, `PR #31 (no marker printed — PR exists on GitHub; verify its merge state); ${none}`);
+  t('issue-1477 a worker that printed no marker has the PR\'s verdict on its line too', advance(ended, { 'open-pr': '31', 'pr-verdict': none }).find((a) => a.type === 'done')?.line, `${none}; PR #31 (no marker printed — PR exists on GitHub; verify its merge state)`);
 }
 
 // A DONE marker naming a PR that is not the worker's own: on another branch, or opened by another

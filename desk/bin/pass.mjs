@@ -318,6 +318,13 @@ const shOut = (cmd, args, { fresh, ...opts } = {}) => {
   try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
+// shOut's output, or a throw naming `what` and the last line it printed. Declared here, before the
+// first phase runs: a phase's handlers run as the module loads.
+const readOrThrow = (what, cmd, args, opts) => {
+  const r = shOut(cmd, args, opts);
+  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
+  return r.out;
+};
 function refusedLine(args, refused, why) {
   const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
   return `${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, ${refused} — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${String(why).split('\n').pop()}`;
@@ -961,6 +968,13 @@ function buildParkOf(t, question) {
 // §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
+// What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
+function prVerdict(pr) {
+  if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
+  try {
+    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
+  } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
+}
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
   try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
@@ -1066,13 +1080,7 @@ const ADVANCE_HANDLERS = {
   'pr-owner': (a) => {
     try { return prOwner(a.pr); } catch { return null; }
   },
-  // What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
-  'pr-verdict': (a) => {
-    if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
-    try {
-      return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${a.pr}`, 'gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
-    } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
-  },
+  'pr-verdict': (a) => prVerdict(a.pr),
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -1304,11 +1312,6 @@ for (const t of Object.values(queue().tickets)) {
 // holds (pass/parks.mjs decideClears). The reads its checks make, cached for the pass:
 const clearsCache = new Map();
 const cached = memo(clearsCache);
-const readOrThrow = (what, cmd, args, opts) => {
-  const r = shOut(cmd, args, opts);
-  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
-  return r.out;
-};
 const clearsRead = {
   pr: (n, repo = GH_REPO) => cached(`pr:${repo}#${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state,isDraft,mergedAt']))),
   // The latest run of each check, as the gate reads them (gate.mjs latestPerCheck).
@@ -1502,6 +1505,7 @@ const CLEARS_HANDLERS = {
     return checkCond(a.cond, { ...clearsRead, push: (p) => pushParked(t, p), file: (f) => existsSync(condPath(f, { worktree: t.worktree, state: STATE })) });
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
+  'pr-verdict': (a) => prVerdict(a.pr),
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
   'other-merged': (a, s) => {
     const t = s.tickets[a.key];

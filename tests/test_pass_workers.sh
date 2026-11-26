@@ -140,7 +140,7 @@ say "AUTOPILOT_STAGE: 9/9 cleanup" "AUTOPILOT_DONE: pr=10 jira=none" > "$T/state
 out=$(node "$B/pass.mjs" 2>&1)
 gone=no; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SPID" 2>/dev/null || { gone=yes; break; }; sleep 0.2; done
 check "a DONE log with a live session records the ticket done" '[ "$(field T-10 state)" = "\"done\"" ] && [ "$(field T-10 result.pr)" = 10 ]'
-check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: review read from the PR: .*; its worker said: pr=10 jira=none (session still live after DONE — stopped pid $SPID)"'
+check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: review read from the PR: [^;]*; its worker said: pr=10 jira=none (session still live after DONE — stopped pid $SPID)" && ! echo "$out" | grep -q "T-10: review read from the PR: unread ("'
 kill "$SPID" 2>/dev/null
 
 # P-1: a live worker that opens its draft PR at Stage 7 and carries on. The stub gh has it open.
@@ -867,15 +867,15 @@ printf '#!/bin/sh\ncase "$*" in *"--head fix/Y-"[678]*) echo 88 ;; esac\n' > "$T
 killed Y-7 sess-y7
 killed Y-8 sess-y8; result_event >> "$T/state-k/logs/Y-8.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
-check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
+check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: .*PR #88"'
+check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: review read from the PR: .*; PR #88 (no marker printed"'
 q set Y-7 state=done
 # The same exits on the person's instruction: an open PR does not show it was carried out, and a ticket
 # recorded done has its fix closed in that pass, which frees the merge.
 instruction_fix='fix={"try":1,"of":1,"kind":"instruction","pr":88,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
 killed Y-61 sess-y61; q set Y-61 "$instruction_fix"; result_event >> "$T/state-k/logs/Y-61.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: PR #88 (no marker printed"'
+check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: .*PR #88 (no marker printed"'
 q requeue Y-61
 check "DS-501 a requeue of that park keeps the instruction for its next worker" '[ "$(field Y-61 state)" = "\"triaged\"" ] && [ "$(field Y-61 fix.answer)" = "\"rename it\"" ] && [ "$(field Y-61 fix.finished)" = null ]'
 q set Y-61 state=done
@@ -886,11 +886,11 @@ q set Y-62 state=done
 # DS-493: a migration rename try holds the merge the same way, and done would spend its one try.
 killed Y-64 sess-y64; q set Y-64 'fix={"try":1,"of":2,"extra":true,"kind":"renames","pr":88,"head":null,"renames":[{"old":"0007_a.sql","new":"0008_a.sql","to":"main","files":["src/x.ts"]}]}'; result_event >> "$T/state-k/logs/Y-64.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-493 a worker on a rename try that ended with no marker parks, its fix left open" '[ "$(field Y-64 state)" = "\"parked\"" ] && [ "$(field Y-64 fix.finished)" = null ] && [ "$(field Y-64 result)" = null ] && field Y-64 park.question | grep -q "the migrations PR #88 names may not be updated to their base.s new names (0007_a.sql → 0008_a.sql)" && ! echo "$out" | grep -q "Y-64: PR #88 (no marker printed"'
+check "DS-493 a worker on a rename try that ended with no marker parks, its fix left open" '[ "$(field Y-64 state)" = "\"parked\"" ] && [ "$(field Y-64 fix.finished)" = null ] && [ "$(field Y-64 result)" = null ] && field Y-64 park.question | grep -q "the migrations PR #88 names may not be updated to their base.s new names (0007_a.sql → 0008_a.sql)" && ! echo "$out" | grep -q "Y-64: .*PR #88 (no marker printed"'
 q set Y-64 state=done
 killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
+check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: .*PR #88 (no marker printed"'
 probe_says limited $(( $(date +%s) + 3600 ))
 killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)
