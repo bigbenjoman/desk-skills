@@ -139,7 +139,7 @@ import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } fr
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
-import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
+import { addPutOff, clearPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
 import { followKind, checkOf, settled, broken, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS, FOLLOW_BROKEN_RETRY_MS } from './follow-steps.mjs';
@@ -2671,20 +2671,33 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
-      if (item.elsewhere) return elsewhereDone(item.elsewhere);
-      if (x.t.park?.session_step) {
-        const d = queueCmd(r, ['step-done', ticket]);
-        return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
-      }
-      if (x.pr || heldDraft(x.t)) return prDone();
-      if (item.kind === 'session') return sessionDone();
-      if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
-      if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
-      if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
-      if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
-      return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
+      // Done on a row put off with not-now is answered as the listed row's is, and then it leaves Put
+      // off: a batch-wide hold, no ticket of the queue, is dismissed as a drop dismisses one; a ticket
+      // row, which the queue shows until a pass moves it on, is no longer put off.
+      const j = judged(r, x, readRegister(r.stateDir)), key = putOffKey(r, x.t, j.item);
+      const wasOff = j.l.status === 'put_off';
+      const out = rowDone();
+      if (!out.ok || !wasOff) return out;
+      if (!r.q.tickets?.[x.t.key]) return { ...out, line: `${out.line} It leaves Put off (${dismissPutOff({ r, t: x.t, putOffKey: key, putOffDir: r.stateDir }, now)}).` };
+      const c = clearPutOff(key.question, r.stateDir, new Date(now).toISOString());
+      return { ...out, line: `${out.line} ${c.ok ? `It is no longer put off (${notNowPath(r.stateDir)}).` : `It is still put off: ${c.why}.`}` };
     }
     default: return say(false, `unknown action ${verb}.`);
+  }
+  // Done on the row as it is listed: { ok, line, message }.
+  function rowDone() {
+    if (item.elsewhere) return elsewhereDone(item.elsewhere);
+    if (x.t.park?.session_step) {
+      const d = queueCmd(r, ['step-done', ticket]);
+      return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
+    }
+    if (x.pr || heldDraft(x.t)) return prDone();
+    if (item.kind === 'session') return sessionDone();
+    if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
+    if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
+    if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
+    if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
+    return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
   }
 }
 
