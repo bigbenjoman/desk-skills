@@ -718,7 +718,7 @@ test('read-cache: an entry set with its own ttl outlives the cache\'s, and one w
     assert.equal(ranWork('pytest: 12 passed'), 'ran');
     assert.equal(ranWork(null), 'ran');
   });
-  test('#1532 failingFiles names the test files on a log\'s FAIL lines only', () => {
+  test('#1532 failingFiles names the test files on a log\'s failing-file lines only', () => {
     assert.deepEqual(failingFiles('PASS a.spec.ts\n\x1b[31mFAIL\x1b[0m src/inngest-function-guards.spec.ts\n FAIL b.test.tsx > x'), ['inngest-function-guards.spec.ts', 'b.test.tsx']);
     assert.deepEqual(failingFiles(null), []);
   });
