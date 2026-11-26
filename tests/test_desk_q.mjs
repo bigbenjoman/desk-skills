@@ -391,7 +391,10 @@ await A.press(DOWN);
 await A.press('\r');
 t('AC2 Enter on voicepa opens its queue', A.crumbs(), 'desk-q › voicepa');
 t('AC12 no row on an 80-column repo screen is wider than 80', A.frame().filter((l) => l.length > 80).length, 0);
+// At 80 columns a Queue row is narrower than every column, so it has no TITLE; at 120 it has one.
+A.output.columns = 120; A.output.resize();
 t('AC13 a title that does not fit ends in an ellipsis', /VPL-4 .*…$/.test(A.frame().find((l) => /VPL-4/.test(l)) ?? ''), true);
+A.output.columns = 80; A.output.resize();
 // Grouped: Running VPL-1 and VPL-2, Ready VPL-4, Waiting VPL-3.
 await A.press(DOWN); await A.press(DOWN); await A.press(DOWN); await A.press('\r');
 t('AC3 down to the Waiting ticket and Enter opens it', A.crumbs(), 'desk-q › voicepa › VPL-3');
