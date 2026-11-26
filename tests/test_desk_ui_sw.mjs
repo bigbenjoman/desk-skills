@@ -39,20 +39,38 @@ async function network(request) {
   return new Response(body, { status });
 }
 
-// ---- the service worker
-const on = {};
-const sw = { location: new URL(`${ORIGIN}/sw.js`), addEventListener: (type, f) => { on[type] = f; }, skipWaiting: async () => {}, clients: { claim: async () => {} } };
-runInNewContext(readFileSync(join(UI, 'public', 'sw.js'), 'utf8'), { self: sw, caches, fetch: network, URL });
-t('the worker takes over at once', [typeof on.install, typeof on.activate, typeof on.fetch], ['function', 'function', 'function']);
-// A load through the worker: its answer, or 'network' when it leaves the request to the browser.
-async function load(path, { mode = 'cors', method = 'GET', origin = ORIGIN } = {}) {
-  let answer = null;
-  on.fetch({ request: { url: `${origin}${path}`, method, mode }, respondWith: (p) => { answer = p; } });
-  if (!answer) return 'network';
-  try { const r = await answer; return [r.status, await r.text()]; } catch (e) { return `failed: ${e.message}`; }
+// ---- the service worker, its handlers by event type, over a Cache Storage of its own
+function worker(store) {
+  const on = {};
+  const sw = { location: new URL(`${ORIGIN}/sw.js`), addEventListener: (type, f) => { on[type] = f; }, skipWaiting: async () => {}, clients: { claim: async () => {} } };
+  runInNewContext(readFileSync(join(UI, 'public', 'sw.js'), 'utf8'), { self: sw, caches: store, fetch: network, URL });
+  // A load through the worker: its answer, or 'network' when it leaves the request to the browser.
+  async function load(path, { mode = 'cors', method = 'GET', origin = ORIGIN } = {}) {
+    let answer = null;
+    on.fetch({ request: { url: `${origin}${path}`, method, mode }, respondWith: (p) => { answer = p; } });
+    if (!answer) return 'network';
+    try { const r = await answer; return [r.status, await r.text()]; } catch (e) { return `failed: ${e.message}`; }
+  }
+  // The page's message, settled as the worker's waitUntil would hold it.
+  async function message(data) { let held = null; on.message({ data, waitUntil: (p) => { held = p; } }); await held; }
+  return { on, load, message, page: () => load('/', { mode: 'navigate' }), kept: () => [...(store.named.get(CACHE)?.kept.keys() ?? [])].sort() };
 }
-const page = () => load('/', { mode: 'navigate' });
-const kept = () => [...(caches.named.get(CACHE)?.kept.keys() ?? [])].sort();
+
+// ---- AC4 from the very first load: its files were fetched before the worker existed
+const fresh = worker(cacheStorage());
+t('the first load has nothing kept yet', fresh.kept(), []);
+await fresh.message({ keep: ['/', `${ORIGIN}/assets/app-1.js`, `${ORIGIN}${SNAPSHOT}`, 'https://github.com/x.js', `${ORIGIN}/assets/gone.js`, 7] });
+t('the page hands over what it loaded: the app\'s own files are kept, not /api, another origin or a refusal', fresh.kept(), ['/', '/assets/app-1.js']);
+server.up = false;
+t('AC4 after one load, a reload with the server stopped loads the app', [await fresh.page(), await fresh.load('/assets/app-1.js')], [[200, 'build one'], [200, 'one()']]);
+await fresh.message({ keep: ['/assets/app-1.js'] });
+t('a file it cannot reach now leaves the copy it has', fresh.kept(), ['/', '/assets/app-1.js']);
+server.up = true;
+await fresh.message({ nothing: true });
+t('a message with no list keeps nothing new', fresh.kept(), ['/', '/assets/app-1.js']);
+
+const { on, load, page, kept } = worker(caches);
+t('the worker takes over at once', [typeof on.install, typeof on.activate, typeof on.fetch, typeof on.message], ['function', 'function', 'function', 'function']);
 
 t('the window loads the app from the server', [await page(), await load('/assets/app-1.js')], [[200, 'build one'], [200, 'one()']]);
 t('it keeps the page and its files', kept(), ['/', '/assets/app-1.js']);
