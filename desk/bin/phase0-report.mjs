@@ -350,6 +350,8 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
       preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
       starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
+      // The handoffs that started a fresh session, as the pass counted them (pass.mjs handedOff).
+      handoffs: Number(t.handoffs) || 0,
       review_rounds: x.reviewRounds, codex_calls: x.codexCalls, codex_dead: x.codexDead, wait_calls: x.waitCalls, denials: Object.values(x.denials).reduce((n, v) => n + v, 0), denials_by_command: x.denials,
       ci_reds: ciRuns ? reds.length : null, ci_reds_by_job: ciRuns ? ciCounts(reds) : null,
       desk_commits: [...new Set(starts.map((s) => s.desk_commit).filter(Boolean))],

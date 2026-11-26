@@ -726,7 +726,7 @@ function refuseUnnamedLease(t, question) {
   return true;
 }
 
-// A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
+// A session that handed off (AUTOPILOT_HANDOFF: <stage>) is queued to start that stage in a fresh
 // session, ahead of new tickets, in the same worktree and on the same branch (spawnHandoff below). A
 // stage no session starts at, a worktree or branch that is gone, or a handoff briefing that is missing
 // or names no criteria parks it, naming which, and spawns nothing. One that is not JSON is kept aside
@@ -755,18 +755,32 @@ function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
   if (isSpine(t)) parkSpine(t, pr);
   else if (ownsSpecs(t)) checkOwned(t, pr);
 }
+// Mid-stage handoffs in a row at one stage before the ticket parks (handedOff).
+const MID_STAGE_REPEATS = 2;
 function handedOff(t, said, { log, h, imgs, stopped }) {
   logDecisions(t, log, null);
   const stage = handoffStage(said);
   const parkIt = (why) => { q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
-  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${HANDOFF_ORDER.join(' or ')}), so no session was spawned. ${FROM_ZERO(t)}`);
+  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${HANDOFF_ORDER.join(', ')}), so no session was spawned. ${FROM_ZERO(t)}`);
   const refused = handoffRefusal(t, stage);
   if (refused) return parkIt(refused);
+  // A handoff partway through a stage, on context (hooks/desk-handoff.py): one at the stage the last
+  // one was also mid-way through counts as a repeat, and the third in a row parks, so a stage whose
+  // own start fills the context past the threshold cannot hand off for ever.
+  const mid = readHandoff(STATE, t.key).data?.midStage ?? null;
+  const repeats = mid && t.handoff_mid != null && String(t.handoff_mid) === stage ? (Number(t.handoff_repeats) || 0) + 1 : 0;
+  if (repeats >= MID_STAGE_REPEATS) {
+    q('set', t.key, 'handoff_mid=null', 'handoff_repeats=null');
+    return parkIt(`handed off partway through Stage ${stage} ${repeats + 1} times in a row on context (${mid.context}% used; handoff-threshold ${mid.threshold}), so no session was spawned: its sessions leave Stage ${stage} no further. ${FROM_ZERO(t)}`);
+  }
   // The session's cost so far, added to the ticket's when its last session finishes.
   const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
-  q('set', t.key, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`,
+  q('set', t.key, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`, `handoff_mid=${mid ? stage : 'null'}`, `handoff_repeats=${mid ? repeats : 'null'}`,
+    `handoffs=${(Number(t.handoffs) || 0) + 1}`,
     ...(cost ? [`handoff_cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`] : []), ...(imgs ? [`images_dir=${imgs}`] : []));
-  report.advanced.push(`${t.key} handed off at the end of Stage ${HANDOFF_STAGES[stage]}: queued for a fresh session from Stage ${stage}${stopped}`);
+  report.advanced.push(mid
+    ? `${t.key} handed off partway through Stage ${stage} on context (${mid.context}% used; handoff-threshold ${mid.threshold}): queued for a fresh session from Stage ${stage}${stopped}`
+    : `${t.key} handed off at the end of Stage ${HANDOFF_STAGES[stage]}: queued for a fresh session from Stage ${stage}${stopped}`);
   return undefined;
 }
 
@@ -3297,7 +3311,9 @@ async function resumeKilled(t) {
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...budgetEnv, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    // A fix try resumed is still a task worker, which never hands off (spawn-worker.sh's DESK_HANDOFF_FILE).
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...budgetEnv, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}),
+      ...(t.fix && !t.fix.finished ? { AUTOPILOT_NO_HANDOFF: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
@@ -3637,7 +3653,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   const logBytes = logPreflight(key, pre.cost);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, AUTOPILOT_NO_HANDOFF: '1' },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
@@ -4089,7 +4105,7 @@ for (const t of spawnable) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null',
+    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'images_dir=null',
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.

@@ -165,6 +165,13 @@ parked or failed starts again at the stage that handoff named (`queue.mjs set <T
 handoff_stage=null` first starts it from Stage 0); one that finished, and is sent back for rework,
 starts from Stage 0.
 
+**A worker also hands off partway through a stage on context.** From Stage 3 on, once a worker's
+context passes its threshold (the ticket's `handoff-threshold` value, else config §2's Handoff at
+context % rows), `hooks/desk-handoff.py` has it commit, write a briefing with what is left of the
+stage, and print `AUTOPILOT_HANDOFF: <that stage>`. The next pass starts a fresh session at that
+same stage (`handed off partway through Stage 5 on context (31% used; handoff-threshold 30)`). The
+third such handoff in a row at one stage parks the ticket instead, naming the stage.
+
 **A requeue after a park at Stage 3 or later resumes that round.** When a worker parks, the pass
 records the stage it reached and its question on the ticket (`last_round`). The fresh spawn after a
 requeue starts at that stage, with a summary of the round in its briefing: the stage, the park

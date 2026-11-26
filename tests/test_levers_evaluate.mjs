@@ -15,7 +15,7 @@ for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) del
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });
 
-const { evaluate, evaluateDue, decide } = await import('../desk/bin/levers-evaluate.mjs');
+const { evaluate, evaluateDue, decide, handoffReport } = await import('../desk/bin/levers-evaluate.mjs');
 const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
 const { assignPin } = await import('../desk/bin/levers-auto.mjs');
 const { reasonWording, DECISION_RULE } = await import('../desk/bin/lever-registry.mjs');
@@ -105,7 +105,7 @@ t('AC14 the evidence file holds every row the evaluation read, with the excluded
 t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
 t('AC14 the transition cites the same evaluation and file', [e.eval_id, e.evidence_file, e.evidence_sha256], [a1.eval_id, a1.evidence_file, a1.evidence_sha256]);
 const a1all = evalsOf(A1);
-t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
+t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
 t('AC13 a quality-risk lever with no state recorded is on trial and weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample']]);
 const pre = a1all.find((x) => x.lever === 'preflight');
 t('AC13 a hold carries its reason code and what would change it next', [pre.decision, pre.reason_code, pre.next.needs], ['hold', 'below_min_sample', '30 more tickets in the smaller arm']);
@@ -314,7 +314,7 @@ t('AC15 the first of four passes evaluates; the rest find today done', passes, [
 const pooled = jsonl(join(T, 'home', '.desk-autopilot', 'levers', 'pooled-evals.jsonl'));
 t('AC15 the pooled estimates are written once that day, across the four repos', [pooled.filter((p) => p.lever === 'wrappers').length, pooled.find((p) => p.lever === 'wrappers')?.n, pooled.find((p) => p.lever === null)?.repos.length], [1, { on: 32, off: 32 }, 4]);
 t('AC15 every repo got its rows from that one run', ['one', 'two', 'three', 'four'].map((n) => evalsOf(`acme__${n}`).filter((x) => x.lever === 'wrappers').length), [1, 1, 1, 1]);
-t('AC15 its line names what it did', /^levers evaluate: 36 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
+t('AC15 its line names what it did', /^levers evaluate: 40 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
 t('AC15 the next day it runs again', evaluateDue({ now: NOW + DAY, configRoot, tz: 'UTC', rowsFor }).status, 'ran');
 
 // ---- review findings: each guarded -------------------------------------------------------------------------------------------------------------------
@@ -787,6 +787,23 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('question handling: a step read incomplete leaves the ticket out of that step and the dollars, never as 0', [r3.tickets, r3.steps.raise.tickets, r3.steps.act.tickets, r3.steps.raise.usd_per_ticket], [30, 25, 30, 0.4104]);
   t('question handling: and the mechanism weighs only the tickets whose asks cost is whole', Math.round(qhRow(QA3).values['one-at-a-time'].mechanism.est * 100), -50);
   t('question handling: only those count toward the sample, so 25 priced of 30 asking tickets is below the minimum', [qhRow(QA3).values['one-at-a-time'].n.off, qhRow(QA3).values['one-at-a-time'].decision, qhRow(QA3).values['one-at-a-time'].reason_code], [25, 'hold', 'below_min_sample']);
+}
+
+// ---- DS-1037 AC5: the handoff threshold's per-value report on its evaluation line ----------------------
+{
+  const HT = 'handoff-threshold';
+  const hrow = (slug, v, cost, handoffs) => row(slug, v, null, { cost, handoffs, pin: { set: v === 'config' ? [] : [HT], arms: { [HT]: v }, trial_ids: { [HT]: `${slug}/${HT}/initial` }, fp: null } });
+  const HS = 'acme__ht-report';
+  const rows = ['config', '20', '30', '45'].flatMap((v, k) => Array.from({ length: 4 }, (_, i) => hrow(HS, v, 10 - k + (i % 2) * 0.5, k + (i % 2))));
+  run([repo(HS, rows)]);
+  const line = evalsOf(HS).filter((e) => e.lever === HT).at(-1);
+  const rep = line?.handoff_report ?? {};
+  t('AC5 the handoff threshold\'s evaluation line carries a report keyed by value', Object.keys(rep), ['20', '30', '45', 'config']);
+  t('AC5 each value: its tickets, dollars per ticket and handoffs per ticket', [rep.config?.tickets, rep.config?.usd_per_ticket, rep.config?.handoffs_per_ticket, rep['45']?.usd_per_ticket, rep['45']?.handoffs_per_ticket], [4, 10.25, 0.5, 7.25, 3.5]);
+  t('no other lever\'s line carries one', evalsOf(HS).filter((e) => e.lever !== HT && e.handoff_report).length, 0);
+  // In a holdback the arms are adopted and holdback: read as the adopted value and the baseline.
+  const held = handoffReport([{ lever: HT, cost: 6, handoffs: 2, pin: { arms: { [HT]: 'adopted' } } }, { lever: HT, cost: 8, handoffs: 1, pin: { arms: { [HT]: 'holdback' } } }], '30', 'config');
+  t('in a holdback, the report is keyed by the adopted value and the baseline, not on and off', JSON.stringify(held), JSON.stringify({ 30: { tickets: 1, usd_per_ticket: 6, handoffs_per_ticket: 2 }, config: { tickets: 1, usd_per_ticket: 8, handoffs_per_ticket: 1 } }));
 }
 
 rmSync(T, { recursive: true, force: true });

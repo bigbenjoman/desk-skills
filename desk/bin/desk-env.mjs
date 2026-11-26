@@ -1029,7 +1029,7 @@ export const leverOn = (name, l = levers()) => l.on.includes(name);
 // The arm a lever with more than two arms runs on for this worker: its value in DESK_LEVER_VALUES
 // (`<lever>=<value>`, space-separated), which spawn-worker.sh exports from the ticket's pin; null
 // where it carries none for `name`.
-function leverValue(name, env = process.env) {
+export function leverValue(name, env = process.env) {
   for (const w of String(env.DESK_LEVER_VALUES ?? '').split(/\s+/)) {
     const i = w.indexOf('=');
     if (i > 0 && w.slice(0, i) === name && w.length > i + 1) return w.slice(i + 1);

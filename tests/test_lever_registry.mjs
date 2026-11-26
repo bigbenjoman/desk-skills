@@ -13,7 +13,7 @@ const without = (name, drop) => ({ ...ENTRIES, [name]: drop({ ...ENTRIES[name], 
 
 // AC1: all seven, in their layers, and the same names desk-env levers parses.
 const byLayer = (layer) => Object.values(REGISTRY).filter((l) => l.layer === layer).map((l) => l.name).sort().join(' ');
-t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class ledger ledger-record memory preflight question-handling wrappers');
+t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class handoff-threshold ledger ledger-record memory preflight question-handling wrappers');
 t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort finder-model review-reuse');
 const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex'));
 t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
@@ -22,6 +22,10 @@ t('AC1 the quality-risk layer is trialled (DS-646)', Object.values(REGISTRY).fil
 t('AC1 the low-risk layer is trialled, but the ledger levers', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk' && !['ledger', 'ledger-record'].includes(l.name)).every((l) => l.trialled === true), true);
 t('AC1 the ledger is declared but not trialled (DS-893)', REGISTRY.ledger.trialled, false);
 t('the ledger-record lever is declared but not trialled', REGISTRY['ledger-record'].trialled, false);
+const ht = REGISTRY['handoff-threshold'];
+t('DS-1037 handoff-threshold is a low-risk lever of four values on trial, config the baseline', `${ht.layer} ${isValued(ht)} ${ht.values.join(',')} ${ht.baseline} ${ht.trialled}`, 'low-risk true config,20,30,45 config true');
+t('DS-1037 it is weighed on dollars per ticket, and covers the handoff hook and handoff.mjs', `${ht.mechanism.metric} | ${ht.code.map((c) => c.path).join(' ')}`, 'dollars per ticket | hooks/desk-handoff.py desk/bin/handoff.mjs');
+t('DS-1037 it needs local workers', `${preconditions('handoff-threshold', { 'worker-location': 'local' }).eligible} ${preconditions('handoff-threshold', { 'worker-location': 'cloud' }).eligible}`, 'true false');
 t('AC1 the loaded registry is frozen', Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY.preflight) && Object.isFrozen(REGISTRY.preflight.code), true);
 
 // AC2: a name in a repo's levers row that the registry does not declare is refused, by name.
