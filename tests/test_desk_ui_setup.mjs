@@ -1,5 +1,5 @@
 // suite: desk-ui first run (GET /api/setup and the Terminal opener, POST /api/terminal)
-// layer: L2
+// layer: L1
 // covers: desk/bin/desk-ui.mjs
 // The server on a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT and a free port, with a stub in place
 // of osascript, so no Terminal opens and nothing touches your real ~/.claude, ~/.config/desk or ~/studia.
