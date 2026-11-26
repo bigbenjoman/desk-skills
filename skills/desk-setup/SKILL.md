@@ -199,6 +199,10 @@ location: a path only, never the token.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
+- An `UNBOUND` line from `desk-env drift` names a §4 Unit tests or Typecheck item that starts Jest
+  with no worker cap or `turbo run` with no `--concurrency`, so one locked run can take the whole
+  machine. Offer the bounded form it prints in its place, whether or not the user asked to change the
+  row.
 - A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
   step 1's *Dev server* proposes it, whether or not the user asked to change the row. Each app a
   §4 Dev server item names with no §4 Test sign-in item (`desk-env drift --app <dir>` prints

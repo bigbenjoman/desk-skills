@@ -68,7 +68,8 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 Then run `desk-env drift` on the file just written. Any `UNLISTED` line blocks: that §4 command item
 can never be allow-listed for a worker, so fix the row with the user (one plain command, or a repo
 script run as `bash <path>.sh`; a §4 Local services item starts with its compose service name) and
-write it again before going on. A `NODEV` line is offered as a
+write it again before going on. An `UNBOUND` line is offered as the bounded form it prints, in
+place of that §4 Unit tests or Typecheck item. A `NODEV` line is offered as a
 §4 Dev server item for its directory (step 1, *Dev server*), and each app a Dev server item names
 is asked for its §4 Test sign-in item where it has none (step 1, *Test sign-in*).
 
