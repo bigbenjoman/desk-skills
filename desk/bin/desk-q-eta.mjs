@@ -155,7 +155,8 @@ export function recordMerge({ state, queue, key, mergedPrs, now = Date.now() }) 
 //
 // The first date the forecast gave each ticket, kept so a ship date can be checked against what
 // happened: <state>/eta.jsonl gains {key, at, starts, ships, could_run_to} the first time a ticket is
-// dated (with shift_h and stretch, the calibration applied to it, once there is one), then
+// dated (with the model that made it, and shift_h and stretch, the calibration applied to it, once
+// there is one), then
 // {key, merged_at} when it merges. Appended only, and the first line of each kind per key
 // wins, so a later forecast never overwrites an estimate and two writers racing count once.
 
@@ -163,6 +164,9 @@ export const ESTIMATES_FILE = 'eta.jsonl';
 // The hit rate reads the last HIT_LAST merged estimates, and needs MIN_HITS before it gives one.
 export const HIT_LAST = 40;
 export const MIN_HITS = 10;
+// The forecast model an estimate came from: calibration fits only this one's, as one made before the
+// outside review was drawn apart ran a day early for reasons this model already corrects.
+export const ESTIMATE_MODEL = 2;
 
 export const estimatesPath = (state) => join(state, ESTIMATES_FILE);
 
@@ -177,7 +181,7 @@ export function readEstimates(state) {
     if (!d?.key) continue;
     if (d.could_run_to != null) {
       if (!est.has(d.key)) est.set(d.key, { key: d.key, at: d.at, starts: d.starts, ships: d.ships, could_run_to: d.could_run_to,
-        ...(d.shift_h != null ? { shift_h: d.shift_h } : {}), ...(d.stretch != null ? { stretch: d.stretch } : {}) });
+        ...(d.model != null ? { model: d.model } : {}), ...(d.shift_h != null ? { shift_h: d.shift_h } : {}), ...(d.stretch != null ? { stretch: d.stretch } : {}) });
     }
     else if (d.merged_at != null && !merges.has(d.key)) merges.set(d.key, d.merged_at);
   }
@@ -190,7 +194,7 @@ export function saveEstimates(state, T, now) {
   const have = readEstimates(state);
   const iso = (t) => new Date(t).toISOString();
   const lines = Object.entries(T ?? {}).filter(([k, e]) => e && !have.has(k))
-    .map(([key, e]) => ({ key, at: iso(now), starts: iso(e.start), ships: iso(e.likely), could_run_to: iso(e.late),
+    .map(([key, e]) => ({ key, at: iso(now), starts: iso(e.start), ships: iso(e.likely), could_run_to: iso(e.late), model: ESTIMATE_MODEL,
       ...(e.stretch != null ? { shift_h: Math.round((e.shift / HOUR) * 100) / 100, stretch: e.stretch } : {}) }));
   append(estimatesPath(state), lines);
   return lines;
@@ -225,15 +229,15 @@ export function hitRate(est) {
 
 // The forecast corrects itself from the last CALIBRATE_LAST merged estimates: ships moves by their
 // median error, and the span from ships to could-run-to stretches until RANGE_HOLDS of them merged
-// inside it. Each estimate's own calibration (shift_h, stretch) is taken off first, so the fit is
-// always of the uncorrected forecast.
+// inside it. Only estimates this ESTIMATE_MODEL made count, and each one's own calibration (shift_h,
+// stretch) is taken off first, so the fit is always of the uncorrected forecast.
 export const CALIBRATE_LAST = 10;
 export const RANGE_HOLDS = 0.8;
 export const MAX_STRETCH = 10;
 // -> {n, shift (ms), stretch, holds (% of the n inside the calibrated range)}, or null with fewer than
-// CALIBRATE_LAST merged.
+// CALIBRATE_LAST of them merged.
 export function calibration(est) {
-  const last = scored(est).slice(-CALIBRATE_LAST);
+  const last = scored(est).filter((e) => e.model === ESTIMATE_MODEL).slice(-CALIBRATE_LAST);
   if (last.length < CALIBRATE_LAST) return null;
   const raw = last.map((e) => {
     const ships = Date.parse(e.ships) - (Number(e.shift_h) || 0) * HOUR;

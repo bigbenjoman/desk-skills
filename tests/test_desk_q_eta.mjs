@@ -301,7 +301,7 @@ t('DS-161 AC12: c again takes the dates away', note().endsWith(UNDATED) && /no d
 ui.finish(0);
 
 // ==== DS-162: each ticket's first estimate, kept beside its merge, and how often it held.
-const { readEstimates } = await import('../desk/bin/desk-q-eta.mjs');
+const { readEstimates, ESTIMATE_MODEL } = await import('../desk/bin/desk-q-eta.mjs');
 const stateOf = (name) => join(zenv.HOME, '.desk-autopilot', `acme__${name}`);
 const repoAt = (name, now = FIXED) => Q.loadRepos(now).find((r) => r.name === name);
 const iso = (ms) => new Date(ms).toISOString();
@@ -314,8 +314,8 @@ repo('gamma', 3600, {
 });
 const gF = Q.forecastOf(repoAt('gamma'), { now: FIXED });
 const g1 = readEstimates(stateOf('gamma')).get('G-1');
-t('DS-162 AC1: the first forecast saves its starts, ships and could-run-to times', g1 && [g1.at, g1.starts, g1.ships, g1.could_run_to],
-  [iso(FIXED), iso(gF.T['G-1'].start), iso(gF.T['G-1'].likely), iso(gF.T['G-1'].late)]);
+t('DS-162 AC1: the first forecast saves its starts, ships and could-run-to times, and the model that made them', g1 && [g1.at, g1.starts, g1.ships, g1.could_run_to, g1.model],
+  [iso(FIXED), iso(gF.T['G-1'].start), iso(gF.T['G-1'].likely), iso(gF.T['G-1'].late), ESTIMATE_MODEL]);
 const gFile = () => readFileSync(join(stateOf('gamma'), 'eta.jsonl'), 'utf8');
 const gBefore = gFile();
 const gLater = Q.forecastOf(repoAt('gamma', FIXED + 10 * MIN), { now: FIXED + 10 * MIN });
@@ -336,7 +336,7 @@ t('DS-162 AC2: a second merged call keeps the first merge time', readEstimates(s
 // Saved estimates, oldest merge first: [shipped before could-run-to?] per ticket.
 const saved = (name, hits) => writeFileSync(join(stateOf(name), 'eta.jsonl'), hits.flatMap((hit, i) => {
   const merged = FIXED - (hits.length - i) * HOUR;
-  return [{ key: `E-${i}`, at: iso(merged - 5 * HOUR), starts: iso(merged - 5 * HOUR), ships: iso(merged - HOUR), could_run_to: iso(merged + (hit ? HOUR : -HOUR / 2)) },
+  return [{ key: `E-${i}`, at: iso(merged - 5 * HOUR), starts: iso(merged - 5 * HOUR), ships: iso(merged - HOUR), could_run_to: iso(merged + (hit ? HOUR : -HOUR / 2)), model: ESTIMATE_MODEL },
     { key: `E-${i}`, merged_at: iso(merged) }];
 }).map((l) => `${JSON.stringify(l)}\n`).join(''));
 
@@ -810,11 +810,11 @@ t('#1487 AC7: with one size alone there is no ratio, and the pool says its borro
 
 // ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
 // Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.
-const scoredOf = (lates, span = 1, applied = null) => new Map(lates.map((late, i) => {
+const scoredOf = (lates, span = 1, applied = null, model = E.ESTIMATE_MODEL) => new Map(lates.map((late, i) => {
   const merged = FIXED - (lates.length - i) * HOUR, ships = merged - late * HOUR;
   const at = applied ? { ships: iso(ships + applied.shift_h * HOUR), could_run_to: iso(ships + applied.shift_h * HOUR + span * applied.stretch * HOUR), ...applied }
     : { ships: iso(ships), could_run_to: iso(ships + span * HOUR) };
-  return [`C-${i}`, { key: `C-${i}`, at: iso(merged - 9 * HOUR), starts: iso(merged - 9 * HOUR), ...at, merged_at: iso(merged) }];
+  return [`C-${i}`, { key: `C-${i}`, at: iso(merged - 9 * HOUR), starts: iso(merged - 9 * HOUR), ...at, ...(model == null ? {} : { model }), merged_at: iso(merged) }];
 }));
 const errs = E.hitRate(scoredOf([-6, -4, 1, 2, 3, 5, 7, 8, 9, 10]));
 t('#1487 AC4: the median signed and absolute error, in hours, beside the hit rate', [errs.signed, errs.abs, errs.pct], [4, 5.5, 20]);
@@ -823,6 +823,9 @@ const cal = E.calibration(scoredOf(lates));
 t('#1487 AC6: ships moves by the median error, and the range stretches until 8 of the 10 merged inside it', cal, { n: 10, shift: 5.5 * HOUR, stretch: 2.5, holds: 80 });
 t('#1487 AC6: an estimate\'s own calibration is taken off before fitting', E.calibration(scoredOf(lates, 1, { shift_h: 2, stretch: 2 })), cal);
 t('#1487 AC6: fewer than 10 merged estimates give no calibration', E.calibration(scoredOf(lates.slice(1))), null);
+const mixedModels = new Map([...scoredOf(lates, 1, null, null)].map(([k, e]) => [`old-${k}`, { ...e, merged_at: iso(Date.parse(e.merged_at) - 20 * HOUR) }]).concat([...scoredOf(lates.slice(1))]));
+t('#1487 AC6: estimates an older forecast model made are not fitted, though the hit rate still counts them',
+  [E.calibration(scoredOf(lates, 1, null, null)), E.calibration(mixedModels), E.hitRate(mixedModels).n], [null, null, 19]);
 t('#1487 AC6: an early correction never takes more than half the time left',
   E.calibrated({ start: FIXED, likely: FIXED + 4 * HOUR, late: FIXED + 6 * HOUR }, { shift: -10 * HOUR, stretch: 1 }, FIXED), { start: FIXED, likely: FIXED + 2 * HOUR, late: FIXED + 4 * HOUR, shift: -2 * HOUR, stretch: 1 });
 const shifted = E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted, calib: cal });
