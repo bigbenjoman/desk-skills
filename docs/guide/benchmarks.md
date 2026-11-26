@@ -46,7 +46,10 @@ node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<e
   [--plans <file>] [--providers <file>]
 ```
 
-Keep the task set outside this repo. Its paths are relative to the file:
+Keep the task set outside this repo, under `~/.config/desk/bench/`, which `desk-disk` and
+`desk-cleanup` never remove. The frozen desk-skills set (the DS-535 PRs) is kept at
+`~/.config/desk/bench/ds-535/`, as `tasks.json` with its hidden tests beside it. Its paths are
+relative to the file:
 
 ```json
 {"tasks": [{"id": "ds-123", "repo": "owner/name", "base": "<full SHA>", "prompt": "<ticket text>",
