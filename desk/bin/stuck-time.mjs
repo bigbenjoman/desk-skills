@@ -201,30 +201,39 @@ const weekName = (start) => {
   return `${y}-W${String(Math.floor((thu - Date.UTC(y, 0, 1)) / WEEK_MS) + 1).padStart(2, '0')}`;
 };
 
-// Repo state `state`'s time stuck in the ISO week `weeksAgo` before the one holding `now`: the hours
-// (each ticket's overlapping causes and batches counted once), the tickets affected, and each cause with its
-// hours, tickets and tracking issue, most hours first (`live` as counted takes it):
-//   { week, from, to, hours, tickets, causes: [{ cause, hours, tickets, link: { ref, url } | null }] }
+// A deliberate hold (`park: hold`, with or without its class) rather than a stall someone can act on.
+export const isHold = (cause) => cause === parkCause('hold') || String(cause).startsWith(`${parkCause('hold')} (`);
+
+// Repo state `state`'s time stuck in the ISO week `weeksAgo` before the one holding `now`: each cause with
+// its hours, tickets and tracking issue, most hours first, and the same split into the stalls and the
+// deliberate holds (isHold), each group with its hours and tickets (a ticket's overlapping causes and
+// batches counted once within a group); the hours are the two groups' summed, the tickets every one
+// affected (`live` as counted takes it):
+//   { week, from, to, hours, tickets, causes: [cause], groups: { stalled, held: { hours, tickets, causes: [cause] } } }
+//   cause: { cause, hours, tickets, link: { ref, url } | null }
 export function weekSummary(state, { now = Date.now(), weeksAgo = 0, live = null } = {}) {
   const from = weekStart(now) - weeksAgo * WEEK_MS, to = from + WEEK_MS, upto = Math.min(to, now);
   const links = readLinks(state);
   // A ticket counts once, by its key, whichever batches it sat stuck in (a move reopens its park in the
   // new batch from the park's since, over the time the old batch's interval already holds): its spans,
   // and each cause's, are joined before they are summed.
-  const byCause = new Map(), spans = new Map();
+  const byCause = new Map(), spans = new Map(), bySide = { stalled: new Map(), held: new Map() };
   const add = (m, k, span) => m.set(k, [...(m.get(k) ?? []), span]);
   for (const e of counted(state, live) ?? []) {
     const a = Math.max(ms(e.start), from), b = Math.min(e.end == null ? now : ms(e.end), upto);
     if (!(b > a)) continue;
     if (!byCause.has(e.cause)) byCause.set(e.cause, new Map());
     add(byCause.get(e.cause), e.key, [a, b]);
+    add(bySide[isHold(e.cause) ? 'held' : 'stalled'], e.key, [a, b]);
     add(spans, e.key, [a, b]);
   }
   const msOf = (m) => [...m.values()].reduce((n, s) => n + unionMs(s), 0);
   const causes = [...byCause].map(([cause, m]) => ({ cause, ms: msOf(m), tickets: m.size })).sort((x, y) => y.ms - x.ms)
     .map(({ cause, ms: m, tickets }) => ({ cause, hours: hours(m), tickets, link: links[cause] ?? null }));
-  const total = msOf(spans);
-  return { week: weekName(from), from: new Date(from).toISOString(), to: new Date(to).toISOString(), hours: hours(total), tickets: spans.size, causes };
+  const group = (side) => ({ hours: hours(msOf(bySide[side])), tickets: bySide[side].size, causes: causes.filter((c) => isHold(c.cause) === (side === 'held')) });
+  const groups = { stalled: group('stalled'), held: group('held') };
+  return { week: weekName(from), from: new Date(from).toISOString(), to: new Date(to).toISOString(),
+    hours: Math.round((groups.stalled.hours + groups.held.hours) * 10) / 10, tickets: spans.size, causes, groups };
 }
 
 export const fmtHours = (h) => `${h < 10 ? h.toFixed(1) : Math.round(h)}h`;

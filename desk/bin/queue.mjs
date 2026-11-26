@@ -15,7 +15,7 @@ import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from
 import { prNames } from './recoveries.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { isSpineOf, ownsSpecsOf } from './pass/shared.mjs';
-import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion, personClears } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { markRearmed } from './loop-tick.mjs';
@@ -1178,7 +1178,7 @@ switch (cmd) {
     t.park.clears_when = w.cond;
     t.updated_at = new Date().toISOString();
     save(q);
-    console.log(`${key}: its park clears when ${describeCond(w.cond)}${w.cond.person ? ', which the person makes, so the park is still put to them' : ''}`);
+    console.log(`${key}: its park clears when ${describeCond(w.cond)}${personClears(w.cond, t.park?.question) ? ', which the person makes, so the park is still put to them' : ''}`);
     break;
   }
 

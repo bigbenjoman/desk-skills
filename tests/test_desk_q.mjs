@@ -2201,6 +2201,21 @@ t('DS-279 AC9 no row with a failed check leads with a pass count, on PRs red on 
   `${/#801 · e2e failed/.test(fxRow(qGo, 'F-1'))} ${[fxRow(qNo, 'F-1'), fxRow(qRr, 'F-1')].every((l) => /#801 · 1 check failed/.test(l))} ${[...qGo, ...qNo, ...qRr].filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | ')}`, 'true true ');
 t('DS-279 a conflict names the batch\'s base, as its fix try will', rail279('F-4', rGo), 'Moves without you: PR #804, merge conflict with develop · the next pass sends it to a worker, try 1 of 2.');
 t('DS-279 a fix worker that parked needs your answer on its page, as its row says', `${/F-5 +◆ needs you/.test(fxRow(qGo, 'F-5'))} ${rail279('F-5', rGo).startsWith('Needs your answer: which copy?')}`, 'true true');
+// DS-1015: granted, a session running the passes and no merge driver: a green or running PR waits on
+// whoever merges for the batch, not on the person, and is in Merging.
+put(I.T, I.env, 'mergeby1015', { port: 5650, conc: '3 / 5', beat: 1, runBy: 'session', perms: grant, queue: { batch: 'mergeby1015', concurrency: 3, tickets: {
+  'M-1': prOn(830, okChecks(2)), 'M-2': prOn(831, [okCheck('build'), { ...okCheck('e2e'), status: 'in_progress', conclusion: null }]) } } });
+const rMb = Q.loadRepos(NOW).find((r) => r.name === 'mergeby1015'), qMb = lines(Q.repoScreen(rMb, { now: NOW }));
+t('DS-1015 AC1 AC3 a green PR in a granted session-run batch with no merge driver is merging and waits on whoever merges for the batch',
+  `${/M-1 +▸ merging/.test(fxRow(qMb, 'M-1'))} ${/M-2 +▸ merging/.test(fxRow(qMb, 'M-2'))} ${Q.needsRows(rMb).length} | ${rail279('M-1', rMb)}`,
+  'true true 0 | Moves without you: PR #830, all 2 checks passed · waits on whoever merges for the batch.');
+t('DS-1015 AC3 batchMerging gives needs-you the green PR in the Merging row\'s words, and not one still running',
+  JSON.stringify(Q.batchMerging(rMb)), '[{"key":"M-1","pr":830,"text":"all 2 checks passed · waits on whoever merges for the batch"}]');
+// The same batch with ci-rerun granted, so only the missing driver, not a missing rerun grant, keeps a red PR the person's.
+put(I.T, I.env, 'mergeby1015red', { port: 5652, conc: '3 / 5', beat: 1, runBy: 'session', perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'mergeby1015red', concurrency: 3, tickets: {
+  'M-3': prOn(832, [okCheck('build'), red]) } } });
+const rMbRed = Q.loadRepos(NOW).find((r) => r.name === 'mergeby1015red');
+t('DS-1015 a red PR in a granted session-run batch with no merge driver stays the person\'s: no driver reruns it', Q.prWhy(rMbRed, rMbRed.q.tickets['M-3'])?.code, 'red');
 const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
 const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
@@ -2663,6 +2678,42 @@ const denseStart = Date.now();
 const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, x));
 t('a 30-ticket transitively held chain reads every state in well under a second', quick(Date.now() - denseStart, 0), true);
 t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
+
+// ---- DS-1005: a park whose question asks the person for a host-side step, on a file only that step
+// makes, needs them even where the file was recorded without the person flag; a self-clearing one waits.
+const q1005 = 'DS-722\'s desk app needs its npm packages installed to make /w/DS-722/desk/ui/package-lock.json, and npm is refused to workers because §4 Package manager is none. Please run `npm install` in /w/DS-722/desk/ui (the next worker commits the lockfile and runs the tests). Not reached: the push, the draft PR.';
+const park1005 = (question, clears_when) => ({ state: 'parked', park: { question, since: '2026-11-25T09:00:00Z', clears_when } });
+const st1005 = (x) => Q.shownState({ tickets: { X: { key: 'X', ...x } } }, { key: 'X', ...x });
+const lock1005 = { kind: 'file-exists', root: 'worktree', path: 'desk/ui/package-lock.json' };
+t('DS-1005 AC1 a park asking the person for a step, on a file no pass makes, needs them though stored without the person flag',
+  st1005(park1005(q1005, lock1005)), 'needs');
+t('DS-1005 AC1 so does one whose ask is followed by when to take it',
+  st1005(park1005('Please run npm install in the worktree before resuming.', lock1005)), 'needs');
+t('DS-1005 AC3 one asking for a step only once the worker saves the file still waits',
+  st1005(park1005('Please run the check once the worker saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
+t('DS-1005 AC3 so does one waiting until CI passes, and one waiting on run 991',
+  `${st1005(park1005('Please run npm install in the worktree until CI passes.', lock1005))} ${st1005(park1005('Please run npm install after run 991 finishes.', lock1005))}`, 'waiting waiting');
+t('DS-1005 AC1 an ask whose later clause only names a worker, not as its subject, still needs them',
+  st1005(park1005('Please run npm install in the worktree; once it is in, the next worker commits the lockfile.', lock1005)), 'needs');
+t('DS-1005 AC1 an ask whose clause names a lowercase ci command still needs them',
+  st1005(park1005('Please run npm install in the worktree, not npm ci, since npm ci fails here.', lock1005)), 'needs');
+t('DS-1005 AC1 an ask ending "if npm ci fails" still needs them',
+  st1005(park1005('Please run npm install in the worktree if npm ci fails.', lock1005)), 'needs');
+t('DS-1005 AC3 one waiting until a worker, or the recall capture script, saves the file still waits',
+  `${st1005(park1005('Please run the check once a worker saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' }))} ${st1005(park1005('Please run the check once the recall capture script saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' }))}`, 'waiting waiting');
+t('DS-1005 AC3 one waiting until workers save the file still waits',
+  st1005(park1005('Please run the check after workers save $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
+t('DS-1005 AC1 an ask whose own first step is stopping the worker still needs them',
+  st1005(park1005('Please run npm install after stopping the worker to make the lockfile.', lock1005)), 'needs');
+t('DS-1005 AC1 an ask giving its reason, since workers cannot install, still needs them',
+  st1005(park1005('Please run npm install in the worktree since workers cannot install packages.', lock1005)), 'needs');
+t('DS-1005 AC1 an ask saying when you take it, once you pass the review, still needs them',
+  st1005(park1005('Please run npm install in the worktree once you pass the review.', lock1005)), 'needs');
+t('DS-1005 AC1 so does one stored with it', st1005(park1005(q1005, { ...lock1005, person: true })), 'needs');
+t('DS-1005 AC1 negative: a file the question leaves to a script still waits',
+  st1005(park1005('waiting on the recall capture to write $DESK_STATE/fixtures/X/meet.json', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
+t('DS-1005 AC3 a PR merging and a run completing still wait, whatever the question asks',
+  `${st1005(park1005(q1005, { kind: 'pr-merged', pr: 12 }))} ${st1005(park1005(q1005, { kind: 'run-completed', run: 34 }))}`, 'waiting waiting');
 
 // ---- DS-654: home's Levers line, and v, a click and `desk-q levers` opening the page ---------------
 // The page's files under the screen's HOME: view.json holding `line`, built `age` minutes before NOW,

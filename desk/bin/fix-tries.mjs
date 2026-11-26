@@ -32,12 +32,13 @@
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, loginIn, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { IDLE_RECHECK_MS } from './batch-state.mjs';
 import { normaliseLine, readError } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
+import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, nameable, personsCall, recommendedOf, spokenFor } from './accept-gaps.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
 import { statesPhrase, leftOver } from './review-plain.mjs';
 import { pairs } from './desk-env.mjs';
@@ -814,17 +815,7 @@ export function reviewGaps(body) {
   }
   return gaps.filter((g) => !/UNVERIFIED CODE CLAIM/.test(g) && !/^none\b/i.test(g));
 }
-// The tag a review puts on a gap only the person can settle (desk-review phase-5-requirements.md).
-const personsCall = (gap) => /PERSON['’]S CALL/.test(gap);
-// The option a tagged gap ends with (`Recommended: <option>`), or null where it names none. Only the
-// bold around the label and the emphasis around the whole option go: the option is kept as written.
-export function recommendedOf(gap) {
-  const s = String(gap ?? '');
-  const at = [...s.matchAll(/\bRecommended:/gi)].at(-1);
-  const option = !at ? '' : s.slice(at.index + at[0].length).replace(/^(\*\*|__)/, '').trim()
-    .replace(/\s*\.$/, '').replace(/^(\*\*|__|[*_`])(.+)\1$/, '$2').trim();
-  return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
-}
+export { recommendedOf };
 // What a recommendation may need that §3 can deny workers: the row, what it reads like, and the action.
 // A worker under a row that is not yes cannot carry it out, so no try is spent on it.
 const WORKER_ROUTES = [
@@ -839,12 +830,13 @@ export function deniedRoute(gap, workerMay) {
 }
 // The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
 // autopilot-judgement yes, only when they are all the review leaves open (`alone`), and only when every
-// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn) and none needs
-// a route §3 denies workers (deniedRoute); otherwise [] and all of them stay the person's.
+// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn), none needs
+// a route §3 denies workers (deniedRoute) and none recommends accepting it, which only the person's own
+// comment does (accept-gaps.mjs acceptOnly); otherwise [] and all of them stay the person's.
 function takenGaps(person, judgement, alone, workerMay) {
   if (judgement !== 'yes' || !alone || !person.length) return [];
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
-  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay)) ? taken : [];
+  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay) && !acceptOnly(x.gap)) ? taken : [];
 }
 // A gap the review did not tag whose recommendation needs a denied route is the person's all the same:
 // tagged as their call wherever it is quoted, so a stuck reason gives it up to needs-you (personGapsIn).
@@ -965,11 +957,11 @@ function scopeQuestion({ acs, outside }, title) {
 // any other review. Asked once reviewFix has returned null, so never for gaps it sends to a try on
 // their recommendations.
 const PERSON_GAPS = 'review gaps only you can settle: ';
-// The tagged gaps a stuck reason names: all of a personGapsCall reason, or those a review stuck reason
-// (reviewFix) carries beside what outlasted its tries. [] for any other reason.
+// The tagged gaps a stuck reason names, one each: all of a personGapsCall reason, or those a review
+// stuck reason (reviewFix) carries beside what outlasted its tries. [] for any other reason.
 export function personGapsIn(why) {
   const s = String(why ?? '');
-  if (s.startsWith(PERSON_GAPS)) return [s.slice(PERSON_GAPS.length)];
+  if (s.startsWith(PERSON_GAPS)) return s.slice(PERSON_GAPS.length).split(/; (?=PERSON['’]S CALL)/);
   const i = /^review not clean\b/.test(s) ? s.indexOf(' — ') : -1;
   const rest = s.slice(i + 3);
   return i < 0 ? [] : (rest.startsWith(SURVIVED) ? rest.slice(SURVIVED.length) : rest).split(/; (?=P[0-2]: |PERSON['’]S CALL)/).filter((x) => /^PERSON['’]S CALL/.test(x));
@@ -986,6 +978,53 @@ export function personGapsCall(review, opts = {}) {
 // FIX_TRIES_MAX tries, which are the pass's own. `ready` is a PR out of draft, which its worker leaves
 // out of draft.
 export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
+
+// A draft whose review verdict at its head has requirement gaps open, as its undraft record says.
+export const draftHasGaps = (t) => t?.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
+// The latest of desk's own reviews (posted by `logins`, loginIn) whose verdict is at `sha`, or null.
+export const verdictReviewAt = (reviews, logins, sha) => (!sha ? null : (reviews ?? []).filter((x) => loginIn(x.author?.login, logins)).filter((x) => {
+  const at = markerOf(String(x.body ?? '').trim())?.sha;
+  return !!at && (sha.startsWith(at) || at.startsWith(sha));
+}).pop() ?? null);
+// A PR left for the person on requirement gaps: a draft whose review at its head has gaps, or one stuck
+// on gaps only its person settles, some of which only their own comment accepts (accept-gaps.mjs).
+export const awaitsAcceptance = (t) => t?.result?.pr != null && t.pr_status?.state !== 'MERGED' && t.pr_status?.state !== 'CLOSED'
+  && (draftHasGaps(t) || personGapsIn(t.stuck?.why).some(acceptOnly));
+// The gaps fix the person's acceptance on the PR sends it to (gapsFix), so its worker posts the round's
+// verdict again with those gaps accepted. `v`: the PR as `gh pr view --json
+// state,isDraft,headRefOid,comments,reviews` gives it; `logins`: desk's verdict logins, the §1 GitHub
+// handle first, whose comment alone accepts. Read against desk's latest review at the head: only a
+// comment or review posted after it counts, so the verdict that records the acceptance is not read as
+// waiting on it again. null where nothing is accepted, or this acceptance already went to a worker.
+export function acceptedFix(t, v, { logins }) {
+  const handle = String(logins ?? '').split(',')[0].trim();
+  if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
+  const head = v.headRefOid;
+  const review = verdictReviewAt(v.reviews, logins, head);
+  if (!review) return null;
+  const gaps = reviewGaps(review.body).filter(acceptOnly);
+  const a = acceptanceOn(gaps, [...(v.comments ?? []), ...(v.reviews ?? [])], { handle, since: review.submittedAt });
+  if (!a || (t.fix?.kind === 'gaps' && t.fix.accepted === (a.url ?? a.at))) return null;
+  return { acceptance: a, fix: { ...gapsFix({ pr: t.result.pr, head, ready: v.isDraft === false, answer: acceptedAnswer(a) }), accepted: a.url ?? a.at } };
+}
+// The acceptance the pass posts as the §1 GitHub handle where config §3 accept-review-gaps is yes
+// (accept-gaps.mjs grantComment), for the gaps only that comment accepts on desk's latest review at the
+// head: { gaps, body }, or null where there are none. `v` as acceptedFix reads it, with `body` (the PR's,
+// for its evidence). Once per gap, and never over the person's words: a gap the handle has named on the
+// PR at any time (accepted, refused or asked about: spokenFor) is left out, and so is one desk posted
+// for under the grant from any account (GRANTED), so a later review that still lists it, or a gh signed
+// in as someone else, puts it to the person rather than posting again. So is a gap with neither a label
+// nor a quoted criterion, which no comment can name, so nothing could show it was posted for.
+export function grantedPost(t, v, { logins }) {
+  const handle = String(logins ?? '').split(',')[0].trim();
+  if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
+  const review = verdictReviewAt(v.reviews, logins, v.headRefOid);
+  const items = [...(v.comments ?? []), ...(v.reviews ?? [])].map((x) => (String(x?.body ?? '').includes(GRANTED) ? { ...x, author: { login: handle } } : x));
+  const open = review ? reviewGaps(review.body).filter(acceptOnly).filter(nameable) : [];
+  const spoken = spokenFor(open, items, { handle });
+  const gaps = open.filter((g) => !spoken.includes(g));
+  return gaps.length ? { gaps, body: grantComment(gaps, evidenceIn(v.body, gaps)) } : null;
+}
 
 // The rule a reviewed fix worker's task states for a push of nothing, and its one exception, which only
 // a gaps call carries (fixTaskText). Whether the call accepts a gap is the worker's reading of the

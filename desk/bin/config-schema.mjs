@@ -637,7 +637,7 @@ export const ROWS = Object.freeze([
   p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'), p('gh-issue-edit'),
   // §3 Autopilot
   p('autopilot-workers'), p('autopilot-worker-mode', { type: 'text', example: 'dontAsk' }), p('autopilot-merge'), p('merge-hold-routine'),
-  p('batch-base-push'), p('autopilot-judgement'), p('autopilot-reclaim'), p('machine-reboot'),
+  p('batch-base-push'), p('autopilot-judgement'), p('accept-review-gaps'), p('autopilot-reclaim'), p('machine-reboot'),
   p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services', noServices), p('worker-web-read'),
   p('worker-workflow-dispatch'), p('worker-preview-db'),
   // §3 Local and shared state

@@ -372,12 +372,16 @@ function trends(v) {
 // A data section in the house style of "Is each lever working?": a card with its heading and a muted
 // intro line, then one table, each group (a repo, or a repo's week or lever) a header row over its rows.
 // `cols` are { label, num }, a numeric column right-aligned with tabular figures; each row is its cells
-// as HTML, the first its row header; a group's `note` is a muted line under its rows.
+// as HTML, the first its row header, or { sub } for a header row over the rows after it inside the group,
+// or { empty } for a muted line standing in for rows; a group's `note` is a muted line under its rows.
 function dataSection({ id, title, intro, cols, groups }) {
   const cls = (c, base) => `${base}${c.num ? ' n' : ''}`;
   const head = `<tr>${cols.map((c) => `<th scope="col" class="${cls(c, 'th')}">${esc(c.label)}</th>`).join('')}</tr>`;
+  const row = (r) => (r.sub != null ? `<tr><th scope="colgroup" colspan="${cols.length}" class="td sgrp">${esc(r.sub)}</th></tr>`
+    : r.empty != null ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(r.empty)}</td></tr>`
+      : `<tr>${r.map((v, i) => (i === 0 ? `<th scope="row" class="td">${v}</th>` : `<td class="${cls(cols[i], 'td')}">${v}</td>`)).join('')}</tr>`);
   const body = groups.map((g) => `<tr class="grp"${g.attrs ?? ''}><th scope="colgroup" colspan="${cols.length}" class="td grp">${esc(g.head)}</th></tr>`
-    + g.rows.map((r) => `<tr>${r.map((v, i) => (i === 0 ? `<th scope="row" class="td">${v}</th>` : `<td class="${cls(cols[i], 'td')}">${v}</td>`)).join('')}</tr>`).join('')
+    + g.rows.map(row).join('')
     + (g.note ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(g.note)}</td></tr>` : '')).join('');
   return `<section aria-labelledby="${id}" class="card levers"><div class="levers-head"><div class="stack4"><h2 id="${id}">${esc(title)}</h2><p class="muted small">${esc(intro)}</p></div></div>`
     + `<div class="scroll"><table class="levtable data"><thead>${head}</thead><tbody>${body}</tbody></table></div></section>`;
@@ -439,19 +443,26 @@ function asksByArm(v) {
 
 // Each repo's time parked by cause (stuck-time.mjs), this ISO week and last: the hours, the tickets
 // affected and each cause, most hours first, with its tracking issue where one is linked (the column only
-// once a cause has one). Nothing until a ticket has sat stuck.
+// once a cause has one). The stalls come first and the deliberate holds after them, each under its own
+// total; a week with no hold has no holds group. Nothing until a ticket has sat stuck.
 function stuckTime(v) {
   const repos = v.panels.stuck_time?.repos ?? [];
   if (!repos.length) return '';
   const weeks = repos.flatMap((r) => r.weeks.filter((w) => w.tickets).map((w) => ({ name: r.name, w })));
   const linked = weeks.some(({ w }) => w.causes.some((c) => c.link));
   const issue = (l) => (!l ? DASH : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
+  const over = (g) => `${fmtHours(g.hours)} over ${g.tickets} ticket${g.tickets === 1 ? '' : 's'}`;
+  const rows = (causes) => causes.map((c) => [esc(c.cause), esc(fmtHours(c.hours)), String(c.tickets), ...(linked ? [issue(c.link)] : [])]);
+  const grouped = ({ stalled, held }) => [
+    { sub: `Stalled · ${over(stalled)}` }, ...(stalled.causes.length ? rows(stalled.causes) : [{ empty: 'No stalls this week' }]),
+    ...(held.causes.length ? [{ sub: `Waiting on purpose · ${over(held)}` }, ...rows(held.causes)] : []),
+  ];
   return dataSection({
-    id: 'st-h', title: 'Time parked by cause', intro: 'Hours tickets sat parked this week and last, by cause, most hours first.',
+    id: 'st-h', title: 'Time parked by cause', intro: 'Hours tickets sat parked this week and last, by cause and most hours first, with stalls apart from deliberate holds.',
     cols: [{ label: 'Cause' }, { label: 'Hours', num: true }, { label: 'Tickets', num: true }, ...(linked ? [{ label: 'Tracking issue' }] : [])],
     groups: weeks.map(({ name, w }) => ({
-      head: `${name} · week ${w.week} · ${fmtHours(w.hours)} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}`,
-      rows: w.causes.map((c) => [esc(c.cause), esc(fmtHours(c.hours)), String(c.tickets), ...(linked ? [issue(c.link)] : [])]),
+      head: `${name} · week ${w.week} · ${over(w)}`,
+      rows: w.groups ? grouped(w.groups) : rows(w.causes),
     })),
   });
 }
@@ -718,6 +729,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .levtable .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .levtable th.td{text-align:left;font-weight:500}
 .levtable .grp{background:#F9FAFB;padding:9px 16px;font-size:13px;font-weight:600;color:#374151;border-bottom:1px solid #E5E7EB}
+.levtable th.sgrp{padding:8px 16px 6px;font-size:12px;font-weight:600;color:#6B7280}
 .levtable tr:last-child>.td{border-bottom:0}
 .bar{height:6px;border-radius:3px;background:#F0F1F3}.bar div{height:6px;border-radius:3px;background:#111827}
 .repo{display:flex;align-items:center;gap:6px}

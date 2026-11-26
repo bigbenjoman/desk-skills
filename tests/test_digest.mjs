@@ -276,6 +276,26 @@ t('DS-280 AC8 the digest lists each Merging PR unchanged for 2h or more, how lon
   '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): Lint failed · no change for 2h 10m\n- `M-3` [#3](https://github.com/acme/m/pull/3): e2e running · no change for 2h\n');
 t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s) with no change for 2h or more.'), true);
 
+// DS-1005 AC4: a park waiting on a clears-when since before the previous check-in, with tickets held
+// behind it, is named with how many wait behind it; one parked since that slot, or with none behind, is not.
+{
+  const iso = (hm) => at('2026-11-25', hm).toISOString();
+  const waits = (key, since) => ({ key, state: 'parked', park: { question: 'waiting on its stacked base', since, clears_when: { kind: 'pr-merged', pr: 7 } } });
+  const heldBy = (key, by) => ({ key, state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+  const W = repo('acme__w', {
+    'W-1': waits('W-1', iso('07:00')), 'W-2': heldBy('W-2', 'W-1'), 'W-3': heldBy('W-3', 'W-2'),
+    'W-4': waits('W-4', iso('09:00')), 'W-5': heldBy('W-5', 'W-4'),
+    'W-6': waits('W-6', iso('07:00')),
+  });
+  const r1005 = await checkin({ times: DEFAULT_TIMES, now: at('2026-11-25', '17:01'), dir: join(root, 'digest1005'), list: [W], bin: BIN, self: 'acme__w', promote: () => null, checkJira: () => null });
+  const page1005 = readFileSync(r1005.page, 'utf8');
+  t('DS-1005 AC4 a wait older than the last check-in is named with the tickets held behind it, transitively',
+    page1005.slice(page1005.indexOf('### Waiting')).split('\n').slice(0, 4).join('\n'),
+    `### Waiting since before the last check-in, with tickets held behind\n\n- \`W-1\`: waiting on PR #7 merged since ${iso('07:00').slice(0, 16).replace('T', ' ')} · 2 ticket(s) held behind it\n`);
+  t('DS-1005 AC4 negative: one parked since that check-in, or with nothing behind it, is not', /`W-4`|`W-6`/.test(page1005), false);
+  t('DS-1005 AC4 the push says so', /1 wait\(s\) holding tickets/.test(r1005.push?.text), true);
+}
+
 // issue-1384: a page whose only news is work a session claimed still shows it, and counts it.
 {
   const { renderPage } = await import('../desk/bin/digest.mjs');
