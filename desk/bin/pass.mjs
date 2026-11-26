@@ -2348,7 +2348,7 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   // The waiting markers of runs that have exited are removed first, so no reader of a lock's queue
   // counts them (admit-ledger.mjs liveWaiters).
   for (const l of ['test', 'light']) liveWaiters(l, E.lockDir(), { startsOf: (pids) => ledgerStarts(pids, E.psRows) });
-  const whole =(v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
+  const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
   let slug = null;
   try { slug = E.repoSlug(); } catch { /* no slug: this repo is still listed, by its checkout */ }
   // Another repo whose config cannot be read is left out, so its runs count under `other`.
