@@ -196,6 +196,8 @@ const navOf = (snapshot, routes) => ({
 
 function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge } }) {
   const repos = (snapshot?.repos ?? []).filter((r) => !r.error);
+  // A repo set up with no batch yet: home lists it by name in no_batch, with nothing to count.
+  const idle = (snapshot?.no_batch ?? []).filter((name) => !repos.some((r) => r.name === name));
   const shipped = screens.filter((s) => s.id !== 'repos');
   const broken = repos.some((r) => r.production_broken?.length);
   const item = (s) => (
@@ -219,13 +221,14 @@ function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge }
       <ul className="flex flex-col gap-px">{shipped.filter((s) => s.id === 'inbox').map(item)}</ul>
       <div className="px-2 pt-3 pb-1 text-xs font-medium text-muted-fg" id="repos-label">Repos</div>
       <ul aria-labelledby="repos-label" className="flex flex-col gap-px" data-repos="">
-        {repos.length === 0 && <li className="h-7 pl-4 text-[13px] leading-7 text-muted-fg">No repos set up yet</li>}
+        {repos.length + idle.length === 0 && <li className="h-7 pl-4 text-[13px] leading-7 text-muted-fg">No repos set up yet</li>}
         {repos.flatMap((r) => [
           <RepoRow key={r.id} name={r.name} title={fullName(r.slug)} running={r.running} needs={r.needs_you} open={openRepo(r.id)} on={path === `/repos/${r.id}`} />,
           ...(r.batches ?? []).map((b) => (
             <RepoRow key={b.id} under={r.id} name={b.name} title={b.name} running={b.running} needs={b.needs_you} open={openRepo(b.id)} on={path === `/repos/${b.id}`} />
           )),
         ])}
+        {idle.map((name) => <RepoRow key={`idle ${name}`} name={name} title={`${name} · no batch yet`} running={0} needs={0} open={null} on={false} />)}
       </ul>
       <ul className="mt-2 flex flex-col gap-px">{shipped.filter((s) => s.id !== 'inbox').map(item)}</ul>
       {settings && <ul className="mt-auto border-t border-border pt-2">{item(settings)}</ul>}

@@ -88,6 +88,14 @@ describe('the title bar, sidebar and status bar', () => {
     expect(within(document.querySelector('[data-repos]')).getByText('◆ 13')).toBeTruthy();
   });
 
+  it('AC2 a repo set up with no batch yet is listed too, with no counts', async () => {
+    const snapshot = fixture();
+    snapshot.repos = [];
+    snapshot.no_batch = ['forewatt'];
+    await open({ snapshot });
+    expect([...document.querySelectorAll('[data-repos] li')].map((li) => li.textContent)).toEqual(['forewatt']);
+  });
+
   it('AC3 a repo name over 20 characters is cut short, its full name in the tooltip', async () => {
     const snapshot = fixture();
     snapshot.repos = [repo('sophos-education-studia-web-app', { slug: 'sophos-education__sophos-education-studia-web-app' })];
