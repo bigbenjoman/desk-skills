@@ -1130,9 +1130,13 @@ switch (cmd) {
       const field = u.slice(0, eq), value = u.slice(eq + 1);
       if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
     }
+    const before = blockersOf(t), outside = String(t.held_outside ?? '').split('|');
     applySet(t, pairs);
     save(q);
     console.log(`${key}: ${pairs.join(' ')}`);
+    // A release still goes ahead past blockers that have not merged, as requeue reads them; it names them.
+    const open = before.filter((p) => !blockersOf(t).includes(p) && (q.tickets[p] ? !mergedCurrent(q.tickets, p) : outside.includes(p)));
+    if (open.length) console.error(`warning: ${key} is no longer held behind ${open.join(', ')}, which ${open.length === 1 ? 'has' : 'have'} not merged yet`);
     break;
   }
 

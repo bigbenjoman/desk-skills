@@ -141,6 +141,27 @@ check "DS-419 AC4: once it merged, it is DONE"                            'echo 
 q set A-5 result.pr=null merged_at=null pr_status=null; q render
 check "DS-419 AC4: one that finished with no PR is DONE"                  'echo "$out" | grep -Eq "^  DONE +A-5 *$"'
 
+# A release by set names the blockers it cleared that have not merged, on stderr only, and still goes ahead.
+# qs: stdout in out, stderr in err. held <KEY>: its held_by and state.
+qs(){ out=$(node "$B/queue.mjs" "$@" 2>"$T/err"); rc=$?; err=$(cat "$T/err"); }
+held(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(`${t.held_by} ${t.state}`)' "$DESK_QUEUE" "$1"; }
+q init holds
+for k in B-1 B-2 B-3 B-4 W-1 W-2 W-3; do q add "$k"; q set "$k" state=triaged lane=A; done
+q set W-1 state=parked held_by='B-1|B-3|B-4|B-2' 'park={"question":"held"}'
+qs set W-1 state=triaged park=null held_by=null
+check "DS-1045 AC1: the release goes ahead and names every open blocker"  '[ $rc -eq 0 ] && [ "$(held W-1)" = "null triaged" ] && [ "$err" = "warning: W-1 is no longer held behind B-1, B-3, B-4, B-2, which have not merged yet" ]'
+check "DS-1045 AC5: stdout is the one-line pairs output"                  '[ "$out" = "W-1: state=triaged park=null held_by=null" ]'
+for k in B-1 B-3; do q set "$k" state=done merged_at=2026-11-02T10:00:00.000Z; done
+q set W-2 state=parked held_by='B-1|B-2|B-3|B-4' 'park={"question":"held"}'
+qs set W-2 state=triaged park=null held_by=null
+check "DS-1045 AC2: only the blockers that have not merged are named"     '[ $rc -eq 0 ] && [ "$err" = "warning: W-2 is no longer held behind B-2, B-4, which have not merged yet" ]'
+q set W-3 state=parked held_by='B-1|B-3' 'park={"question":"held"}'
+qs set W-3 state=triaged park=null held_by=null
+check "DS-1045 AC3: all merged, nothing on stderr, stdout as today"       '[ $rc -eq 0 ] && [ -z "$err" ] && [ "$out" = "W-3: state=triaged park=null held_by=null" ] && [ "$(held W-3)" = "null triaged" ]'
+# AC4: the warned release writes what the silent one does, bar the timestamp.
+strip(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; delete t.updated_at; delete t.key; console.log(JSON.stringify(t))' "$DESK_QUEUE" "$1"; }
+check "DS-1045 AC4: exit 0, and the queue holds what it would without it" '[ "$(strip W-2)" = "$(strip W-3)" ]'
+
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
