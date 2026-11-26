@@ -328,6 +328,13 @@ const keepRequeuedPr = (t) => {
   return kept ? { merged_pr: kept } : {};
 };
 
+// Which of `keys`, ticket t's blockers, still hold it: one in the batch whose current work has not merged,
+// as the merge driver reads it (batch-state.mjs mergedCurrent), or one in no batch that its held_outside names.
+const unmergedBlockers = (q, t, keys) => {
+  const outside = String(t.held_outside ?? '').split('|');
+  return keys.filter((p) => (q.tickets[p] ? !mergedCurrent(q.tickets, p) : outside.includes(p)));
+};
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   // Recorded parked as a pass's harvest records it, with the round a fresh spawn may resume and the
@@ -398,9 +405,8 @@ function requeue(q, key, { handedBack = false } = {}) {
   // leaves one on a ticket that is not held.
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
-  // A blocker merged once and gone round again since has not merged its current work, as the merge driver
-  // reads it (batch-state.mjs mergedCurrent): it holds this ticket still.
-  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !mergedCurrent(q.tickets, p) : outside.includes(p)));
+  // A blocker merged once and gone round again since has not merged its current work: it holds this ticket still.
+  const pending = unmergedBlockers(q, t, blockersOf(t));
   // Done by another's PR, its merged_at was that PR's merge: sent back for work of its own, it has none
   // yet, or the merge driver and the holds above would read the work as merged.
   const byOther = t.done_by?.pr != null;
@@ -1116,11 +1122,15 @@ switch (cmd) {
   // --unless <field>=<value>: written only while the ticket's field, read under the lock, is not that
   // value. The pass's state=running write passes --unless state=done, so a try withdrawn (withdraw) after
   // the pass read it as waiting is never marked running, and no worker starts.
+  // --merged: the caller has confirmed every blocker it clears merged (the merge driver's release reads
+  // GitHub's merged PRs, which the queue can trail), so the warning about unmerged ones is not printed.
   case 'set': {
     const [key, ...rest] = args;
     const unless = [], pairs = [];
+    let confirmed = false;
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '--unless') { unless.push(String(rest[++i] ?? '')); continue; }
+      if (rest[i] === '--merged') { confirmed = true; continue; }
       pairs.push(rest[i]);
     }
     const t = ticket(q, key);
@@ -1130,12 +1140,12 @@ switch (cmd) {
       const field = u.slice(0, eq), value = u.slice(eq + 1);
       if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
     }
-    const before = blockersOf(t), outside = String(t.held_outside ?? '').split('|');
+    const held = unmergedBlockers(q, t, blockersOf(t));
     applySet(t, pairs);
     save(q);
     console.log(`${key}: ${pairs.join(' ')}`);
-    // A release still goes ahead past blockers that have not merged, as requeue reads them; it names them.
-    const open = before.filter((p) => !blockersOf(t).includes(p) && (q.tickets[p] ? !mergedCurrent(q.tickets, p) : outside.includes(p)));
+    // A release still goes ahead past blockers that have not merged; it names them.
+    const open = confirmed ? [] : held.filter((p) => !blockersOf(t).includes(p));
     if (open.length) console.error(`warning: ${key} is no longer held behind ${open.join(', ')}, which ${open.length === 1 ? 'has' : 'have'} not merged yet`);
     break;
   }
