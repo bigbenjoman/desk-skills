@@ -45,7 +45,7 @@ for step in migrate seed; do
 db=\$(sed -nE 's#^DATABASE_URL="?[^"]*/([a-z0-9_]+)"?\$#\1#p' .env)
 echo "$step \$db" >> "$T/calls"
 [ ! -f "$T/fail.$step.\$db" ] && exit 0
-echo "P1010: denied for postgresql://postgres:s3cret@localhost:5432/\$db"; exit 1
+printf 'P1010: denied for postgresql://postgres:s3cret@localhost:5432/%s' "\$db"; exit 1
 EOF
   chmod +x "$T/$step.sh"
 done
@@ -134,6 +134,12 @@ check "AC3 the machine-read line names only the failed database"   '[[ "$out" ==
 : > "$T/calls"; touch "$T/fail.seed.widgets_t_3"
 out=$(bash "$B/setup-worktree.sh" T-3 fix/T-3 2>&1); rc=$?
 check "AC3 a failed seed names the app and its database"           '[ $rc -eq 0 ] && [[ "$out" == *"WARNING: app .: the seed did not complete against widgets_t_3"* ]] && [[ "$out" == *"migrate=failed"* ]]'
+# Kept: the seed's error output ended mid-line (the stub prints no final newline), yet its failure is
+# still found, so that app alone runs again although its database holds tables.
+rm -f "$T/fail.seed.widgets_t_3"; : > "$T/calls"
+echo 9 > "$T/tables.widgets_t_3"; echo 9 > "$T/tables.widgets_t_3_apps_portal"
+out=$(bash "$B/setup-worktree.sh" T-3 fix/T-3 2>&1); rc=$?
+check "kept: a failed seed with no final newline runs again"       '[ $rc -eq 0 ] && [ "$(cat "$T/calls")" = "$(printf "migrate widgets_t_3\nseed widgets_t_3")" ] && [ ! -e "$T/wt/T-3/.desk-migrate.log" ]'
 
 # A kept worktree whose last run failed: only the failed app runs again (both databases hold tables, so
 # only the log can pick it), the app that seeded cleanly is not seeded twice, and success clears the log.

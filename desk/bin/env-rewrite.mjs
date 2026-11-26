@@ -110,7 +110,8 @@ export function rewriteEnvFiles({ mode, wt, db = '', dbs = null, container = '',
 }
 
 const isMain = (() => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
-const tabbed = (raw) => raw.split('\n').filter(Boolean).map((l) => (l.includes('\t') ? l.split('\t') : ['.', l]));
+// `<dir><TAB><rest>` lines, split at the first tab only, so a command keeps any tab of its own.
+const tabbed = (raw) => raw.split('\n').filter(Boolean).map((l) => (l.includes('\t') ? [l.slice(0, l.indexOf('\t')), l.slice(l.indexOf('\t') + 1)] : ['.', l]));
 if (isMain && process.argv[2] === 'owned') {
   // node env-rewrite.mjs owned <`DIR<TAB>DB` app lines> <`DIR<TAB>CMD` item lines> <app dir, or '' for none>
   // Prints the item lines that app owns, as given.

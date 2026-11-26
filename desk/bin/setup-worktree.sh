@@ -416,10 +416,15 @@ cmds_of() { # cmds_of <DIR<TAB>CMD lines> <app dir, or '' for none>: the items t
   [ -n "$1" ] || return 0
   node "$DESK_ENV_DIR/env-rewrite.mjs" owned "$APPS" "$1" "$2"
 }
+log_line() { # log_line <format> <args...>: a line of its own in the log, even after output with no final newline
+  if [ -s "$MIGRATE_LOG" ] && [ -n "$(tail -c 1 "$MIGRATE_LOG")" ]; then echo >> "$MIGRATE_LOG"; fi
+  # shellcheck disable=SC2059
+  printf "$@" >> "$MIGRATE_LOG"
+}
 FAILED_DBS=""   # the databases whose migrate or seed failed on this run, for the `migrate-failed=` line
 app_failed() { # app_failed <app dir> <db>: recorded in the log, so a kept worktree's next run retries only this app
   MIGRATE_FAILED=1
-  printf '== failed app %s\n' "$1" >> "$MIGRATE_LOG"
+  log_line '== failed app %s\n' "$1"
   FAILED_DBS="${FAILED_DBS:+$FAILED_DBS,}$2"
 }
 # With apps, each app's migrate then seed run against its own database, their output appended to the
@@ -429,7 +434,7 @@ migrate_app() { # migrate_app <app dir> <db>
   m="$(cmds_of "$MIGRATE_CMDS" "$1")"; s="$(cmds_of "$SEED_CMDS" "$1")"
   if [ -n "$m" ]; then
     say "applying migrations to $2 (app $1)"
-    printf '== app %s: migrate against %s\n' "$1" "$2" >> "$MIGRATE_LOG"
+    log_line '== app %s: migrate against %s\n' "$1" "$2"
     if run_cmds "$m" 2>&1 | mask_urls >> "$MIGRATE_LOG"; then say "  migrated $2"
     else
       app_failed "$1" "$2"
@@ -441,7 +446,7 @@ migrate_app() { # migrate_app <app dir> <db>
   fi
   [ -n "$s" ] || return 0
   say "seeding $2 (app $1)"
-  printf '== app %s: seed against %s\n' "$1" "$2" >> "$MIGRATE_LOG"
+  log_line '== app %s: seed against %s\n' "$1" "$2"
   if run_cmds "$s" 2>&1 | mask_urls >> "$MIGRATE_LOG"; then say "  seeded $2"
   else
     app_failed "$1" "$2"
@@ -485,7 +490,7 @@ remigrate_if_needed() {
   [ -f "$MIGRATE_LOG" ] && failed="$(sed -n 's/^== failed app //p' "$MIGRATE_LOG")"
   while IFS="$(printf '\t')" read -r d n; do
     [ -n "$d" ] || continue
-    if printf '%s\n' "$failed" | grep -qxF "$d" || [ "$(db_table_count "$n" </dev/null)" = 0 ]; then
+    if printf '%s\n' "$failed" | grep -qxF -e "$d" || [ "$(db_table_count "$n" </dev/null)" = 0 ]; then
       again="${again:+$again
 }$d	$n"
     fi
