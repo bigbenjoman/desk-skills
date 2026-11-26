@@ -1,6 +1,6 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
 // layer: L1
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, holdOf, heldText, lockHeldLine, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, holdOf, heldText, lockHeldLine, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
 import { lockGate, lockQueue } from '../desk/bin/suite-wait.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
@@ -279,6 +279,8 @@ const vsnap = (tickets, fields = {}) => {
   const free = { spawned: 0, eligible: 2, held: null, baseHold: false, baseLag: null, lowMemory: false, availGB: 9, minAvailGB: 6,
     lockHold: null, machine: { room: 1, line: 'm' }, repoUnlocked: false, repoLine: 'r', repo: { room: 1, line: 'R' }, concurrency: 2,
     bins: { queue: '/b/queue.mjs', pass: '/b/pass.mjs' } };
+  // The pass record's held, as pass.mjs writes it.
+  const heldWhyOf = (s) => heldText(holdOf(s));
   const lock = lockHeldLine({ gate: lockGate([lockQueue({ waiting: 1, slots: 1, factor: 2 })]), held: ['A'], running: 1, concurrency: 2 });
   t('a spawn, or nothing eligible, holds nothing', j([heldWhyOf({ ...free, spawned: 1 }), heldWhyOf({ ...free, eligible: 0 })]), '[null,null]');
   t('the first hold that applied names why', j([
@@ -291,7 +293,7 @@ const vsnap = (tickets, fields = {}) => {
 
   // DS-1047: the hold behind each of those words, as the pass record keeps it.
   const harm = 'memory harm: OOM-KILL within the last 10m (…)';
-  const back = [{ key: 'C', holds: [{ file: 'a.js', k: 1, by: ['A'], elsewhere: [{ key: 'X', label: 'batch b' }] }] }];
+  const back = ['C'];
   const causes = [
     { ...free, held: 'the maintenance window holds every spawn' }, { ...free, held: '7-day usage ahead of pace holds every spawn' },
     { ...free, held: 'the batch budget holds every spawn' }, { ...free, held: 'a failing health check (gh) holds every spawn' },
@@ -308,13 +310,13 @@ const vsnap = (tickets, fields = {}) => {
     'a failing health check (gh) holds every spawn', 'config §3b "Usage pacing" holds every spawn', harm, 'the batch base sync holds every spawn', harm,
     'memory: 3.2G available, under the 6G spawn gate', lock.line, 'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3',
     'the batch\'s worker count is 0']));
-  t('DS-1047 AC2 a collision holds the pass only when nothing is eligible, naming the tickets in the report\'s words', j([causes.at(-1).tickets, heldText(causes.at(-1)), heldWhyOf({ ...free, heldBack: back })]),
-    j([['C'], 'held back by a collision: C (a.js has 2 running of its 1: A, X in batch b)', null]));
+  t('DS-1047 AC2 AC4 a collision holds the pass only when nothing is eligible, naming its tickets, and its held stays null as before',
+    j([causes.at(-1).tickets, heldText(causes.at(-1)), holdOf({ ...free, heldBack: back })]), j([['C'], null, null]));
   t('DS-1047 AC3 a hold the person can clear names the exact command', j([
     holdOf({ ...free, held: 'the batch budget holds every spawn' }).action, holdOf({ ...free, held: 'config §3 autopilot-workers is "ask"' }).action,
     holdOf({ ...free, held: 'config §3b "Worker models" holds every spawn' }).action, holdOf({ ...free, concurrency: 0 }).action,
   ]), j([
-    { text: 'raise the batch budget, or set it to none', cmd: 'node /b/queue.mjs set-batch budget_usd=<usd>' },
+    { text: 'lift the batch budget (or set budget_usd to a higher figure in its place)', cmd: 'node /b/queue.mjs set-batch budget_usd=none' },
     { text: 'confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1', cmd: 'AUTOPILOT_USER_APPROVED=1 node /b/pass.mjs' },
     { text: 'fix the config row with /desk-setup', cmd: '/desk-setup' },
     { text: 'set the batch\'s worker count above 0', cmd: 'node /b/queue.mjs set-batch concurrency=1 concurrency_by=user' }]));

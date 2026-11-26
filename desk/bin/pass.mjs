@@ -2400,8 +2400,10 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   // machineProfile: the rows as with-lock's admission reads them, so a TODO sizes the pool as it does there.
   try { pools = slotPools({ ...LEASE_ENV, machineProfile: E.machineProfile, lockDir: E.lockDir }); } catch { /* as above */ }
   const factor = whole(E.machineValue('test-lock-queue-factor'), 2);
-  // Each holder named by the repo it works in, with its usual hold from the holds passes saw finish.
-  const repoOf = runRepo(repos);
+  // Each holder named by the repo it works in (null where its directory was not read), with its usual
+  // hold from the holds passes saw finish.
+  const inRepo = runRepo(repos);
+  const repoOf = (cwd) => (cwd ? inRepo(cwd) : null);
   const usual = expectedOf(E.repoStateOf(STATE));
   const queueOf = (locks, slots) => {
     const holders = lockHolders(E.lockDir(), { locks });
@@ -2421,8 +2423,9 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
     light ? queueOf('light', pools?.light.current ?? E.lightLockSlots()) : null,
   ]);
 })();
-// The holds passes see finish give each holder its usual time (lock-holds.mjs). A dry run records none.
-if (LOCK_QUEUE && !DRY) report.recovered.push(...holdStep(E.repoStateOf(STATE), LOCK_QUEUE.queues.flatMap((q) => q.holders), { now: PASS_AT }));
+// The holds passes see finish give each holder its usual time (lock-holds.mjs). A dry run records none,
+// and nor does a pass that could not read the process table: its holders are unknown, not gone.
+if (LOCK_QUEUE && !DRY && !LOCK_QUEUE.queues.some((q) => q.unread)) report.recovered.push(...holdStep(E.repoStateOf(STATE), LOCK_QUEUE.queues.flatMap((q) => q.holders), { now: PASS_AT }));
 // The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
 // resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
@@ -6266,7 +6269,7 @@ runPhase({
 const HOLD = holdOf({
   spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, harmWhy, availGB, minAvailGB: MIN_AVAIL_GB,
   lockHold: LOCK_HELD?.hold ?? null, machine: MACHINE, repoUnlocked, repoLine, repo: REPO, concurrency,
-  heldBack: heldBack.map((r) => ({ key: r.key, holds: budgetHolds(r).map((h) => ({ ...h, elsewhere: h.elsewhere.map((o) => ({ key: o.key, label: batchLabel(o.batch) })) })) })),
+  heldBack: heldBack.map((r) => r.key),
   bins: { queue: join(SHOWN_BIN, 'queue.mjs'), pass: join(SHOWN_BIN, 'pass.mjs') },
 });
 const heldWhy = heldText(HOLD);

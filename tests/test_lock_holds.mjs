@@ -1,6 +1,6 @@
 // suite: lock holds (each finished test-lock hold, and each holder's usual run time from them)
-// layer: L2
-// covers: desk/bin/lock-holds.mjs desk/bin/dir-lock.mjs
+// layer: L1
+// covers: desk/bin/lock-holds.mjs desk/bin/dir-lock.mjs desk/bin/quantile.mjs
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -36,6 +36,14 @@ const run = (pid, heldS, repo = 'web', cmd = 'bash tests/run.sh') => ({ pid, rep
   holdStep(S, [run(1, 60)], { now: 'p1' });
   holdStep(S, [run(1, null)], { now: 'p2' });
   t('a holder still there whose hold is unread has not finished', holds(S).length, 0);
+}
+{
+  const S = scratch('lock-holds-cwd-');
+  holdStep(S, [run(1, 60)], { now: 'p1' });
+  holdStep(S, [run(1, 120, null)], { now: 'p2' });
+  t('a holder whose directory was not read this pass is the same hold, not one finished', holds(S).length, 0);
+  holdStep(S, [], { now: 'p3' });
+  t('and when it finishes it is under the repo an earlier pass read', j(holds(S)), j([{ repo: 'web', cmd: 'bash tests/run.sh', seconds: 120, end: 'p2' }]));
 }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

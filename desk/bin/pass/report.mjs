@@ -360,17 +360,12 @@ export function mergeGapLine(tickets, reported = []) {
 // cap. With a run waiting on a queue it is a stall, the gate's line. With none waiting on any, the room
 // went to this pass's own suite-bound starts (the cap is checked before the gate, so it held none of
 // these): a wait for the next pass, which names the workers running against the cap beside it, not a
-// stall. -> { line, stall }.
-// stall }, and `hold` the same as a pass record's structured hold (holdOf), cause test-lock.
+// stall. -> { line, stall, hold }, `hold` as a pass record's structured hold (holdOf), cause test-lock.
 export function lockHeldLine({ gate, held, running, concurrency }) {
   if (!held.length || !gate) return null;
   const stall = gate.queues?.some((q) => q.waiting > 0) ?? true;
-  // The queues the gate's line names: each holding one, else the tightest.
-  const queues = (gate.queues ?? [gate]).filter((q) => q.holds);
-  const named = (queues.length ? queues : [gate]).map((q) => ({
-    lock: q.lock, waiting: q.waiting, slots: q.slots, factor: q.factor, at: q.at, deep: q.deep, unread: q.unread,
-    share: q.share, own: q.own, active: q.active, runsByRepo: q.runsByRepo, holders: q.holders ?? [],
-  }));
+  // The queues the gate's line names (lockGate's `named`), each without the line heldText rebuilds.
+  const named = (gate.named ?? [gate]).map(({ line, queues, named: _, ...q }) => ({ ...q, holders: q.holders ?? [] }));
   const first = named[0];
   const hold = {
     cause: 'test-lock', scope: 'machine',
@@ -389,7 +384,7 @@ const ELIGIBILITY_CAUSES = [
 ];
 // What the person runs for a hold they can clear, from an eligibility hold's words, or null.
 function eligibilityAction(text, bins) {
-  if (/^the batch budget/.test(text)) return { text: 'raise the batch budget, or set it to none', cmd: `node ${bins.queue} set-batch budget_usd=<usd>` };
+  if (/^the batch budget/.test(text)) return { text: 'lift the batch budget (or set budget_usd to a higher figure in its place)', cmd: `node ${bins.queue} set-batch budget_usd=none` };
   const ask = /^config §3 \S+ is "ask"$/.test(text);
   if (ask) return { text: 'confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1', cmd: `AUTOPILOT_USER_APPROVED=1 node ${bins.pass}` };
   if (/^config §/.test(text)) return { text: 'fix the config row with /desk-setup', cmd: '/desk-setup' };
@@ -407,14 +402,14 @@ function eligibilityAction(text, bins) {
 //   action   { text, cmd } where the person can clear it, else null
 //   detail   the line of another module's it quotes (the machine or repo budget's, the base lag, an
 //            eligibility hold's words), where heldText says it as it is
-// `s.heldBack` [{ key, holds }] (decideReportLines's) are the tickets a collision held; a collision is
-// the hold only when no ticket was eligible and nothing else held. `s.bins` { queue, pass } name the
-// scripts an action runs.
+// `s.heldBack` (keys) are the tickets a collision held; a collision is the hold only when no ticket was
+// eligible. The report says it in its own line (decideReportLines), and its `held` stays null as it
+// always was. `s.bins` { queue, pass } name the scripts an action runs.
 export function holdOf(s) {
   if (s.spawned) return null;
   if (!s.eligible) {
     const back = s.heldBack ?? [];
-    return back.length ? { cause: 'collision', scope: 'batch', numbers: null, holders: [], tickets: back.map((x) => x.key), action: null, detail: collisionText(back) } : null;
+    return back.length ? { cause: 'collision', scope: 'batch', numbers: null, holders: [], tickets: [...back], action: null } : null;
   }
   const h = (cause, scope, more = {}) => ({ cause, scope, numbers: null, holders: [], tickets: [], action: null, ...more });
   if (s.held) {
@@ -434,15 +429,12 @@ export function holdOf(s) {
   return null;
 }
 
-const collisionText = (back) => `held back by a collision: ${back.map((x) => `${x.key} (${x.holds.map((b) => {
-  const names = [...b.by, ...(b.elsewhere ?? []).map((o) => `${o.key} in ${o.label}`)];
-  return `${b.file} has ${names.length} running of its ${b.k}: ${names.join(', ')}`;
-}).join('; ')})`).join(', ')}`;
-
-// A hold (holdOf) as the pass record's `held` string, the report's and logs' words for it.
+// A hold (holdOf) as the pass record's `held` string, the report's and logs' words for it, or null
+// where there was none (a collision included: the report names it in its own line).
 export function heldText(hold) {
   if (!hold) return null;
   switch (hold.cause) {
+    case 'collision': return null;
     case 'test-lock': {
       const n = hold.numbers, tickets = hold.tickets.join(', ');
       if (!n.stall) return `held for the next pass, not a stall (${tickets}): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; ${n.running} worker(s) running against the batch's cap of ${n.concurrency}`;
@@ -456,6 +448,3 @@ export function heldText(hold) {
     default: return hold.detail;
   }
 }
-
-// Why nothing spawned while something could have, in words (heldText of holdOf), or null.
-export const heldWhyOf = (s) => heldText(holdOf(s));

@@ -363,13 +363,15 @@ export function queueLine(q) {
 
 // The gate over the lock queues a repo's suite-bound workers would join (lockQueue readings; a null is
 // left out), or null with none: its room is the least any leaves, it holds when any holds, and its line
-// is each holding queue's, else the tightest's. `queues` keeps every reading, so one not read is said.
+// is each holding queue's, else the tightest's. `queues` keeps every reading, so one not read is said;
+// `named` the readings its line names.
 export function lockGate(queues) {
   const read = queues.filter(Boolean);
   if (!read.length) return null;
   const tight = read.reduce((a, b) => (b.room < a.room ? b : a));
   const holding = read.filter((q) => q.holds);
-  return { ...tight, holds: holding.length > 0, line: holding.length ? holding.map((q) => q.line).join('; and ') : tight.line, queues: read };
+  const named = holding.length ? holding : [tight];
+  return { ...tight, holds: holding.length > 0, line: named.map((q) => q.line).join('; and '), queues: read, named };
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.
