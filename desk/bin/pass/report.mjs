@@ -355,14 +355,16 @@ export function mergeGapLine(tickets, reported = []) {
 
 // The line for the tickets the lock-queue gate held this pass (`held`, keys), or null with none. `gate`
 // is suite-wait.mjs lockGate's reading, `running` the workers running now and `concurrency` the batch's
-// cap. With a run waiting on a queue it is a stall, the gate's line; with none waiting on any, the room
-// went to this pass's own starts, so the hold is the workers', and reads as a wait. -> { line, stall }.
+// cap. With a run waiting on a queue it is a stall, the gate's line. With none waiting on any, the room
+// went to this pass's own suite-bound starts (the cap is checked before the gate, so it held none of
+// these): a wait for the next pass, which names the workers running against the cap beside it, not a
+// stall. -> { line, stall }.
 export function lockHeldLine({ gate, held, running, concurrency }) {
   if (!held.length || !gate) return null;
   if (gate.queues?.some((q) => q.waiting > 0) ?? true) {
     return { stall: true, line: `${gate.line}: holding new workers and resumes into Stage 4 (${held.join(', ')}), past the ${gate.room} this pass had room for` };
   }
-  return { stall: false, line: `held for worker concurrency, not the lock (${held.join(', ')}): ${running} worker(s) running against the batch's cap of ${concurrency}, with no run waiting on the lock` };
+  return { stall: false, line: `held for the next pass, not a stall (${held.join(', ')}): no run is waiting on the lock, and this pass already started the ${gate.room} suite-bound session(s) it may start at once; ${running} worker(s) running against the batch's cap of ${concurrency}` };
 }
 
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.

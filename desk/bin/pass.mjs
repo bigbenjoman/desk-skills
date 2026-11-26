@@ -6245,7 +6245,7 @@ if (!DRY) {
   const waits = [
     ...(spawnCause ? eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').map((r) => ({ key: r.key, cause: spawnCause })) : []),
     ...collisions.map((c) => ({ key: c.key, cause: 'collision' })),
-    ...lockQueueHeld.map((key) => ({ key, cause: LOCK_HELD?.stall === false ? 'worker concurrency' : 'test lock queue' })),
+    ...lockQueueHeld.map((key) => ({ key, cause: LOCK_HELD?.stall === false ? 'suite starts this pass' : 'test lock queue' })),
     ...stuckWaits,
     ...externalWaits.filter((w) => down.has(w.login)).map((w) => ({ key: w.key, cause: 'gate reviewer down' })),
   ];

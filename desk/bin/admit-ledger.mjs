@@ -37,11 +37,9 @@ export function liveWaiters(cls, dir, { isAlive = alive, startsOf = null } = {})
   const stamped = marks.filter((m) => m.start).map((m) => m.pid);
   let starts = null;
   try { starts = startsOf && stamped.length ? startsOf(stamped) : null; } catch { /* unread: alive alone */ }
-  return marks.filter((m) => {
-    if (isAlive(m.pid) && (!m.start || !starts || starts.get(m.pid) === m.start)) return true;
-    try { unlinkSync(join(wdir, String(m.pid))); } catch { /* gone already */ }
-    return false;
-  }).map((m) => m.pid);
+  const live = liveEntries(marks, { isAlive, starts });
+  for (const m of marks) if (!live.includes(m)) try { unlinkSync(join(wdir, String(m.pid))); } catch { /* gone already */ }
+  return live.map((m) => m.pid);
 }
 
 // The ledger's lines as [{ at, pool, pid, gb, load, reason, start }]; a line that does not read is
