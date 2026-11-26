@@ -1777,6 +1777,7 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
 // Every name's charge this month, most first, then shared and the total, under a line with the total
 // by supplier. A name the cost sources list with no figure reads –. A row ends in what its figure
 // leaves out, the total in how many figures were not read today, and a note under them says each.
+// With a `width`, a line too wide is cut at a whole field (fitRuns).
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
   const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
@@ -1784,7 +1785,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
   const unread = unreadSources({ cache: fc, costs });
   if (!c) return { head: noFigureHead(unread, costs, fc, width), rows: [], foot };
-  const charged = segLine([['charged ', GREY], ...chargedSegs(c)]);
+  const charged = segLine(fitRuns([['charged ', GREY], ...chargedSegs(c)], width));
   const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
   const aw = Math.max(10, usd(c.total).length + 3);
@@ -1794,7 +1795,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const rows = lines.map((x) => {
     const tag = x.name === 'shared' ? sharedTag : costTag(x, { now, suppliersOf, repoless });
     const open = x.name === 'shared' ? null : { kind: 'costs', ...costPlace(repos, costs, x.name) };
-    const r = segRow(`cost ${x.name}`, [[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], open);
+    const r = segRow(`cost ${x.name}`, fitRuns([[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], width), open);
     return { ...r, bill: x.name === 'shared' ? null : billOf(x, { costs }) };
   });
   const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
@@ -1809,7 +1810,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
     ...unreadNameNotes(unread, { said: (name, s) => c.names.some((x) => x.name === name && x.cantRead?.supplier === s) }),
   ];
   return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
-    foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes]), ...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
+    foot: [segLine(fitRuns([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes], width)),...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
 }
 
 export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
@@ -2121,7 +2122,7 @@ const LEVERS_ARROW = ' ↗';
 const agoShort = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
 // What stops the page updating, in words: build.json's failure, else a page built with a broken line.
 const leversFault = (p) => p.failed?.where ?? (p.view?.line?.state === 'broken' ? whereOf(p.view.line.error, p.view.repos) : null);
-function leversLine(p, now) {
+function leversLine(p, now, width = null) {
   const link = (text) => [BAR, [`${text}${LEVERS_ARROW}`, UNDERLINE]];
   const fig = (label, n) => [[label, GREY], [String(n), BOLD]];
   const fault = leversFault(p);
@@ -2148,7 +2149,7 @@ function leversLine(p, now) {
     }
     segs.push(...link('Open Levers'));
   }
-  return { ...segLine(segs), link: 'levers' };
+  return { ...segLine(fitRuns(segs, width)), link: 'levers' };
 }
 // The Levers line as plain text, less its arrow.
 const leversText = (p, now) => leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '');
@@ -2903,6 +2904,18 @@ function cutCells(cells, width) {
   return [...out, [' …', null]];
 }
 const cutLine = (cells, width) => cutCells(cells.map((s) => [s, null]), width).map(([s]) => s).join('');
+// A line's coloured runs cut to `width` at a whole field, as cutCells cuts a row. A field starts at a
+// run that opens with a blank (a gap, or a " │ " or " · " separator), so a label and its figure
+// ("kept " and "3") go together and no separator is left before the " …".
+function fitRuns(segs, width) {
+  const fields = [];
+  for (const [s, k] of segs) { if (!fields.length || /^\s/.test(s)) fields.push([]); fields.at(-1).push([s, k]); }
+  const cells = cutCells(fields.map((f) => [f.map(([s]) => s).join(''), f]), width);
+  if (cells.at(-1)?.[0] !== ' …') return segs;
+  const kept = cells.slice(0, -1).flatMap(([, f]) => f);
+  if (kept.length) kept.at(-1)[0] = kept.at(-1)[0].trimEnd();
+  return [...kept, [' …', null]];
+}
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache, hidden = null } = {}) {
   // One row per repo, adding up its batches on screen.
@@ -2921,7 +2934,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   // RUNS ON's cell, empty while the column is not shown.
   const runs = (r) => (!lay.runsW ? ['', null] : ((t) => [pad(t, lay.runsW), t === '—' ? GREY : null])(runsOn(r.slug)));
   const head = [
-    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now), count: needOf }),
+    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now, width), count: needOf }),
     '',
     bold(cutLine([`  ${pad('REPO', w)}`, lay.runsW ? pad('RUNS ON', lay.runsW) : '', pad('LAST PASS', lay.lastW), ...lay.cols.map(([h, , cw]) => rpad(h, cw)), `  ${pad('ALL DONE BY', lay.qdW)}`, '  WORKERS'], width)),
   ];

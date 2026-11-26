@@ -2768,6 +2768,20 @@ t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Buil
 // A page just past the 10-minute rebuild, waiting for the next supervisor tick, is no fault.
 L654 = await leversLine654({ line: WORKING654, age: 15 });
 t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
+// issue-1485 AC2: home at 60, 80 and 120 columns keeps the Levers line whole where it fits, and cuts a
+// longer one after a whole field with " …", never inside one or after a separator.
+{
+  const NEEDS1485 = '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you │ Open Levers ↗';
+  const at1485 = async (columns) => {
+    levers654({ line: { ...WORKING654, state: 'needs_you', needs_you: 1 } });
+    const s = screen({ kind: 'overview', all: false }, columns, () => NOW);
+    await sleep(20);
+    s.ui.finish(0);
+    return lastFrame(s).map((l) => l.replace(ANSI, '')).find((l) => /^[○●▼▲] Levers /.test(l)) ?? '';
+  };
+  const want1485 = { 60: '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 …', 80: '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you …', 120: NEEDS1485 };
+  for (const columns of [60, 80, 120]) t(`issue-1485 AC2: home's Levers line at ${columns} columns`, await at1485(columns), want1485[columns]);
+}
 
 // v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves. The stub
 // finishes only once the screen has been read while it rebuilds, never on a timer: a draw of home's whole
