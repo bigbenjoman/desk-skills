@@ -197,11 +197,14 @@ if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
   rm -f "$CANARY" "$WT/.preflight.tmp"
   HAVE_JIRA=""; command -v desk-jira >/dev/null 2>&1 && HAVE_JIRA=1
   HAVE_CODEX=""; command -v codex >/dev/null 2>&1 && HAVE_CODEX=1
+  # The READ check's Read is what the worker reread hook records, under the session's id.
+  READ_FILE="$STATE/workers/$TICKET.preflight-read.txt"
   cd "$WT"
   # One line per check; a TOOLn line for every toolchain binary, so a second toolchain (a Python
   # backend beside a JS frontend) is proved to execute, not just the first.
   CHECKS="W_IN=OK or W_IN=BLOCKED  — write the file $WT/.preflight.tmp containing x
-W_OUT=OK or W_OUT=BLOCKED — write the file $CANARY containing x"
+W_OUT=OK or W_OUT=BLOCKED — write the file $CANARY containing x
+READ=OK or READ=BLOCKED — read the file $READ_FILE with your Read tool"
   i=0
   for p in "${TOOL_PROBES[@]}"; do i=$((i + 1)); CHECKS="$CHECKS
 TOOL$i=OK or TOOL$i=BLOCKED — run: $p"; done
@@ -212,7 +215,7 @@ DENY2=OK or DENY2=BLOCKED — run: git -c alias.st=status st
 ESCAPE=OK or ESCAPE=BLOCKED — run: touch $CANARY.bash
 CODEX=OK or CODEX=BLOCKED — run: codex --version
 AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subagent type your Agent tool offers (do not launch any): $AGENT_NAMES"
-  NCHECKS=$((i + 8))
+  NCHECKS=$((i + 9))
   # With the preflight lever on (config §3b Phase 0 levers), a pass on these same inputs stands: the
   # ticket's own pass, or for a day another ticket's in this repo, since the ticket's worktree, key,
   # branch and database, and the other worktrees its settings deny, are placeholders in the hash (the
@@ -261,12 +264,20 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
   fi
   rm -f "$PREFLIGHT_RECORD"
   [ -z "$FINGERPRINT" ] || node "$BIN/preflight-fingerprint.mjs" forget "$STATE" "$FINGERPRINT" </dev/null >/dev/null 2>&1 || true
+  printf 'x\n' > "$READ_FILE"
+  trap 'rm -f "$READ_FILE"' EXIT
+  # The worker's hooks act only under this flag, so the preflight call runs under it as the worker does.
+  export DESK_AUTOPILOT_WORKER=1
+  # Where the reread hook is registered, its record for the call's session proves the hooks loaded.
+  REREAD_DIR=""
+  grep -q 'desk-worker-reread\.py' "$SETTINGS" 2>/dev/null && REREAD_DIR="${DESK_HOME:-$HOME/.claude/desk}/worker-reread"
   PRE_PROMPT="Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS"
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
-  # unknown, never zero. pass.mjs reads the [preflight] cost line. One node run reads all three: the
-  # cost line, then yes or no for the usage limit, then the reply.
+  # unknown, never zero. pass.mjs reads the [preflight] cost line. One node run reads them all: the
+  # cost line, yes or no for the usage limit, yes or no for a sign-in the CLI could not make, the
+  # session id (empty when none), then the reply.
   read_raw() {
     printf '%s\n' "$RAW" | node -e '
       let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
@@ -276,6 +287,9 @@ $CHECKS"
         const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
         console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
         console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
+        const AUTH = /invalid api key|please run \/login|not logged in|oauth token (has )?(expired|been revoked|revoked)|authentication_error|failed to authenticate/i;
+        console.log(r ? (r.api_error_status === 401 || (r.is_error === true && AUTH.test(String(r.result ?? ""))) ? "yes" : "no") : (AUTH.test(s) ? "yes" : "no"));
+        console.log(/^[A-Za-z0-9_-]+$/.test(String(r?.session_id ?? "")) ? r.session_id : "");
         process.stdout.write(r && typeof r.result === "string" ? r.result : s);
       });' || true
   }
@@ -303,8 +317,11 @@ $CHECKS"
       ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
     PARSED="$(read_raw)"
     PRE_COST="${PARSED%%$'\n'*}"; PARSED="${PARSED#*$'\n'}"
-    PRE_LIMIT="${PARSED%%$'\n'*}"; RESULT=""
-    case "$PARSED" in *$'\n'*) RESULT="${PARSED#*$'\n'}" ;; esac  # an empty reply leaves no line after the limit
+    # $(...) drops the trailing newlines, so with no session id and no reply the last lines run out.
+    PRE_LIMIT="${PARSED%%$'\n'*}"; case "$PARSED" in *$'\n'*) PARSED="${PARSED#*$'\n'}" ;; *) PARSED="" ;; esac
+    PRE_SIGNIN="${PARSED%%$'\n'*}"; case "$PARSED" in *$'\n'*) PARSED="${PARSED#*$'\n'}" ;; *) PARSED="" ;; esac
+    PRE_SESSION="${PARSED%%$'\n'*}"; RESULT=""
+    case "$PARSED" in *$'\n'*) RESULT="${PARSED#*$'\n'}" ;; esac  # an empty reply leaves no line after the session
   }
   # Two calls' "cost=<usd> turns=<n>" added up; either part unknown in one call is unknown in the sum.
   sum_cost() {
@@ -340,6 +357,17 @@ $CHECKS"
     if [ -e "$WT/.preflight.tmp" ]; then LINES="$LINES$(printf '  %-6s %-8s ok' W_IN OK)"$'\n'
     else check W_IN OK; fi  # must be able to edit its own worktree
     check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
+    # The reread hook records each Read under the session's id: none after a Read the session made means
+    # the --settings hooks (reread, hints, stop) did not load. Only a Read never made is retried.
+    if [ -z "$REREAD_DIR" ]; then LINES="$LINES  HOOKS  skipped  (the worker reread hook is not installed, so its record cannot be checked)"$'\n'
+    elif [ -n "$PRE_SESSION" ] && [ -n "$(find "$REREAD_DIR/$PRE_SESSION" -name '*.json' 2>/dev/null | head -1)" ]; then
+      LINES="$LINES$(printf '  %-6s %-8s ok' HOOKS OK)"$'\n'
+    elif printf '%s\n' "$RESULT" | grep -qE '^READ=OK'; then
+      LINES="$LINES  HOOKS  FAIL     (worker hooks did not load in the preflight: the session ${PRE_SESSION:-with no session id} read a file and the reread hook recorded nothing; CLI $(claude --version 2>/dev/null | head -1 || true))"$'\n'
+      fail=1; breach=1
+    else check READ OK; fi
+    # The preflight session never resumes, so its records go.
+    [ -n "$REREAD_DIR" ] && [ -n "$PRE_SESSION" ] && rm -rf "${REREAD_DIR:?}/$PRE_SESSION"
     i=0
     for _ in "${TOOL_PROBES[@]}"; do i=$((i + 1)); check "TOOL$i" OK; done   # every toolchain binary (config §4) executes
     check AGENTS OK       # the named review seats resolve, not general-purpose
@@ -384,6 +412,13 @@ $CHECKS"
       echo "[preflight] ${TOTAL_COST:-cost=unknown turns=unknown}"
       [ -z "$RETRY_NOTE" ] || echo "$RETRY_NOTE"
       echo "[preflight] usage-limit: the account is at its usage limit ($(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"
+      echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
+      exit 1
+    fi
+    # A call the CLI could not sign in for answered no check either: name the sign-in, in its own words.
+    if [ "$PRE_SIGNIN" = yes ]; then
+      echo "[preflight] ${TOTAL_COST:-cost=unknown turns=unknown}"
+      echo "  SIGNIN FAIL     (the CLI could not sign in, so no check ran; claude said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"
       echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
       exit 1
     fi

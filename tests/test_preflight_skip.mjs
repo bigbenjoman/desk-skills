@@ -84,6 +84,8 @@ printf '%s' "$*" | tr '\\n' ' ' >> "${T}/calls"
 echo >> "${T}/calls"
 # While $T/write-w-in exists, the session really writes the W_IN file the prompt names.
 if [ -e "${T}/write-w-in" ]; then f=$(printf '%s' "$*" | grep -oE '[^ ]*/\\.preflight\\.tmp' | head -1); [ -n "$f" ] && echo x > "$f"; fi
+# While $T/write-reread exists, the worker reread hook fires as it does under DESK_AUTOPILOT_WORKER=1.
+if [ -e "${T}/write-reread" ] && [ "\${DESK_AUTOPILOT_WORKER-}" = 1 ]; then mkdir -p "$DESK_HOME/worker-reread/sess-1"; echo '{}' > "$DESK_HOME/worker-reread/sess-1/r.json"; fi
 # The model list (model-list.mjs): the initialize response, naming each model in $T/models, and no turn.
 case "$*" in *--input-format*) printf '{"type":"control_response","response":{"subtype":"success","request_id":"desk-model-list","response":{"models":[%s]}}}\\n' "$(cat "${T}/models")"; exit 0 ;; esac
 # $T/reply.first, while it exists, answers one call in place of $T/reply.
@@ -277,6 +279,33 @@ for (const p of Object.values(aged)) p.at = new Date(Date.now() - 25 * 3600 * 10
 writeFileSync(passes, JSON.stringify(aged));
 t('DS-699 a pass more than 24 hours old stands for no other ticket', ran(two()), RAN);
 t('DS-699 and the run that replaces it is recorded as that ticket\'s, the stale passes dropped', Object.values(JSON.parse(readFileSync(passes, 'utf8'))).map((p) => p.ticket), ['ticket-two']);
+
+// DS-1021: with the reread hook registered, the preflight session's own record proves the worker hooks
+// loaded, and a sign-in the CLI could not make is named as one.
+const hooksDir = join(T, 'home', '.claude', 'hooks');
+mkdirSync(hooksDir, { recursive: true });
+writeFileSync(join(hooksDir, 'desk-worker-reread.py'), '');
+const READ_GOOD = result(`${GOOD}\nREAD=OK`, { session_id: 'sess-1' });
+const rereadDir = join(T, 'deskhome', 'worker-reread', 'sess-1');
+say('reply', READ_GOOD);
+r = preflight(off);
+t('DS-1021 AC1 a Read the reread hook did not record stops the spawn, unretried',
+  [r.status, r.passed, r.calls.length, /HOOKS +FAIL +\(worker hooks did not load in the preflight: .*CLI 2\.0\.0 \(Claude Code\)\)/.test(r.out)], [1, false, 1, true]);
+say('reply', result('Invalid API key · Please run /login', { is_error: true, num_turns: 1, session_id: 'sess-1' }));
+r = preflight(off);
+t('DS-1021 AC2 a sign-in failure stops the spawn, in the CLI\'s words, with no check verdict',
+  [r.status, r.passed, /SIGNIN FAIL +\(the CLI could not sign in, so no check ran; claude said: Invalid API key · Please run \/login\)/.test(r.out), /W_IN|HOOKS|BLOCKED/.test(r.out)], [1, false, true, false]);
+say('reply', 'Not logged in · Please run /login');
+r = preflight(off);
+t('DS-1021 AC2 a sign-in failure with no json result reads the same', [r.status, /SIGNIN FAIL .*Not logged in/.test(r.out)], [1, true]);
+say('reply', READ_GOOD);
+say('write-reread', '');
+r = preflight(off);
+t('DS-1021 AC3 a session the reread hook recorded spawns as now', [r.status, r.passed, /HOOKS +OK +ok/.test(r.out)], [0, true, true]);
+t('DS-1021 the preflight session\'s records and its read file are tidied', [existsSync(rereadDir), existsSync(join(T, 'state', 'workers', `${KEY}.preflight-read.txt`))], [false, false]);
+rmSync(join(T, 'write-reread'));
+rmSync(join(hooksDir, 'desk-worker-reread.py'));
+say('reply', result(GOOD));
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

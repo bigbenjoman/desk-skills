@@ -51,6 +51,10 @@ With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last 
 the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
 A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
 checks that should be OK, is run once more at default effort; a boundary failure is never retried.
+The preflight session also reads one file, and where `desk-worker-reread.py` is installed it fails
+with "worker hooks did not load in the preflight", naming the CLI version, when that Read left no
+record from the hook: the worker's `--settings` hooks did not run. A call the CLI could not sign in
+for fails on its own `SIGNIN` line, quoting the CLI, rather than as a failed check.
 
 With the `ledger` lever on (config §3b Phase 0 levers), every queue write also appends what it
 changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.jsonl`, naming its
