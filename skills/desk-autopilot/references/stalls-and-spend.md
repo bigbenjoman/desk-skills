@@ -180,5 +180,9 @@ the PR's last desk review (the latest verdict review the person's logins posted,
 time). An entry dated after that review's day, or on it when the file was written since, restarts the
 worker at Stage 3, whatever stage a handoff or last round names. The briefing lists the new entries,
 and the worker checks the branch for each before building it (`spawned: … restarted at Stage 3: 1
-Decisions entry dated after PR #<n>'s last review`). An unfinished fix try keeps its own task, and a
-PR gh cannot read is said in the report and resumes as before.
+Decisions entry dated after PR #<n>'s last review`). The spawn records the time as the queue's
+`decisions_seen`, and later spawns compare with it where it is after the review, so the restarted
+session's own handoff to 4b, and a requeue after a session that found every entry met and pushed
+nothing, do not restart again. A round whose worktree or resume file is refused starts at Stage 0
+with the entries instead. An unfinished fix try keeps its own task, and a PR gh cannot read is said in
+the report and resumes as before.

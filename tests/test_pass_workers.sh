@@ -1145,6 +1145,10 @@ respawn Q-1
 check "#1465 AC1 a handed-off ticket whose Decisions gained an entry after its PR's last review restarts at Stage 3" 'spawned_for Q-1 | grep -q "stage=3 " && [ "$(field Q-1 stage)" = "\"3\"" ] && echo "$out" | grep -qF "Q-1 fresh session from Stage 3 (handed off at Stage 7; restarted at Stage 3: 1 Decisions entry dated after PR #61'"'"'s last review"'
 check "#1465 AC1 its briefing lists the new entry ahead of the handoff, and says to start at Stage 3" 'b=$(brief Q-1); grep -qF "## New decisions since PR #61'"'"'s last review: this session starts at Stage 3" <<< "$b" && grep -qxF -- "- 2026-11-24 ben: widen it to the list page" <<< "$b" && grep -qF "## Handoff: this session starts at Stage 7" <<< "$b"'
 check "#1465 AC2 the briefing has the worker check the branch first and name the commit that meets it" 'brief Q-1 | grep -qF "Where a commit on it already meets a decision, say so, naming that commit and the decision"'
+check "#1465 the restart records when it was delivered" 'field Q-1 decisions_seen | grep -qE "^\"20[0-9]{2}-"'
+hfile Q-1 4b "typecheck: pass"; hlog Q-1 "$(printf 'AUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1465 the restarted session's own handoff goes on to Stage 4b, not back to Stage 3" '[ "$(spawned_for Q-1 | tail -1 | grep -o "stage=[^ ]*")" = stage=4b ] && ! brief Q-1 | grep -q "## New decisions"'
 q set Q-1 state=done
 respawn Q-2
 check "#1465 AC3 a requeue with no Decisions change resumes at the stage its handoff named" 'spawned_for Q-2 | grep -q "stage=7 " && ! brief Q-2 | grep -q "## New decisions"'
@@ -1154,8 +1158,14 @@ out=$(node "$B/pass.mjs" 2>&1)
 q set Q-3 result.pr=63; decided Q-3 2026-11-24 "and the empty state"
 respawn Q-3
 check "#1465 AC1 a requeue resuming its last round restarts at Stage 3, keeping the round's summary" 'spawned_for Q-3 | grep -q "stage=3 " && brief Q-3 | grep -qF "## New decisions since PR #63" && brief Q-3 | grep -qF "## Last round: this session resumes at Stage 5" && echo "$out" | grep -q "Q-3 .*restarted at Stage 3"'
+q set Q-3 state=done
+parking Q-4 "5/9 evidence" "which page shows it?"
+out=$(node "$B/pass.mjs" 2>&1)
+q set Q-4 result.pr=64; decided Q-4 2026-11-24 "and the empty state"; stateresume Q-4 fix/Q-4-old
+respawn Q-4
+check "#1465 a restart whose resume file is for another branch starts at Stage 0 with the entries, and moves that file aside" 'spawned_for Q-4 | grep -q "stage= " && brief Q-4 | grep -qF "## New decisions since PR #64'"'"'s last review: this session starts at Stage 0" && brief Q-4 | grep -qF "do not resume from its resume file" && [ -f "$DESK_AUTOPILOT_STATE/resume/Q-4.json.old" ] && echo "$out" | grep -q "Q-4 .*restarted at Stage 0"'
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
-for k in Q-1 Q-2 Q-3; do q set "$k" state=done; done
+for k in Q-1 Q-2 Q-3 Q-4; do q set "$k" state=done; done
 
 # ---- DS-742: a worker queue.mjs stop ended stays held until the person lets it start -------------
 all_done
