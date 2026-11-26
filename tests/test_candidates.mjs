@@ -225,7 +225,8 @@ t('#1484 AC1 with no account id, the signed-in Jira user', ownAssignee(null), 'a
 {
   // More of the person's own than a page: the top tier is read first, so an older P0 is not lost behind newer P2s.
   const at = (d) => ({ created: `2026-11-${String(d).padStart(2, '0')}T09:00:00.000+0000`, assignee: { accountId: ME } });
-  const issues = [issue('ACME-80', 'Bug', 'P0', at(1)), ...Array.from({ length: 120 }, (_, i) => issue(`ACME-${300 + i}`, 'Task', 'P2', at(20)))];
+  // The fake reads in array order, so the P0 sits after a page of P2s, as a created-ordered search would hold it.
+  const issues = [...Array.from({ length: 120 }, (_, i) => issue(`ACME-${300 + i}`, 'Task', 'P2', at(20))), issue('ACME-80', 'Bug', 'P0', at(1))];
   const got = list(readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) }));
   t('#1484 AC1 an older P0 of the person\'s own comes first past a page of P2s', [got.offered[0].key, got.more], ['ACME-80', true]);
 }
