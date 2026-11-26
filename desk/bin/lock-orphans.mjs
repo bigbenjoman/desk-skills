@@ -13,17 +13,19 @@ export const orphanGraceS = (env = process.env) => (/^\d+$/.test(env.AUTOPILOT_O
 
 // A per-user service manager, which adopts orphans in place of pid 1 where it is a subreaper.
 const SUBREAPER = /^(?:\S*\/)?systemd\s+--user(?:\s|$)/;
-// A desk script's path: the pass, a base gate, a spine check.
-const DESK_SCRIPT = /(?:^|\/)desk\/(?:releases\/[^/]+\/)?bin\/[^/]+\.(?:mjs|sh)$/;
-const INTERPRETER = /^(?:node(?:js)?|bash|sh)$/;
-// Whether a process (its ps args) is a desk script that owns a run, so a run under it has an owner that is
-// not a worker. Only the program itself counts, run directly or as an interpreter's script: never a path
-// named inside a shell's command string (a worker's shell names with-lock.sh there). with-lock.sh is no
-// owner either, since it only takes the lock for whoever called it.
+// The desk's own entry points, which the desk starts rather than a worker: the supervisor, the pass it
+// runs, the base gate the pass spawns and the maintenance step. Any other desk script (desk-env.mjs, which
+// a worker runs for its baseline checks, or with-lock.sh, which only takes the lock for its caller) owns
+// nothing: a run under one is still the worker's.
+const DESK_OWNER = /(?:^|\/)desk\/(?:releases\/[^/]+\/)?bin\/(?:pass|base-gate|supervisor|maintenance)\.mjs$/;
+const INTERPRETER = /^node(?:js)?$/;
+// Whether a process (its ps args) is a desk entry point that owns a run, so a run under it has an owner
+// that is not a worker. Only the program itself counts, run directly or as node's script: never a path
+// named inside a shell's command string (a worker's shell names desk scripts there).
 export function isDeskOwner(args) {
   const words = String(args ?? '').trim().split(/\s+/);
   const script = INTERPRETER.test(basename(words[0] ?? '')) ? words.slice(1).find((w) => !w.startsWith('-')) : words[0];
-  return !!script && DESK_SCRIPT.test(script) && basename(script) !== 'with-lock.sh';
+  return !!script && DESK_OWNER.test(script);
 }
 
 // The key of the ticket worktree a path is in, under `worktrees`, or null.

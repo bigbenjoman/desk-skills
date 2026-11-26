@@ -39,13 +39,18 @@ t('#1459 AC1 a holder whose shell outlived its Claude session, in a worktree who
   why([{ ...SHELL, ppid: 1 }, RUN]), "its worktree's ticket T-1 is no longer running (parked)");
 t('#1459 AC3 the same holder in a running ticket\'s worktree is left alone',
   why([{ ...SHELL, ppid: 1 }, RUN], join(WT, 'T-2', 'apps')), null);
-t('#1459 AC3 a holder under a desk script (a gate the pass started) is left alone',
-  why([{ pid: 150, ppid: 1, args: 'node /home/u/.claude/desk/releases/abc123/bin/some-gate.mjs run' }, { ...SHELL, ppid: 150 }, RUN]), null);
+t('#1459 AC3 a holder under a desk entry point (the base gate the pass started) is left alone',
+  why([{ pid: 150, ppid: 1, args: 'node /home/u/.claude/desk/releases/abc123/bin/base-gate.mjs' }, { ...SHELL, ppid: 150 }, RUN]), null);
+t('#1459 AC1 a worker\'s baseline typecheck (desk-env.mjs, then with-lock.sh tsc), its ticket not running, is orphaned',
+  why([{ ...SHELL, ppid: 1 }, { pid: 240, ppid: 200, args: 'node /home/u/.claude/desk/bin/desk-env.mjs baseline typecheck' },
+    { pid: 250, ppid: 240, args: 'bash /home/u/.claude/desk/bin/with-lock.sh tsc -- sh -c pnpm typecheck' }, { ...RUN, ppid: 250, args: 'sh -c pnpm typecheck' }]),
+  "its worktree's ticket T-1 is no longer running (parked)");
 t('#1459 AC1 a holder under a with-lock.sh wrapper (the child-run path), in a worktree whose ticket is not running, is orphaned',
   why([{ ...SHELL, ppid: 1 }, { pid: 250, ppid: 200, args: 'bash /home/u/.claude/desk/bin/with-lock.sh light -- bash tests/test_related.sh' }, { ...RUN, ppid: 250 }]), "its worktree's ticket T-1 is no longer running (parked)");
-t('#1459 a desk script owns a run only as the program itself',
-  ['node /home/u/.claude/desk/bin/pass.mjs', '/home/u/.claude/desk/bin/base-gate.sh run', 'bash --noprofile /x/desk/releases/abc/bin/spine.sh', SHELL.args, 'bash /home/u/.claude/desk/bin/with-lock.sh test -- true', 'vim desk/bin/pass.mjs'].map(isDeskOwner),
-  [true, true, true, false, false, false]);
+t('#1459 only a desk entry point owns a run, and only as the program itself',
+  ['node /home/u/.claude/desk/bin/pass.mjs', 'node /x/desk/releases/abc/bin/supervisor.mjs tick --foreground', '/usr/bin/node /x/desk/bin/maintenance.mjs step',
+    SHELL.args, 'bash /home/u/.claude/desk/bin/with-lock.sh test -- true', 'node /home/u/.claude/desk/bin/desk-env.mjs baseline lint', 'vim desk/bin/pass.mjs'].map(isDeskOwner),
+  [true, true, true, false, false, false, false]);
 t('#1459 a holder outside the worktrees directory, its parent alive, is not judged by any ticket',
   why([{ ...SHELL, ppid: 1 }, RUN], '/home/u/code/other'), null);
 t('#1459 a holder of a ticket the queue does not hold is not judged by it',
