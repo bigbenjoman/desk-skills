@@ -139,7 +139,7 @@ import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } fr
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
-import { addPutOff, clearPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
+import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
 import { followKind, checkOf, settled, broken, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS, FOLLOW_BROKEN_RETRY_MS } from './follow-steps.mjs';
@@ -2403,8 +2403,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // refused naming those that are.
   // A put-off ticket row can always be dropped (queue.mjs drop says if it cannot), so one whose premise
   // was decided otherwise leaves Put off.
-  const putOffRow = verb === 'drop' && !!r.q.tickets?.[x.t.key] && judged(r, x, readRegister(r.stateDir), reads).l.status === 'put_off';
+  const putOffRow = ['drop', 'done'].includes(verb) && !!r.q.tickets?.[x.t.key] && judged(r, x, readRegister(r.stateDir), reads).l.status === 'put_off';
   const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : []), ...(putOffRow ? ['drop'] : [])];
+  // A put-off ticket row takes no done: done means a step was taken, and drop dismisses the rest.
+  if (verb === 'done' && putOffRow) return { ok: false, line: `${r.name} ${ticket}: ${putOffDoneRefusal(item.kind, allowed)}` };
   if (!allowed.includes(verb)) return offDrop() ?? { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
@@ -2671,16 +2673,13 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
-      // Done on a row put off with not-now is answered as the listed row's is, and then it leaves Put
-      // off: a batch-wide hold, no ticket of the queue, is dismissed as a drop dismisses one; a ticket
-      // row, which the queue shows until a pass moves it on, is no longer put off.
+      // Done on a batch-wide hold put off with not-now (no ticket of the queue: a put-off ticket row
+      // was refused done above) is answered as the listed hold's is, and then it is dismissed as a
+      // drop dismisses one, so it leaves Put off.
       const j = judged(r, x, readRegister(r.stateDir)), key = putOffKey(r, x.t, j.item);
-      const wasOff = j.l.status === 'put_off';
       const out = rowDone();
-      if (!out.ok || !wasOff) return out;
-      if (!r.q.tickets?.[x.t.key]) return { ...out, line: `${out.line} It leaves Put off (${dismissPutOff({ r, t: x.t, putOffKey: key, putOffDir: r.stateDir }, now)}).` };
-      const c = clearPutOff(key.question, r.stateDir, new Date(now).toISOString());
-      return { ...out, line: `${out.line} ${c.ok ? `It is no longer put off (${notNowPath(r.stateDir)}).` : `It is still put off: ${c.why}.`}` };
+      if (!out.ok || j.l.status !== 'put_off') return out;
+      return { ...out, line: `${out.line} It leaves Put off (${dismissPutOff({ r, t: x.t, putOffKey: key, putOffDir: r.stateDir }, now)}).` };
     }
     default: return say(false, `unknown action ${verb}.`);
   }
@@ -2708,6 +2707,13 @@ function putOffHits(c, ticket) {
   return own.length ? own : c.off.filter((y) => itemKey(y.t, y) === ticket);
 }
 const manyPutOff = (c, ticket, hits, what, how) => ({ ok: false, line: `${c.named?.name ?? hits[0].r.repo} ${ticket}: ${hits.length} put-off items show as ${ticket}, so nothing was ${what}. ${how} one by its own key: ${hits.map((y) => y.t.key).join(', ')}.`, message: null });
+// Why done is refused on a put-off item with no done action (a duplicate, a finished ticket with no
+// PR, plan-first, unpromoted, a proposal, a base-sync approve, a ticket row): the actions it takes,
+// and that drop closes it.
+function putOffDoneRefusal(kind, verbs) {
+  const take = [...new Set(verbs)].filter((v) => !['done', 'not-now', 'drop'].includes(v));
+  return `done is not an action for a put-off ${kind} item, so nothing was recorded. ${take.length ? `It takes ${andList(take)}, and drop closes it` : 'Drop closes it'}.`;
+}
 // Records put-off item `off` dismissed in its register: it leaves Put off until what it keys to changes. -> the register's path
 function dismissPutOff(off, now) {
   const dir = off.putOffDir ?? off.r.stateDir;
@@ -2758,6 +2764,7 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   // done that records nothing (a noted item) would otherwise leave it there.
   const off = !i && verb === 'done' ? c.off.find((y) => y.t.key === ticket) : null;
   if (off) {
+    if (!off.actions.some(([a]) => a === 'done')) return { ok: false, line: `${off.r.repo} ${ticket}: ${putOffDoneRefusal(off.kind, off.actions.map(([a]) => a.split(' ')[0]))}` };
     const out = answerRepoItem(off, { ticket, verb, text, now, reads });
     return out.ok ? { ...out, line: `${out.line} It leaves Put off (${dismissPutOff(off, now)}).` } : out;
   }

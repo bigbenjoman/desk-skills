@@ -2372,6 +2372,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${chiDrop.ok} ${/Put off/.test(bpScr())} ${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).offItems.length}`, 'true false 0');
   N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
   t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
+  const chiDone = N.record({ word: 'chi934', ticket: 'base-push', action: 'done' });
+  t('issue-1494 done on a put-off base-push approve, which has no done action, is refused naming what it takes and that drop closes it',
+    `${chiDone.ok} ${/ base-push: done is not an action for a put-off base-push item, so nothing was recorded\. It takes approve, and drop closes it\.$/.test(chiDone.line)} ${/Put off · 1\b/.test(bpScr())}`, 'false true true');
 }
 
 // An item put off with not-now is still settled by done, as a listed one is, and leaves Put off.
@@ -2425,7 +2428,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${s.ok} ${/: noted: the next pass that reads OPS-8 from Jira .* It leaves Put off \(/.test(s.line)} ${psi().putOff} ${psi().shown}`, 'true true 0 0');
 }
 
-// Done on a put-off batch-wide hold, or on a put-off ticket row, is answered as the listed one is, and it leaves Put off.
+// Done on a put-off batch-wide hold is answered as the listed one is, and it leaves Put off; a put-off
+// ticket row refuses done, naming what it takes, and drop closes it (issue-1494 decision of 2026-11-26).
 {
   const stuck = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: null, frozen: 1, why: 'could not fetch feat/x from origin', path: '/wt/base-feat-x' };
   put('rho1494', { port: 4497, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
@@ -2436,15 +2440,19 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('issue-1494 AC1 done on a put-off base-sync hold is noted as a listed one is, and it leaves Put off',
     `${bs.ok} ${/^\S+ base-sync: noted: the next pass reads the base again.* It leaves Put off \(.*not-now\.jsonl\)\.$/.test(bs.line)} ${rho().putOff} ${rho().shown} ${N.collect({ word: 'rho1494' }).putOff}`, 'true true 0 0 0');
 
-  put('ups1494', { port: 4498, beat: 1, supervised: true, tickets: { 'U-1': { state: 'triaged', lane: 'A', worktree_busy: { why: 'its worktree /w/U-1 has uncommitted changes (a.txt)', at: minsAgo(30) } } } });
+  const busy = (k) => ({ state: 'triaged', lane: 'A', worktree_busy: { why: `its worktree /w/${k} has uncommitted changes (a.txt)`, at: minsAgo(30) } });
+  put('ups1494', { port: 4498, beat: 1, supervised: true, tickets: { 'U-1': busy('U-1'), 'U-2': busy('U-2') } });
   const ups = () => N.needsCount(loadRepos().find((r) => r.slug === 'acme__ups1494'));
   N.record({ word: 'ups1494', ticket: 'U-1', action: 'not-now' });
-  t('issue-1494 the worktree row is put off', `${ups().putOff} ${ups().shown}`, '1 0');
+  t('issue-1494 the worktree row is put off', `${ups().putOff} ${ups().shown}`, '1 1');
   const wt = N.record({ word: 'ups1494', ticket: 'U-1', action: 'done' });
-  t('issue-1494 AC1 done on a put-off ticket row is noted as a listed one is, and it is no longer put off',
-    `${wt.ok} ${/^\S+ U-1: noted: the next pass that finds the worktree clean .* It is no longer put off \(.*not-now\.jsonl\)\.$/.test(wt.line)} ${ups().putOff} ${ups().shown}`, 'true true 0 1');
-  t('issue-1494 a listed row\'s done adds nothing about Put off, as before',
-    N.record({ word: 'ups1494', ticket: 'U-1', action: 'done' }).line.includes('put off'), false);
+  t('issue-1494 done on a put-off ticket row is refused, naming that drop closes it, and it stays put off',
+    `${wt.ok} ${wt.line} ${ups().putOff}`, 'false ups1494 U-1: done is not an action for a put-off worktree item, so nothing was recorded. Drop closes it. 1');
+  const wtDrop = N.record({ word: 'ups1494', ticket: 'U-1', action: 'drop' });
+  t('issue-1494 AC2 drop on a put-off ticket row closes it, and it leaves Put off', `${wtDrop.ok} ${ups().putOff}`, 'true 0');
+  const listed = N.record({ word: 'ups1494', ticket: 'U-2', action: 'done' });
+  t('issue-1494 a listed row\'s done is noted as before, and says nothing about Put off',
+    `${listed.ok} ${/: noted: the next pass that finds the worktree clean/.test(listed.line)} ${listed.line.includes('put off')}`, 'true true false');
 }
 
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
