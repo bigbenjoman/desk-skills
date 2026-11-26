@@ -5,7 +5,10 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { orphanOf, orphanHolders, orphanLine, endOrphan, logOrphan, orphanLog, orphanGraceS } from '../desk/bin/lock-orphans.mjs';
+import { orphanOf, orphanHolders, orphanLine, endOrphan, logOrphan, orphanLog, orphanGraceS, isDeskOwner } from '../desk/bin/lock-orphans.mjs';
+import { belowOf, insideOf } from '../desk/bin/suite-wait.mjs';
+import { procStats, startTimes } from '../desk/bin/leases.mjs';
+import { psRows } from '../desk/bin/desk-env.mjs';
 import { verdict } from '../desk/bin/lock-watch.mjs';
 import { runProcs, workerProcs } from '../desk/bin/worker-stop.mjs';
 import { scratch } from './scratch.mjs';
@@ -19,7 +22,8 @@ mkdirSync(join(WT, 'T-1'), { recursive: true });
 
 // ---- AC1, AC3: which holders are orphaned, and why ----------------------------------------------
 const CLAUDE = { pid: 100, ppid: 1, args: '/usr/bin/claude -p --session-id s1' };
-const SHELL = { pid: 200, ppid: 100, args: '/bin/bash -c with-lock.sh light -- bash tests/test_related.sh' };
+// The worker's Bash-tool shell, as ps shows it: the with-lock.sh call is inside its command string.
+const SHELL = { pid: 200, ppid: 100, args: "/bin/bash -c source /home/u/.claude/shell-snapshots/s.sh 2>/dev/null || true && eval '~/.claude/desk/bin/with-lock.sh light -- bash tests/test_related.sh' < /dev/null && pwd -P >| /tmp/claude-x-cwd" };
 const RUN = { pid: 300, ppid: 200, args: 'bash tests/test_related.sh' };
 const tickets = { 'T-1': { state: 'parked' }, 'T-2': { state: 'running' } };
 const at = (cwd) => ({ pid: 300, cwd, args: RUN.args, seconds: 4000 });
@@ -37,10 +41,23 @@ t('#1459 AC3 the same holder in a running ticket\'s worktree is left alone',
   why([{ ...SHELL, ppid: 1 }, RUN], join(WT, 'T-2', 'apps')), null);
 t('#1459 AC3 a holder under a desk script (a gate the pass started) is left alone',
   why([{ pid: 150, ppid: 1, args: 'node /home/u/.claude/desk/releases/abc123/bin/some-gate.mjs run' }, { ...SHELL, ppid: 150 }, RUN]), null);
+t('#1459 AC1 a holder under a with-lock.sh wrapper (the child-run path), in a worktree whose ticket is not running, is orphaned',
+  why([{ ...SHELL, ppid: 1 }, { pid: 250, ppid: 200, args: 'bash /home/u/.claude/desk/bin/with-lock.sh light -- bash tests/test_related.sh' }, { ...RUN, ppid: 250 }]), "its worktree's ticket T-1 is no longer running (parked)");
+t('#1459 a desk script owns a run only as the program itself',
+  ['node /home/u/.claude/desk/bin/pass.mjs', '/home/u/.claude/desk/bin/base-gate.sh run', 'bash --noprofile /x/desk/releases/abc/bin/spine.sh', SHELL.args, 'bash /home/u/.claude/desk/bin/with-lock.sh test -- true', 'vim desk/bin/pass.mjs'].map(isDeskOwner),
+  [true, true, true, false, false, false]);
 t('#1459 a holder outside the worktrees directory, its parent alive, is not judged by any ticket',
   why([{ ...SHELL, ppid: 1 }, RUN], '/home/u/code/other'), null);
 t('#1459 a holder of a ticket the queue does not hold is not judged by it',
   why([{ ...SHELL, ppid: 1 }, RUN], join(WT, 'X-9')), null);
+
+t('#1459 belowOf gives a path\'s place below a directory, and insideOf still reads it',
+  [belowOf(WT)(WT), belowOf(WT)(join(WT, 'T-1', 'a')), belowOf(WT)(`${WT}x/T-1`), insideOf(WT)(join(WT, 'T-1')), insideOf(WT)(`${WT}x`)],
+  ['', 'T-1/a', null, true, false]);
+const mine = procStats([process.pid], psRows).get(process.pid);
+t('#1459 procStats reads a live pid\'s parent and start, and startTimes its start alone',
+  [mine?.ppid === process.ppid, startTimes([process.pid], psRows).get(process.pid) === mine?.start, procStats([2 ** 22 + 7], psRows).get(2 ** 22 + 7)],
+  [true, true, null]);
 
 // ---- AC2: due past the grace, and what the pass says --------------------------------------------
 const procs = [{ ...RUN, ppid: 1 }, { pid: 301, ppid: 1, args: 'node jest' }, { pid: 302, ppid: 1, args: 'node vitest' }];

@@ -11,27 +11,15 @@
 // the run been re-parented: it ends the run's processes (worker-stop.mjs runProcs), SIGTERM then SIGKILL,
 // and exits. A caller of pid 1 or less is no caller to watch.
 import { spawn } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { psRows } from './desk-env.mjs';
 import { sleepSync } from './dir-lock.mjs';
-import { isClaudeProcess } from './leases.mjs';
+import { isClaudeProcess, procStats } from './leases.mjs';
 import { endProcs, processRows, runProcs } from './worker-stop.mjs';
 
-// { ppid, start } for `pid`, or null once it has gone: /proc where there is one, else ps.
-export function procOf(pid) {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    // The command name, field 2, is in parentheses and may hold spaces: the fields after its last `)`.
-    const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return f[0] === 'Z' ? null : { ppid: Number(f[1]), start: f[19] };
-  } catch (e) {
-    if (e.code !== 'ENOENT' || process.platform === 'linux') return null;
-  }
-  let r;
-  try { r = psRows('pid=,ppid=,stat=,lstart=', { LC_ALL: 'C', TZ: 'UTC0' }).find((x) => x.pid === pid); } catch { return null; }
-  return !r || String(r.stat).startsWith('Z') ? null : { ppid: Number(r.ppid), start: String(r.lstart) };
-}
+// { ppid, start } for `pid` (leases.mjs procStats), or null once it has gone or cannot be read.
+const procOf = (pid) => { try { return procStats([pid], psRows).get(pid); } catch { return null; } };
 
 // Whether the watch should end the run now: 'gone' when the run has, 'orphaned' when its parent is no
 // longer the caller, else null.

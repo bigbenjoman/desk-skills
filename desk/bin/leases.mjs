@@ -147,9 +147,10 @@ export function poolOf(kind, key, caps) {
   }
 }
 
-// Each pid's process start time, or null for one not running (a zombie counts as exited): from /proc
-// on Linux, from one ps read (`psRows`, desk-env's) for them all elsewhere. -> Map pid -> start.
-export function startTimes(pids, psRows) {
+// Each pid's { ppid, start } (its parent and process start time), or null for one not running (a zombie
+// counts as exited): from /proc on Linux, from one ps read (`psRows`, desk-env's) for them all elsewhere.
+// -> Map pid -> { ppid, start } | null.
+export function procStats(pids, psRows) {
   const want = [...new Set(pids.filter((p) => Number.isInteger(p) && p > 0))];
   const out = new Map(want.map((p) => [p, null]));
   if (!want.length) return out;
@@ -158,18 +159,21 @@ export function startTimes(pids, psRows) {
       try {
         const s = readFileSync(`/proc/${p}/stat`, 'utf8');
         const f = s.slice(s.lastIndexOf(')') + 2).split(' '); // f[0] is field 3, the state
-        if (f[0] !== 'Z') out.set(p, f[19]); // field 22, starttime
+        if (f[0] !== 'Z') out.set(p, { ppid: Number(f[1]), start: f[19] }); // field 4, ppid; field 22, starttime
       } catch { /* not running */ }
     }
     return out;
   }
   // lstart prints local time, so it is read in UTC and the C locale (as hooks/desk-handoff.py
   // does): a command run under another TZ must read the same string for the same process.
-  for (const r of psRows('pid=,stat=,lstart=', { LC_ALL: 'C', TZ: 'UTC0' })) {
-    if (out.has(r.pid) && !r.stat.startsWith('Z')) out.set(r.pid, r.lstart);
+  for (const r of psRows('pid=,ppid=,stat=,lstart=', { LC_ALL: 'C', TZ: 'UTC0' })) {
+    if (out.has(r.pid) && !String(r.stat).startsWith('Z')) out.set(r.pid, { ppid: Number(r.ppid), start: String(r.lstart) });
   }
   return out;
 }
+
+// Each pid's process start time, as procStats reads it. -> Map pid -> start | null.
+export const startTimes = (pids, psRows) => new Map([...procStats(pids, psRows)].map(([p, s]) => [p, s?.start ?? null]));
 
 // A process that is a Claude Code session: the claude binary, or node running the Claude Code CLI as
 // its script, named by its entry point or by the `claude` link an npm install puts on the PATH (a

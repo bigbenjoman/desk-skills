@@ -1,10 +1,10 @@
 // Holders of the test or light lock whose worker session has ended: a run that outlived the worker that
 // started it holds the lock, and every queued suite and suite-bound spawn behind it, with nobody to
 // finish it. The pass names each (orphanHolders), and ends one held past the grace (endOrphan) itself.
-import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
-import { dirname, join, relative, isAbsolute } from 'node:path';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { claudeAncestor, isClaudeProcess } from './leases.mjs';
-import { holdersText } from './suite-wait.mjs';
+import { belowOf, holdersText } from './suite-wait.mjs';
 import { endProcs, runProcs } from './worker-stop.mjs';
 
 // How long an orphaned holder has held the lock before the pass ends it, in seconds:
@@ -13,20 +13,24 @@ export const orphanGraceS = (env = process.env) => (/^\d+$/.test(env.AUTOPILOT_O
 
 // A per-user service manager, which adopts orphans in place of pid 1 where it is a subreaper.
 const SUBREAPER = /^(?:\S*\/)?systemd\s+--user(?:\s|$)/;
-// A desk script (the pass, a base gate, a spine check): a run under one has an owner that is not a worker.
-const DESK_SCRIPT = /(?:^|[\s/])desk\/(?:releases\/[^/\s]+\/)?bin\/\S+\.(?:mjs|sh)(?:\s|$)/;
+// A desk script's path: the pass, a base gate, a spine check.
+const DESK_SCRIPT = /(?:^|\/)desk\/(?:releases\/[^/]+\/)?bin\/[^/]+\.(?:mjs|sh)$/;
+const INTERPRETER = /^(?:node(?:js)?|bash|sh)$/;
+// Whether a process (its ps args) is a desk script that owns a run, so a run under it has an owner that is
+// not a worker. Only the program itself counts, run directly or as an interpreter's script: never a path
+// named inside a shell's command string (a worker's shell names with-lock.sh there). with-lock.sh is no
+// owner either, since it only takes the lock for whoever called it.
+export function isDeskOwner(args) {
+  const words = String(args ?? '').trim().split(/\s+/);
+  const script = INTERPRETER.test(basename(words[0] ?? '')) ? words.slice(1).find((w) => !w.startsWith('-')) : words[0];
+  return !!script && DESK_SCRIPT.test(script) && basename(script) !== 'with-lock.sh';
+}
 
 // The key of the ticket worktree a path is in, under `worktrees`, or null.
-// The directory is matched as given and by its real path, as a process's working directory reads.
 const worktreeKey = (cwd, worktrees) => {
   if (!cwd || !worktrees) return null;
-  let real = worktrees;
-  try { real = realpathSync(worktrees); } catch { /* as given */ }
-  for (const d of [worktrees, real]) {
-    const rel = relative(d, cwd);
-    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) return rel.split('/')[0];
-  }
-  return null;
+  const rel = belowOf(worktrees)(cwd);
+  return rel ? rel.split('/')[0] : null;
 };
 
 // Why lock holder `run` ({pid, cwd}, lockHolderRuns) is orphaned, or null while its worker may be alive.
@@ -44,7 +48,7 @@ export function orphanOf(run, { procs, worktrees, tickets }) {
   if (!t || t.state === 'running') return null;
   for (let p = parent, seen = new Set(); p && !seen.has(p.pid); p = byPid.get(p.ppid)) {
     seen.add(p.pid);
-    if (DESK_SCRIPT.test(p.args)) return null;
+    if (isDeskOwner(p.args)) return null;
   }
   return `its worktree's ticket ${key} is no longer running (${t.state})`;
 }

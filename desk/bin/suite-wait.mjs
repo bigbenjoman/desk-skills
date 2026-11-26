@@ -39,11 +39,24 @@ export function processCwds() {
   return CWDS;
 }
 
-// Whether a path is a directory or inside it, matched by the directory as given and by its real path.
-export function insideOf(dir) {
+// A path's place below a directory: '' for the directory itself, its relative path for one inside it,
+// else null. The directory is matched as given and by its real path.
+export function belowOf(dir) {
   let real = dir;
   try { real = realpathSync(dir); } catch { /* as given */ }
-  return (p) => [dir, real].some((d) => p === d || p.startsWith(`${d}/`));
+  return (p) => {
+    for (const d of [dir, real]) {
+      if (p === d) return '';
+      if (String(p).startsWith(`${d}/`)) return p.slice(d.length + 1);
+    }
+    return null;
+  };
+}
+
+// Whether a path is a directory or inside it, as belowOf matches it.
+export function insideOf(dir) {
+  const below = belowOf(dir);
+  return (p) => below(p) != null;
 }
 
 // The processes working in a directory, as [{pid, cmd, cwd}], leaving out the pids in skip. Null when
