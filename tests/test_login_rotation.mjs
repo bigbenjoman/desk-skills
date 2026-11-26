@@ -210,6 +210,33 @@ t('AC7 a pass later it starts and preflights nothing', `${calls('Y-1').length} $
 t('AC7 and the hold reads with its reset', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
 t('AC7 nothing is benched or moved', `${batchOf().benched ?? null} ${row('Y-1').login_move ?? null}`, 'null null');
 
+// A fallback login: the pass that learns the default is full holds as before, the next starts new work
+// on the fallback, and once the default has room the next new worker starts on it again.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO);
+atLimit(dirOf('b'));
+pass(env);
+t('fallback the pass that learns the default is full holds as before', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
+out = pass(env);
+t('fallback AC1 the next pass starts new work on the fallback', `${row('Y-1').state} ${on('Y-1')} ${row('Y-1').login.fallback} ${loginArg(calls('Y-1').at(-1))} ${row('Y-2').state}`, `running c true ${dirOf('c')} running`);
+t('fallback AC3 the switch is logged with its reason', out.includes('login: new workers start on fallback login c, as default login b is at the 5-hour usage limit'), true);
+t('fallback AC3 the spawn line names the login', /Y-1 port=.* login=c \(fallback\);/.test(out), true);
+t('fallback the switch is recorded and the default\'s hold no longer holds the batch', `${batchOf().login_fallback?.login} ${batchOf().usage_hold ?? null}`, 'c null');
+rmSync(LIMITED);
+// As a pass minutes later: the last probe of b is not one started under a minute ago, so it is not shared.
+rmSync(join(process.env.DESK_USAGE_DIR, 'probe.b.at'), { force: true });
+addTicket('Y-3');
+out = pass(env);
+t('fallback AC2 once the default has room the next worker starts on it', `${row('Y-3').state} ${on('Y-3')} ${loginArg(calls('Y-3').at(-1))}`, `running b ${dirOf('b')}`);
+t('fallback AC2 a worker on the fallback stays there', on('Y-1'), 'c');
+t('fallback AC3 the switch back is logged', out.includes('login: new workers start on default login b again, as it has room; workers on fallback login c finish there'), true);
+t('fallback the record is cleared', batchOf().login_fallback ?? null, null);
+// A repo pinned to an email never falls back.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO, { sub: 'b@example.com' });
+atLimit(dirOf('b'));
+pass(env);
+pass(env);
+t('fallback a pinned repo holds as before', `${row('Y-1').state} ${row('Y-2').state} ${calls('Y-2').length} ${batchOf().login_fallback ?? null}`, 'triaged triaged 0 null');
+
 // AC8, AC9: a worker whose session ended at b's limit, c with room.
 const PAUSED = { key: 'K-2', state: 'running', open_questions: 0, session_id: 'sess-2', branch: 'fix/K-2', worktree: join(W, 'wt', 'K-2'), stage: '4/9', login: { name: 'b', config_dir: dirOf('b') } };
 mkdirSync(join(W, 'wt', 'K-2'), { recursive: true });
