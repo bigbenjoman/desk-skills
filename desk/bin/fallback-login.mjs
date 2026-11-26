@@ -2,7 +2,7 @@
 // while the default is full, and on the default again once it has room. Only new sessions move: a
 // resumed one stays on the login it started on, waiting for that login's reset, so nothing moves
 // mid-session. The pass reads the default each time; these decide on what it read, and run nothing.
-import { WINDOWS, windowUse } from './usage-pace.mjs';
+import { fullWindow } from './usage-pace.mjs';
 import { limitName } from './usage-limit.mjs';
 import { untilText } from './pass/shared.mjs';
 
@@ -16,12 +16,8 @@ import { untilText } from './pass/shared.mjs';
 //   -> { full, why, limit: { type, resetsAt } | null }; `type` is a window, 'unknown', or 'pace'
 export function defaultFull({ hold = null, reading = null, pace = null, now = Date.now() } = {}) {
   if (hold) return { full: true, why: `at ${limitName(hold.type)}${untilText(hold)}`, limit: { type: hold.type ?? 'unknown', resetsAt: hold.resetsAt ?? null } };
-  for (const k of WINDOWS) {
-    const w = reading?.[k];
-    if (!w || reading.none?.includes(k)) continue;
-    const u = windowUse(w, now);
-    if (!u.reset && u.pct >= 100) return { full: true, why: `at ${limitName(k)}${untilText(w)}`, limit: { type: k, resetsAt: w.resetsAt } };
-  }
+  const w = fullWindow(reading, now);
+  if (w) return { full: true, why: `at ${limitName(w.type)}${untilText(w)}`, limit: w };
   if (pace?.hold && !pace.bad) return { full: true, why: `past the usage pacing headroom (${String(pace.line).replace(/^usage: /, '')})`, limit: { type: 'pace', resetsAt: null } };
   return { full: false, why: null, limit: null };
 }

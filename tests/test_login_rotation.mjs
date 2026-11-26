@@ -41,7 +41,8 @@ ld="\${AUTOPILOT_LOGIN_DIR:-${H}/.claude}"
 if [ "$3" = preflight ]; then
   if grep -qF "$ld " "${LIMITED}" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
 else echo "[spawn] ticket=$1"; fi\n`);
-// Sign-in per folder: a folder's name is its account, and a signed-out folder answers loggedIn false.
+// Sign-in per folder: a folder's name is its account (its .account file's, where it has one), and a
+// signed-out folder answers loggedIn false.
 // Every `auth` call is recorded.
 const AUTHS = join(T, 'auths');
 writeFileSync(join(W, 'stub', 'claude'), `#!/bin/sh
@@ -50,7 +51,7 @@ case "$1" in
   agents) echo '[]' ;;
   auth) echo "$d" >> "${AUTHS}"
     if grep -qx "$d" "${SIGNED_OUT}" 2>/dev/null; then echo '{"loggedIn":false}'; exit 1; fi
-    printf '{"loggedIn":true,"email":"%s@example.com"}\\n' "$(basename "$d")" ;;
+    printf '{"loggedIn":true,"email":"%s@example.com"}\\n' "$(cat "$d/.account" 2>/dev/null || basename "$d")" ;;
   -p) lim="$(grep -F "$d " "${LIMITED}" 2>/dev/null | head -n 1 | cut -d' ' -f2)"
     if [ "$lim" = none ]; then echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}'; echo '{"type":"result","is_error":true}'; exit 1; fi
     if [ -n "$lim" ]; then printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":%s}}\\n' "$lim"; echo '{"type":"result","is_error":true}'; exit 1; fi
@@ -236,6 +237,14 @@ atLimit(dirOf('b'));
 pass(env);
 pass(env);
 t('fallback a pinned repo holds as before', `${row('Y-1').state} ${row('Y-2').state} ${calls('Y-2').length} ${batchOf().login_fallback ?? null}`, 'triaged triaged 0 null');
+// A fallback folder signed in to the default's own account shares its limits: the pass holds and says why.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO);
+writeFileSync(join(dirOf('c'), '.account'), 'b');
+atLimit(dirOf('b'));
+pass(env);
+out = pass(env);
+t('fallback on the default\'s own account holds as before', `${row('Y-1').state} ${row('Y-2').state} ${batchOf().login_fallback ?? null}`, 'triaged triaged null');
+t('fallback on the default\'s own account says why', out.includes('fallback login c is signed in to b@example.com, the default\'s own account, so it shares the default\'s limits'), true);
 
 // AC8, AC9: a worker whose session ended at b's limit, c with room.
 const PAUSED = { key: 'K-2', state: 'running', open_questions: 0, session_id: 'sess-2', branch: 'fix/K-2', worktree: join(W, 'wt', 'K-2'), stage: '4/9', login: { name: 'b', config_dir: dirOf('b') } };

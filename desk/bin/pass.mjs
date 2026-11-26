@@ -513,9 +513,13 @@ const FALLBACK = (() => {
   let usable = null;
   if (full.full) {
     FALLBACK_CHECK = checkLogin(FALLBACK_LOGIN);
-    const live = FALLBACK_CHECK.email?.toLowerCase() ?? null;
-    usable = FALLBACK_CHECK.state === 'signed out' ? `is signed out (sign it in, in another terminal: ${signInCommand(FALLBACK_LOGIN)})`
-      : FALLBACK_LOGIN.account && FALLBACK_CHECK.state === 'signed in' && live !== FALLBACK_LOGIN.account ? `is signed in to ${live} instead of ${FALLBACK_LOGIN.account}` : null;
+    const no = loginUnusable(FALLBACK_LOGIN, FALLBACK_CHECK);
+    // A fallback signed in to the default's own account shares its limits, so it has no room to give.
+    const live = liveEmail(FALLBACK_CHECK);
+    const sameAccount = !no && live && live === (DEFAULT_LOGIN.account ?? liveEmail(checkLogin(DEFAULT_LOGIN)));
+    usable = no?.kind === 'signed out' ? `is signed out (sign it in, in another terminal: ${signInCommand(FALLBACK_LOGIN)})`
+      : no ? `is signed in to ${no.live} instead of ${FALLBACK_LOGIN.account}`
+        : sameAccount ? `is signed in to ${live}, the default's own account, so it shares the default's limits` : null;
   }
   return fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable, record });
 })();
@@ -3184,14 +3188,13 @@ function repoLogin() {
   }
   REPO_CHECK ??= checkLogin(login);
   const email = REPO_SUB.email ?? REPO_CHECK.email ?? null;
-  if (REPO_CHECK.state === 'signed out') {
+  const no = loginUnusable(login, REPO_CHECK);
+  if (no?.kind === 'signed out') {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) is signed out, so nothing new starts for this repo; it never falls back to another. Sign it in, in another terminal: ${signInCommand(login)}`);
     return null;
   }
-  // A folder pinned to an account (DS-528) is used only while it is signed in to that account.
-  const live = REPO_CHECK.state === 'signed in' ? REPO_CHECK.email?.toLowerCase() ?? null : null;
-  if (login.account && live && live !== login.account) {
-    noLogin(`this repo's subscription ${login.account} (login ${login.name}, ${login.folder}) is signed in to ${live} instead, so nothing new starts for this repo; it never falls back to another. Sign it back in to ${login.account}, in another terminal: ${signInCommand(login)}`);
+  if (no) {
+    noLogin(`this repo's subscription ${login.account} (login ${login.name}, ${login.folder}) is signed in to ${no.live} instead, so nothing new starts for this repo; it never falls back to another. Sign it back in to ${login.account}, in another terminal: ${signInCommand(login)}`);
     return null;
   }
   const refused = refusedOf(login);
@@ -3200,6 +3203,16 @@ function repoLogin() {
     return null;
   }
   return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email })}`, line: ` login=${login.name}` };
+}
+// The email a checkLogin answer is signed in to, lower-cased, or null when signed out or unread.
+function liveEmail(check) { return check.state === 'signed in' ? check.email?.toLowerCase() ?? null : null; }
+// Why a checked login cannot take new work, or null: { kind: 'signed out' }, or, for a folder pinned to an
+// account (DS-528), { kind: 'wrong account', live } while it is signed in to another. An email the check
+// could not read is no other account: the preflight says what is wrong with such a login.
+function loginUnusable(login, check) {
+  if (check.state === 'signed out') return { kind: 'signed out' };
+  const live = liveEmail(check);
+  return login.account && live && live !== login.account ? { kind: 'wrong account', live } : null;
 }
 function noLogin(why) {
   if (noLoginWhy) return;

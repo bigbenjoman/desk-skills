@@ -64,7 +64,7 @@ import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, wquantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, calibration, MIN_HITS } from './desk-q-eta.mjs';
-import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
+import { WINDOW_LABELS, fullWindow, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, workLoginDirs } from './claude-logins.mjs';
 import { holdOn } from './call-login.mjs';
@@ -2422,11 +2422,8 @@ function usageTable(repos, now, checked = null) {
 //   -> { type, at } (`at` epoch seconds, or null with no reset time) | null
 function limitOf(x, now) {
   if (x.out) return x.out;
-  const r = x.reading;
-  const full = ['five_hour', 'seven_day'].filter((k) => r?.[k]?.utilization >= 1 && r[k].resetsAt * 1000 > now);
-  if (!full.length) return null;
-  const k = full.reduce((a, b) => (r[b].resetsAt > r[a].resetsAt ? b : a));
-  return { type: k, at: r[k].resetsAt };
+  const f = fullWindow(x.reading, now);
+  return f ? { type: f.type, at: f.resetsAt } : null;
 }
 
 // Each subscription at its limit that repos run on, earliest reset first (the default first on a tie):
@@ -2581,8 +2578,8 @@ const repoHint = () => segLine([['  Select a repo and press ', GREY], ['enter', 
 // account whose sign-in was switched to another, or a login that is signed out, which desk can't use;
 // else with one login per tool, that every worker runs on it; else the Claude default, which every repo
 // not pinned runs on.
-// Claude's fallback login's row while it has room, else null.
-const fallbackFree = (t) => t.claude.find((x) => x.use?.isFallback && !x.limit) ?? null;
+// Claude's fallback login's row while it has room and desk can use it, else null.
+const fallbackFree = (t) => t.claude.find((x) => x.use?.isFallback && !x.limit && !unusable(x)) ?? null;
 function usageHeadline(t, now) {
   const def = t.claude.find((x) => x.use?.isDefault);
   const l = def?.limit;
