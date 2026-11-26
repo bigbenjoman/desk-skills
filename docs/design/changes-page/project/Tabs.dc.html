@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Changes page structure: tabs</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#F9FAFB;color:#111827;font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+a{color:#111827}a:hover{color:#374151}
+*{box-sizing:border-box}
+h1,h2,p{margin:0}
+.tab{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 4px;font-size:14px;color:#6B7280;border-bottom:2px solid transparent;white-space:nowrap}
+.blk{background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px}
+</style>
+</helmet>
+<div style="width: 680px; height: 460px; padding: 24px; background: #F9FAFB; display: flex; flex-direction: column; gap: 16px">
+<h1 style="font-size: 22px; font-weight: 700; letter-spacing: -0.01em">Changes</h1>
+<div role="tablist" aria-label="Sections" style="display: flex; gap: 20px; border-bottom: 1px solid #E5E7EB">
+<span role="tab" aria-selected="true" class="tab" style="color: #111827; font-weight: 600; border-bottom-color: #111827">Needs you <span style="font-size: 12px; font-weight: 600; padding: 0 6px; border-radius: 999px; background: #FEF3C7; color: #92400E">1</span></span>
+<span role="tab" aria-selected="false" class="tab">Trends</span>
+<span role="tab" aria-selected="false" class="tab">Levers</span>
+<span role="tab" aria-selected="false" class="tab">Changes</span>
+<span role="tab" aria-selected="false" class="tab">Merge time and parking</span>
+</div>
+<div class="blk" style="height: 88px; background: #FFFBEB; border-color: #FCD34D"></div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px">
+<div class="blk" style="height: 96px"></div><div class="blk" style="height: 96px"></div><div class="blk" style="height: 96px"></div>
+</div>
+<p style="font-size: 13px; line-height: 1.5; color: #6B7280">Each tab shows one part of the page. Shorter to scan, but the rest is hidden until you click, links like #lev-h need the script to open the right tab, and browser find only searches the open tab.</p>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":680,"height":460}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

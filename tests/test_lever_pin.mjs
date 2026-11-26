@@ -227,6 +227,5 @@ const u = start('Fix the failing check on $TICKET.');
 t('AC6 an unpinned ticket\'s spawn line records the row', u.levers, ['preflight', 'memory']);
 t('AC6 an unpinned ticket\'s worker has no DESK_LEVERS', u.env, 'unset');
 
-rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

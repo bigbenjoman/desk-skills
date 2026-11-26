@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Changes page on a phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#F9FAFB;color:#111827;font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+a{color:#111827}a:hover{color:#374151}
+*{box-sizing:border-box}
+h1,h2,h3,p{margin:0}
+.mono{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+.pill{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border:1px solid #D1D5DB;border-radius:999px;background:#FFFFFF;font-size:13px;font-weight:500;color:#374151;white-space:nowrap;text-decoration:none}
+.copy{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 14px;border:1px solid #D1D5DB;border-radius:6px;background:#FFFFFF;color:#374151;font:500 14px Inter,system-ui,sans-serif}
+</style>
+</helmet>
+<div style="width: 390px; height: 1680px; background: #F9FAFB; display: flex; flex-direction: column">
+<nav aria-label="Sections" style="position: sticky; top: 0; display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; background: #F9FAFB; border-bottom: 1px solid #E5E7EB">
+<a href="#needs" class="pill" style="background: #111827; border-color: #111827; color: #F9FAFB">Needs you <span style="font-size: 12px; font-weight: 600; padding: 0 6px; border-radius: 999px; background: #FEF3C7; color: #92400E">1</span></a>
+<a href="#overview" class="pill">Overview</a>
+<a href="#trends" class="pill">Trends</a>
+<a href="#levers" class="pill">Levers</a>
+</nav>
+<div style="padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 20px">
+<header style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="font-size: 28px; font-weight: 700; letter-spacing: -0.01em">Changes</h1>
+<p style="font-size: 14px; line-height: 1.45; color: #6B7280">Everything that changed how desk works, and what happened after.</p>
+</header>
+
+<section id="needs" style="display: flex; flex-direction: column; gap: 14px; padding: 16px; background: #FFFFFF; border: 1px solid #FCD34D; border-radius: 8px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: #FEF3C7; color: #92400E; width: fit-content"><span style="width: 8px; height: 8px; border-radius: 50%; background: #D97706"></span>Needs you</span>
+<h2 style="font-size: 16px; font-weight: 600; line-height: 1.35">desk turned finder-model off in desk-skills. Keep it off, or test it again?</h2>
+<p style="font-size: 14px; line-height: 1.5; color: #374151">On DS-1012 a worker ran a command that included <span class="mono" style="font-size: 12px; background: #F3F4F6; padding: 1px 6px; border-radius: 4px">desk-env model finder</span>, and the command exited 3. desk counts that as the lever’s own step failing, so it turned the lever off. Nothing about review quality was measured.</p>
+<p style="font-size: 12px; color: #6B7280">Waiting on you since 26 Nov, 05:30 · <span class="mono">logs/DS-1012.log</span>, line 94</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #E5E7EB; border-radius: 6px">
+<span style="font-size: 15px; font-weight: 600">Keep it off</span>
+<span style="font-size: 14px; line-height: 1.45; color: #4B5563">Finders stay on their usual model in desk-skills. You can test it again whenever you like.</span>
+<code class="mono" style="font-size: 12px; background: #F3F4F6; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: nowrap">levers decide desk-skills finder-model off</code>
+<button type="button" class="copy" aria-label="Copy the keep-it-off command">Copy</button>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #E5E7EB; border-radius: 6px">
+<span style="font-size: 15px; font-weight: 600">Test it again</span>
+<span style="font-size: 14px; line-height: 1.45; color: #4B5563">Starts a new test at 0 of 40 tickets. This is the first time desk turned it off. If desk turns it off again, it stays off until you turn it back on.</span>
+<code class="mono" style="font-size: 12px; background: #F3F4F6; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: nowrap">levers decide desk-skills finder-model trial</code>
+<button type="button" class="copy" aria-label="Copy the test-it-again command">Copy</button>
+</div>
+<p style="font-size: 12px; line-height: 1.45; color: #6B7280">Until you choose, finder-model stays off. Run either command in a terminal, and this updates on the next refresh.</p>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 4px; padding: 16px; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px">
+<h2 style="font-size: 17px; font-weight: 600">Every change</h2>
+<p style="font-size: 13px; line-height: 1.45; color: #6B7280; margin-bottom: 8px">Newest first. Numbers match the lines on the charts.</p>
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 14px 0; border-top: 1px solid #F0F1F3">
+<span style="font-size: 13px; color: #6B7280">23 Nov, 21:57</span>
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span style="display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid #6E7079; font-size: 11px; font-weight: 600; color: #374151">2</span><span style="display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 500; background: #F3F4F6; color: #374151">Claude version</span></div>
+<span style="font-weight: 600; font-size: 15px">Claude Code 2.1.330 to 2.1.331</span>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: #F9FAFB; border: 1px solid #F0F1F3; border-radius: 6px">
+<div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; font-weight: 500; color: #6B7280">Cost per ticket</span><span class="mono" style="font-size: 13px">$15.20 before · 14 tickets</span><span class="mono" style="font-size: 13px">$9.80 since · 11 tickets</span></div>
+<div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; font-weight: 500; color: #6B7280">Blind review score</span><span class="mono" style="font-size: 13px">4.2 before · 9 reviews</span><span class="mono" style="font-size: 13px">4.3 since · 8 reviews</span></div>
+<span style="font-size: 12px; line-height: 1.45; color: #6B7280">Before and after, not a test. Other changes landed in the same days, so this can’t show the version caused the difference.</span>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 14px 0 0; border-top: 1px solid #F0F1F3">
+<span style="font-size: 13px; color: #6B7280">26 Nov, 10:21</span>
+<div style="display: flex; align-items: center; gap: 8px"><span style="display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid #6E7079; font-size: 11px; font-weight: 600; color: #374151">5</span><span style="display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 500; background: #F3F4F6; color: #374151">Merged PR</span></div>
+<span style="font-weight: 600; font-size: 15px">A worker stops at start-up when its hooks or sign-in didn’t load</span>
+<span style="font-size: 13px; color: #4B5563">Too early: 2 tickets since. Figures show once there are 5 on each side.</span>
+</div>
+</section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

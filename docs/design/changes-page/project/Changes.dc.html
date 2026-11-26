@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Every change, with before and after</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#F9FAFB;color:#111827;font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+a{color:#111827}a:hover{color:#374151}
+*{box-sizing:border-box}
+h2,h3,p{margin:0}
+.mono{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+.tg{min-height:36px;padding:0 14px;border:0;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer}
+.tg[aria-pressed=true]{background:#111827;color:#F9FAFB}
+button:focus-visible,a:focus-visible{outline:2px solid #111827;outline-offset:2px}
+.chip{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;white-space:nowrap}
+.no{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:1px solid #6E7079;font-size:11px;font-weight:600;color:#374151;flex:none}
+.ba{display:grid;grid-template-columns:150px 140px 140px;gap:6px 14px;font-size:13px;align-items:baseline}
+.ba .h{font-size:12px;font-weight:500;color:#6B7280}
+.row{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px;padding:14px 0;border-top:1px solid #F0F1F3;align-items:start}
+</style>
+</helmet>
+<div style="padding: 32px 24px 64px; background: #F9FAFB">
+<div style="max-width: 1180px; margin: 0 auto">
+<section aria-labelledby="ch-h" style="background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 18px 16px; display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 8px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 id="ch-h" style="font-size: 17px; font-weight: 600">Every change</h2>
+<p style="font-size: 13px; color: #6B7280; max-width: 720px">Newest first. Lever changes come from tests. Other changes can’t be tested, so each shows the tickets before and after it. Numbers match the lines on the charts.</p>
+</div>
+<div role="group" aria-label="Which changes to show" style="display: inline-flex; border: 1px solid #D1D5DB; border-radius: 6px; overflow: hidden">
+<button type="button" class="tg" aria-pressed="{{allOn}}" onClick="{{showAll}}">All</button>
+<button type="button" class="tg" aria-pressed="{{leverOn}}" onClick="{{showLever}}" style="border-left: 1px solid #D1D5DB">Lever changes</button>
+<button type="button" class="tg" aria-pressed="{{otherOn}}" onClick="{{showOther}}" style="border-left: 1px solid #D1D5DB">Other changes</button>
+</div>
+</div>
+
+<sc-if value="{{others}}" hint-placeholder-val="{{ true }}">
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">26 Nov, 10:21</span>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="no">5</span><span class="chip" style="background: #F3F4F6; color: #374151">Merged PR</span><span style="font-weight: 600">A worker stops at start-up when its hooks or sign-in didn’t load</span></div>
+<span style="font-size: 13px; color: #6B7280"><a href="#">PR #1509</a> · DS-1021 · desk-skills</span>
+<span style="font-size: 13px; color: #4B5563">Too early: 2 tickets since. Figures show once there are 5 on each side.</span>
+</div>
+</div>
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">26 Nov, 10:03</span>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="no">4</span><span class="chip" style="background: #F3F4F6; color: #374151">Merged PR</span><span style="font-weight: 600">Review drops a finding whose file and line don’t exist</span></div>
+<span style="font-size: 13px; color: #6B7280"><a href="#">PR #1508</a> · DS-1022 · desk-skills</span>
+<span style="font-size: 13px; color: #4B5563">Too early: 2 tickets since. Figures show once there are 5 on each side.</span>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{levers}}" hint-placeholder-val="{{ true }}">
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">26 Nov, 05:30</span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="chip" style="background: #DBEAFE; color: #1E40AF">Lever</span><span style="font-weight: 600">Turned off finder-model in desk-skills</span></div>
+<span style="font-size: 13px; color: #6B7280">Its own step looked like it failed on DS-1012. <a href="#">Decide what happens next</a></span>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{others}}" hint-placeholder-val="{{ true }}">
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">25 Nov, 15:11</span>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="no">3</span><span class="chip" style="background: #F3F4F6; color: #374151">Claude version</span><span style="font-weight: 600">Claude Code 2.1.331 to 2.1.332</span></div>
+<span style="font-size: 13px; color: #6B7280">First worker start on the new version · all repos</span>
+<span style="font-size: 13px; color: #4B5563">Too early: 4 tickets since. Figures show once there are 5 on each side.</span>
+</div>
+</div>
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">23 Nov, 21:57</span>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="no" style="background: #111827; border-color: #111827; color: #F9FAFB">2</span><span class="chip" style="background: #F3F4F6; color: #374151">Claude version</span><span style="font-weight: 600">Claude Code 2.1.330 to 2.1.331</span></div>
+<span style="font-size: 13px; color: #6B7280">First worker start on the new version · all repos</span>
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #F9FAFB; border: 1px solid #F0F1F3; border-radius: 6px; width: fit-content">
+<div class="ba">
+<span class="h"></span><span class="h">7 days before</span><span class="h">Since</span>
+<span style="color: #4B5563">Cost per ticket</span><span class="mono">$15.20 <span style="color: #6B7280">· 14 tickets</span></span><span class="mono">$9.80 <span style="color: #6B7280">· 11 tickets</span></span>
+<span style="color: #4B5563">Blind review score</span><span class="mono">4.2 <span style="color: #6B7280">· 9 reviews</span></span><span class="mono">4.3 <span style="color: #6B7280">· 8 reviews</span></span>
+</div>
+<span style="font-size: 12px; color: #6B7280">Before and after, not a test. Other changes landed in the same days, so this can’t show the version caused the difference.</span>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{levers}}" hint-placeholder-val="{{ true }}">
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">23 Nov, 00:02</span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="chip" style="background: #DBEAFE; color: #1E40AF">Lever</span><span style="font-weight: 600">Turned off memory in desk-skills</span></div>
+<span style="font-size: 13px; color: #6B7280">CI went red more often with it on: 5.75 against 1.25, over 20 and 23 tickets</span>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{others}}" hint-placeholder-val="{{ true }}">
+<div class="row">
+<span style="font-size: 13px; color: #6B7280; padding-top: 2px">21 Nov, 15:20</span>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap"><span class="no">1</span><span class="chip" style="background: #F3F4F6; color: #374151">Settings</span><span style="font-weight: 600">Levers row in desk-skills: preflight to auto preflight</span></div>
+<span style="font-size: 13px; color: #6B7280">Config §3b Phase 0 levers · changed by Ben</span>
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #F9FAFB; border: 1px solid #F0F1F3; border-radius: 6px; width: fit-content">
+<div class="ba">
+<span class="h"></span><span class="h">7 days before</span><span class="h">Since</span>
+<span style="color: #4B5563">Cost per ticket</span><span class="mono">$19.07 <span style="color: #6B7280">· 17 tickets</span></span><span class="mono">$14.58 <span style="color: #6B7280">· 26 tickets</span></span>
+<span style="color: #4B5563">Blind review score</span><span class="mono" style="color: #6B7280">not recorded</span><span class="mono">4.2 <span style="color: #6B7280">· 17 reviews</span></span>
+</div>
+<span style="font-size: 12px; color: #6B7280">Before and after, not a test. Other changes landed in the same days, so this can’t show the setting caused the difference.</span>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{none}}" hint-placeholder-val="{{ false }}">
+<p style="padding: 12px 0; border-top: 1px solid #F0F1F3; font-size: 14px; color: #6B7280">No changes of this kind in the last 30 days.</p>
+</sc-if>
+</section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1240}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { show: 'all' }; }
+  renderVals() {
+    const s = this.state.show;
+    return {
+      allOn: s === 'all' ? 'true' : 'false',
+      leverOn: s === 'lever' ? 'true' : 'false',
+      otherOn: s === 'other' ? 'true' : 'false',
+      levers: s !== 'other',
+      others: s !== 'lever',
+      none: false,
+      showAll: () => this.setState({ show: 'all' }),
+      showLever: () => this.setState({ show: 'lever' }),
+      showOther: () => this.setState({ show: 'other' }),
+    };
+  }
+}
+</script>
+</body>
+</html>

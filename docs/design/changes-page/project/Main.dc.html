@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Changes page: a lever waiting on you</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#F9FAFB;color:#111827;font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+a{color:#111827}a:hover{color:#374151}
+*{box-sizing:border-box}
+h1,h2,h3,p{margin:0}
+.mono{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+.th{font-size:12px;font-weight:500;color:#6B7280;text-align:left;padding:10px 16px;border-bottom:1px solid #E5E7EB}
+.td{padding:14px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;font-size:14px}
+.copy{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border:1px solid #D1D5DB;border-radius:6px;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.copy:hover{background:#F3F4F6}
+button:focus-visible,a:focus-visible{outline:2px solid #111827;outline-offset:2px}
+</style>
+</helmet>
+<div style="padding: 32px 24px 64px; background: #F9FAFB">
+<div style="max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px">
+
+<header style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h1 style="font-size: 28px; font-weight: 700; letter-spacing: -0.01em">Changes</h1>
+<p style="font-size: 15px; color: #6B7280">Everything that changed how desk works, and what happened after. Levers are tested. Other changes are shown before and after.</p>
+</div>
+<span style="font-size: 13px; color: #6B7280">Updated 26 Nov, 15:18</span>
+</header>
+
+<section aria-label="Summary" style="background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 18px 20px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px">
+<p style="font-size: 18px; line-height: 1.45; max-width: 820px"><b style="font-weight: 600">Needs you.</b> Last week a ticket cost <b style="font-weight: 600">19.4% less</b> than before levers, and nothing has got worse. 0 kept, 6 still being tested, and <b style="color: #B45309; font-weight: 600">1 needs your decision</b>.</p>
+<a href="#lev-decide" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 6px; background: #111827; color: #F9FAFB; font-size: 14px; font-weight: 500; text-decoration: none">Decide on finder-model</a>
+</section>
+
+<section aria-labelledby="lev-h" style="background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; overflow: hidden">
+<div style="padding: 18px 16px 14px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid #E5E7EB">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 id="lev-h" style="font-size: 17px; font-weight: 600">Is each lever working?</h2>
+<p style="font-size: 13px; color: #6B7280">One row per lever. Testing means it’s on for half of new tickets, so desk can compare the two halves.</p>
+</div>
+<div style="display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #6B7280">
+<span style="display: flex; align-items: center; gap: 6px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #16A34A"></span>Kept</span>
+<span style="display: flex; align-items: center; gap: 6px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #3B82F6"></span>Testing</span>
+<span style="display: flex; align-items: center; gap: 6px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #D97706"></span>Needs you</span>
+<span style="display: flex; align-items: center; gap: 6px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #9CA3AF"></span>Off or waiting</span>
+</div>
+</div>
+<div style="overflow-x: auto">
+<table style="width: 100%; border-collapse: collapse; min-width: 900px">
+<thead><tr><th class="th" style="width: 26%">Lever</th><th class="th" style="width: 15%">Status</th><th class="th" style="width: 20%">Result so far</th><th class="th" style="width: 17%">Progress to a decision</th><th class="th">By repo</th></tr></thead>
+<tbody>
+<tr>
+<td class="td"><div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600">codex</span><span style="font-size: 13px; color: #6B7280">Has Codex review pull requests instead of Claude</span><span style="font-size: 12px; color: #4B5563">Each change checked by a blind review after merge</span></div></td>
+<td class="td"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: #DBEAFE; color: #1E40AF"><span style="width: 8px; height: 8px; border-radius: 50%; background: #3B82F6"></span>Testing</span></td>
+<td class="td"><div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600; color: #4B5563">Too early: 2 of 40</span><span style="font-size: 12px; color: #6B7280">90% range 0 to 0 · n 2</span></div></td>
+<td class="td"><div style="display: flex; flex-direction: column; gap: 6px"><div style="height: 6px; border-radius: 3px; background: #F0F1F3"><div style="width: 5%; height: 6px; border-radius: 3px; background: #111827"></div></div><span style="font-size: 12px; color: #6B7280">2 of 40 tickets</span></div></td>
+<td class="td" style="font-size: 13px"><div style="display: flex; flex-direction: column; gap: 4px"><span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #3B82F6"></span>desk-skills: testing</span><span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #9CA3AF"></span>ai-agents: not enrolled</span></div></td>
+</tr>
+
+<tr id="lev-decide" style="background: #FFFBEB">
+<td class="td" style="border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600">finder-model</span><span style="font-size: 13px; color: #6B7280">Runs the review’s Claude finders on a cheaper model</span><span style="font-size: 12px; color: #4B5563">Each change checked by a blind review after merge</span></div></td>
+<td class="td" style="border-bottom: 0"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: #FEF3C7; color: #92400E"><span style="width: 8px; height: 8px; border-radius: 50%; background: #D97706"></span>Needs you</span></td>
+<td class="td" style="border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600; color: #4B5563">Too early: 0 of 40</span><span style="font-size: 12px; color: #6B7280">No range recorded · n 0</span></div></td>
+<td class="td" style="border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 6px"><div style="height: 6px; border-radius: 3px; background: #FDE68A"><div style="width: 0%; height: 6px; border-radius: 3px; background: #111827"></div></div><span style="font-size: 12px; color: #92400E; font-weight: 500">Waiting on you since 26 Nov, 05:30</span></div></td>
+<td class="td" style="font-size: 13px; border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 4px"><span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #9CA3AF"></span>desk-skills: turned off by desk, 26 Nov</span><span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #9CA3AF"></span>ai-agents: not enrolled</span></div></td>
+</tr>
+<tr style="background: #FFFBEB">
+<td colspan="5" style="padding: 0 16px 18px; border-bottom: 1px solid #F0F1F3">
+<div style="display: flex; flex-direction: column; gap: 14px; padding: 16px; background: #FFFFFF; border: 1px solid #FCD34D; border-radius: 8px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h3 style="font-size: 15px; font-weight: 600">desk turned finder-model off in desk-skills. Keep it off, or test it again?</h3>
+<p style="font-size: 13px; line-height: 1.5; color: #374151; max-width: 860px">On DS-1012 a worker ran a command that included <span class="mono" style="font-size: 12px; background: #F3F4F6; padding: 1px 6px; border-radius: 4px">desk-env model finder</span>, and the command exited 3. desk counts that as the lever’s own step failing, so it turned the lever off. Nothing about review quality was measured.</p>
+<p style="font-size: 12px; color: #6B7280">Evidence: <span class="mono">logs/DS-1012.log</span>, line 94</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #E5E7EB; border-radius: 6px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 14px; font-weight: 600">Keep it off</span>
+<span style="font-size: 13px; line-height: 1.45; color: #4B5563">Finders stay on their usual model in desk-skills. You can test it again whenever you like.</span>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; margin-top: auto">
+<code class="mono" style="flex: 1; min-width: 0; font-size: 12px; background: #F3F4F6; padding: 9px 10px; border-radius: 4px; overflow-x: auto; white-space: nowrap">levers decide desk-skills finder-model off</code>
+<button type="button" class="copy" onClick="{{copyOff}}" aria-label="Copy the keep-it-off command">{{offLabel}}</button>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #E5E7EB; border-radius: 6px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 14px; font-weight: 600">Test it again</span>
+<span style="font-size: 13px; line-height: 1.45; color: #4B5563">Starts a new test at 0 of 40 tickets. This is the first time desk turned it off. If desk turns it off again, it stays off until you turn it back on.</span>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; margin-top: auto">
+<code class="mono" style="flex: 1; min-width: 0; font-size: 12px; background: #F3F4F6; padding: 9px 10px; border-radius: 4px; overflow-x: auto; white-space: nowrap">levers decide desk-skills finder-model trial</code>
+<button type="button" class="copy" onClick="{{copyTrial}}" aria-label="Copy the test-it-again command">{{trialLabel}}</button>
+</div>
+</div>
+</div>
+<p style="font-size: 12px; color: #6B7280">Until you choose, finder-model stays off. Run either command in a terminal, and this row updates on the next refresh.</p>
+</div>
+</td>
+</tr>
+
+<tr>
+<td class="td" style="border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600">effort</span><span style="font-size: 13px; color: #6B7280">Uses less thinking on simple steps</span><span style="font-size: 12px; color: #4B5563">Each change checked by a blind review after merge</span></div></td>
+<td class="td" style="border-bottom: 0"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: #DBEAFE; color: #1E40AF"><span style="width: 8px; height: 8px; border-radius: 50%; background: #3B82F6"></span>Testing</span></td>
+<td class="td" style="border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600; color: #4B5563">Too early: 0 of 40</span><span style="font-size: 12px; color: #6B7280">No range recorded · n 0</span></div></td>
+<td class="td" style="border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 6px"><div style="height: 6px; border-radius: 3px; background: #F0F1F3"><div style="width: 0%; height: 6px; border-radius: 3px; background: #111827"></div></div><span style="font-size: 12px; color: #6B7280">0 of 40 tickets</span></div></td>
+<td class="td" style="font-size: 13px; border-bottom: 0"><div style="display: flex; flex-direction: column; gap: 4px"><span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #3B82F6"></span>desk-skills: testing</span><span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #9CA3AF"></span>ai-agents: not enrolled</span></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1080}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { copied: null }; }
+  renderVals() {
+    const c = this.state.copied;
+    return {
+      offLabel: c === 'off' ? 'Copied' : 'Copy',
+      trialLabel: c === 'trial' ? 'Copied' : 'Copy',
+      copyOff: () => this.setState({ copied: 'off' }),
+      copyTrial: () => this.setState({ copied: 'trial' }),
+    };
+  }
+}
+</script>
+</body>
+</html>
