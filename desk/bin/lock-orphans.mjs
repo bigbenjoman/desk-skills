@@ -85,17 +85,20 @@ export function orphanReason(run, { rows, tickets = new Map(), worktrees = null,
   return `its worktree's ticket ${key} is ${state}, not running, and no worker session is above it`;
 }
 
-// What ending run `pid` ends, from `rows`: { groups, pids }. Its whole process group when every live
-// process in that group is the run or its descendant (the usual case once its caller has gone: the
-// group is the caller's, emptied), and every group a descendant leads (a detached child); the run's
-// other descendants by pid. Never `self`, or a process above it that the run is not, or a group one of
-// those is in; `self` inside the run (the caller watch, the run's own child) leaves its group to the run.
-export function endTarget(pid, rows, self = process.pid) {
+// What ending the processes `roots` and every descendant of one ends, from `rows`: { groups, pids }.
+// `groups` are the process groups a process in that tree leads (a setsid wrapper, a detached child),
+// signalled whole, so a child that outlived its parent still goes with its group; `pids` are the rest.
+// Never `self`, its ancestors, or a group any of them is in. With `run` (one of the roots), the walk up
+// from `self` stops at it: `self` inside the run (the caller watch, the run's own child) is then ended
+// with it, and leaves its group to the run, which is taken whole when every live process in it is in
+// the tree (the usual case once a run's caller has gone: the group is the caller's, emptied).
+// Used by worker-stop.mjs workerProcs and by endTarget below.
+export function treeTarget(roots, rows, self = process.pid, { run = null } = {}) {
   const byPid = new Map(rows.map((r) => [r.pid, r]));
   const above = new Set();
   let p = byPid.get(self);
-  for (; p && p.pid !== pid && !above.has(p.pid); p = byPid.get(p.ppid)) above.add(p.pid);
-  const within = p?.pid === pid;
+  for (; p && p.pid !== run && !above.has(p.pid); p = byPid.get(p.ppid)) above.add(p.pid);
+  const within = run != null && p?.pid === run;
   const myGroups = new Set([...above].filter((q) => !within || q !== self).map((q) => byPid.get(q)?.pgid));
   const tree = new Set();
   const walk = (q) => {
@@ -103,12 +106,15 @@ export function endTarget(pid, rows, self = process.pid) {
     tree.add(q);
     for (const c of rows) if (c.ppid === q) walk(c.pid);
   };
-  if (byPid.has(pid)) walk(pid);
+  for (const q of roots) if (byPid.has(q)) walk(q);
   const groups = new Set([...tree].map((q) => byPid.get(q)).filter((r) => r.pgid === r.pid && !myGroups.has(r.pgid)).map((r) => r.pgid));
-  const own = byPid.get(pid)?.pgid;
+  const own = run != null ? byPid.get(run)?.pgid : null;
   if (own != null && !myGroups.has(own) && rows.every((r) => r.pgid !== own || tree.has(r.pid) || (within && r.pid === self))) groups.add(own);
   return { groups: [...groups], pids: [...tree].filter((q) => !groups.has(byPid.get(q).pgid)) };
 }
+
+// What ending run `pid` ends, from `rows`: treeTarget with the run's own group, never `self` or above.
+export const endTarget = (pid, rows, self = process.pid) => treeTarget([pid], rows, self, { run: pid });
 
 // Whether path `p` is directory `dir` or inside it, by `dir` as given or by its real path.
 function inside(dir, p) {

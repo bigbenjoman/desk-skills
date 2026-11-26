@@ -121,7 +121,10 @@ try {
   // A caller that stays: the run ends on its own and the watch with it.
   const ok = spawnSync('bash', [script, 'test', '--', 'sh', '-c', 'echo ran'], { env, encoding: 'utf8' });
   t('a run whose caller stays runs to its end', [ok.status, ok.stdout.trim()], [0, 'ran']);
-  t('no caller watch is left once runs end', await until(() => !(readRows() ?? []).some((r) => r.args.includes('lock-caller-watch.mjs') && r.args.includes(script.replace(/with-lock\.sh$/, ''))), 5000), true);
+  // This test's own watches only, by the run pid each watches: other suites' runs have watches too.
+  const runs = new Set([...(pids ?? []).slice(0, 1), ok.pid].map(String));
+  const ours = (r) => { const w = r.args.split(/\s+/); const i = w.findIndex((x) => x.endsWith('/lock-caller-watch.mjs')); return i >= 0 && runs.has(w[i + 1]); };
+  t('no caller watch of this test\'s runs is left once they end', await until(() => !(readRows() ?? []).some(ours), 5000), true);
   if (existsSync(L)) rmSync(L, { recursive: true, force: true });
 } finally { rmSync(L, { recursive: true, force: true }); }
 
