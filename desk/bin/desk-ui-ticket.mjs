@@ -76,7 +76,9 @@ export function makePrReader({ gh = runGh, now = Date.now } = {}) {
     if (!t.pr) return { status: 200, body: { pr: null, text: NO_PR } };
     const id = idOf(t);
     const hit = cache.get(id);
-    if (hit && now() - hit.at < PR_TTL_MS && hit.recorded === (t.pr.head ?? null)) return { status: 200, body: fromRead(hit) };
+    // The head the last pass recorded, read even where the ticket's PR has none (a fix try).
+    const seen = recorded?.head ?? t.pr.head ?? null;
+    if (hit && now() - hit.at < PR_TTL_MS && hit.recorded === seen) return { status: 200, body: fromRead(hit) };
     const ran = await gh(['pr', 'view', String(t.pr.number), '--repo', t.gh_repo, '--json', FIELDS]);
     let read = null;
     if (ran.exit === 0) { try { read = fromGh(JSON.parse(ran.stdout)); } catch { read = null; } }
@@ -86,7 +88,7 @@ export function makePrReader({ gh = runGh, now = Date.now } = {}) {
       return { status: 200, body: { ...shape(fromPass(t, recorded ?? {}), kinds, verdict(recorded ?? {})), source: 'pass', as_of: at ?? null,
         note: at ? `Showing the copy from the last pass (${clock(at)}). GitHub isn't answering.` : "GitHub isn't answering, and no pass has recorded this PR yet." } };
     }
-    const entry = { at: now(), recorded: t.pr.head ?? null, read };
+    const entry = { at: now(), recorded: seen, read };
     cache.set(id, entry);
     return { status: 200, body: fromRead(entry) };
 

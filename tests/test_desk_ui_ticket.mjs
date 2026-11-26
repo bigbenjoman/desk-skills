@@ -47,6 +47,8 @@ const QUEUE = { version: 1, batch: 'w', concurrency: 2, tickets: {
   'DS-565': { key: 'DS-565', state: 'queued' },
   'DS-566': { key: 'DS-566', state: 'done', result: { pr: 653 }, pr_status: recorded(653, [passed('unit (node 24)'), { name: 'lint', status: 'completed', conclusion: 'failure', started: at(10, 1), completed: at(10, 2), runner: true, runId: 300, jobId: 301 }]) },
   'base-red-1': { key: 'base-red-1', state: 'queued' },
+  // Stuck: held outside the batch with a question of its own, which resuming passes does not move.
+  'DS-568': { key: 'DS-568', state: 'parked', outside_blockers: [{ key: 'EXT-9' }], open_questions: 1, park: { question: 'start without EXT-9?', clears_when: { kind: 'pr-merged', pr: 7 } } },
 } };
 const QUEUE_FILE = join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json');
 writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
@@ -83,6 +85,8 @@ t('any id a queue admits is read, a lowercase base-red one included', (await get
 t('a repo that is not configured is a 404', (await get(`/api/repos/acme__nope/tickets/DS-563`)).status, 404);
 t('a ticket in no batch is a 404', (await get(api('DS-999'))).status, 404);
 const tk = (await get(api('DS-563'))).body;
+const stuck = (await get(api('DS-568'))).body;
+t('a stuck ticket is not one stopped passes hold', [stuck.state, stuck.stopped, stuck.passes.live], ['stuck', false, false]);
 t('the ticket carries its PR as the last pass recorded it', [tk.key, tk.pr.number, tk.pr.head, tk.gh_repo, tk.jira_browse], ['DS-563', 651, HEAD, GH, 'https://jira.example.net/browse/']);
 
 // ---- AC5: all 14 required checks green and approved
@@ -148,6 +152,12 @@ const fixRead = calls.length;
 now += 10_000;
 await get(api('DS-564', '/pr'));
 t('AC11 a ticket on a fix try is answered from the cache too', calls.length - fixRead, 0);
+// A head the pass records during the fix try is not the cached read's, so GitHub is read again.
+QUEUE.tickets['DS-564'].pr_status.head = 'c'.repeat(40);
+writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
+now += 10_000;
+await get(api('DS-564', '/pr'));
+t('AC11 a head the pass records during a fix try reads GitHub again', calls.length - fixRead, 1);
 // GitHub's head ahead of the one the last pass recorded: the same head as the last fetch, so the cache.
 answer = () => ({ exit: 0, stdout: JSON.stringify(prView(654, REQUIRED.map((n) => node(n)))), stderr: '' });
 await get(api('DS-567', '/pr'));

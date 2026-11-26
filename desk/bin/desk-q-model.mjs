@@ -3649,8 +3649,9 @@ const RAIL = '▌ ';
 export const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
 const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 
-// With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-const stoppedBy = (r, k, t, h) => !r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t));
+// With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it. A
+// stuck ticket waits on tickets outside the batch, which resuming does not move.
+const stoppedBy = (r, k, t, h) => !r.live && k !== 'stuck' && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t));
 
 // What a ticket page leads with: whether it moves without the user and, if not, what would. `lead`
 // introduces `cmds`, the commands that move it, each drawn alone on its own line so it copies whole.
