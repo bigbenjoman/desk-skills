@@ -17,26 +17,28 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { LIVE_MS, lastBeat } from './borrow.mjs';
+import { LIVE_MS, dueTick, lastBeat } from './borrow.mjs';
 
 // Each batch's lost tick, in its state folder: { pass, session, told_at, rearmed_at, why }.
 export const TICK_FILE = 'loop-tick.json';
 
-// The loop's tick: the next pass recorded, else the loop's tick a pass run by hand carried (r.tick).
-const dueOf = (r) => r.next ?? r.tick ?? null;
-// The interval the loop keeps: from its last pass to its tick; with none recorded, half of LIVE_MS.
-export const loopInterval = (r) => { const due = dueOf(r); return due != null && r.last != null && due > r.last ? due - r.last : LIVE_MS / 2; };
-// When a batch with no next pass to come reads its loop lost: twice its interval after its last pass,
+// The loop pass the interval runs from: desk-q's r.from (borrow.mjs loopFrom), the loop pass that
+// recorded a tick a pass run by hand carried, so that pass does not shorten the loop's interval.
+const fromOf = (r) => r.from ?? r.last;
+// The interval the loop keeps: from its loop pass to its tick (borrow.mjs dueTick); with none
+// recorded, half of LIVE_MS.
+export const loopInterval = (r) => { const due = dueTick(r), from = fromOf(r); return due != null && from != null && due > from ? due - from : LIVE_MS / 2; };
+// When a batch with no next pass to come reads its loop lost: twice its interval after its loop pass,
 // or sooner where desk-q reads its passes stopped before that (r.stoppedAt), so needs-you's stalled
 // item never shows a loop its session has not yet been told to re-arm.
-export const lostAt = (r) => Math.min(r.last + 2 * loopInterval(r), r.stoppedAt ?? Infinity);
+export const lostAt = (r) => Math.min(fromOf(r) + 2 * loopInterval(r), r.stoppedAt ?? Infinity);
 // The session whose /loop runs the batch: the one that recorded its next pass, else the one its last
 // pass ran in (borrow.mjs loopCarried).
 export const loopSession = (r) => r.loop ?? r.session;
 // A batch a session runs, that has run a pass, with no next pass recorded (or the loop's tick a pass
 // run by hand carried) still to come.
 export const unscheduled = (r, now = Date.now()) => !!r.q && r.run?.by === 'session' && r.last != null
-  && (dueOf(r) == null || dueOf(r) <= now);
+  && (dueTick(r) == null || dueTick(r) <= now);
 
 const readTick = (stateDir) => { try { return JSON.parse(readFileSync(join(stateDir, TICK_FILE), 'utf8')) || null; } catch { return null; } };
 // The record for the batch's last pass `last`, or null.

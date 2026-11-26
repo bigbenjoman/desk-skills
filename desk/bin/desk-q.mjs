@@ -53,7 +53,7 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, lastBeat, liveBeat, machineCap, stoppedAt } from './borrow.mjs';
+import { LIVE_MS, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -802,8 +802,10 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.live = liveBeat(beat, now);
   r.session = beat?.session ?? null;
   r.loop = beat?.loop ?? null;
-  // The loop's tick a pass run by hand carried, still to come when it ran (borrow.mjs loopTick).
+  // The loop's tick a pass run by hand carried, still to come when it ran (borrow.mjs loopTick), and
+  // the loop pass its interval runs from (loopFrom).
   r.tick = beat?.tick ?? null;
+  r.from = beat ? loopFrom(beat) : null;
   r.stoppedAt = beat ? stoppedAt(beat) : null;
   r.ctx = r.q ? holdContext(r) : NOBODY;
   const rows = Object.values(r.q?.tickets ?? {});

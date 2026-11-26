@@ -102,23 +102,29 @@ t('a beat that names no loop session gives the session it ran in', carried({ nex
 t('with the tick a pass run by hand carried gone by, the loop is lost', carried({ next: null, tick: NOW - 60e3, loop: 's1' }, { session: 's2' }), null);
 
 // ---- #1420: a pass run by hand records the loop's tick still to come, so it never reads as a stall
-const ticked = (prev, opts) => B.loopTick(prev, { now: NOW, ...opts });
-t('a pass run by hand carries the loop\'s next pass still to come as its tick', ticked({ next: NOW + 60e3 }), NOW + 60e3);
-t('and a second such pass carries it on', ticked({ next: null, tick: NOW + 60e3 }), NOW + 60e3);
-t('a tick gone by is not carried', ticked({ next: NOW - 60e3 }), null);
-t('a pass given its next time (the loop\'s own) carries none', ticked({ next: NOW + 60e3 }, { next: NOW + 120e3 }), null);
+const ticked = (prev, opts) => JSON.stringify(B.loopTick(prev, { now: NOW, ...opts }));
+t('a pass run by hand carries the loop\'s next pass still to come as its tick, with the loop pass it runs from', ticked({ pass: NOW - 60e3, next: NOW + 60e3 }), JSON.stringify({ at: NOW + 60e3, from: NOW - 60e3 }));
+t('and a second such pass carries both on', ticked({ pass: NOW - 30e3, next: null, tick: NOW + 60e3, tickPass: NOW - 60e3 }), JSON.stringify({ at: NOW + 60e3, from: NOW - 60e3 }));
+t('a tick gone by is not carried', ticked({ pass: NOW - 120e3, next: NOW - 60e3 }), 'null');
+t('a pass given its next time (the loop\'s own) carries none', ticked({ pass: NOW - 60e3, next: NOW + 60e3 }, { next: NOW + 120e3 }), 'null');
 t('stoppedAt reads the carried tick: live until PASS_GRACE_MS after it', B.stoppedAt({ at: NOW, next: null, tick: NOW + 28 * 60e3 }), NOW + 28 * 60e3 + B.PASS_GRACE_MS);
-const handBeat = (pass, tickAt) => writeFileSync(BEAT,
-  JSON.stringify({ queue: QUEUE, batch: 'loop-batch', pid: 1, at: iso(pass), pass: iso(pass), tick: iso(tickAt), session: 's2', loop: 's1' }));
-handBeat(-16, 12); // the comment's case: a pass by hand at 14:32, the loop's tick at 15:00, read at 14:48
-t('a beat a pass run by hand wrote reads its tick', B.lastBeat(STATE, QUEUE)?.tick, Date.parse(iso(12)));
+// handBeat(<pass by hand>, <the loop's tick>, <the loop pass that recorded it>), minutes from now
+const handBeat = (pass, tickAt, from) => writeFileSync(BEAT,
+  JSON.stringify({ queue: QUEUE, batch: 'loop-batch', pid: 1, at: iso(pass), pass: iso(pass), tick: iso(tickAt), tick_pass: iso(from), session: 's2', loop: 's1' }));
+handBeat(-16, 12, -18); // the comment's case: a pass by hand at 14:32, the loop's tick at 15:00, read at 14:48
+t('a beat a pass run by hand wrote reads its tick and the loop pass it runs from', `${B.lastBeat(STATE, QUEUE)?.tick} ${B.lastBeat(STATE, QUEUE)?.tickPass}`, `${Date.parse(iso(12))} ${Date.parse(iso(-18))}`);
 hook('Stop');
 t('the loop\'s session is not held to a tick it already has', out, '');
 hook('PostToolUse');
 t('nor told its loop is lost', out, '');
 const NY = await import('../desk/bin/needs-you.mjs');
 t('needs-you shows no stalled item 16 minutes after the pass run by hand, with the loop\'s tick to come', NY.collect({ word: 'loop' }).items.some((i) => i.kind === 'stalled'), false);
-handBeat(-41, -25);
+// A pass by hand 30 seconds before a 10-minute loop's tick, read a minute after the tick: the loop
+// keeps its own interval, so it is not yet lost (it would be at the tick plus 30 seconds otherwise).
+handBeat(-1.5, -1, -11);
+hook('PostToolUse');
+t('a pass by hand just before the loop\'s tick does not shorten its interval: not told to re-arm', out, '');
+handBeat(-41, -25, -35);
 o = hook('PostToolUse');
 t('with that tick gone by twice over, the loop reads lost', /loop lost its next tick/.test(ctx(o)), true);
 t('and needs-you\'s stalled item names when it was due', /and the next was due at /.test(NY.collect({ word: 'loop' }).items.find((i) => i.kind === 'stalled')?.need ?? ''), true);

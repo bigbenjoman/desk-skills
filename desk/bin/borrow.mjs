@@ -49,8 +49,9 @@ export const beatFile = (stateDir, queuePath) => join(stateDir, 'orchestrators',
 // (CLAUDE_CODE_SESSION_ID), where there is one: intake.mjs admit reads it to know it runs in the session
 // that runs the batch. `loop`, the session whose /loop schedules the batch's passes, where known
 // (loopCarried). `tick`, the loop's tick still to come that a pass given no next time carries
-// (loopTick), so a pass run by hand leaves `next` unset and the loop still reads armed. Advisory: a
-// failed write is ignored.
+// (loopTick's { at, from }, written as `tick` and `tick_pass`, the loop pass that recorded it), so a
+// pass run by hand leaves `next` unset and the loop still reads armed. Advisory: a failed write is
+// ignored.
 export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass = Date.now(), now = Date.now(), loop = null, tick = null } = {}) {
   const session = process.env.CLAUDE_CODE_SESSION_ID || null;
   const iso = (t) => (t == null ? null : new Date(t).toISOString());
@@ -58,7 +59,7 @@ export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass
     mkdirSync(join(stateDir, 'orchestrators'), { recursive: true });
     writeFileSync(beatFile(stateDir, queuePath), JSON.stringify({
       queue: queuePath, batch, pid: process.pid, at: iso(now), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }),
-      ...(next == null && tick != null ? { tick: iso(tick) } : {}), ...(session ? { session } : {}), ...(loop ? { loop } : {}),
+      ...(next == null && tick != null ? { tick: iso(tick.at), tick_pass: iso(tick.from) } : {}), ...(session ? { session } : {}), ...(loop ? { loop } : {}),
     }));
   } catch { /* advisory */ }
 }
@@ -78,14 +79,18 @@ export function loopCarried(prev, { next = null, session = process.env.CLAUDE_CO
 
 // The loop's tick a beat records: its next pass, else the tick a pass run by hand carried (tick).
 export const dueTick = (beat) => beat?.next ?? beat?.tick ?? null;
+// The pass the loop's interval runs from: the beat's own with a next pass recorded, else the loop pass
+// that recorded a carried tick (tickPass), else the beat's own.
+export const loopFrom = (beat) => (beat?.next == null && beat?.tick != null ? beat.tickPass ?? beat.pass : beat?.pass) ?? null;
 
 // The loop's tick a pass given no next time carries into its heartbeat: the one the last beat records
-// while it is still to come, so a pass run by hand between the loop's passes never reads as a stall.
-// A pass given its next time (the loop's own) carries none.
-//   prev: lastBeat's, or null  ->  epoch ms, or null
+// while it is still to come, with the loop pass it runs from, so a pass run by hand between the loop's
+// passes never reads as a stall and the loop keeps its own interval. A pass given its next time (the
+// loop's own) carries none.
+//   prev: lastBeat's, or null  ->  { at, from } in epoch ms, or null
 export function loopTick(prev, { next = null, now = Date.now() } = {}) {
   const due = dueTick(prev);
-  return next == null && due != null && due > now ? due : null;
+  return next == null && due != null && due > now ? { at: due, from: loopFrom(prev) } : null;
 }
 
 // A next-pass time as given on a command line: `+<seconds>` or `<seconds>` from now, or an ISO time.
@@ -100,7 +105,7 @@ export function parseNext(word, now = Date.now()) {
 // The newest heartbeat on `queuePath`: pass.mjs (and a supervisor's idle tick) writes one per queue
 // file into the state directory, so only that queue's count. `next` is the pass or tick planned after,
 // where one was recorded; `pass` is when the last pass ran (`at` for a beat that does not say).
-//   -> { at, next, pass, tick } in epoch ms (next, pass and tick null when none), with `session` the
+//   -> { at, next, pass, tick, tickPass } in epoch ms (each but at null when none), with `session` the
 //      Claude Code session it was written in and `loop` the session whose /loop runs the batch (each
 //      null with none), or null with no heartbeat
 export function lastBeat(stateDir, queuePath) {
@@ -112,10 +117,11 @@ export function lastBeat(stateDir, queuePath) {
       const at = Date.parse(hb.at);
       const next = hb.next == null ? NaN : Date.parse(hb.next);
       const tick = hb.tick == null ? NaN : Date.parse(hb.tick);
+      const tickPass = hb.tick_pass == null ? NaN : Date.parse(hb.tick_pass);
       const pass = 'pass' in hb ? Date.parse(hb.pass ?? '') : at;
       if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last.at)) {
         last = { at, next: Number.isFinite(next) ? next : null, pass: Number.isFinite(pass) ? pass : null, session: typeof hb.session === 'string' ? hb.session : null,
-          loop: typeof hb.loop === 'string' ? hb.loop : null, tick: Number.isFinite(tick) ? tick : null };
+          loop: typeof hb.loop === 'string' ? hb.loop : null, tick: Number.isFinite(tick) ? tick : null, tickPass: Number.isFinite(tickPass) ? tickPass : null };
       }
     } catch { /* a torn heartbeat is no heartbeat */ }
   }

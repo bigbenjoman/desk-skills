@@ -962,11 +962,12 @@ check "DS-185 AC6 queue.mjs next-pass records the next pass the orchestrator sch
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-185 AC6 a pass with no --next records none" '[ "$(nextin)" = none ]'
 # #1420: it carries the loop's next pass, still to come, as the loop's tick, so it never reads as a stall
+# The heartbeat's carried tick, or "none"; with "in", its seconds from now.
 tickat(){ node -e 'const fs = require("fs"), p = require("path"); const d = process.argv[1];
   const h = fs.readdirSync(d).map((x) => JSON.parse(fs.readFileSync(p.join(d, x), "utf8"))).find((x) => x.queue === process.argv[2]);
-  console.log(h?.tick ?? "none")' "$DESK_AUTOPILOT_STATE/orchestrators" "$DESK_QUEUE"; }
+  console.log(!h?.tick ? "none" : process.argv[3] === "in" ? Math.round((Date.parse(h.tick) - Date.now()) / 1000) : h.tick)' "$DESK_AUTOPILOT_STATE/orchestrators" "$DESK_QUEUE" "${1:-}"; }
 tick1=$(tickat)
-check "#1420 a pass with no --next carries the loop's tick still to come" '[ "$tick1" != none ] && [ "$(( $(date -d "$tick1" +%s) - $(date +%s) ))" -ge 1100 ]'
+check "#1420 a pass with no --next carries the loop's tick still to come" '[ "$tick1" != none ] && [ "$(tickat in)" -ge 1100 ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1420 and a second pass by hand carries it on" '[ "$(tickat)" = "$tick1" ] && [ "$(nextin)" = none ]'
 out=$(node "$B/queue.mjs" next-pass +600 2>&1)

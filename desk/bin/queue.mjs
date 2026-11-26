@@ -1419,6 +1419,7 @@ switch (cmd) {
     if (!existsSync(file)) throw new Error('no pass has run on this queue yet: run pass.mjs --next instead');
     const hb = JSON.parse(readFileSync(file, 'utf8'));
     delete hb.tick;
+    delete hb.tick_pass;
     // The session that records the next pass is the one whose /loop runs the batch (loop-tick.mjs).
     // The next pass recorded replaces a tick a pass run by hand carried (borrow.mjs loopTick).
     const loop = process.env.CLAUDE_CODE_SESSION_ID || hb.loop;
