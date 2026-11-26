@@ -109,6 +109,9 @@ const moved = movePreflight(pcall, '/scratch');
 t('the replay moves the worktree and canary into its own checkout', [moved.prompt.includes(WT), moved.prompt.includes('/scratch/checkout/.preflight.tmp'), moved.prompt.includes('/scratch/outside/.preflight-should-not-exist.tmp'), moved.settings.includes('Edit(//scratch/checkout/**)')], [false, true, true, true]);
 const movedState = movePreflight({ ...pcall, inputs: { ...pcall.inputs, add_dirs: ['/skills', state] }, settings: `{"allow":["Edit(/${state}/parks/x.json)"]}` }, '/scratch');
 t('the replay is granted a throwaway state folder, never the live one', [movedState.addDirs, movedState.settings.includes(state)], [['/skills', '/scratch/state'], false]);
+const readLine = (p) => `${pcall.prompt}\nREAD=OK or READ=BLOCKED — read the file ${p} with your Read tool`;
+t('DS-1021 the replay names the READ check\'s file, moved into its own state, to write', [movedState.readFile, movePreflight({ ...pcall, state, prompt: readLine(`${state}/workers/K.preflight-read.txt`) }, '/scratch').readFile], [null, '/scratch/state/workers/K.preflight-read.txt']);
+t('DS-1021 a READ file outside the moved state is never written', [movePreflight({ ...pcall, state, prompt: readLine('/etc/x.txt') }, '/scratch').readFile, movePreflight({ ...pcall, state, prompt: readLine(`${state}/../x.txt`) }, '/scratch').readFile], [null, null]);
 const many = Array.from({ length: 9 }, (_, i) => ({ id: `c${i}` }));
 t('a sample is seeded: the same seed gives the same calls', sampleOf(many, 4, 's1', 'preflight').map((c) => c.id), sampleOf([...many].reverse(), 4, 's1', 'preflight').map((c) => c.id));
 
