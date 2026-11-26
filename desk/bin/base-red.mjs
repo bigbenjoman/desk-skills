@@ -17,7 +17,8 @@
 //       no second repair while one is open, so an earlier spell's repair is the one merge a later red lets in.
 //
 // The record, <state>/base-red.json:
-//   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
+//   { branch, sha, checks: [{ name, sha, url, files? }], merges: [{ pr, ticket, sha, at }], repair_key, since, at, no_work? }
+// `no_work`, where present, is the passes of a red check that tested nothing (baseState), so it stays red.
 // `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by` since the driver last
 // read the base's tip green (<state>/base-green.json, written on each such read), newest first, and `since`
 // when this red spell was first read. `repair_key` is this spell's own repair ticket (desk-env baseRedKey),
@@ -39,11 +40,43 @@ export const FILE = 'base-red.json';
 export const WALK = 5;
 export const MERGES_SHOWN = 3;
 export const baseRedPath = (state) => join(state, FILE);
-// When the driver last read its base green, { branch, at }, kept beside the record so a red spell names
+// When the driver last read its base green, { branch, at, sha } (sha the tip it read), kept beside the record so a red spell names
 // only the merges made since (lastMerges `after`).
 export const GREEN_FILE = 'base-green.json';
 export function readGreen(state, branch) {
-  try { const g = JSON.parse(readFileSync(join(state, GREEN_FILE), 'utf8')); return g?.branch === branch && typeof g.at === 'string' ? g.at : null; } catch { return null; }
+  return readGreenRec(state, branch)?.at ?? null;
+}
+// The same read whole: { at, sha } (sha null in a record written before it was kept), else null.
+export function readGreenRec(state, branch) {
+  try {
+    const g = JSON.parse(readFileSync(join(state, GREEN_FILE), 'utf8'));
+    return g?.branch === branch && typeof g.at === 'string' ? { at: g.at, sha: typeof g.sha === 'string' ? g.sha : null } : null;
+  } catch { return null; }
+}
+
+// Whether a passing job's log shows it ran work, for a check the base was red on: a job that tested
+// nothing (turbo --affected on a docs-only commit: "No tasks were executed", "Tasks: 0 successful,
+// 0 total") passes without exercising the failure, so it does not end the red. `files` are the test
+// files the failing run named (failingFiles): one of them in the log is work. -> 'ran' | 'none', and
+// 'ran' when the log is unread or shows neither signal, so a repo whose CI logs no task count reads
+// as before.
+const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
+const TURBO_TOTAL = /Tasks:\s+\d+\s+successful,\s+(\d+)\s+total/g;
+export function ranWork(log, files = []) {
+  if (typeof log !== 'string' || !log) return 'ran';
+  const s = log.replace(ANSI, '');
+  if ((files ?? []).some((f) => f && s.includes(f))) return 'ran';
+  const totals = [...s.matchAll(TURBO_TOTAL)].map((m) => Number(m[1]));
+  if (totals.some((n) => n > 0)) return 'ran';
+  return totals.length || /No tasks were executed as part of this run/.test(s) ? 'none' : 'ran';
+}
+// The test files a failing job's log names on its FAIL lines (Jest, Vitest), for ranWork.
+const TEST_FILE = /([\w.@-]+\.(?:spec|test)\.[cm]?[jt]sx?)\b/g;
+export function failingFiles(log) {
+  if (typeof log !== 'string') return [];
+  const out = new Set();
+  for (const line of log.replace(ANSI, '').split('\n')) if (/\bFAIL\b/.test(line)) for (const m of line.matchAll(TEST_FILE)) out.add(m[1]);
+  return [...out];
 }
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 
@@ -73,12 +106,21 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // of any status, on any commit of the walk runs only on PRs (a review gate) or not on pushes, so it is
 // left out (`absent` on the answer), and the base reads by the checks that do run there; one with nothing
 // else required reads unknown.
-export function baseState({ required, branch, read }) {
+// `was` is the red record kept before (readBaseRed): a check it holds red that passes now counts only
+// where its job ran work (read.work(w, wasEntry) -> 'ran' | 'none', ranWork; no read.work counts every
+// pass). A pass that did nothing is passed over, as a run still going is, and the walk reads on down;
+// where it finds no run that counts, the check stays red as `was` had it, and the answer carries
+// `no_work`, the passes passed over ({ name, sha, url }). read.files(url), where given, names the test
+// files a failing run's log shows, kept on its check as `files` for the next read.work.
+export function baseState({ required, branch, read, was = null }) {
   if (!required.length) return { state: 'none' };
   const unread = (why) => ({ state: 'unread', why });
   let c = read.tip(branch);
   if (!c) return unread(`the tip of ${branch} could not be read`);
   const tip = c.sha, left = new Set(required), red = [], seen = new Set(), onTip = new Set();
+  const wasRed = new Map(was?.branch === branch ? (was.checks ?? []).map((x) => [x.name, x]) : []);
+  // `idle`: checks whose every pass from the tip down so far did nothing, so a pass below them stands for the tip.
+  const noWork = [], idle = new Set();
   for (let i = 0; i < WALK && c && left.size; i++) {
     const runs = read.runs(c.sha);
     // A read that fails after a check was found red leaves the base red: that failure stands.
@@ -87,16 +129,29 @@ export function baseState({ required, branch, read }) {
       const mine = runs.filter((r) => r?.name === name);
       if (mine.length) seen.add(name);
       const st = runsState(mine);
-      if (!st) continue;
+      if (!st) { if (i > 0) idle.delete(name); continue; }
+      if (st === 'pass' && wasRed.has(name) && read.work) {
+        const run = mine.find((r) => String(r?.conclusion ?? '').toLowerCase() === 'success') ?? mine[0];
+        const w = { name, sha: c.sha, url: run?.url ?? null };
+        if (read.work(w, wasRed.get(name)) === 'none') { noWork.push(w); if (i === 0) idle.add(name); continue; }
+      }
       left.delete(name);
-      if (i === 0) onTip.add(name);
-      if (st === 'fail') red.push({ name, sha: c.sha, url: mine.find((r) => FAILED.has(String(r.conclusion ?? '').toLowerCase()))?.url ?? null });
+      if (i === 0 || idle.has(name)) onTip.add(name);
+      if (st === 'fail') {
+        const url = mine.find((r) => FAILED.has(String(r.conclusion ?? '').toLowerCase()))?.url ?? null;
+        const prev = wasRed.get(name);
+        const files = !read.files ? null : prev && prev.url === url && Array.isArray(prev.files) ? prev.files : read.files(url);
+        red.push({ name, sha: c.sha, url, ...(Array.isArray(files) ? { files } : {}) });
+      }
     }
     if (!left.size || !c.parent || i === WALK - 1) break;
     c = read.commit(c.parent);
     if (!c) { if (red.length) break; return unread(`a commit on ${branch} could not be read`); }
   }
-  if (red.length) return { state: 'red', sha: tip, checks: red };
+  // A check whose only passes in the walk did nothing stays red as it was.
+  for (const name of [...left]) if (noWork.some((w) => w.name === name)) { red.push(wasRed.get(name)); left.delete(name); }
+  const idleRed = noWork.filter((w) => red.some((x) => x.name === w.name));
+  if (red.length) return { state: 'red', sha: tip, checks: red, ...(idleRed.length ? { no_work: idleRed } : {}) };
   const absent = [...left].filter((n) => !seen.has(n)), pending = [...left].filter((n) => seen.has(n));
   if (pending.length || absent.length === required.length) return { state: 'unknown', why: `no completed run of ${(pending.length ? pending : absent).join(', ')} on the newest ${WALK} commits of ${branch}` };
   const more = absent.length ? { absent } : {};
@@ -133,7 +188,8 @@ export function batchLine(r, { held = [], repair }) {
     : repair?.first
       ? `No repair ticket is admitted yet: ${repair.first}. Repair ticket ${repair.key} is admitted if it fails again`
       : `Repair ticket ${repair.key} is ${repair.state}: its PR is the one merge the driver lets into ${r.branch} until the check passes`;
-  return `${r.branch} is red: ${checkWords(r)} failed on its latest run there, since ${r.since}. The merge driver merges nothing into it until that passes. ` +
+  const idle = untestedChecks(r).length ? ` ${untestedWords(r)}, so it stays red.` : '';
+  return `${r.branch} is red: ${checkWords(r)} failed on its latest run there, since ${r.since}.${idle} The merge driver merges nothing into it until that passes. ` +
     `The last merges desk made: ${mergeWords(r)}.${held.length ? ` It holds ${held.join(', ')}.` : ''} ${fix}`;
 }
 
@@ -243,8 +299,11 @@ export function baseRerun(r, { reran = [], view, status, perm, notes = () => nul
 export function nextRecord(was, s, { branch, merges, at }) {
   if (s.state !== 'red') return null;
   const since = was?.branch === branch ? was.since ?? at : at;
-  return { branch, sha: s.sha, checks: s.checks, merges, repair_key: E.baseRedKey(branch, since), since, at };
+  return { branch, sha: s.sha, checks: s.checks, merges, repair_key: E.baseRedKey(branch, since), since, at, ...(s.no_work?.length ? { no_work: s.no_work } : {}) };
 }
+// The checks a red record holds red only because its newest passes tested nothing (baseState no_work).
+export const untestedChecks = (r) => [...new Set((r?.no_work ?? []).map((w) => w?.name).filter(Boolean))];
+export const untestedWords = (r) => `${r.branch}'s last green run tested nothing for ${untestedChecks(r).map((n) => `"${n}"`).join(', ')}`;
 
 // `read` for baseState with what does not change kept in `cache` (read-cache.mjs openCache), so a driver
 // whose base has not moved reads no commit and no check runs on its next loop: each commit's parent,
@@ -276,6 +335,8 @@ export function cachedRead(read, cache, required = [], { now = Date.now() } = {}
       return t.parent === undefined ? commit(t.sha) : keep(t);
     },
     commit,
+    work: read.work,
+    files: read.files,
     runs: (sha) => {
       const kept = cache.get(`runs:${sha}`);
       // A bare list is a green one; one holding a failure was kept before red lists were dated, and is read again.
@@ -320,6 +381,7 @@ export function condGet(path, pick, cache = null, run = ghRun, jq = null) {
   return v;
 }
 const SHA = /^[0-9a-f]{40}$/;
+export const jobIdFrom = (url) => /\/job\/(\d+)/.exec(String(url ?? ''))?.[1] ?? null;
 // Whether this checkout's origin is `repo`, so its branches are the ones base-red reads. The URL is
 // read as desk-env reads it (ownerRepoFromUrl), an ssh host alias included.
 const originUrl = () => { const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
@@ -346,10 +408,30 @@ export function ghRead(repo, { cache = null, run = ghRun, viaGit = originIs(repo
   const commit = (ref) => condGet(`repos/${repo}/commits/${encodeURIComponent(ref)}`,
     (c) => (SHA.test(c?.sha ?? '') ? { sha: c.sha, parent: c.parents?.[0]?.sha ?? null } : null),
     cache, run, COMMIT_JQ);
+  // A GitHub Actions job's log, by the job id in its check run's URL (`…/actions/runs/<run>/job/<job>`); null unread.
+  const jobLog = (url) => {
+    const id = jobIdFrom(url);
+    if (!id) return null;
+    const r = run(['api', `repos/${repo}/actions/jobs/${id}/logs`]);
+    return r?.error || r?.status !== 0 ? null : String(r.stdout ?? '');
+  };
   return {
     // From origin where this checkout's origin is the repo, else (or when that read fails) the REST API.
     tip: (branch) => (viaGit ? lsRemoteTip(branch) : null) ?? commit(branch),
     commit,
+    // Whether a passing job of a check the base was red on ran work (ranWork), kept in `cache` once read:
+    // a finished job's log does not change.
+    work: (w, prev) => {
+      const id = jobIdFrom(w?.url), files = prev?.files ?? [];
+      const key = id ? `work:${id}:${files.join(',')}` : null;
+      const kept = key ? cache?.get(key) : undefined;
+      if (kept) return kept;
+      const log = jobLog(w?.url);
+      const v = ranWork(log, files);
+      if (log != null && key && cache) cache.set(key, v, { ttl: ETAG_MS });
+      return v;
+    },
+    files: (url) => { const log = jobLog(url); return log == null ? null : failingFiles(log); },
     runs: (sha) => condGet(`repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`,
       (j) => (Array.isArray(j?.check_runs) ? j.check_runs.map((r) => ({ name: r?.name, status: r?.status, conclusion: r?.conclusion, url: r?.details_url ?? r?.html_url ?? null })) : null),
       cache, run, RUNS_JQ),
@@ -373,7 +455,11 @@ if (isMain) {
   // A cache shared across repos would answer one repo's SHA from another's, so its keys are repo-scoped
   // by living in the repo's own state directory, which the driver passes.
   const cache = openCache(flag('--cache') || null);
-  const s = required.length ? baseState({ required, branch, read: cachedRead(ghRead(repo, { cache }), cache, required) }) : { state: 'none' };
+  // The tip's SHA is kept with a green read, so a repair closed on that read is not closed again on it.
+  const base = cachedRead(ghRead(repo, { cache }), cache, required);
+  let tipSha = null;
+  const read = { ...base, tip: (b) => { const t = base.tip(b); tipSha = t?.sha ?? null; return t; } };
+  const s = required.length ? baseState({ required, branch, read, was: readBaseRed(state) }) : { state: 'none' };
   cache.save();
   const path = baseRedPath(state);
   if (s.state === 'red') {
@@ -388,7 +474,7 @@ if (isMain) {
     if (s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
     // Only a green read of the tip itself moves the mark: one from below it would pass over the merges
     // whose checks are still going, which are the ones a red read next would blame.
-    if (s.state === 'green' && !s.tip_pending) { mkdirSync(state, { recursive: true }); writeFileSync(join(state, GREEN_FILE), `${JSON.stringify({ branch, at: new Date().toISOString() })}\n`); }
+    if (s.state === 'green' && !s.tip_pending) { mkdirSync(state, { recursive: true }); writeFileSync(join(state, GREEN_FILE), `${JSON.stringify({ branch, at: new Date().toISOString(), ...(tipSha ? { sha: tipSha } : {}) })}\n`); }
     console.log(JSON.stringify(s));
   }
 }
