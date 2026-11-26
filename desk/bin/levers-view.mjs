@@ -609,7 +609,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest) },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest), handoffs: handoffsPanel(repos, latest) },
     line,
   };
 }
@@ -633,6 +633,16 @@ function asksPanel(repos, latest) {
   return {
     repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.ask_report && Object.keys(e.ask_report).length)
       .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, arms: e.ask_report }))),
+  };
+}
+
+// Each repo's latest per-arm handoff report (levers-evaluate.mjs: tickets, dollars and handoffs per
+// ticket), for each lever whose evaluation carries one, with that lever's baseline arm:
+// { repos: [{ name, lever, at, state, baseline, arms: { <arm>: report } }] }.
+function handoffsPanel(repos, latest) {
+  return {
+    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.handoff_report && Object.keys(e.handoff_report).length)
+      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, baseline: REGISTRY[e.lever]?.baseline ?? null, arms: e.handoff_report }))),
   };
 }
 

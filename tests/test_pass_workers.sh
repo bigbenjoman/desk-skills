@@ -1051,11 +1051,26 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC6 a handoff whose worktree is gone parks naming the worktree, and spawns nothing" '[ "$(field H-2 state)" = "\"parked\"" ] && field H-2 park.question | grep -qF "handoff to Stage 4b: its worktree $T/wt/H-2-gone no longer exists, so no session was spawned" && ! spawned_for H-2'
 check "DS-155 AC6 a handoff whose branch is gone parks naming the branch, and spawns nothing" '[ "$(field H-3 state)" = "\"parked\"" ] && field H-3 park.question | grep -qF "its branch fix/H-3-gone no longer exists" && ! spawned_for H-3'
 # A stage no session starts at, and a handoff with no briefing written.
-handing H-5; hlog H-5 "AUTOPILOT_HANDOFF: 5"
+handing H-5; hlog H-5 "AUTOPILOT_HANDOFF: 2"
 handing H-6; hlog H-6 "AUTOPILOT_HANDOFF: 4b"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qE "5\\\\\", which no session starts at \(only Stage (4b or 7|7 or 4b)\), so no session was spawned" && ! spawned_for H-5'
+check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qE "2\\\\\", which no session starts at \(only Stage 3, 4, 4b, 5, 6, 7, 8, 9\), so no session was spawned" && ! spawned_for H-5'
 check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(field H-6 state)" = "\"parked\"" ] && field H-6 park.question | grep -qF "its handoff briefing $T/state-h/handoffs/H-6.json does not exist" && ! spawned_for H-6'
+
+# DS-1037 AC3: a worker that handed off partway through Stage 5 on context is followed by a fresh one
+# starting at Stage 5 from the briefing; a third such handoff in a row at that stage parks.
+midfile(){ node -e 'const [k] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: "5", criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$1"; }
+handing H-10; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 AC3 a mid-stage handoff at Stage 5 is followed by a fresh session at Stage 5" 'echo "$out" | grep -qF "H-10 handed off partway through Stage 5 on context (31% used; handoff-threshold 30): queued for a fresh session from Stage 5" && [ "$(spawned_for H-10 | tail -1 | grep -o "stage=[^ ]*")" = stage=5 ] && [ "$(field H-10 state)" = "\"running\"" ]'
+check "DS-1037 AC3 its briefing says so and lists what is left of the stage" 'b=$(brief H-10); grep -qF "## Handoff: this session starts at Stage 5" <<< "$b" && grep -qF "handed off partway through Stage 5" <<< "$b" && grep -qF "handoff-threshold 30" <<< "$b" && grep -qF "### Left of Stage 5" <<< "$b" && grep -qxF -- "- capture the after screenshot" <<< "$b"'
+midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 a second mid-stage handoff at the same stage still spawns" '[ "$(spawned_for H-10 | wc -l | tr -d " ")" = 2 ] && [ "$(field H-10 handoff_repeats)" = 1 ]'
+midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 the third in a row at one stage parks, spawning nothing" '[ "$(field H-10 state)" = "\"parked\"" ] && field H-10 park.question | grep -qF "handed off partway through Stage 5 3 times in a row on context" && [ "$(spawned_for H-10 | wc -l | tr -d " ")" = 2 ]'
+q set H-10 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"

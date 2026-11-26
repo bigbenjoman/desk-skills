@@ -85,7 +85,7 @@ export function logMarkers(h, t) {
   const lastPark = [...h.matchAll(/AUTOPILOT_PARK:\s*(.+)/g)].pop();
   const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
   const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
-  // A handoff (AUTOPILOT_HANDOFF: 4b or 7) ends this session so the next stage starts in a fresh one.
+  // A handoff (AUTOPILOT_HANDOFF: <stage>) ends this session so that stage starts in a fresh one.
   // It counts only as the last marker: a session that hands off has neither parked nor finished.
   const lastHandoff = [...h.matchAll(/AUTOPILOT_HANDOFF:\s*(.+)/g)].pop();
   // A stop for a planned reboot (AUTOPILOT_REBOOT) is resumed by the pass after the boot, never parked.

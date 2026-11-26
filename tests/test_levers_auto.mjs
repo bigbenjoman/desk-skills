@@ -66,8 +66,10 @@ const rowStates = (row) => { const r = leverRow([row]); return Object.fromEntrie
 const ROW_STATES = rowStates('preflight');
 const AUTO_PIN_STATES = rowStates('auto preflight');
 
-// The low-risk levers on trial that this config lets draw (question handling needs the ledger named).
-const TRIAL = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'low-risk' && REGISTRY[n].trialled && preconditions(n).eligible);
+// The on/off low-risk levers on trial that this config lets draw (question handling needs the ledger
+// named), and the valued ones it lets draw, each checked on its own below.
+const TRIAL = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'low-risk' && REGISTRY[n].trialled && !REGISTRY[n].values && preconditions(n).eligible);
+const VALUED = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'low-risk' && REGISTRY[n].trialled && REGISTRY[n].values && preconditions(n).eligible);
 const QUALITY = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'quality-risk');
 const NOW = new Date('2026-11-16T10:00:00Z');
 const daysAgo = (d) => new Date(NOW.getTime() - d * 86_400_000).toISOString();
@@ -193,16 +195,17 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
 {
   const { pin, assigned } = assignPin('P-1', { slug: 'ac3', size: 'M', random: seededRandom(3), now: NOW });
   t('AC3 assigned', assigned, true);
-  t('AC3 the pin holds the set, the arms, the trial ids, the fingerprints, the block and the time', Object.keys(pin), ['set', 'arms', 'trial_ids', 'fp', 'block', 'at']);
+  t('AC3 the pin holds the set, the arms, the trial ids, the values, the fingerprints, the block and the time', Object.keys(pin), ['set', 'arms', 'trial_ids', 'values', 'fp', 'block', 'at']);
   // A quality-risk lever on trial too: with nothing else in flight the cap leaves it the off arm.
-  const onTrial = [...TRIAL, ...QUALITY].sort();
+  const onTrial = [...TRIAL, ...VALUED, ...QUALITY].sort();
   t('AC3 an arm per lever on trial', Object.keys(pin.arms).sort(), onTrial);
   t('AC3 a trial id per lever on trial', Object.keys(pin.trial_ids).sort(), onTrial);
   t('AC3 a quality-risk lever is drawn off while it would be the only ticket in flight', QUALITY.map((l) => pin.arms[l]), QUALITY.map(() => 'off'));
   t('AC3 the trial id names the repo, the lever and the trial', pin.trial_ids.wrappers, 'ac3/wrappers/initial');
   t('AC3 a fingerprint entry per registry lever', Object.keys(pin.fp).sort(), Object.keys(REGISTRY).sort());
   t('AC3 the time it was pinned', pin.at, NOW.toISOString());
-  t('AC3 the set is the levers drawn on', pin.set, TRIAL.filter((l) => pin.arms[l] === 'on'));
+  t('AC3 the set is the levers drawn on, a valued one on any value but its baseline', pin.set,
+    Object.keys(REGISTRY).filter((l) => (VALUED.includes(l) ? pin.arms[l] !== REGISTRY[l].baseline : TRIAL.includes(l) && pin.arms[l] === 'on')));
   const events = read('ac3').events;
   t('AC11 one assign event', events.map((e) => e.kind), ['assign']);
   const e = events[0];
@@ -220,6 +223,23 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   t('question handling, ledger on: a block of twelve draws each value four times', REGISTRY['question-handling'].values.map((v) => pins.filter((p) => p.arms['question-handling'] === v).length), [4, 4, 4]);
   const off = assignPin('QH-off', { slug: 'qh-off', size: 'S', random, now: NOW, values: { 'worker-location': 'local', ledger: 'off' } }).pin;
   t('question handling, ledger off: no arm and no value', [off.arms['question-handling'] ?? null, off.values?.['question-handling'] ?? null], [null, null]);
+}
+
+// The handoff threshold is on trial where workers run locally: each ticket draws one of config, 20, 30
+// and 45, balanced in blocks of four, and its pin and assign record name the value; a cloud repo none.
+{
+  const random = seededRandom(37);
+  const local = { 'worker-location': 'local', ledger: 'off' };
+  const pins = Array.from({ length: 8 }, (_, i) => assignPin(`HT-${i + 1}`, { slug: 'ht-trial', size: 'S', random, now: NOW, values: local }).pin);
+  const vals = REGISTRY['handoff-threshold'].values;
+  t('handoff threshold: its values are config, 20, 30 and 45, config the baseline', [vals, REGISTRY['handoff-threshold'].baseline], [['config', '20', '30', '45'], 'config']);
+  t('handoff threshold: every ticket draws a value as its arm, with a trial id', pins.every((p) => vals.includes(p.arms['handoff-threshold']) && p.trial_ids['handoff-threshold'] === 'ht-trial/handoff-threshold/initial'), true);
+  t('handoff threshold: each block of four draws each value once', vals.map((v) => pins.filter((p) => p.arms['handoff-threshold'] === v).length), [2, 2, 2, 2]);
+  t('handoff threshold: the pin names the value its workers run on', pins.every((p) => p.values?.['handoff-threshold'] === p.arms['handoff-threshold']), true);
+  const assigns = read('ht-trial').events.filter((e) => e.kind === 'assign');
+  t('AC1 each ticket\'s assign record names the threshold it drew', assigns.map((e) => e.values?.['handoff-threshold']), pins.map((p) => p.arms['handoff-threshold']));
+  const cloud = assignPin('HT-cloud', { slug: 'ht-cloud', size: 'S', random, now: NOW, values: { 'worker-location': 'cloud', ledger: 'off' } }).pin;
+  t('handoff threshold, cloud workers: no arm and no value', [cloud.arms['handoff-threshold'] ?? null, cloud.values?.['handoff-threshold'] ?? null], [null, null]);
 }
 
 // ---- AC4: holdback after an adopt --------------------------------------------------------------
@@ -519,7 +539,7 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   let r = node([join(BIN, 'queue.mjs'), 'admit', 'Q-1', '--by', 'intake']);
   t('admit in an auto repo succeeds', r.status, 0);
   const pin = queue().tickets['Q-1']?.levers;
-  t('admit pins the ticket with its trial arms', Object.keys(pin?.arms ?? {}).sort(), [...TRIAL, ...QUALITY].sort());
+  t('admit pins the ticket with its trial arms', Object.keys(pin?.arms ?? {}).sort(), [...TRIAL, ...VALUED, ...QUALITY].sort());
   t('admit: the block is the repo\'s, by triage size', pin?.block, 'acme__widgets/S/1');
   const logged = read('acme__widgets', { kinds: ['assign'] }).events;
   t('admit writes the assign event', logged.map((e) => [e.ticket, e.block]), [['Q-1', 'acme__widgets/S/1']]);
@@ -532,7 +552,7 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   q.tickets['Q-3'] = { key: 'Q-3', state: 'queued' };
   writeFileSync(QUEUE, JSON.stringify(q));
   r = node([join(BIN, 'levers-auto.mjs'), 'assign', 'Q-3']);
-  t('assign pins a queued ticket that has none', [r.status, Object.keys(queue().tickets['Q-3']?.levers?.arms ?? {}).length], [0, TRIAL.length + QUALITY.length]);
+  t('assign pins a queued ticket that has none', [r.status, Object.keys(queue().tickets['Q-3']?.levers?.arms ?? {}).length], [0, TRIAL.length + VALUED.length + QUALITY.length]);
   r = node([join(BIN, 'levers-auto.mjs'), 'assign', 'Q-9']);
   t('assign on a ticket not in the queue fails, naming it', [r.status, /no such ticket in the queue: Q-9/.test(r.stderr)], [1, true]);
   r = node([join(BIN, 'queue.mjs'), 'add', 'Q-4', 'Story', 'A'], { DESK_CONFIG: ROW });

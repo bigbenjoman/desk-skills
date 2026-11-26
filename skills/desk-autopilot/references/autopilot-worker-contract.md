@@ -61,8 +61,9 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 did not reach, and end your turn. Never carry on from what you remember of an earlier contract.
 
 **Stages 4b and 7 start in a fresh session**: at the end of Stages 4 and 6 you hand off
-(`AUTOPILOT_HANDOFF`, the Stage 4 file's "Handing off"). A session starting at a stage redoes none
-before it.
+(`AUTOPILOT_HANDOFF`, the Stage 4 file's "Handing off"), and partway through any stage from Stage 3
+on once the handoff hook says your context passed its threshold. A session starting at a stage
+redoes none before it.
 
 ## 1. You cannot ask, so ask through the orchestrator
 

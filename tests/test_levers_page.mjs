@@ -213,12 +213,12 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 no chart yet', tr.includes('<svg'), false);
   const lev = section(hToday, 'lev-h');
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
-  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 11);
+  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 12);
   t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
   t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling">.*?Testing starts (once|when) a repo is set to auto\./.test(lev), true);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
-  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 8);
+  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 9);
   t('AC4 this week\'s changes', section(hToday, 'ch-h').includes('>What changed this week</h2>'), true);
   t('AC4 with nothing changed', section(hToday, 'ch-h').includes('No lever changed this week.'), true);
   t('AC4 no How desk decides', hToday.includes('How desk decides'), false);
@@ -231,9 +231,9 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 the needs-you tile', tilesOf(hSix)[3], 'Needs you=1');
   t('AC5 four WBR cards', count(hSix, /<article class="card wbr"/g), 4);
   const lev = section(hSix, 'lev-h');
-  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 11);
+  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 12);
   t('AC5 with results and progress', lev.includes('>Result so far</th>') && lev.includes('>Progress to a decision</th>'), true);
-  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,ledger,ledger-record');
+  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,handoff-threshold,ledger,ledger-record');
   const ch = section(hSix, 'ch-h');
   t('AC5 Every change desk made', ch.includes('>Every change desk made</h2>'), true);
   t('AC5 since testing started', ch.includes('Newest first, since testing started on 17 Nov.'), true);
@@ -426,6 +426,25 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td class="td n">$0.41 (410)</td><td class="td n">$0.00 (0)</td><td class="td n">$0.60 (600)</td>'), true);
   t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes(cells('0', '1', '25%', '1.5h')), rowOf('one-at-a-time').includes(cells('1', '0', '0%', '10m'))].join(' '), 'true true');
   t('with no ask report, the page has no such section', section(hSix, 'asks-h'), '');
+}
+
+// DS-1037 AC5: the handoff threshold's per-value report: in the view from the latest evaluation, and on
+// the page, each value's dollars and handoffs per ticket against the baseline.
+{
+  const report = { config: { tickets: 30, usd_per_ticket: 4, handoffs_per_ticket: 2 }, 20: { tickets: 30, usd_per_ticket: 3, handoffs_per_ticket: 3.5 },
+    30: { tickets: 30, usd_per_ticket: 3.6, handoffs_per_ticket: 2.5 }, 45: { tickets: 30, usd_per_ticket: 4.4, handoffs_per_ticket: 1 } };
+  const ht = { ...ev('handoff-threshold', { state: 'trial', on: 30, off: 30 }), handoff_report: report };
+  const built = V.buildView({ ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl([...evals, ht]) } }), now: NOW2, tz: 'UTC', generatedAt: NOW2 });
+  const panel = built.panels.handoffs?.repos ?? [];
+  t('AC5 the view carries each repo\'s latest per-value handoff report, with its baseline', j(panel.map((r) => [r.name, r.lever, r.baseline, Object.keys(r.arms).sort()])), j([['desk-skills', 'handoff-threshold', 'config', ['20', '30', '45', 'config']]]));
+  t('and no other lever has one', j((six.panels.handoffs?.repos ?? []).length), '0');
+  const sec = section(P.renderPage(built), 'handoffs-h');
+  const rowOf = (a) => sec.split(`<th scope="row" class="td">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
+  const cells = (...xs) => xs.map((x) => `<td class="td n">${x}</td>`).join('');
+  t('AC5 the page shows the baseline first, then each value', [...sec.matchAll(/<th scope="row" class="td">([^<]+)<\/th>/g)].map((m) => m[1]).join(','), 'config (baseline),20%,30%,45%');
+  t('AC5 each row has its tickets, dollars per ticket, against the baseline, and handoffs per ticket',
+    [rowOf('config (baseline)').includes(cells('30', '$4.00', '—', '2')), rowOf('20%').includes(cells('30', '$3.00', '−25%', '3.5')), rowOf('45%').includes(cells('30', '$4.40', '+10%', '1'))].join(' '), 'true true true');
+  t('with no handoff report, the page has no such section', section(hSix, 'handoffs-h'), '');
 }
 
 // The merge-time, learned-bar, time-parked and asks sections, in the house style of the lever table:

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // A worker's handoff to a fresh session: at the end of Stage 4 it hands off to Stage 4b, and at the
 // end of Stage 6 to Stage 7, so self-review and the PR stage each start on a short briefing rather
-// than on a context that has grown through the build. The worker writes $DESK_STATE/handoffs/<TICKET>.json
+// than on a context that has grown through the build. Partway through any stage from Stage 3 on, it
+// hands off when its context passes the handoff threshold (hooks/desk-handoff.py), and the fresh
+// session starts that same stage again from the briefing. The worker writes $DESK_STATE/handoffs/<TICKET>.json
 // with `handoff.mjs write` (below) and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
 // from git, and spawns the next session with the rendered briefing in its first message.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, realpathSync } from 'node:fs';
@@ -13,13 +15,25 @@ import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { execGit, REMOTE_GIT_MS } from './remote-git.mjs';
 
-// The stages a session may start at, and the stage each one follows.
-export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
+// The stages a session may start at after a handoff (those a resume starts at), and the stage each
+// one follows.
+const STAGE_ORDER = ['0', '1', '2', '3', '4', '4b', '5', '6', '7', '8', '9'];
+export const HANDOFF_STAGES = Object.freeze(Object.fromEntries(RESUME_STAGES.map((s) => [s, STAGE_ORDER[STAGE_ORDER.indexOf(s) - 1]])));
 
 // The stage a marker names ("4b", "4b/9", "7"), or null for one no session starts at.
 export function handoffStage(v) {
-  const s = /^\s*(?:stage\s+)?(4b|7)(?:\/9)?\b/i.exec(String(v ?? ''))?.[1]?.toLowerCase();
-  return s ?? null;
+  const s = /^\s*(?:stage\s+)?(4b|\d)(?:\/9)?\b/i.exec(String(v ?? ''))?.[1]?.toLowerCase();
+  return s && Object.hasOwn(HANDOFF_STAGES, s) ? s : null;
+}
+
+// The value of the handoff-threshold lever this worker runs on, from its pin (DESK_LEVER_VALUES), or
+// `config` with none: the value a mid-stage briefing records.
+export function thresholdValue(env = process.env) {
+  for (const w of String(env.DESK_LEVER_VALUES ?? '').split(/\s+/)) {
+    const [k, v] = w.split('=');
+    if (k === 'handoff-threshold' && v) return v;
+  }
+  return 'config';
 }
 
 export const handoffPath = (stateDir, key) => join(stateDir, 'handoffs', `${key}.json`);
@@ -61,10 +75,12 @@ export function readHandoff(stateDir, key) {
   const criteria = list(d?.criteria);
   if (!criteria.length) return { ok: false, why: `its handoff briefing ${path} lists no acceptance criteria` };
   const back = String(d.handed_back?.note ?? '').trim();
+  const left = list(d.left);
   return {
     ok: true,
     data: { criteria, lane: String(d.lane ?? '').trim() || 'not recorded', verification: list(d.verification), review: list(d.review), evidence: list(d.evidence),
-      ...(back ? { handedBack: { note: back, at: d.handed_back.at ?? null } } : {}) },
+      ...(back ? { handedBack: { note: back, at: d.handed_back.at ?? null } } : {}),
+      ...(left.length ? { midStage: { left, context: d.context ?? null, threshold: d.threshold ?? null } } : {}) },
   };
 }
 
@@ -108,17 +124,19 @@ export function replaceUnreadable(stateDir, { key, stage }) {
   return kept;
 }
 
-const WRITE_USAGE = 'usage: handoff.mjs write <TICKET> --stage <4b|7> --criterion <text> [--criterion <text> …] [--lane <text>] ' +
-  '[--verification <text> …] [--review <text> …] [--evidence <path> …]';
-const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification', '--review': 'review', '--evidence': 'evidence' };
+const WRITE_USAGE = `usage: handoff.mjs write <TICKET> --stage <${RESUME_STAGES.join('|')}> --criterion <text> [--criterion <text> …] [--lane <text>] ` +
+  '[--verification <text> …] [--review <text> …] [--evidence <path> …] [--left <text> … --context <percent>]';
+const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification', '--review': 'review', '--evidence': 'evidence', '--left': 'left' };
 
 // `handoff.mjs write`'s arguments as the briefing it writes, or { error }. Each flag takes the next
-// argument whole, whatever it starts with; the list flags repeat.
-export function handoffFromArgs(args) {
+// argument whole, whatever it starts with; the list flags repeat. `--left` makes it a mid-stage
+// handoff: what is left of the stage, with the context share it handed off at (`--context`) and the
+// handoff-threshold value the worker ran on (`env`'s DESK_LEVER_VALUES, `config` with none).
+export function handoffFromArgs(args, env = process.env) {
   const [key, ...rest] = args;
   if (!key || key.startsWith('--')) return { error: WRITE_USAGE };
   if (!SAFE_ID.test(key) || key.includes('..')) return { error: `'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
-  const d = { ticket: key, stage: null, criteria: [], lane: '', verification: [], review: [], evidence: [] };
+  const d = { ticket: key, stage: null, criteria: [], lane: '', verification: [], review: [], evidence: [], left: [] };
   for (let i = 0; i < rest.length; i += 2) {
     const flag = rest[i];
     const value = rest[i + 1];
@@ -126,12 +144,20 @@ export function handoffFromArgs(args) {
     if (WRITE_LISTS[flag]) d[WRITE_LISTS[flag]].push(value);
     else if (flag === '--stage') d.stage = value;
     else if (flag === '--lane') d.lane = value;
+    else if (flag === '--context') d.context = value;
     else return { error: `unknown argument ${flag}. ${WRITE_USAGE}` };
   }
   const stage = handoffStage(d.stage);
-  if (!stage || String(d.stage).trim().toLowerCase() !== stage) return { error: `--stage takes 4b or 7, not ${d.stage == null ? 'nothing' : `'${d.stage}'`}` };
+  if (!stage || String(d.stage).trim().toLowerCase() !== stage) return { error: `--stage takes ${RESUME_STAGES.join(', ')}, not ${d.stage == null ? 'nothing' : `'${d.stage}'`}` };
   d.stage = stage;
   if (!d.criteria.some((c) => c.trim())) return { error: 'a criterion is required: pass --criterion <text> once for each acceptance criterion, verbatim' };
+  if (!d.left.length && d.context != null) return { error: '--context goes with --left: a mid-stage handoff says what is left of the stage' };
+  if (d.left.length) {
+    const pct = Number(String(d.context ?? '').trim().replace(/%$/, ''));
+    if (!(pct > 0 && pct <= 100)) return { error: `--context takes the context share the handoff fired at, a percentage, not ${d.context == null ? 'nothing' : `'${d.context}'`}` };
+    d.context = pct;
+    d.threshold = thresholdValue(env);
+  } else delete d.left;
   return { data: d };
 }
 
@@ -149,7 +175,7 @@ if (isMain) {
   const path = handoffPath(dir, got.data.ticket);
   mkdirSync(join(dir, 'handoffs'), { recursive: true });
   writeFileSync(path, `${JSON.stringify(got.data, null, 2)}\n`);
-  console.log(`wrote ${path}: ${got.data.criteria.length} criteria, for Stage ${got.data.stage}`);
+  console.log(`wrote ${path}: ${got.data.criteria.length} criteria, for Stage ${got.data.stage}${got.data.left ? `, mid-stage at ${got.data.context}% (handoff-threshold ${got.data.threshold})` : ''}`);
 }
 
 // null when the session can start in this worktree on this branch, else what is missing.
@@ -355,8 +381,13 @@ export function renderHandoff({ key, stage, data, branch, worktree, base, commit
       ? ['This ticket needed an interactive session, and the person did that step and handed it back to a worker. What they did, in their words:', '',
         `> ${data.handedBack.note.split('\n').join('\n> ')}`, '',
         'Self-review the branch as it stands, then finish the ticket from there (evidence, the PR, Jira). This is everything handed on.']
-      : [`An earlier session of this ticket finished Stages 0 to ${HANDOFF_STAGES[stage]} and ended so that this one starts fresh. This is everything it handed on.`]),
+      : data.midStage
+        ? [`An earlier session of this ticket finished Stages 0 to ${HANDOFF_STAGES[stage]} and handed off partway through Stage ${stage}, as its context passed the handoff threshold ` +
+          `(${data.midStage.context ?? '?'}% used; handoff-threshold ${data.midStage.threshold ?? 'config'}). Carry on with Stage ${stage} from what is left below: do not redo the stages before it, ` +
+          'and check git status and git log first, since its work so far is on the branch. This is everything it handed on.']
+        : [`An earlier session of this ticket finished Stages 0 to ${HANDOFF_STAGES[stage]} and ended so that this one starts fresh. This is everything it handed on.`]),
     '',
+    ...(data.midStage ? [`### Left of Stage ${stage}`, '', ...items(data.midStage.left, 'not recorded'), ''] : []),
     '### Ticket',
     '',
     key,

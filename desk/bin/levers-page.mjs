@@ -65,6 +65,7 @@ const WHAT = Object.freeze({
   effort: 'Uses less thinking on simple steps',
   'finder-model': 'Runs the review’s Claude finders on a cheaper model',
   'question-handling': 'Decides whether a parked ticket’s question is pushed to you at once or waits for the digest',
+  'handoff-threshold': 'Sets how full a worker’s context gets before it hands off to a fresh session',
   ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
@@ -438,6 +439,29 @@ function asksByArm(v) {
       rows: Object.entries(r.arms).map(([a, x]) => [esc(a), String(x.tickets), ...steps.map((k) => `${usd(x.steps?.[k]?.usd_per_ticket)} (${tokens(x.steps?.[k]?.tokens_per_ticket)})`),
         esc(String(x.pushes_per_ticket ?? DASH)), esc(String(x.digests_per_ticket ?? DASH)), share(x.defaulted_share), latency(x.median_latency_s)]),
     })),
+  });
+}
+
+// Each repo's tickets by arm of a lever that reports handoffs (handoff threshold, levers-evaluate.mjs):
+// per ticket, the dollars and the handoffs to a fresh session, the baseline arm first and each other
+// value against it. Nothing until an evaluation has tickets.
+function handoffsByArm(v) {
+  const repos = v.panels.handoffs?.repos ?? [];
+  if (!repos.length) return '';
+  const vs = (x, b) => (x == null || b == null || !b ? DASH : `${x >= b ? '+' : MINUS}${Math.abs(Math.round((x / b - 1) * 100))}%`);
+  return dataSection({
+    id: 'handoffs-h', title: 'Handoffs, by threshold',
+    intro: 'Per ticket: what it cost and how many times its worker handed off to a fresh session, each threshold against the baseline.',
+    cols: [{ label: 'Threshold' }, { label: 'Tickets', num: true }, { label: '$ per ticket', num: true }, { label: 'vs baseline', num: true }, { label: 'Handoffs per ticket', num: true }],
+    groups: repos.map((r) => {
+      const base = r.arms[r.baseline];
+      const order = [...(base ? [r.baseline] : []), ...Object.keys(r.arms).filter((a) => a !== r.baseline)];
+      return {
+        head: `${r.name} · ${r.lever} · tickets by threshold, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
+        rows: order.map((a) => { const x = r.arms[a]; return [esc(a === r.baseline ? `${a} (baseline)` : `${a}%`), String(x.tickets), usd(x.usd_per_ticket),
+          a === r.baseline ? DASH : vs(x.usd_per_ticket, base?.usd_per_ticket), esc(String(x.handoffs_per_ticket ?? DASH))]; }),
+      };
+    }),
   });
 }
 
@@ -828,6 +852,7 @@ ${trends(view)}
 ${mergeStages(view)}
 ${stuckTime(view)}
 ${asksByArm(view)}
+${handoffsByArm(view)}
 ${leverTable(view, today)}
 ${changes(view, today)}
 ${today ? '' : howDesk()}

@@ -94,6 +94,7 @@ export const MECHANISMS = Object.freeze({
   'finder-model': { num: (r) => r.cost, den: (r) => r.starts },
   // Dollars at list prices over every measured step of the ticket's asks (withAsks), per asking ticket.
   'question-handling': { num: (r) => r.ask_usd, den: () => 1 },
+  'handoff-threshold': { num: (r) => r.cost, den: () => 1 },
 });
 
 // The tickets a lever is weighed on, by the registry's `rows`: every ticket unless it names some.
@@ -245,6 +246,17 @@ function askReport(rows) {
       median_latency_s: quantile(rs.flatMap((r) => r.latencies ?? []), 0.5),
     }];
   }));
+}
+
+// Per arm of `rows` (a valued lever's tickets, each with its `arm`), the tickets, dollars per ticket and
+// handoffs to a fresh session per ticket: what the handoff-threshold lever's row shows for each value.
+function handoffReport(rows) {
+  const by = new Map();
+  for (const r of rows) { const k = r.arm ?? (r.on ? 'on' : 'off'); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
+  const per = (rs, f) => (rs.length ? r4(rs.reduce((n, r) => n + f(r), 0) / rs.length) : null);
+  return Object.fromEntries([...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([arm, rs]) => [arm, {
+    tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)),
+  }]));
 }
 
 // ---- outcome files -----------------------------------------------------------------------------------
@@ -699,6 +711,7 @@ export function evaluate({
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
         ...(reg.rows === ASKING ? { ask_report: askReport(used) } : {}),
+        ...(lever === 'handoff-threshold' ? { handoff_report: handoffReport(used) } : {}),
         ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });

@@ -7,7 +7,8 @@
 # single Stop block, the .handoffs/ exclude, /desk-update's one-time offer-1m of a 20% 1M row
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only),
 # two sessions in one repo: a reserved name each, and each resuming its own handoff; and the
-# session's /rename name, recorded in the handoff and given back as a /rename line after /clear.
+# session's /rename name, recorded in the handoff and given back as a /rename line after /clear; and
+# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -488,5 +489,68 @@ check "settings_env: a value already set is kept"         '[ $rc -eq 0 ] && [ "$
 printf '{not json' > "$SETTINGS"
 rc=0; settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 55 || rc=$?
 check "settings_env: unreadable settings.json is exit 2, untouched" '[ $rc -eq 2 ] && [ "$(cat "$SETTINGS")" = "{not json" ]'
+
+# ---- DS-1037: worker mode, a mid-stage handoff at the lever's value or the §2 rows ----
+# wtranscript <file> <main-chain tokens> <the worker's last stage line>
+wtranscript(){ transcript "$1" "$2"
+  printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"Verified.\\nAUTOPILOT_STAGE: %s\\n"}]}}\n' "$3" >> "$1"; }
+WFILE="$T/state/handoffs/W-1.json"; mkdir -p "$T/state/handoffs"
+whook(){ DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="$WFILE" DESK_LEVER_VALUES="${LV:-}" hook "$@"; }
+config '`45`' '`20`'
+before="$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d ' ')"
+LV='question-handling=batched handoff-threshold=30'
+wtranscript "$T/w25.jsonl" 50000 "5/9 evidence"
+whook PostToolUse wk1 "$T/w25.jsonl"
+check "DS-1037 AC2 drawn 30: 25% of 200k mid-stage injects nothing"       '[ $rc -eq 0 ] && [ -z "$out" ]'
+wtranscript "$T/w32.jsonl" 64000 "5/9 evidence"
+whook PostToolUse wk1 "$T/w32.jsonl"
+c="$(ctx)"
+check "DS-1037 AC2 drawn 30: at 32% it hands off partway through Stage 5"  '[[ "$c" == *"context is at 32% of a 200,000-token window"* ]] && [[ "$c" == *"threshold of 30% (handoff-threshold 30), partway through Stage 5"* ]]'
+check "DS-1037 AC2 it says to commit, write the briefing for Stage 5 and print the marker" '[[ "$c" == *"commit what you have"* ]] && [[ "$c" == *"handoff.mjs write W-1 --stage 5 --context 32 --left"* ]] && [[ "$c" == *"AUTOPILOT_HANDOFF: 5"* ]] && [[ "$c" == *"Print no AUTOPILOT_DONE"* ]]'
+check "DS-1037 a worker is named no .handoffs/ file"                        '[ "$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d " ")" = "$before" ] && [[ "$c" != *".handoffs/"* ]]'
+whook PostToolUse wk1 "$T/w32.jsonl"
+check "DS-1037 it fires once"                                              '[ -z "$out" ]'
+whook Stop wk1 "$T/w32.jsonl"
+check "DS-1037 Stop blocks once while the briefing is unwritten"           '[[ "$out" == *"\"decision\": \"block\""* ]] && [[ "$out" == *"write the handoff briefing first"* ]] && [[ "$out" == *"AUTOPILOT_HANDOFF: 5"* ]]'
+whook Stop wk1 "$T/w32.jsonl"
+check "DS-1037 and only once"                                              '[ -z "$out" ]'
+wtranscript "$T/w40s2.jsonl" 80000 "2/9 understand"
+whook PostToolUse wk2 "$T/w40s2.jsonl"
+check "DS-1037 before Stage 3 no fresh session can start there: nothing"   '[ -z "$out" ]'
+wtranscript "$T/w40s3.jsonl" 80000 "3/9 implement"
+whook PostToolUse wk2 "$T/w40s3.jsonl"
+check "DS-1037 once it reaches Stage 3 it hands off there"                 '[[ "$(ctx)" == *"partway through Stage 3"* ]]'
+echo '{"ticket":"W-1"}' > "$WFILE"
+whook Stop wk2 "$T/w40s3.jsonl"
+check "DS-1037 with the briefing written, Stop does not block"             '[ -z "$out" ]'
+whook SessionStart wk3 "$T/w32.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+wtranscript "$T/w31m.jsonl" 310000 "4b/9 self-review"
+whook PostToolUse wk3 "$T/w31m.jsonl"
+check "DS-1037 the drawn value holds on a 1M window too"                   '[[ "$(ctx)" == *"31% of a 1,000,000-token window, past this worker'"'"'s threshold of 30% (handoff-threshold 30), partway through Stage 4b"* ]]'
+LV=''
+wtranscript "$T/w40.jsonl" 80000 "5/9 evidence"
+whook PostToolUse wk4 "$T/w40.jsonl"
+check "DS-1037 AC4 lever off: 40% of 200k is under the 45% row"             '[ -z "$out" ]'
+wtranscript "$T/w46.jsonl" 92000 "5/9 evidence"
+whook PostToolUse wk4 "$T/w46.jsonl"
+check "DS-1037 AC4 lever off: at 46% it hands off at the 200k row"          '[[ "$(ctx)" == *"threshold of 45% (config §2 Handoff at context %), partway through Stage 5"* ]]'
+LV='handoff-threshold=config'
+whook SessionStart wk5 "$T/w46.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+wtranscript "$T/w19m.jsonl" 190000 "5/9 evidence"
+whook PostToolUse wk5 "$T/w19m.jsonl"
+check "DS-1037 AC4 drawn config: 19% of a 1M window is under the 20% 1M row" '[ -z "$out" ]'
+wtranscript "$T/w21m.jsonl" 210000 "5/9 evidence"
+whook PostToolUse wk5 "$T/w21m.jsonl"
+check "DS-1037 AC4 drawn config: at 21% it hands off at the 1M row"         '[[ "$(ctx)" == *"threshold of 20% (config §2 Handoff at context % on a 1M window)"* ]]'
+whook SessionStart wk5 "$T/w21m.jsonl" ',"source":"compact"'
+whook PostToolUse wk5 "$T/w21m.jsonl"
+check "DS-1037 a compaction makes the next crossing a new one"             '[[ "$(ctx)" == *"partway through Stage 5"* ]]'
+config '`0`'
+wtranscript "$T/w90.jsonl" 180000 "5/9 evidence"
+whook PostToolUse wk6 "$T/w90.jsonl"
+check "DS-1037 AC4 rows at 0 and no lever value: a worker never hands off" '[ -z "$out" ]'
+config '`45`'
+DESK_HANDOFF_FILE="" hook PostToolUse wk7 "$T/w90.jsonl"
+check "DS-1037 outside a worker, worker mode stays off"                    '[[ "$(ctx)" == *".handoffs/"* ]]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

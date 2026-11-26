@@ -576,6 +576,9 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# Where hooks/desk-handoff.py's worker mode has the worker write its handoff briefing, once its context
+# passes the handoff threshold partway through a stage.
+export DESK_HANDOFF_FILE="$STATE/handoffs/$TICKET.json"
 # Caches on disk, in the repo's cache folder (desk-env paths), never a tmpfs /tmp: the Node compile
 # cache here, and with-lock.sh gives each test run a temporary folder there with the Jest cache in it.
 if mkdir -p "$DESK_CACHE_DIR/node-compile-cache" "$DESK_CACHE_DIR/jest" "$DESK_CACHE_DIR/runs" 2>/dev/null; then
