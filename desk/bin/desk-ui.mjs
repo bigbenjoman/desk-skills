@@ -50,9 +50,10 @@
 // Conversations (desk-ui-sessions.mjs): a Claude conversation about a repo or one of its tickets, on the
 // repo's subscription, seeded with quoted text as data, never counted as a queue worker.
 //   POST /api/sessions {purpose, repo, ticket?, mode?, login?}   starts one: purpose park, ticket or blank,
-//        repo a slug, mode chat, login another subscription's email for this conversation only. Any other
-//        field (a prompt, flags, a command) is 400 and starts nothing. 429 when the repo's subscription is
-//        at its usage limit and no login is named, or at the broker's own limits.
+//        repo a slug, mode chat, login another subscription's email for this conversation only, taken
+//        only while the repo's own is at its limit (409 otherwise). Any other field (a prompt, flags, a
+//        command) is 400 and starts nothing. 429 when the repo's subscription is at its usage limit and
+//        no login is named, or at the broker's own limits.
 //   GET /api/sessions                      { items }: every conversation, open and ended
 //   POST /api/sessions/<id>/messages {text}  the person's next message; resumes one a restart ended
 //   DELETE /api/sessions/<id>               ends it; its transcript is kept
@@ -69,7 +70,6 @@ import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-s
 import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { holdOn } from './call-login.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
 
@@ -473,10 +473,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return body;
   }
 
-  // The usage limit a pass recorded on `login` in any repo's queue, as the reason nothing starts on it, or null.
-  const heldReason = (all, login, own, who) => {
-    const h = holdOn(all.map((r) => r.q), login, own, clock());
-    return h ? `${who} is at ${limitName(h.type)}${h.resets_at != null ? ` until ${resetText(h.resets_at)}` : ''}` : null;
+  // `login`'s usage limit as the Usage screen reads it (a batch's hold, or a full window), as the reason
+  // nothing starts on it, or null.
+  const heldReason = (Q, all, login, who) => {
+    const h = Q.loginLimit(all, login, clock());
+    return h ? `${who} is at ${limitName(h.type)}${h.at != null ? ` until ${resetText(h.at)}` : ''}` : null;
   };
 
   // POST /api/sessions: what the conversation is about, checked; the subscription it runs on; then the broker.
@@ -490,10 +491,10 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       return refuse(res, 400, 'ticket', purpose === 'blank' ? 'A blank conversation names no ticket.' : 'ticket is a ticket key.');
     }
     if (other !== undefined && (typeof other !== 'string' || !EMAIL.test(other))) return refuse(res, 400, 'login', 'login is the email of one of this computer\'s subscriptions.');
-    let all, at, batches;
+    let Q, all, at, batches;
     try {
       const loaded = await loadAll();
-      all = loaded.all;
+      ({ Q, all } = loaded);
       batches = typeof slug === 'string' ? all.filter((r) => r.slug === slug) : [];
       if (!batches.length) return refuse(res, 400, 'repo', 'That is not a configured repo.');
       try { at = loaded.Q.checkoutOf(batches.find((r) => r.batch == null) ?? batches[0], 'talk about it'); } catch (e) { return refuse(res, 409, 'checkout', e.message); }
@@ -506,16 +507,18 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
     const sub = repoSubscription(subs, { value: E.repoConfigValue(slug, 'subscription'), source: 'row' });
     const mine = !subs.exists && sub.source === 'default' ? own : sub.login;
+    // Another subscription only for a conversation the repo's own cannot run: signed out or at its limit.
+    const mineHeld = mine && heldReason(Q, all, mine, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
     let login, email;
     if (other === undefined) {
       if (!mine) return refuse(res, 409, 'subscription', `${possessive(name)} subscription, ${sub.email ?? 'the default'}, is not signed in to any login here, so nothing started.`);
-      const held = heldReason(all, mine, own, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
-      if (held) return refuse(res, 429, 'usage_limit', `${held}, so nothing started. Name another subscription for this conversation to start it there.`);
+      if (mineHeld) return refuse(res, 429, 'usage_limit', `${mineHeld}, so nothing started. Name another subscription for this conversation to start it there.`);
       login = mine; email = sub.email ?? null;
     } else {
       const o = repoSubscription(subs, { value: other, source: 'request' });
       if (!o.login) return refuse(res, 400, 'login', `${other} is not one of this computer's subscriptions.`);
-      const held = heldReason(all, o.login, own, o.email);
+      if (mine && !mineHeld) return refuse(res, 409, 'subscription', `${possessive(name)} own subscription has room, so a conversation runs on it: another is named only once it is at its limit. Nothing started.`);
+      const held = heldReason(Q, all, o.login, o.email);
       if (held) return refuse(res, 429, 'usage_limit', `${held}, so nothing started.`);
       login = o.login; email = o.email;
     }

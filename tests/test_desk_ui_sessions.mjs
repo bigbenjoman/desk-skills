@@ -183,8 +183,11 @@ t('AC4 it starts on ops@studia.example', [a4.status, a4.json?.subscription], [20
 await until(() => starts().length === 2);
 t('AC4 Claude runs with ops@studia.example\'s login folder', starts()[1]?.configDir, OPS);
 t('AC4 desk-skills\' Subscription row is unchanged', readFileSync(DS.config, 'utf8'), dsConfigBefore);
-t('AC4 a login that is itself at its limit is refused too', (await start({ purpose: 'blank', repo: 'acme__studia-web', login: 'ds@desk.example' })).status, 429);
+t('AC4 a login that is itself at its limit is refused too', (await start({ purpose: 'ticket', repo: 'acme__desk-skills', ticket: 'DS-563', login: 'ds@desk.example' })).status, 429);
 t('AC4 an email no login here is signed in to is refused', (await start({ purpose: 'blank', repo: 'acme__studia-web', login: 'nobody@example.com' })).status, 400);
+const roomy = await start({ purpose: 'blank', repo: 'acme__studia-web', login: 'ds@desk.example' });
+t('AC4 another subscription is refused while the repo\'s own has room', [roomy.status, roomy.json?.error?.code], [409, 'subscription']);
+t('AC4 none of those started anything', starts().length, 2);
 
 // ---- AC5: 30 queue workers against a cap of 30: the conversation still runs, and the budget is unchanged
 const before5 = machineBudget({ running: 0, queues: otherQueues() });
@@ -287,6 +290,16 @@ t('AC10 the next message is accepted', (await message(b10.json.id, 'again?')).st
 await until(() => starts().length === n10 + 2);
 const r10 = starts()[n10 + 1];
 t('AC10 Claude resumes the session the first message began', [r10?.argv.includes('--resume'), r10?.argv[r10.argv.indexOf('--resume') + 1], r10?.argv.includes('--session-id')], [true, b10.json.sessionId, false]);
+
+// ---- AC3: a subscription whose newest usage reading has a window full is at its limit, with no pass's hold
+mkdirSync(join(H, '.desk-autopilot', 'usage'), { recursive: true });
+writeFileSync(join(H, '.desk-autopilot', 'usage', 'probe.log'), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: {
+  five_hour: { utilization: 1, resetsAt: Math.floor(NOW / 1000) + 3600 }, seven_day: { utilization: 0.4, resetsAt: Math.floor(NOW / 1000) + 86400 } } } })}\n`);
+const n3 = starts().length;
+const full = await start({ purpose: 'blank', repo: 'acme__voicepa' });
+t('AC3 a full window in the reading refuses it with 429', [full.status, full.json?.error?.code, /^voicepa's subscription is at the [a-z0-9 -]*limit until /.test(full.json?.error?.message ?? '')], [429, 'usage_limit', true]);
+await until(() => false, 200);
+t('AC3 nothing started', starts().length, n3);
 
 const reg = JSON.parse(readFileSync(join(H, '.desk-autopilot', 'ui', 'sessions.json'), 'utf8'));
 t('the registry is readable only by this user', (await import('node:fs')).statSync(join(H, '.desk-autopilot', 'ui', 'sessions.json')).mode & 0o777, 0o600);
