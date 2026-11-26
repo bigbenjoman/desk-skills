@@ -121,8 +121,8 @@ export function parseSubscriptions(text, { exists = true } = {}) {
     }
     if (header.join('|') === FEE_HEADER) {
       const [tool, name, plan, feeText] = c;
-      const usd = Number(String(feeText ?? '').replace(/^\$/, ''));
-      if (c.length !== 4 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !plan || !String(feeText ?? '').trim() || !(usd >= 0)) errors.push(`${at}: a fee wants a tool (claude or codex), a login's name, its plan and a monthly fee in dollars`);
+      const usd = feeUsd(feeText);
+      if (c.length !== 4 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !plan || usd == null) errors.push(`${at}: a fee wants a tool (claude or codex), a login's name, its plan and a monthly fee in dollars and cents`);
       else if (fees.some((f) => f.tool === tool && f.name === name)) errors.push(`${at}: ${tool} ${name} has a fee already`);
       else fees.push({ tool, name, plan, usd });
       return;
@@ -155,6 +155,12 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), fees, errors };
 }
 const FEE_HEADER = 'tool|name|plan|monthly fee (usd)';
+// A monthly fee as the file and `logins fee` take it: whole dollars or dollars and cents, an optional
+// $ before it, so every place that shows or adds it rounds to the same cent.  -> dollars, or null
+const feeUsd = (text) => {
+  const m = /^\$?(\d+(?:\.\d{1,2})?)$/.exec(String(text ?? '').trim());
+  return m ? Number(m[1]) : null;
+};
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
 const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
 
@@ -239,8 +245,8 @@ export function setFee(subs, { tool, name, plan, usd }) {
   const names = toolLogins(tool, subs).map((l) => l.name);
   if (!names.includes(name)) throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}`);
   const clear = String(usd ?? '').trim().toLowerCase() === 'none';
-  const n = Number(String(usd ?? '').trim().replace(/^\$/, ''));
-  if (!clear && (!String(usd ?? '').trim() || !(n >= 0))) throw new Error(`logins: the fee is dollars a month, or none to clear it, not "${usd}"`);
+  const n = feeUsd(usd);
+  if (!clear && n == null) throw new Error(`logins: the fee is dollars a month, to the cent at most (e.g. 200 or 19.99), or none to clear it, not "${usd}"`);
   const p = String(plan ?? '').trim();
   if (!clear && (!p || p.includes('`'))) throw new Error('logins: the fee needs the plan it is for, e.g. "Max 20x"');
   const fee = clear ? null : { tool, name, plan: p, usd: n };

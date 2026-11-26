@@ -51,6 +51,10 @@ t('setFee: none clears it', L.parseSubscriptions(L.setFee(subs, { tool: 'claude'
 const refused = (f) => { try { f(); return null; } catch (e) { return e.message; } };
 t('setFee: a login desk does not know is refused, naming the logins', refused(() => L.setFee(subs, { tool: 'claude', name: 'nobody', plan: 'Max', usd: '100' })), 'logins: no claude login "nobody": the logins are default');
 t('setFee: a fee that is not dollars is refused', /dollars a month/.test(refused(() => L.setFee(subs, { tool: 'claude', name: 'default', plan: 'Max', usd: 'ten' }))), true);
+t('setFee: a fee past the cent is refused, so its line and the total round alike', /to the cent at most/.test(refused(() => L.setFee(subs, { tool: 'claude', name: 'default', plan: 'Max', usd: '1.115' }))), true);
+t('setFee: dollars and cents are kept', L.setFee(subs, { tool: 'claude', name: 'default', plan: 'Plus', usd: '19.99' }).fee.usd, 19.99);
+t('Fees: a fee row past the cent is named and left out',
+  L.parseSubscriptions(FILE.replace('`200`', '`1.115`')).errors.length === 1 && L.parseSubscriptions(FILE.replace('`200`', '`1.115`')).fees.length === 0, true);
 
 // ---- Codex list prices
 t('codexPrice: a dated model id is priced as its model', W.codexPrice('gpt-6.1-sol-2026-09-29') === W.CODEX_PRICES['gpt-6.1-sol'], true);
