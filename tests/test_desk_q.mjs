@@ -631,8 +631,9 @@ t('DS-163 AC7 then each day to 6 days out, then the week by its Monday', [at(202
   'Wed 21 Oct | Sun 25 Oct | Week of Mon 26 Oct | Week of Mon 2 Nov');
 t('DS-163 AC7 desk-q <repo> days is the By day view', Q.run(['tidy', 'days'], { now: FIXED }), Q.daysScreen(Q.loadRepos(FIXED), 'acme__tidy', { now: FIXED }));
 
-// The median of tidy's 12 size M durations, 4 to 10 h: the 7th of them sorted.
-const typicalM = '7.0';
+// The median of tidy's 12 size M durations, 4 to 10 h, each weighted by how recently it merged: its
+// newer merges are the shorter ones, so the 6th of them sorted.
+const typicalM = '6.0';
 t('DS-163 AC8 (DS-279 AC16) a ticket that needs your answer says so, and how long once answered', [barRow(tidyTl, 'T-4'), days.find((l) => /^ {4}T-4 /.test(l)) ?? ''].every((l) => l.includes(`Needs your answer · ~${typicalM} h once answered`)), true);
 t('DS-163 AC8 (DS-217 AC8) a ticket held outside the batch names what holds it', [barRow(tidyTl, 'T-5'), days.find((l) => /^ {4}T-5 /.test(l)) ?? ''].every((l) => l.includes('Held by EXT-5, outside this batch')), true);
 t('DS-163 AC8 workers set to 0 says nothing starts', /Workers set to 0: nothing starts +Z-1 title$/.test(barRow(tl('acme__zero'), 'Z-1')), true);
