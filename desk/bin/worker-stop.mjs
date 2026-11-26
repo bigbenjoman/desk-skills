@@ -1,16 +1,15 @@
 // Ending one worker session's processes, for queue.mjs stop. spawn-worker.sh records no pid it can
 // trust (setsid may fork), so the session id on the command line is the handle: the claude CLI and the
 // wrapper spawn-worker.sh runs it under both carry `--session-id <sid>` or `--resume <sid>`.
-import { psRows } from './desk-env.mjs';
 import { sleepSync } from './dir-lock.mjs';
-import { treeTarget } from './lock-orphans.mjs';
+import { readRows, treeTarget } from './lock-orphans.mjs';
 
-const COLUMNS = 'pid=,ppid=,pgid=,stat=,args=';
-
-// Every live process as { pid, ppid, pgid, args }; a zombie is already gone. Throws when ps cannot be read.
-export function processRows(read = () => psRows(COLUMNS)) {
-  return read().map((r) => ({ pid: Number(r.pid), ppid: Number(r.ppid), pgid: Number(r.pgid), stat: String(r.stat ?? ''), args: String(r.args ?? '') }))
-    .filter((r) => Number.isInteger(r.pid) && Number.isInteger(r.pgid) && !r.stat.startsWith('Z'));
+// Every live process as { pid, ppid, pgid, stat, tty, args } (lock-orphans.mjs readRows); a zombie is
+// already gone. Throws when ps cannot be read.
+export function processRows() {
+  const rows = readRows();
+  if (!rows) throw new Error('ps could not be read');
+  return rows;
 }
 
 // Whether command line `args` starts session `sid`: the flag and the id as two whole words.

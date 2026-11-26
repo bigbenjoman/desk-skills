@@ -2,8 +2,8 @@
 // what with-lock.sh's caller watch (lock-caller-watch.mjs) ends once the run's caller exits. Node's own
 // modules only, so the watch each locked run starts stays small.
 //
-// `rows` everywhere is the process table as [{ pid, ppid, pgid, args }] (worker-stop.mjs processRows,
-// or readRows below).
+// `rows` everywhere is the process table as [{ pid, ppid, pgid, stat, tty, args }] (readRows below,
+// which worker-stop.mjs processRows reads with).
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 
@@ -19,14 +19,14 @@ const isInit = (r) => r.pid === 1 || INIT.test(r.args);
 // waits for it (the pass, the merge driver, a base gate).
 const DRIVER = /^(?:\S*\/)?node(?:js)?(?:\s|$)|\/desk\/(?:bin|releases\/[^/\s]+\/bin)\//;
 
-// The process table, read once per call: [{ pid, ppid, pgid, args }], zombies left out. Null when ps
-// cannot be read.
+// The process table, read once per call: [{ pid, ppid, pgid, stat, tty, args }], zombies left out. `tty`
+// is the controlling terminal, null for none. Null when ps cannot be read.
 export function readRows() {
-  const r = spawnSync('ps', ['-ww', '-axo', 'pid=,ppid=,pgid=,stat=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  const r = spawnSync('ps', ['-ww', '-axo', 'pid=,ppid=,pgid=,stat=,tty=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
   if (r.error || r.status !== 0) return null;
   return r.stdout.split('\n').flatMap((l) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s?(.*)$/.exec(l);
-    return m && !m[4].startsWith('Z') ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), args: m[5] }] : [];
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s?(.*)$/.exec(l);
+    return m && !m[4].startsWith('Z') ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], tty: /^[?-]+$/.test(m[5]) ? null : m[5], args: m[6] }] : [];
   });
 }
 
@@ -66,8 +66,9 @@ export function worktreeKey(cwd, worktrees) {
 // whether a Claude Code session is above a pid. A holder in the worktree of a running ticket is that
 // worker's, alive however long it runs, and never orphaned. Otherwise it is orphaned when
 //   - its caller exited and it was re-parented to init (callersOf finds no owner), or
-//   - it works in the worktree of a ticket that is not running, with no Claude session and no driver
-//     (DRIVER) above it: the worker that started it has ended.
+//   - it works in the worktree of a ticket that is not running, with no controlling terminal (a
+//     person's run in a terminal has one; a detached worker's has none), no Claude session and no
+//     driver (DRIVER) above it: the worker that started it has ended.
 export function orphanReason(run, { rows, tickets = new Map(), worktrees = null, claudeAbove = () => false }) {
   const key = worktreeKey(run.cwd, worktrees);
   const state = key ? tickets.get(key) ?? null : null;
@@ -76,8 +77,8 @@ export function orphanReason(run, { rows, tickets = new Map(), worktrees = null,
   if (!up) return null;
   const ended = state ? `; its worktree's ticket ${key} is ${state}, not running` : '';
   if (!up.owner) return `its caller exited and it was re-parented to init${ended}`;
-  if (!state || claudeAbove(run.pid)) return null;
   const byPid = new Map(rows.map((r) => [r.pid, r]));
+  if (!state || byPid.get(run.pid)?.tty || claudeAbove(run.pid)) return null;
   for (let p = byPid.get(run.pid)?.ppid, seen = new Set(); p > 1 && !seen.has(p); p = byPid.get(p)?.ppid) {
     seen.add(p);
     if (DRIVER.test(byPid.get(p)?.args ?? '')) return null;

@@ -42,6 +42,10 @@ t('AC3 a holder in a running ticket\'s worktree is never orphaned, even re-paren
 const timeoutOwner = [INIT, row(450, 1, 'timeout 9000 bash -c x'), row(600, 450, 'bash tests/run.sh')];
 t('AC1 a holder in an ended ticket\'s worktree with no worker above it is orphaned', reason(timeoutOwner, `${WT}/DS-3/sub`), "its worktree's ticket DS-3 is done, not running, and no worker session is above it");
 t('the same holder outside any ticket worktree is not orphaned', reason(timeoutOwner, '/elsewhere'), null);
+// A person's run from a terminal in an ended ticket's worktree: it has a controlling terminal.
+const terminal = [INIT, row(440, 1, 'login -pf ben'), row(450, 440, '-zsh'), { ...row(600, 450, 'bash tests/run.sh'), tty: 'ttys003' }];
+t('AC3 a run from a live terminal in an ended ticket\'s worktree is not orphaned', reason(terminal, `${WT}/DS-3`), null);
+t('readRows reads a controlling terminal, and none for a detached process', (() => { const me = (readRows() ?? []).find((r) => r.pid === process.pid); return me != null && 'tty' in me; })(), true);
 // Drivers that start a run on purpose and wait for it.
 t('a run the pass started is not orphaned', reason([INIT, row(450, 1, 'node /h/.claude/desk/bin/pass.mjs'), row(600, 450, 'bash tests/run.sh')], `${WT}/DS-3`), null);
 t('a run a detached desk script started is not orphaned', reason([INIT, row(450, 1, 'bash /h/.claude/desk/bin/merge-driver.sh --all-batches'), row(600, 450, 'bash tests/run.sh')], `${WT}/DS-3`), null);
