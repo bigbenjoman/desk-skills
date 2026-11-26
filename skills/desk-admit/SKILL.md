@@ -33,14 +33,14 @@ Bugs before Tasks, then newest, clean unassigned ones first. A ticket assigned t
 listed. One whose summary or labels read as a decision, or as access, key
 or infrastructure work outside the repo, is left out naming the word.
 A ticket a merged PR or a commit on the default branch already names is shown as `already on main (PR
-#n)` and not offered. One an open PR, draft or not, names is left out as `open PR #n by <author>`
-when someone other than §1 GitHub handle opened it, and offered flagged `open PR #n` when the person
-did, with the command that takes it in on that PR instead of admitting it:
-`node ~/.claude/desk/bin/queue.mjs adopt <KEY> <n> --filed`, which the merge driver then merges
-(admitting it would start a worker that opens a second PR). With the open PRs unread, each says it was not checked for one. One missing its Acceptance criteria or Design section says so, and one naming a
+#n)` and not offered. One an open PR names is left out as `open PR #n by <author>` when someone but
+§1 GitHub handle opened it, and offered flagged `open PR #n` when the person did, with
+`node ~/.claude/desk/bin/queue.mjs adopt <KEY> <n> --filed`, which takes it in on that PR for the
+merge driver (admitting it would open a second PR). With the open PRs unread, each says it is
+unchecked. One missing its Acceptance criteria or Design section says so, and one naming a
 file a PR merged in the last 7 days changed names that PR as possible overlap. Show the list and ask
-which to admit, then run step 0 and step 1 for the ones chosen, or that adopt command for one flagged
-`open PR #n`. It admits nothing itself. Exit 3 means
+which to admit, then run step 0 and step 1 for the ones chosen, or that adopt command for one
+flagged so. It admits nothing itself. Exit 3 means
 the repo has no Jira tracker or project to list from: say so. While a slot stays free, the pass prints
 the person's own under `free slot:`, and with config §3b "Propose candidates for a free slot" on, the
 whole list.
