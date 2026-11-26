@@ -327,15 +327,20 @@ export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
 // One task on one arm, start to tidy-up. Whatever goes wrong is this run's failure, with the reason.
 // `charge` takes the result once the session ends and returns its quota, before the hidden tests are
 // scored: scoring can wait long for the test lock, and use of the account during that wait is not
-// the run's.
+// the run's. A charge that throws (an unwritable ledger) is rethrown only once the run is scored and
+// saved, so a resumed bench reuses it rather than paying for the session again.
 function runOne(repo, task, arm, order, opts, out, dir, secrets, charge = () => null) {
   mkdirSync(dir, { recursive: true });
   const result = { task: task.id, arm: arm.name, repo: task.repo, base: task.base, model: arm.model, effort: arm.effort, order: order.map((a) => a.name),
     status: 'failed', why: null, cost: null, tokens: null, attempts: [], ran_at: null, at: new Date().toISOString() };
   const parent = mkdtempSync(join(realpathSync(tmpdir()), 'desk-bench-'));
   const wt = join(parent, 'checkout');
-  let charged = false;
-  const end = () => { if (!charged) { charged = true; result.quota = charge(result); } };
+  let charged = false, chargeError = null;
+  const end = () => {
+    if (charged) return;
+    charged = true;
+    try { result.quota = charge(result); } catch (e) { chargeError = e; }
+  };
   try {
     makeCheckout(repo, task, wt);
     const settings = join(parent, 'settings.json');
@@ -353,6 +358,7 @@ function runOne(repo, task, arm, order, opts, out, dir, secrets, charge = () => 
     rmSync(parent, { recursive: true, force: true });
   }
   writeFileSync(join(dir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
+  if (chargeError) throw chargeError;
   return result;
 }
 
