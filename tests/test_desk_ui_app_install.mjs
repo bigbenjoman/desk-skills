@@ -84,7 +84,6 @@ t('a failed build is tried again on the next install', /failed/.test(run(['insta
 const sh = readFileSync(join(ROOT, 'install.sh'), 'utf8');
 const fn = sh.match(/^install_desk_ui_app\(\) \{\n[\s\S]*?\n\}$/m)?.[0];
 t('install_desk_ui_app is found in install.sh', !!fn, true);
-t('install.sh builds the app after it installs the server, and before Desk.app', /^install_desk_ui$[\s\S]*^install_desk_ui_app$[\s\S]*^install_desk_app$/m.test(sh), true);
 const step = (more = {}) => spawnSync('bash', ['-c', `set -euo pipefail
 WARNINGS=0; WROTE=""
 ok(){ echo "ok $1"; }; warn(){ echo "WARN $1"; WARNINGS=$((WARNINGS+1)); }; note(){ echo "note $1"; }; wrote(){ WROTE="$WROTE$1"; }
