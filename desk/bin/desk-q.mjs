@@ -1474,7 +1474,11 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   const ind = ' '.repeat(lead);
   const solid = solidBars(width);
   const head = [...s.head, '', `Scale: ${sc.id}${zoom === 'auto' ? ' (auto)' : ''}${width == null ? '' : ' · z to change'}`, ''];
-  if (s.items.length) head.push(segLine([[`${ind}${lab.join('')}  `, null], [`${pad('STARTS', 13)}${byEpic ? 'SHIPS' : `${pad('SHIPS', 12 + TL_GAP)}TITLE`}`, BOLD]]), `${ind}${tick.join('')}`);
+  // Narrower than its narrowest row, a row and its heading are cut at a whole column (cutRuns).
+  if (s.items.length) {
+    head.push(segLine(cutRuns([[[`${ind}${lab.join('')}  `, null]], [[pad('STARTS', 13), BOLD]], ...(byEpic ? [[['SHIPS', BOLD]]] : [[[pad('SHIPS', 12 + TL_GAP), BOLD]], [['TITLE', BOLD]]])], width)),
+      `${ind}${tick.join('')}`);
+  }
   // Each run of bar glyphs is one segment, so it is coloured once and cut as a whole.
   const bar = (e, sgr) => {
     const a = Math.max(0, col(e.start)), b = Math.max(a, col(e.likely)), c = Math.max(b, col(e.late));
@@ -1491,10 +1495,10 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     for (const { r, F, e, d, opens = r.id } of epics) {
       const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
       const open = { kind: 'epic', slug: opens, epic: e.key };
-      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F, e, checkin), whyColour(F)]], open)); continue; }
+      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [width == null ? epicWhy(r, F, e, checkin) : cut(epicWhy(r, F, e, checkin), Math.max(1, width - EP_LEAD)), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
-      rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
-        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(shipWhen(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
+      rows.push(segRow(`${r.id}${e.key}`, cutRuns([name, bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
+        [[` ${pad(epicStarts(r, F, e, d, now), 13)}`, null]], [[pad(shipWhen(d.likely, now), 12), null]], ...(provisional(e) ? [[['  provisional', sgr]]] : [])], width), open));
     }
     if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
@@ -1510,13 +1514,16 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     }
     for (const i of mine(dated)) {
       const sgr = STATE_SGR[i.x.k];
-      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, cutRuns([...tlead(i).map((c) => [c]), [[' ', null], ...bar(i.e, sgr)], [[` ${pad(startsCell(i.F, i.x, now), 13)}`, null]],
+        [[pad(shipsCell(i.F, i.x, now), 12), null]], ...tail(i).map((c) => [c])], width), openTicket(i, epic)));
     }
-    // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
+    // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits;
+    // narrower than that, it keeps to the width.
     for (const i of mine(undated)) {
-      const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), cw + TL_TAIL + TL_GAP, tw);
+      const room = width == null ? Infinity : Math.max(12, width - lead - 2);
+      const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), Math.min(cw + TL_TAIL + TL_GAP, room), tw);
       const title = byEpic ? [] : [[cut(tt(summaryOf(i)), left), null]];
-      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, cutRuns([...tlead(i).map((c) => [c]), [[' ', null], [cell, STATE_SGR[i.x.k]]], ...title.map((c) => [c])], width), openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -1566,14 +1573,18 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
   const tw = width == null ? 60 : Math.max(1, width - lead);
   const tt = titler(s.items.map(summaryOf));
   const head = [...s.head, ''];
-  if (s.items.length) head.push(bold(`    ${all ? pad('', REPO_W) : ''}${pad('TICKET', kw)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
+  // Narrower than its narrowest row, a row and its heading are cut at a whole column (cutRuns), and an
+  // undated row's reason keeps to the width.
+  if (s.items.length) head.push(bold(cutLine([`    ${all ? pad('', REPO_W) : ''}${pad('TICKET', kw)}`, pad('STATE', STATE_W), pad('STARTS', 13), pad('SHIPS', 14), 'TITLE'], width)));
+  const room = width == null ? Infinity : Math.max(12, width - (lead - 27) - 2);
   const rows = [];
   for (const [g, list] of groups) {
     rows.push(segRow(`day ${g}`, [[`  ${g}`, BOLD], [` · ${list.length} ticket${list.length === 1 ? '' : 's'}`, DIM]], null));
     for (const i of list) {
-      const [cell, left] = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, tw] : whyCell(why(i), 27, tw);
+      const [cell, left] = i.e ? [null, tw] : whyCell(why(i), Math.min(27, room), tw);
+      const dates = i.e ? [[[pad(startsCell(i.F, i.x, now), 13), null]], [[`${pad(shipsCell(i.F, i.x, now), 12)}  `, null]]] : [[[cell, STATE_SGR[i.x.k]]]];
       const title = cut(tt(summaryOf(i)), left);
-      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? repoCell(i.r.repo ?? i.r.name) : ''}`, kw), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, cutRuns([...ticketLead(i, `    ${all ? repoCell(i.r.repo ?? i.r.name) : ''}`, kw).map((c) => [c]), ...dates, [[title, null]]], width), openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -2904,17 +2915,22 @@ function cutCells(cells, width) {
   return [...out, [' …', null]];
 }
 const cutLine = (cells, width) => cutCells(cells.map((s) => [s, null]), width).map(([s]) => s).join('');
-// A line's coloured runs cut to `width` at a whole field, as cutCells cuts a row. A field starts at a
-// run that opens with a blank (a gap, or a " │ " or " · " separator), so a label and its figure
-// ("kept " and "3") go together and no separator is left before the " …".
+// A row's cells, each a list of coloured runs, cut to `width` as cutCells cuts, so no cell shows in
+// part; the runs, flat.
+function cutRuns(cells, width) {
+  const out = cutCells(cells.map((c) => [c.map(([s]) => s).join(''), c]), width);
+  if (out.at(-1)?.[0] !== ' …') return cells.flat();
+  const kept = out.slice(0, -1).flatMap(([, c]) => c.map(([s, k]) => [s, k]));
+  if (kept.length) kept.at(-1)[0] = kept.at(-1)[0].trimEnd();
+  return [...kept, [' …', null]];
+}
+// A line's coloured runs cut to `width` at a whole field. A field starts at a run that opens with a
+// blank (a gap, or a " │ " or " · " separator), so a label and its figure ("kept " and "3") go
+// together and no separator is left before the " …".
 function fitRuns(segs, width) {
   const fields = [];
   for (const [s, k] of segs) { if (!fields.length || /^\s/.test(s)) fields.push([]); fields.at(-1).push([s, k]); }
-  const cells = cutCells(fields.map((f) => [f.map(([s]) => s).join(''), f]), width);
-  if (cells.at(-1)?.[0] !== ' …') return segs;
-  const kept = cells.slice(0, -1).flatMap(([, f]) => f);
-  if (kept.length) kept.at(-1)[0] = kept.at(-1)[0].trimEnd();
-  return [...kept, [' …', null]];
+  return cutRuns(fields, width);
 }
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache, hidden = null } = {}) {
@@ -3374,7 +3390,8 @@ function queueWidths(width, keys, spans) {
   const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - lead - TITLE_MIN));
   return { kw, ww, nw, tw: width == null ? 60 : Math.max(1, width - lead - nw) };
 }
-const queueHead = ({ kw, ww, nw }) => bold(`  ${rpad('#', 4)}  ${pad('TICKET', kw)}${pad('STATE', STATE_W)}${ww ? pad(WAIT_HEAD, ww) : ''}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`);
+// Narrower than its narrowest row, a Queue row and its heading are cut at a whole column (cutRuns).
+const queueHead = ({ kw, ww, nw }, width = null) => bold(cutLine([`  ${rpad('#', 4)}  ${pad('TICKET', kw)}`, pad('STATE', STATE_W), ww ? pad(WAIT_HEAD, ww) : '', pad('WHAT IT NEEDS', nw), pad('STARTS', 13), pad('SHIPS', 14), 'TITLE'], width));
 // A repo's Queue in groups, each in queue order: what autopilot is moving first, then what needs the user.
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
@@ -3387,16 +3404,16 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // it names none. TICKET is the ticket the item is about (itemKey), the key a drop of a put-off item takes.
 // How long an item has waited, for WAITING, or ''.
 const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
-const itemRowOf = (r, k, { now, kw, ww, nw, tw }) => ({ r: b, t, item }) => {
+const itemRowOf = (r, k, { now, kw, ww, nw, tw, width = null }) => ({ r: b, t, item }) => {
   const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
   const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
   const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
-  return segRow(null, [
-    [`  ${rpad('-', 4)}  ${pad(itemKey(t, item), kw)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
-    ...(ww ? [[pad(itemWait(item, now), ww), null]] : []),
-    ...fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
-    [pad('—', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
-  ], null);
+  return segRow(null, cutRuns([
+    [[`  ${rpad('-', 4)}  ${pad(itemKey(t, item), kw)}`, null]], [[pad(LABEL[k], STATE_W), STATE_SGR[k]]],
+    ...(ww ? [[[pad(itemWait(item, now), ww), null]]] : []),
+    fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
+    [[pad('—', 13), null]], [[pad('—', 14), null]], [[cut(what, tw), null]],
+  ], width), null);
 };
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
 
@@ -3429,8 +3446,8 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
     const all = groups.flatMap(([, , xs]) => xs);
     const w = queueWidths(width, all.map(({ t, item }) => itemKey(t, item)), all.map(({ item }) => itemWait(item, now)));
-    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, ...w }))]);
-    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', queueHead(w)],
+    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, ...w, width }))]);
+    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', queueHead(w, width)],
       rows, foot: ['', ...stateKey(groups.map(([, k]) => k), width)] };
   }
   // A repo of several batches dates and words each row by its own batch, `x.b`.
@@ -3468,7 +3485,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const wait = (x) => { const g = ageOf(x, now); return g == null ? '' : span(g); };
   const its = [...items, ...offItems];
   const { kw, ww, nw, tw } = queueWidths(width, [...list.map((x) => x.t.key), ...its.map(({ t, item }) => itemKey(t, item))], [...list.map(wait), ...its.map(({ item }) => itemWait(item, now))]);
-  fit.push('', queueHead({ kw, ww, nw }));
+  fit.push('', queueHead({ kw, ww, nw }, width));
   // A ticket with a PR open has started and has no ship date of its own.
   const starts = (x) => { const a = afterPrs(of(x), x); return x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
   const waitSgr = (x) => {
@@ -3476,15 +3493,15 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
   const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
-  const row = (x) => segRow(x.t.key, [
-    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, kw)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],
-    ...(ww ? [[pad(wait(x), ww), waitSgr(x)]] : []),
+  const row = (x) => segRow(x.t.key, cutRuns([
+    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
+    ...(ww ? [[[pad(wait(x), ww), waitSgr(x)]]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
-    ...fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
-    [pad(starts(x), 13), null], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
-  ], { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
-  const itemRow = (k) => itemRowOf(r, k, { now, kw, ww, nw, tw });
+    fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
+    [[pad(starts(x), 13), null]], [[pad(ships(x), 14), null]], [[cut(tt(summary(x)), tw), null]],
+  ], width), { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
+  const itemRow = (k) => itemRowOf(r, k, { now, kw, ww, nw, tw, width });
   const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);

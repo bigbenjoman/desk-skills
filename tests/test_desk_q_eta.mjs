@@ -719,8 +719,8 @@ t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics',
 
 // ---- Long keys and short, in every view at 60, 80 and 120 columns. Each ticket row keeps a
 // space between its key and its state, every row's state starts in one column (the STATE heading's, where
-// the view has one), and a row's title is whole or cut with an ellipsis. A repo name longer than its
-// column is cut with an ellipsis too.
+// the view has one), a row's title is whole or cut with an ellipsis, and every row and heading fits
+// the width. A repo name longer than its column is cut with an ellipsis too.
 const MIXED = ['issue-1484', 'SV-12', 'issue-1480', 'SV-7', 'issue-1479'];
 repo('mixed-up-repo', 4870, {
   tickets: { 'issue-1484': { state: 'running', stage: '6/9' }, 'SV-12': { state: 'triaged' }, 'issue-1480': { state: 'triaged' }, 'SV-7': { state: 'parked', park: { question: 'which copy?' } }, 'issue-1479': heldBy('SV-12') },
@@ -734,7 +734,7 @@ repo('mixed-up-repo', 4870, {
   const ticketRows = (ls) => ls.slice(0, (ls.findIndex((l) => l.startsWith('key ')) + 1 || ls.length + 1) - 1)
     .filter((l) => STATE.test(l) && l.slice(0, l.search(STATE)).trim());
   const mixedRow = (l) => MIXED.some((k) => new RegExp(`(^|\\s)${k}\\s`).test(l));
-  const layoutOf = (text) => {
+  const layoutOf = (text, width = Infinity) => {
     const ls = text.replace(ANSI_ETA, '').split('\n');
     const rows = ticketRows(ls), at = rows.map((l) => l.search(STATE));
     const head = ls.find((l) => /\sTICKET\s+STATE\s/.test(l));
@@ -743,6 +743,7 @@ repo('mixed-up-repo', 4870, {
       apart: rows.every((l, i) => l[at[i] - 1] === ' '),
       aligned: new Set([...at, ...(head ? [head.indexOf('STATE')] : [])]).size === 1,
       cut: rows.filter(mixedRow).every((l) => /(title|…)$/.test(l)),
+      fits: [...rows, ...ls.filter((l) => /\bSTARTS\b/.test(l))].every((l) => [...l].length <= width),
     };
   };
   for (const width of [60, 80, 120]) {
@@ -753,7 +754,7 @@ repo('mixed-up-repo', 4870, {
       'By day': Q.daysScreen(rs, slug, { now: FIXED, width }),
       'every repo\'s By day': Q.daysScreen(rs, null, { now: FIXED, width }),
     };
-    for (const [name, text] of Object.entries(views)) t(`issue-1485 AC1-AC3: ${name} at ${width} columns`, layoutOf(text), { rows: 5, apart: true, aligned: true, cut: true });
+    for (const [name, text] of Object.entries(views)) t(`issue-1485 AC1-AC3: ${name} at ${width} columns`, layoutOf(text, width), { rows: 5, apart: true, aligned: true, cut: true, fits: true });
     t(`issue-1485 AC2: every repo's By day cuts a long repo name with an ellipsis, a space before the key, at ${width} columns`,
       Q.daysScreen(rs, null, { now: FIXED, width }).split('\n').filter((l) => l.startsWith('    mixed-up-r')).map((l) => /^ {4}mixed-up-r… issue-|^ {4}mixed-up-r… SV-/.test(l)), [true, true, true, true, true]);
     const home = Q.overview(rs, { now: FIXED, width, avail: 20, cap: 4, gate: 4, perWorker: 1 }).split('\n');
@@ -761,8 +762,8 @@ repo('mixed-up-repo', 4870, {
     t(`issue-1485 AC2: home's row keeps its name apart and is cut where its heading is, at ${width} columns`, [/^ {2}mixed-up-repo {2,}●/.test(homeRow), homeRow.endsWith(' …'), homeRow.length <= width],
       [true, homeHead.endsWith(' …'), true]);
   }
-  const { rows, apart, aligned } = layoutOf(Q.shipsScreen(rs, slug, { now: FIXED }));
-  t('issue-1485 AC1: desk-q ships keeps a space between a long key and its state', { rows, apart, aligned }, { rows: 5, apart: true, aligned: true });
+  const { rows, apart, aligned, fits } = layoutOf(Q.shipsScreen(rs, slug, { now: FIXED }));
+  t('issue-1485 AC1: desk-q ships keeps a space between a long key and its state', { rows, apart, aligned, fits }, { rows: 5, apart: true, aligned: true, fits: true });
 }
 
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
