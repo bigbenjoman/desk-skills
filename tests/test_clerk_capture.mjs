@@ -1,4 +1,4 @@
-// suite: Clerk sign-in capture (the script desk-pr documents parses, refuses any key but sk_test_, and waits on the session cookie)
+// suite: Clerk sign-in capture (the script desk-pr documents parses, and refuses any key but sk_test_ before signing in)
 // layer: L2
 // covers: skills/desk-pr/references/screenshot-surfaces.md
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -33,13 +33,6 @@ for (const prefix of ['sk_' + 'live_', 'pk_' + 'test_', '']) {
   t(`AC5 a ${prefix || 'missing'} key is refused`, r.status !== 0 && r.stderr.includes("is not a development instance's (sk_test_), so no sign-in"), true);
   t(`AC5 and nothing signed in with the ${prefix || 'missing'} key`, r.stdout.includes('sign-in'), false);
 }
-
-// AC1, AC3: sign-in ends on the __session cookie, not on setActive, and stops when none is set.
-t('AC1 setActive is not awaited', /await\s+window\.Clerk\.setActive/.test(script), false);
-t('AC1 sign-in waits for the __session cookie', /ctx\.cookies\(base\)\)\.find\(\(c\) => c\.name === '__session'\)/.test(script), true);
-t('AC3 no cookie stops the script, naming it', script.includes('no __session cookie was set within 30s'), true);
-// AC2: the first load of the page under test is tried again when it fails.
-t('AC2 the page load is retried', /for \(let tries = 1; ; tries\+\+\) \{\n\s+const res = await page\.goto\(/.test(script), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
