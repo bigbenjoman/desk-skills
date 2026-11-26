@@ -805,7 +805,8 @@ t('#1487 AC7: size L, with none, borrows M doubled', [E.poolFor(slots, 'L').v.ma
 t('#1487 AC7: size XS borrows S halved', [...new Set(E.poolFor(slots, 'XS').v.map((l) => l.h))], [1]);
 t('#1487 AC7: a size with its own five uses them alone, and no size uses all unscaled', [E.poolFor(slots, 'S').own, E.poolFor(slots, 'unknown').v.length], [true, 12]);
 const fewM = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(2, () => ({ size: 'M', h: 4, w: 1 }))];
-t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))]], [2, [4]]);
+t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))], E.poolFor(fewM, 'M').scaled], [2, [4], true]);
+t('#1487 AC7: with one size alone there is no ratio, and the pool says its borrowed times are unscaled', E.poolFor(range(6, () => ({ size: 'S', h: 2, w: 1 })), 'M').scaled, false);
 
 // ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
 // Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.

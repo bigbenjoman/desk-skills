@@ -3673,10 +3673,10 @@ function timingFields(r, F, x, h, now) {
   const e = F && !undatable(F) ? F.T[t.key] : null;
   if (e) {
     const size = F.sizes[t.key];
-    const { v, own, n, from } = F.P[size];
+    const { v, own, n, from, scaled } = F.P[size];
     // Not its size's own, the line says how many of this size it holds, and which sizes it borrowed, or that triage gave none.
     const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)'
-      : from.length ? ` (${n} of size ${size}; sizes ${from.join(', ')} scaled to ${size})` : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
+      : from.length ? ` (${n} of size ${size}; sizes ${from.join(', ')} ${scaled ? `scaled to ${size}` : 'as they are, no ratio between sizes read yet'})` : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
     const q = (p) => wquantile(v, p).toFixed(1);
     const took = F.ext ? `typical ${q(0.5)} h spawn to undraft, then ${wquantile(F.ext, 0.5).toFixed(1)} h undraft to merge`
       : `typical ${q(0.5)} h spawn to merge, 4 in 5 within ${q(0.8)} h`;

@@ -338,7 +338,7 @@ export function splitHistory(history, stages, now) {
 
 // How much longer each size up the scale takes: the geometric mean, over every pair of sizes with
 // MIN_FOR_RATIO lines each, of their typical times' ratio per step. 1 with no such pair. Fewer than a
-// size needs alone are enough here, so a size borrowing from the one size with history still scales.
+// size needs alone are enough here, so one size with a long history and another with a short one give a ratio.
 export const MIN_FOR_RATIO = 2;
 export function sizeStep(slot) {
   const med = SIZES.map((s) => { const v = slot.filter((l) => l.size === s); return v.length >= MIN_FOR_RATIO ? wquantile(v, 0.5) : null; });
@@ -349,7 +349,8 @@ export function sizeStep(slot) {
 
 // The slot times a ticket of `size` draws from: its size's own with MIN_OF_SIZE of them; else its own
 // and its neighbouring sizes', nearest first, each scaled by sizeStep per step, until MIN_OF_SIZE;
-// else, or with no size, the whole history. -> {v: [{h, w}], own, n (its size's own count), from: [sizes borrowed]}
+// else, or with no size, the whole history. -> {v: [{h, w}], own, n (its size's own count), from: [sizes borrowed],
+// scaled (whether a ratio between sizes was read; without one the borrowed times are used as they are)}
 export function poolFor(slot, size, step = sizeStep(slot)) {
   const of = (s) => slot.filter((l) => l.size === s);
   const n = of(size).length, idx = SIZES.indexOf(size);
@@ -365,7 +366,7 @@ export function poolFor(slot, size, step = sizeStep(slot)) {
         from.push(SIZES[j]);
       }
     }
-    if (v.length >= MIN_OF_SIZE) return { v, own: false, n, from };
+    if (v.length >= MIN_OF_SIZE) return { v, own: false, n, from, scaled: step !== 1 };
   }
   return { v: slot, own: false, n, from: [] };
 }
