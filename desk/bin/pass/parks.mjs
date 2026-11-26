@@ -124,7 +124,8 @@ function* settleClear(t, s) {
     yield set(t.key, ...doneOnPr(merges.pr, { summary: `parked only on who merges PR #${merges.pr}, which desk now merges: recorded done` }),
       // Link steps alone (keepLinks) do not hold the park's words: those are added after them.
       ...(t.follow_on?.length > linkSteps(t.follow_on).length ? [] : [parkFollowOn(ownWords(t.park.question), t.follow_on)]), 'follow_on_comment=due');
-    yield say(t.key, 'done', `${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${merges.grant})`);
+    const review = yield { type: 'pr-verdict', key: t.key, pr: String(merges.pr) };
+    yield say(t.key, 'done', `${t.key}: ${review ? `${review}; ` : ''}PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${merges.grant})`);
     return;
   }
   const r = yield { type: 'check', key: t.key, cond: c };
@@ -142,7 +143,8 @@ function* settleClear(t, s) {
   // A done ticket parked only on links the pass did not make (parkLinks) goes back to done on its PR.
   if (c.kind === LINKS_MADE) {
     yield set(t.key, 'state=done', 'park=null', ...(c.pr ? [`result.pr=${c.pr}`] : []));
-    yield say(t.key, 'done', `${t.key}: ${what}, each read on Jira: recorded done again${c.pr ? ` on PR #${c.pr}` : ''}, no longer parked`);
+    const review = c.pr ? yield { type: 'pr-verdict', key: t.key, pr: String(c.pr) } : null;
+    yield say(t.key, 'done', `${t.key}: ${review ? `${review}; ` : ''}${what}, each read on Jira: recorded done again${c.pr ? ` on PR #${c.pr}` : ''}, no longer parked`);
     return;
   }
   if (needsSession(t)) {

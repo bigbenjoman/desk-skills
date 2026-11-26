@@ -66,7 +66,7 @@ import { parkClauses, tailSteps } from './park-words.mjs';
 import { leftOver, statesPhrase, saysNothingLeft } from './review-plain.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
-import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
+import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
 export { VERDICT_CHECK };
 
@@ -90,6 +90,18 @@ function ownReviews(reviews, handle) {
 // null. The body and the id (its GraphQL node id, for its inline comments) are for the findings it lists.
 export function latestReview(reviews, handle) {
   return ownReviews(reviews, handle).map((r) => ({ verdict: parseVerdict(r.body), body: r.body, id: r.id ?? null })).filter((r) => r.verdict).pop() ?? null;
+}
+
+// What a finished ticket's done line says of its review, read from its PR (gh pr view --json
+// headRefOid,reviews) rather than from its worker's marker: the round, SHA and counts of the latest
+// verdict `handle` posted when it is at the head, else that the head has none.
+export function doneVerdictLine(view, handle) {
+  const head = String(view?.headRefOid ?? '');
+  const v = latestReview(view?.reviews, handle)?.verdict;
+  if (!v || !head || !head.startsWith(v.sha)) {
+    return `review read from the PR: the head ${head.slice(0, 9) || '(unread)'} has no review verdict${v ? ` (the latest, round ${v.round}, is at ${v.sha.slice(0, 9)})` : ''}`;
+  }
+  return `review read from the PR: round ${v.round} at ${v.sha.slice(0, 9)}, ${COUNTS.filter((k) => k in v).map((k) => `${k}=${v[k]}`).join(' ')}`;
 }
 
 // What the verdict says about this head: { clean, why, settle } (settle: the verdict is at the head,
