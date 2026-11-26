@@ -103,6 +103,11 @@ const STATE_W = 13;
 const pad = (s, n) => { s = String(s ?? ''); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
 const rpad = (s, n) => { s = String(s ?? ''); return ' '.repeat(Math.max(0, n - s.length)) + s; };
 const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
+// A TICKET or EPIC column fits the longest key shown plus a space, and is never narrower than 10.
+const keyW = (keys) => Math.max(10, ...keys.map((k) => String(k).length + 1));
+// A REPO column of every repo's views: a longer name is cut with an ellipsis, a space before the next column.
+const REPO_W = 12;
+const repoCell = (name) => pad(cut(name, REPO_W - 1), REPO_W);
 const ago = (ms) => (ms == null ? 'never' : ms < 60000 ? 'just now' : `${since(ms)} ago`);
 // A span as `since` writes it, with a zero second unit dropped: "2h 5m", "3h", "1d 1h".
 const span = (ms) => since(ms).replace(/ 0[mh]$/, '');
@@ -1176,9 +1181,10 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
   if (!s.list.length) return nothingToDate;
   const out = [];
   const table = (r, F) => {
-    out.push(`  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}SHIPS`);
+    const kw = keyW(r.rows.map((x) => x.t.key));
+    out.push(`  ${pad('TICKET', kw)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
-      out.push(`  ${pad(x.t.key, 10)}${pad(LABEL[x.k], STATE_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
+      out.push(`  ${pad(x.t.key, kw)}${pad(LABEL[x.k], STATE_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
     }
     if (!r.rows.length) out.push('  No unfinished tickets.');
   };
@@ -1197,8 +1203,9 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     out.push(`All done by: ${F.clears ? shipWhen(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
     if (epics.length) {
-      out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
-      for (const e of epics) out.push(epicLine(r, F, e, now, checkin));
+      const ew = keyW(epics.map((e) => e.key));
+      out.push('', `  ${pad('EPIC', ew)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
+      for (const e of epics) out.push(epicLine(r, F, e, now, checkin, ew));
       if (F.noEpic) out.push(`Other work: ${F.noEpic} ticket${F.noEpic === 1 ? '' : 's'} with no epic.`);
     }
     if (F.unread) out.push(unreadLine(F.unread));
@@ -1224,8 +1231,8 @@ function epicWhy(r, F, e, checkin) {
 }
 
 // One epic's line: key, title, children done of total, then STARTS and SHIPS, shipped, or why it has no date.
-function epicLine(r, F, e, now, checkin) {
-  const lead = `  ${pad(e.key, 10)}${pad(cut(e.summary, 30), 32)}${pad(`${e.done}/${e.total}`, 7)}`;
+function epicLine(r, F, e, now, checkin, ew = 10) {
+  const lead = `  ${pad(e.key, ew)}${pad(cut(e.summary, 30), 32)}${pad(`${e.done}/${e.total}`, 7)}`;
   if (!e.queued && !e.missing) return `${lead}${pad('—', 13)}shipped${e.shipped != null ? ` ${when(e.shipped, now)}` : ''}${e.missing == null ? ' · children not read' : ''}`;
   const d = F.E[e.key];
   if (!d) return `${lead}${pad('—', 13)}${epicWhy(r, F, e, checkin)}`;
@@ -1405,8 +1412,8 @@ const solidBars = (width) => width != null && !process.env.NO_COLOR;
 const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count}${MERGED}`
   + ` · ${workers} workers${checkin ? CHECKIN_DATED : ''}`;
 
-// A ticket row's key and state, the state in its colour.
-const ticketLead = (i, indent) => [[`${indent}${pad(i.x.t.key, 10)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
+// A ticket row's key, in a TICKET column `kw` wide, and state, the state in its colour.
+const ticketLead = (i, indent, kw) => [[`${indent}${pad(i.x.t.key, kw)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
 // With passes stopped, a running row has no STARTS column here to say so, so its stage stands in.
 const why = (i) => capital(i.F.paused && i.x.k === 'running' ? `stage ${i.x.st.label ?? '?'} · dated again at the next pass` : undatedWhy(i.r, i.F, i.x)) || 'No date yet';
 // An undated row's reason in the `cell` columns its dates would take, two of them the gap before the
@@ -1421,8 +1428,8 @@ const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.id, key: i.x
 const summaryOf = (i) => triageOf(i.r, i.x.t.key)?.summary ?? '';
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
-// The label columns before a Timeline bar, the STARTS and SHIPS after it (behind its end mark), and
-// the gap before TITLE.
+// The label columns before a Timeline bar, with TICKET at its narrowest, the STARTS and SHIPS after it
+// (behind its end mark), and the gap before TITLE.
 const TL_LEAD = 2 + 10 + STATE_W + 1, TL_TAIL = 2 + 13 + 12, TL_GAP = 2, TL_BAR = 64;
 // By epic, the name and children-done columns before the bar, and the note after SHIPS.
 const EP_NAME = 27, EP_LEAD = 2 + EP_NAME + 5 + 1, EP_NOTE = '  provisional'.length;
@@ -1440,7 +1447,8 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   const epics = slug && !epic && s.per.some((p) => p.F) ? epicRows(s, now, checkin) : [];
   const byEpic = epics.length > 0;
   const items = byEpic ? s.items.filter((i) => !i.F.of[i.x.t.key]) : s.items;
-  const lead = byEpic ? EP_LEAD : TL_LEAD;
+  const kw = keyW(items.map((i) => i.x.t.key));
+  const lead = byEpic ? EP_LEAD : TL_LEAD + kw - 10;
   const spare = width == null ? null : width - lead - TL_TAIL - (byEpic ? EP_NOTE : TL_GAP);
   const cw = width == null ? TL_BAR : Math.max(12, Math.min(TL_BAR, byEpic ? spare : Math.ceil(spare / 2)));
   const tw = width == null ? 60 : Math.max(1, spare - cw);
@@ -1491,7 +1499,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
   // By epic, a ticket is led by its title and has no TITLE column.
-  const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
+  const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  ', kw));
   const tail = (i) => (byEpic ? [] : [title(i)]);
   // One repo's batches are one list in ship order; every repo's view groups by batch.
   for (const r of slug ? [null] : [...new Set(s.items.map((i) => i.r))]) {
@@ -1553,18 +1561,19 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
   const add = (g, i) => { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); };
   for (const i of s.items.filter((y) => y.e).sort((a, b) => a.e.likely - b.e.likely)) add(shipDay(i.e.likely, now), i);
   for (const i of s.items.filter((y) => !y.e)) add('No date yet', i);
-  const lead = 4 + (all ? 12 : 0) + 10 + STATE_W + 27;
+  const kw = keyW(s.items.map((i) => i.x.t.key));
+  const lead = 4 + (all ? REPO_W : 0) + kw + STATE_W + 27;
   const tw = width == null ? 60 : Math.max(1, width - lead);
   const tt = titler(s.items.map(summaryOf));
   const head = [...s.head, ''];
-  if (s.items.length) head.push(bold(`    ${all ? pad('', 12) : ''}${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
+  if (s.items.length) head.push(bold(`    ${all ? pad('', REPO_W) : ''}${pad('TICKET', kw)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
   const rows = [];
   for (const [g, list] of groups) {
     rows.push(segRow(`day ${g}`, [[`  ${g}`, BOLD], [` · ${list.length} ticket${list.length === 1 ? '' : 's'}`, DIM]], null));
     for (const i of list) {
       const [cell, left] = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, tw] : whyCell(why(i), 27, tw);
       const title = cut(tt(summaryOf(i)), left);
-      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.repo ?? i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? repoCell(i.r.repo ?? i.r.name) : ''}`, kw), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -1643,7 +1652,8 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   const all = !slug;
   const list = epicRows(s, now, checkin);
   const head = [...s.head, ''];
-  if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
+  const ew = keyW(list.map(({ e }) => e.key));
+  if (list.length) head.push(bold(`  ${all ? pad('REPO', REPO_W) : ''}${pad('EPIC', ew)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
   const notYet = solidBars(width) ? '■' : '□';
   const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name, opens = r.id }) => {
@@ -1651,7 +1661,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(shipWhen(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
-    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
+    return segRow(`${r.id}${e.key}`, [[`  ${all ? repoCell(name) : ''}${pad(e.key, ew)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
       [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: opens, epic: e.key });
   });
@@ -3341,8 +3351,6 @@ function fitSegs(segs, max, w) {
 const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
 // The columns before TITLE on a ticket row, less WHAT IT NEEDS, with TICKET at its narrowest and no WAITING.
 const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
-// TICKET fits the longest key shown plus a space, and is never narrower than 10.
-const keyW = (keys) => Math.max(10, ...keys.map((k) => String(k).length + 1));
 // WAITING, between STATE and WHAT IT NEEDS, holds how long a row has sat in Merging, Needs you or Put
 // off, so STARTS holds only a start. It fits the longest such time shown, and is left out when none is.
 const WAIT_HEAD = 'WAITING';

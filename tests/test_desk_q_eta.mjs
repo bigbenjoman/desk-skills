@@ -717,6 +717,54 @@ t('DS-516 AC5: an epic\'s own place says it has no Epics view', (await placeView
 const namedEpics = await placeView({ kind: 'repo', slug: 'acme__split:rotation' }, '4');
 t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics', [rowOf(namedEpics, 'EP-22').length, rowOf(namedEpics, 'EP-21').length], [1, 0]);
 
+// ---- issue-1485: long keys and short, in every view at 60, 80 and 120 columns. Each ticket row keeps a
+// space between its key and its state, every row's state starts in one column (the STATE heading's, where
+// the view has one), and a row's title is whole or cut with an ellipsis. A repo name longer than its
+// column is cut with an ellipsis too.
+const MIXED = ['issue-1484', 'SV-12', 'issue-1480', 'SV-7', 'issue-1479'];
+repo('mixed-up-repo', 4870, {
+  tickets: { 'issue-1484': { state: 'running', stage: '6/9' }, 'SV-12': { state: 'triaged' }, 'issue-1480': { state: 'triaged' }, 'SV-7': { state: 'parked', park: { question: 'which copy?' } }, 'issue-1479': heldBy('SV-12') },
+  sizes: Object.fromEntries(MIXED.map((k) => [k, 'M'])),
+  history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+{
+  const rs = Q.loadRepos(FIXED), mixed = rs.find((r) => r.name === 'mixed-up-repo'), slug = 'acme__mixed-up-repo';
+  const STATE = /[●○▸·◆✓◇◑] (running|ready|merging|waiting|needs you|done|put off|finishing)\b/;
+  // A ticket row: a state with something before it, above the key lines.
+  const ticketRows = (ls) => ls.slice(0, (ls.findIndex((l) => l.startsWith('key ')) + 1 || ls.length + 1) - 1)
+    .filter((l) => STATE.test(l) && l.slice(0, l.search(STATE)).trim());
+  const mixedRow = (l) => MIXED.some((k) => new RegExp(`(^|\\s)${k}\\s`).test(l));
+  const layoutOf = (text) => {
+    const ls = text.replace(ANSI_ETA, '').split('\n');
+    const rows = ticketRows(ls), at = rows.map((l) => l.search(STATE));
+    const head = ls.find((l) => /\sTICKET\s+STATE\s/.test(l));
+    return {
+      rows: rows.filter(mixedRow).length,
+      apart: rows.every((l, i) => l[at[i] - 1] === ' '),
+      aligned: new Set([...at, ...(head ? [head.indexOf('STATE')] : [])]).size === 1,
+      cut: rows.filter(mixedRow).every((l) => /(title|…)$/.test(l)),
+    };
+  };
+  for (const width of [60, 80, 120]) {
+    const views = {
+      'repo table': Q.repoScreen(mixed, { now: FIXED, width }),
+      'compact list (every repo\'s Timeline)': Q.timelineScreen(rs, null, { now: FIXED, width }),
+      'ship timeline': Q.timelineScreen(rs, slug, { now: FIXED, width }),
+      'By day': Q.daysScreen(rs, slug, { now: FIXED, width }),
+      'every repo\'s By day': Q.daysScreen(rs, null, { now: FIXED, width }),
+    };
+    for (const [name, text] of Object.entries(views)) t(`issue-1485 AC1-AC3: ${name} at ${width} columns`, layoutOf(text), { rows: 5, apart: true, aligned: true, cut: true });
+    t(`issue-1485 AC2: every repo's By day cuts a long repo name with an ellipsis, a space before the key, at ${width} columns`,
+      Q.daysScreen(rs, null, { now: FIXED, width }).split('\n').filter((l) => l.startsWith('    mixed-up-r')).map((l) => /^ {4}mixed-up-r… issue-|^ {4}mixed-up-r… SV-/.test(l)), [true, true, true, true, true]);
+    const home = Q.overview(rs, { now: FIXED, width, avail: 20, cap: 4, gate: 4, perWorker: 1 }).split('\n');
+    const homeRow = home.find((l) => l.startsWith('  mixed-up-repo ')) ?? '', homeHead = home.find((l) => l.startsWith('  REPO ')) ?? '';
+    t(`issue-1485 AC2: home's row keeps its name apart and is cut where its heading is, at ${width} columns`, [/^ {2}mixed-up-repo {2,}●/.test(homeRow), homeRow.endsWith(' …'), homeRow.length <= width],
+      [true, homeHead.endsWith(' …'), true]);
+  }
+  const { rows, apart, aligned } = layoutOf(Q.shipsScreen(rs, slug, { now: FIXED }));
+  t('issue-1485 AC1: desk-q ships keeps a space between a long key and its state', { rows, apart, aligned }, { rows: 5, apart: true, aligned: true });
+}
+
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');
