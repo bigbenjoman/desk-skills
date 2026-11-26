@@ -1,12 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { loadSnapshot } from './snapshot.js';
 
-export const RETRY_S = 5;
-export const BLOCKED = {
+const RETRY_S = 5;
+const BLOCKED = {
   unreachable: "Can't change anything until the server is back.",
   'signed-out': 'Sign in first: re-run install.sh in Terminal.',
 };
-export const RECONNECTED = 'Reconnected. Showing live data.';
+// Why writes are off in `view`, or null when they are allowed.
+export const blockedIn = (view) => BLOCKED[view] ?? null;
+const RECONNECTED = 'Reconnected. Showing live data.';
 // Kept for this window only: the server was unreachable when it last looked. Desk.app reloads the page
 // once a restarted server signs it in again, so the reconnect toast is shown by the page that loads then.
 const DOWN = 'desk:down';
@@ -32,7 +34,7 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
   const cur = useRef({ view: 'loading', snapshot: null, setup: null, checkout: kept('localStorage', CHECKOUT), attempt: 0, left: 0, toast: null });
   const [state, setState] = useState(cur.current);
   const live = useRef(false);
-  const t = useRef({ tick: null, toast: null, stream: null, checking: null });
+  const t = useRef({ tick: null, again: null, toast: null, stream: null, checking: null });
   const set = (patch) => {
     if (!live.current) return;
     cur.current = { ...cur.current, ...(typeof patch === 'function' ? patch(cur.current) : patch) };
@@ -40,7 +42,7 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
   };
 
   const closeStream = () => { t.current.stream?.close(); t.current.stream = null; };
-  const stopTicking = () => { clearInterval(t.current.tick); t.current.tick = null; };
+  const stopTicking = () => { clearInterval(t.current.tick); clearTimeout(t.current.again); t.current.tick = null; t.current.again = null; };
   const toast = (text) => {
     clearTimeout(t.current.toast);
     set({ toast: text });
@@ -79,9 +81,11 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
     else {
       try { snapshot = await loadSnapshot({ get, store }); } catch { return down(); }
     }
-    keep('sessionStorage', DOWN, null);
+    // Desk with no snapshot read is the server answering without its data: not yet reconnected.
+    const reconnected = view !== 'app' || snapshot != null;
+    if (reconnected) keep('sessionStorage', DOWN, null);
     set((s) => ({ view, setup, attempt: 0, left: 0, checkout: setup?.checkout ?? s.checkout, snapshot: snapshot ?? s.snapshot }));
-    if (back) toast(RECONNECTED);
+    if (back && reconnected) toast(RECONNECTED);
     openStream();
   }
   // One look at a time; a look asked for while one runs is that one.
@@ -90,15 +94,27 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
     return t.current.checking;
   }
 
-  // The change stream is how the window hears that the server stopped: an error is a reason to look.
+  // The change stream is how the window hears that the server stopped: an error is a reason to look,
+  // at once for a stream that was open, and after RETRY_S seconds for one the server refused to open,
+  // so a server answering everything but its stream is not asked again in a loop.
   function openStream() {
     if (!Events || t.current.stream || !live.current) return;
     const es = new Events('/api/events');
     t.current.stream = es;
-    es.addEventListener('snapshot', (e) => { try { set({ snapshot: JSON.parse(e.data) }); } catch { /* not JSON */ } });
-    // A repo set up from the first-run list ends the list.
-    es.addEventListener('repo', () => { if (cur.current.view === 'first-run') check(); });
-    es.onerror = () => { if (t.current.stream !== es) return; closeStream(); check(); };
+    let opened = false;
+    es.onopen = () => { opened = true; };
+    es.addEventListener('snapshot', (e) => { opened = true; try { set({ snapshot: JSON.parse(e.data) }); } catch { /* not JSON */ } });
+    // A repo set up from the first-run list ends the list: with no batch yet it shows in `home`'s
+    // no_batch, and once it has one, as a `repo`.
+    const firstRunEnds = () => { if (cur.current.view === 'first-run') check(); };
+    es.addEventListener('home', firstRunEnds);
+    es.addEventListener('repo', firstRunEnds);
+    es.onerror = () => {
+      if (t.current.stream !== es) return;
+      closeStream();
+      if (opened) check();
+      else t.current.again = setTimeout(check, RETRY_S * tickMs);
+    };
   }
 
   useEffect(() => {
@@ -112,6 +128,6 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
   return { ...state, retry, dismiss };
 }
 
-// Why writes are off right now, or null when they are allowed (BLOCKED's text).
+// Why writes are off right now, or null when they are allowed (blockedIn's text).
 export const Writes = createContext(null);
 export const useWritesBlocked = () => useContext(Writes);

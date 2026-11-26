@@ -3,17 +3,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWritesBlocked } from './connection.jsx';
 
-export const KICKSTART = 'launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui';
-export const CLONE = 'git clone https://github.com/bigbenjoman/desk-skills && cd desk-skills && ./install.sh';
+const KICKSTART = 'launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui';
+const CLONE = 'git clone https://github.com/bigbenjoman/desk-skills && cd desk-skills && ./install.sh';
 const DEFAULT_CHECKOUT = '~/studia/desk-skills';
-const clock = (at) => new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+// A path as the shell reads it back: quoted where it holds anything but plain path characters, with a
+// leading ~/ left outside the quotes so the shell still expands it.
+const shellPath = (p) => {
+  const home = p.startsWith('~/') ? '~/' : '';
+  const rest = p.slice(home.length);
+  return home + (/^[A-Za-z0-9._/-]+$/.test(rest) ? rest : `'${rest.replaceAll("'", "'\\''")}'`);
+};
+// A snapshot's time as the window shows it, 10:06.
+export const clock =(at) => new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
 const BUTTON = {
   primary: 'border-primary bg-primary text-primary-fg',
   outline: 'border-border bg-background text-foreground',
   secondary: 'border-border bg-secondary text-secondary-fg',
 };
-export function Button({ variant = 'secondary', className = '', ...props }) {
+function Button({ variant = 'secondary', className = '', ...props }) {
   return (
     <button type="button" {...props}
       className={`inline-flex h-7 shrink-0 items-center rounded-md border px-2.5 text-[13px] font-medium disabled:opacity-50 ${BUTTON[variant]} ${className}`} />
@@ -45,7 +53,7 @@ function Copy({ text }) {
   return <Button onClick={copy} aria-label={`Copy ${text}`}>{copied ? 'Copied' : 'Copy'}</Button>;
 }
 
-export function Command({ text }) {
+function Command({ text }) {
   return (
     <div className="flex items-center gap-2 rounded-md border border-border bg-muted py-2 pr-2 pl-3">
       <code className="flex-1 font-mono text-[12.5px] break-all select-all">{text}</code>
@@ -86,7 +94,7 @@ export function SignedOut({ checkout }) {
     <Card aria-labelledby="signed-out-title">
       <h2 id="signed-out-title" className="text-lg font-semibold tracking-tight">This window isn't signed in to Desk</h2>
       <p>Re-run install.sh in Terminal. It writes Desk's sign-in again, and this window signs in by itself.</p>
-      <Command text={`cd ${checkout || DEFAULT_CHECKOUT} && ./install.sh`} />
+      <Command text={`cd ${shellPath(checkout || DEFAULT_CHECKOUT)} && ./install.sh`} />
     </Card>
   );
 }

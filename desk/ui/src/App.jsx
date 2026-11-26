@@ -1,8 +1,6 @@
 import { useColorScheme } from './color-scheme.js';
-import { BLOCKED, useConnection, Writes } from './connection.jsx';
-import { FirstRun, NotInstalled, SignedOut, Toast, Unreachable } from './system.jsx';
-
-const clock = (at) => new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+import { blockedIn, useConnection, Writes } from './connection.jsx';
+import { clock, FirstRun, NotInstalled, SignedOut, Toast, Unreachable } from './system.jsx';
 
 // Opens Terminal running /desk-setup in one of the repos /api/setup found.
 const openFolder = (get) => (folder) => get('/api/terminal', {
@@ -23,15 +21,13 @@ function Body({ c, get }) {
 }
 
 // `deps` stands in for fetch, EventSource, Cache Storage and the countdown's second (useConnection).
-// `children` sit around the body, under the same write rule.
-export default function App({ deps = {}, children }) {
+export default function App({ deps = {} }) {
   useColorScheme();
   const c = useConnection(deps);
   const get = deps.get ?? ((u, o) => fetch(u, o));
   return (
-    <Writes.Provider value={BLOCKED[c.view] ?? null}>
+    <Writes.Provider value={blockedIn(c.view)}>
       <Body c={c} get={get} />
-      {children}
       <Toast text={c.toast} onDismiss={c.dismiss} />
     </Writes.Provider>
   );

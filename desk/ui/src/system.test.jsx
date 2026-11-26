@@ -1,9 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
+import { blockedIn, useConnection, Writes } from './connection.jsx';
 import { WriteButton } from './system.jsx';
 
-// A fixture token: the app is never given one, and none may reach the page.
+// A fixture token, which the stub server puts in the text and fields of its sign-in refusal: none of it
+// may reach the page.
 const TOKEN = ['tok', 'c3'.repeat(30)].join('');
 const AT = new Date(2026, 10, 22, 10, 6).toISOString();
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -17,14 +19,18 @@ function stubServer() {
   };
   s.get = vi.fn(async (url, opts = {}) => {
     if (s.mode === 'down') throw new TypeError('Failed to fetch');
-    if (s.mode === 'refused') return json({ error: { code: 'unauthorized', message: 'Not signed in.' } }, 401);
+    if (s.mode === 'refused') return json({ error: { code: 'unauthorized', message: `Not signed in. ${TOKEN}`, token: TOKEN } }, 401);
     if (url === '/api/setup') return json(s.setup);
-    if (url === '/api/snapshot') return json(s.snapshot);
+    if (url === '/api/snapshot') return s.mode === 'no-data' ? json({ error: { code: 'read' } }, 500) : json(s.snapshot);
     if (url === '/api/terminal' && opts.method === 'POST') { s.posts.push(JSON.parse(opts.body)); return json({ opened: JSON.parse(opts.body).folder }); }
     return json({ error: { code: 'not_found' } }, 404);
   });
   s.Events = class {
-    constructor(url) { this.url = url; this.on = {}; this.closed = false; s.streams.push(this); }
+    // A stream opens, as EventSource does once the server answers it, unless the server refuses it.
+    constructor(url) {
+      this.url = url; this.on = {}; this.closed = false; s.streams.push(this);
+      queueMicrotask(() => { if (s.mode === 'no-data') this.onerror?.(); else this.onopen?.(); });
+    }
     addEventListener(name, f) { this.on[name] = f; }
     close() { this.closed = true; }
   };
@@ -45,6 +51,19 @@ beforeEach(() => {
 afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); consoleLines.length = 0; vi.restoreAllMocks(); });
 
 const body = () => document.body.textContent;
+
+// An action button under the window's write rule, as the app frame's buttons will sit around the body.
+function Frame({ deps }) {
+  const c = useConnection(deps);
+  return (
+    <Writes.Provider value={blockedIn(c.view)}>
+      <p data-testid="view">{c.view}</p>
+      <WriteButton>Answer</WriteButton>
+      <button type="button" onClick={c.retry}>Retry</button>
+    </Writes.Provider>
+  );
+}
+const view = () => screen.getByTestId('view').textContent;
 
 describe('the server stops answering', () => {
   it('AC1 shows the server-down body with the copy it holds, the command, and the retry countdown', async () => {
@@ -86,15 +105,15 @@ describe('the server stops answering', () => {
 
   it('AC2 every action button is off, with the tooltip, until the server is back', async () => {
     const s = stubServer();
-    render(<App deps={s.deps}><WriteButton>Answer</WriteButton></App>);
-    await screen.findByText('As of 10:06');
+    render(<Frame deps={s.deps} />);
+    await waitFor(() => expect(view()).toBe('app'));
     const answer = screen.getByRole('button', { name: 'Answer' });
     expect([answer.disabled, answer.parentElement.title]).toEqual([false, '']);
     s.stop();
-    await screen.findByText("Desk can't reach its local server");
+    await waitFor(() => expect(view()).toBe('unreachable'));
     expect([answer.disabled, answer.parentElement.title]).toEqual([true, "Can't change anything until the server is back."]);
     s.mode = 'up';
-    fireEvent.click(screen.getByRole('button', { name: 'Try now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(answer.disabled).toBe(false));
   });
 
@@ -121,6 +140,22 @@ describe('the server stops answering', () => {
     render(<App deps={s.deps} />);
     expect(await screen.findByText('Reconnected. Showing live data.')).toBeTruthy();
   });
+
+  it('a server answering without its data is not reconnected, and is not asked again in a loop', async () => {
+    const s = stubServer();
+    s.mode = 'down';
+    render(<App deps={s.deps} />);
+    await screen.findByText("Desk can't reach its local server");
+    s.mode = 'no-data'; // setup answers, the snapshot and the stream fail
+    fireEvent.click(screen.getByRole('button', { name: 'Try now' }));
+    await waitFor(() => expect(s.streams.at(-1)?.closed).toBe(true));
+    const looks = s.get.mock.calls.filter(([u]) => u === '/api/setup').length;
+    await new Promise((r) => setTimeout(r, 60)); // three ticks: well inside the retry wait
+    expect(s.get.mock.calls.filter(([u]) => u === '/api/setup').length).toBe(looks);
+    expect(screen.queryByText('Reconnected. Showing live data.')).toBeNull();
+    s.mode = 'up';
+    expect(await screen.findByText('Reconnected. Showing live data.')).toBeTruthy();
+  });
 });
 
 describe('the window is not signed in', () => {
@@ -136,11 +171,22 @@ describe('the window is not signed in', () => {
     expect(screen.getByRole('button', { name: 'Copy cd ~/studia/desk-skills && ./install.sh' })).toBeTruthy();
   });
 
+  it('AC4 a checkout whose path has a space or a quote is quoted in the command, ~ still outside', async () => {
+    const s = stubServer();
+    s.setup = { ...s.setup, checkout: "~/Code/Ben's desk" };
+    render(<App deps={s.deps} />);
+    await screen.findByText('As of 10:06');
+    s.mode = 'refused';
+    s.drop();
+    expect(await screen.findByText("cd ~/'Code/Ben'\\''s desk' && ./install.sh")).toBeTruthy();
+  });
+
   it('AC5 no part of the token reaches the page, its tooltips or the console', async () => {
     const s = stubServer();
     s.mode = 'refused';
-    render(<App deps={s.deps}><WriteButton>Answer</WriteButton></App>);
+    render(<><App deps={s.deps} /><Frame deps={s.deps} /></>);
     await screen.findByText("This window isn't signed in to Desk");
+    await waitFor(() => expect(view()).toBe('signed-out'));
     expect(screen.getByRole('button', { name: 'Answer' }).parentElement.title).toBe('Sign in first: re-run install.sh in Terminal.');
     const seen = [document.documentElement.outerHTML, ...[...document.querySelectorAll('[title]')].map((e) => e.title), ...consoleLines].join('\n');
     for (let i = 0; i + 8 <= TOKEN.length; i += 4) expect(seen).not.toContain(TOKEN.slice(i, i + 8));
@@ -184,7 +230,8 @@ describe('desk is not set up', () => {
     render(<App deps={s.deps} />);
     await screen.findByText('Set up desk in your first repo');
     s.setup = { ...s.setup, repos: 1, found: [] };
-    act(() => { s.streams.at(-1).on.repo?.({ data: '{}' }); });
+    // A repo just set up has no batch yet: the server says so in `home`, as one more no_batch repo.
+    act(() => { s.streams.at(-1).on.home?.({ data: '{"no_batch":[{"slug":"studia-web"}]}' }); });
     expect(await screen.findByText('As of 10:06')).toBeTruthy();
   });
 });

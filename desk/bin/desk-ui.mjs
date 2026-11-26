@@ -50,6 +50,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
 import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
+import { tilde } from './logins.mjs';
 import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -153,23 +154,25 @@ function appFile(path) {
 
 // ---- first run -------------------------------------------------------------------------------
 
-const tilde = (p) => (p === E.HOME || p.startsWith(`${E.HOME}${sep}`) ? `~${p.slice(E.HOME.length)}` : p);
 // desk's commands as install.sh installs them: the desk-env command on PATH and the scripts it runs.
 const deskInstalled = () => existsSync(join(E.HOME, '.local', 'bin', 'desk-env')) && existsSync(join(E.binDir(), 'desk-env.mjs'));
 const FOLDER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // The git repos directly under ~/studia: each folder (not a link) holding a .git, by name.
-export function gitRepos(root = join(E.HOME, 'studia')) {
+function gitRepos(root = join(E.HOME, 'studia')) {
   let entries;
   try { entries = readdirSync(root, { withFileTypes: true }); } catch { return []; }
   return entries.filter((d) => d.isDirectory() && FOLDER.test(d.name) && existsSync(join(root, d.name, '.git')))
     .map((d) => ({ name: d.name, path: join(root, d.name) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
+// The repos the first run offers, and the only folders /api/terminal opens: none once desk is missing
+// or any repo is configured.
+const firstRun = (installed = deskInstalled(), repos = E.configuredRepos().length) => (installed && !repos ? gitRepos() : []);
 function setup() {
   const installed = deskInstalled();
   const from = readInstalled()?.from;
   const repos = E.configuredRepos().length;
-  const found = installed && !repos ? gitRepos().map((r) => ({ name: r.name, path: tilde(r.path) })) : [];
+  const found = firstRun(installed, repos).map((r) => ({ name: r.name, path: tilde(r.path) }));
   return { installed, checkout: typeof from === 'string' && from ? tilde(from) : null, repos, found };
 }
 
@@ -344,7 +347,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     let body;
     try { body = JSON.parse(await readBody(req)); } catch { return refuse(res, 400, 'body', 'Send {"folder": "<name>"} as JSON.'); }
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).join() !== 'folder') return no('Send only {"folder": "<name>"}.');
-    const repo = typeof body.folder === 'string' && FOLDER.test(body.folder) && deskInstalled() ? gitRepos().find((r) => r.name === body.folder) : null;
+    const repo = typeof body.folder === 'string' && FOLDER.test(body.folder) ? firstRun().find((r) => r.name === body.folder) : null;
     if (!repo) return no('That is not one of the git repos under ~/studia.');
     const exit = await terminal(repo.path);
     audit('/api/terminal', ['osascript', '<desk-setup>', tilde(repo.path)], exit);

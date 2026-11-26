@@ -102,6 +102,7 @@ mkdirSync(join(process.env.DESK_CONFIG_ROOT, 'repos', 'acme__widgets'), { recurs
 writeFileSync(join(process.env.DESK_CONFIG_ROOT, 'repos', 'acme__widgets', 'config.md'), '## 0. This repo\n');
 const after = await setup();
 t('with a repo configured, setup counts it and lists no repos', [after.repos, after.found], [1, []]);
+t('AC10 with a repo configured, Terminal opens for no folder setup does not list', [(await open({ folder: 'studia-web' })).status, opened], [400, []]);
 
 server.close();
 console.log(fails ? `${fails} failed` : 'all passed');
