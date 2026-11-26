@@ -227,7 +227,8 @@ It names each gap's criterion and quotes only what the review and the PR body al
 then goes back to a worker on the PR, which records the acceptance. The pass posts once per gap, and
 never for a gap your own comment on the PR names (one refusing it, say): if a later review still lists
 the gap, or you have spoken to it, it is put to you. `ask` (the Recommended value), unset or anything
-else reads as `no`, and you are given the ready comment to post yourself, one gap at a time. `/desk-setup` writes the matching auto-mode entry at `yes`.
+else reads as `no`, and you are given the ready comment to post yourself. `/desk-setup` writes the
+matching auto-mode entry at `yes`.
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
 puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
 FileVault on, `yes` does as `ask` does: a restarted Mac waits at the unlock screen until you log in.
