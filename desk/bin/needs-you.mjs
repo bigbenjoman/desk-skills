@@ -155,6 +155,8 @@ import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
 import { askAnswered, ledgerOnIn } from './ask-ledger.mjs';
+import { lostAt, readRearm } from './loop-tick.mjs';
+import { dueTick } from './borrow.mjs';
 import { acceptNeed, acceptOnly, evidenceIn, gapParts } from './accept-gaps.mjs';
 
 // The decisions a parked item offers to override, newest first.
@@ -1782,12 +1784,23 @@ function cloudItems(batches) {
 // LIVE_MS, its next pass due more than PASS_GRACE_MS ago, and a ticket autopilot could move), it is
 // one item, `stalled` for the standing batch and `stalled:<batch>` for a named one, listed and put
 // off in that batch alone, so every scope that lists it lists the same item. Its need names its last
-// pass, so not-now holds until a later stall; done records nothing: the next pass drops it.
+// pass and what the session did about it (rearmOf), so not-now holds until a later stall or a re-arm;
+// done records nothing: the next pass drops it.
 const STALLED = 'stalled';
+// What the session running the batch did about its lost tick: hooks/desk-handoff.py tells it to re-arm
+// the loop on its first turn once the loop reads lost, which is never later than this item shows, and
+// queue.mjs next-pass logs the re-arm (loop-tick.mjs).
+function rearmOf(b) {
+  const rec = readRearm(b.stateDir, b.last);
+  if (rec?.why) return `the session could not re-arm it: ${one(rec.why)}`;
+  if (rec?.rearmed_at) return `the session re-armed it at ${utc(rec.rearmed_at)}, but no pass has run since`;
+  if (rec?.told_at) return `the session could not re-arm it yet: it was told to at ${utc(rec.told_at)} and has not recorded a next pass since`;
+  return `the session could not re-arm it: it has taken no turn since ${utc(lostAt(b))}, when it was due to`;
+}
 const stalledItems = (batches, now = Date.now()) => batches
   .filter((b) => !b.error && b.q && sessionStalled(b))
   .map((b) => ({ r: b, dir: b.stateDir, t: { key: b.batch == null ? STALLED : `${STALLED}:${b.batch}` }, item: { kind: STALLED, repoLevel: true,
-    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${b.next != null ? `, and the next was due at ${utc(b.next)}` : ''}. The session running it looks stalled: resume it, or ${resumeOf(b)}`,
+    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${dueTick(b) != null ? `, and the next was due at ${utc(dueTick(b))}` : ''}. The loop lost its next tick, and ${rearmOf(b)}: resume the session, or ${resumeOf(b)}`,
     note: `Passes stopped ${since(now - b.last)} ago.${b.rows.some((x) => x.k === 'running') ? ' Running workers carry on.' : ''}`,
     actions: [['done', 'once a pass runs again this item leaves the list; done records nothing'], ['not-now']],
     since: b.last } }));

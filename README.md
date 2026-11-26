@@ -757,7 +757,11 @@ most once a day) says when this checkout has new commits for `/desk-update` to i
 **`desk-handoff.py`** (on prompt submit, after each tool, at turn end, at session start and before a compaction) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
 context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
-you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
+you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step. In a
+session that runs a batch through `/loop`, it also blocks a turn that ends with no next pass
+recorded, once per pass, and once no pass has run for twice the loop's interval (or sooner, where
+needs-you would show the batch stalled) it tells the session's next turn to re-arm the loop, which
+`queue.mjs next-pass` logs for needs-you (`desk/bin/loop-tick.mjs`).
 
 With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100
 under `env` in `~/.claude/settings.json`; `install.sh` offers to set it at 55 and keeps a value

@@ -19,6 +19,7 @@ AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE A
 node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"                # settles one open question (the first, or triage question n with --question <n>); --all before the answer settles every one
 node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop unless the supervisor runs passes; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs next-pass +1500                     # after scheduling the next pass: when it runs (here 25 minutes), so desk-q counts the batch live until then
+node ~/.claude/desk/bin/loop-tick.mjs could-not "<why>"             # told to re-arm a lost loop and cannot: needs-you's stalled item says why
 node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd or systemd, at login and every 3 minutes
 node ~/.claude/desk/bin/supervisor.mjs status                         # exit 0 while installed and loaded; uninstall removes it
 node ~/.claude/desk/bin/run-by.mjs stage4                             # Stage 4: who runs the batch (§3b Batches run by); installs the supervisor at supervisor; exit 11 an install failed

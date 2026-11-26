@@ -90,6 +90,7 @@ const REWRITTEN = [
   ['DS-972', 'it starts the driver for a handed-over batch and starts it again after a reboot', 1],
   ['DS-890', 'questions <SPINE> <state>/spine-review-<SPINE>.txt --batch <EPIC>`', 1], // the step names the file saved in step 2, so its script stays checked
   ['#1376', 'and on its own (the worker contract says when a worker may use it).', 1], // the question-handling lever pushes more between check-ins
+  ['#1420', 'each time you schedule the next pass, record it', 1], // the next pass is scheduled before the pass's output is acted on
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));
