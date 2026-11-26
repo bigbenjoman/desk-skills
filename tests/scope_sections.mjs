@@ -409,11 +409,13 @@ function mainOnly(c, guards) {
     conds.push(cond);
     at += close;
     at += read.slice(at).match(/^\s*/)[0].length;
-    // An unbraced body is one statement on the `if`'s line, ended by its `;` with nothing after it: a
-    // second statement there, or one on a later line after a line break ends the first, runs on load.
+    // An unbraced body is one expression on the `if`'s line, ended by its `;` with nothing after it. A
+    // second statement there, one on a later line after a line break ends the first, or a body that is
+    // not an expression (a `for`, `while`, `if` or block, whose own `}` can hide a statement after it)
+    // runs on load.
     if (read[at] !== '{') {
       const tail = read.slice(at);
-      const end = groupEnd(tail, ';', (p) => `(async function () {\n${p}\n})`);
+      const end = groupEnd(tail, ';', (p) => `(async function () {\n${asExpression(p.slice(0, -1))}\n})`);
       return end > 0 && !tail.slice(0, end).includes('\n') && !tail.slice(end).trim() ? conds.join('\n') : null;
     }
     const end = groupEnd(read.slice(at), '}', (p) => `(async function () {\n${p}\n})`);

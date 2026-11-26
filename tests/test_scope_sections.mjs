@@ -615,11 +615,13 @@ t('DS-1002 a function a guard\'s condition calls runs on load, so an edit to it 
   decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(entryQ, entryQ.replace('return fileURLToPath(u);', 'return fileURLToPath(u) + "";')) }], hubWith({ 'desk/bin/desk-q.mjs': entryQ }), { byName: true }).reason.includes('runs one at load: if (process.argv[1] === entryPath(import.meta.url)) { (entryPath)'),
   drawEdit(entryQ),
 ], [true, true, 'some: test_cli.sh test_lint.sh']);
-t('DS-1002 an unbraced guard\'s body is one statement on its line: a second one after it, or after a line break, runs on load', [
+t('DS-1002 an unbraced guard\'s body is one expression on its line: a second statement after it, after a line break, or after a loop or block body, runs on load', [
   drawEdit(chainQ('if (isMain) console.log(1); draw();')) === everyClaimer,
   drawEdit(chainQ('if (isMain) console.log(1)\n  draw()')) === everyClaimer,
   drawEdit(chainQ("if (isMain) console.log(draw(), ';');")),
-], [true, true, 'some: test_cli.sh test_lint.sh']);
+  drawEdit(chainQ('if (isMain) for (const a of [1]) { console.log(a); } draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) while (false) { console.log(1); } draw();')) === everyClaimer,
+], [true, true, 'some: test_cli.sh test_lint.sh', true, true]);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
