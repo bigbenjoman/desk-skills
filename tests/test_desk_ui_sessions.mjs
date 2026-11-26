@@ -269,6 +269,25 @@ t('AC7 nothing started', starts().length, n7 + 10);
 NOW += 11 * 60 * 1000;
 t('AC7 once they leave the window, one starts again', (await start({ purpose: 'blank', repo: 'acme__studia-web' })).status, 201);
 
+// ---- AC10: a restart while the first turn runs: the next message resumes that session, never claims its id again
+const n10 = starts().length;
+const b10 = await start({ purpose: 'blank', repo: 'acme__studia-web' });
+await until(() => starts().length === n10 + 1);
+const f10 = starts()[n10];
+t('AC10 a first turn is running', (await message(b10.json.id, 'a first question')).status, 202);
+await until(() => inputs(f10.pid).length === 1);
+server.sessions.stop();
+server.closeAllConnections();
+await new Promise((r) => server.close(r));
+await until(() => lines('exits.jsonl').some((x) => x.pid === f10.pid));
+await listen();
+await signIn();
+t('AC10 that turn reads interrupted after the restart, with none completed', [(await item(b10.json.id))?.state, (await item(b10.json.id))?.turns], ['interrupted', 0]);
+t('AC10 the next message is accepted', (await message(b10.json.id, 'again?')).status, 202);
+await until(() => starts().length === n10 + 2);
+const r10 = starts()[n10 + 1];
+t('AC10 Claude resumes the session the first message began', [r10?.argv.includes('--resume'), r10?.argv[r10.argv.indexOf('--resume') + 1], r10?.argv.includes('--session-id')], [true, b10.json.sessionId, false]);
+
 const reg = JSON.parse(readFileSync(join(H, '.desk-autopilot', 'ui', 'sessions.json'), 'utf8'));
 t('the registry is readable only by this user', (await import('node:fs')).statSync(join(H, '.desk-autopilot', 'ui', 'sessions.json')).mode & 0o777, 0o600);
 t('the registry holds every conversation', reg.items.length >= 15, true);

@@ -237,6 +237,7 @@ const openTerminal = (dir) => new Promise((resolve) => {
 // ---- conversations ---------------------------------------------------------------------------
 
 const START_FIELDS = new Set(['purpose', 'repo', 'ticket', 'mode', 'login']);
+const FOLDER_FIELDS = new Set(['folder']);
 const PURPOSES = new Set(['park', 'ticket', 'blank']);
 const EMAIL = /^[^\s@`]{1,128}@[^\s@`]{1,128}\.[^\s@`]{1,63}$/;
 const MAX_MESSAGE = 16000;
@@ -376,11 +377,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   }
 
   async function write(req, res, path, kind, slugPart, keyPart) {
-    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return refuse(res, 415, 'content_type', 'JSON only.');
-    let body, slug, key;
-    try { body = JSON.parse(await readBody(req, MAX_WRITE_BODY)); slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); }
+    const body = await jsonOnly(req, res, '', null, MAX_WRITE_BODY);
+    if (!body) return;
+    let slug, key;
+    try { slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); }
     catch { return refuse(res, 400, 'body', 'Send the request as JSON.'); }
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return refuse(res, 400, 'body', 'Send the request as a JSON object.');
     if (!KEY.test(key)) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
     const { text } = body;
     if (text !== undefined && (typeof text !== 'string' || text.length > MAX_TEXT)) return refuse(res, 400, 'text', `The text must be a string of at most ${MAX_TEXT} characters.`);
@@ -413,14 +414,10 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
 
   // Terminal for one folder setup lists as found, sent as {folder: <its name>} and nothing else.
   async function openFolder(req, res, query) {
-    const no = (message) => refuse(res, 400, 'folder', message);
-    if (query) return no('Send only the folder, in the body.');
-    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return refuse(res, 415, 'content_type', 'JSON only.');
-    let body;
-    try { body = JSON.parse(await readBody(req)); } catch { return refuse(res, 400, 'body', 'Send {"folder": "<name>"} as JSON.'); }
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).join() !== 'folder') return no('Send only {"folder": "<name>"}.');
+    const body = await jsonOnly(req, res, query, FOLDER_FIELDS);
+    if (!body) return;
     const repo = typeof body.folder === 'string' && FOLDER.test(body.folder) ? firstRun().find((r) => r.name === body.folder) : null;
-    if (!repo) return no('That is not one of the git repos under ~/studia.');
+    if (!repo) return refuse(res, 400, 'folder', 'That is not one of the git repos under ~/studia.');
     const exit = await terminal(repo.path);
     audit('/api/terminal', ['osascript', '<desk-setup>', tilde(repo.path)], exit);
     if (exit === 0) return send(res, 200, { opened: repo.name });
@@ -463,15 +460,15 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     } catch (e) { console.error(`desk-ui: inbox: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
   }
 
-  // A JSON object body holding only the fields `allowed` names, with no query: -> the object, or null
-  // once refused.
+  // A JSON object body with no query, holding only the fields `allowed` names (any, with `allowed`
+  // null): -> the object, or null once refused.
   async function jsonOnly(req, res, query, allowed, max = MAX_BODY) {
     if (query) { refuse(res, 400, 'fields', 'Send the request in the body, with no query.'); return null; }
     if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) { refuse(res, 415, 'content_type', 'JSON only.'); return null; }
     let body;
     try { body = JSON.parse(await readBody(req, max)); } catch { refuse(res, 400, 'body', 'Send the request as JSON.'); return null; }
     if (!body || typeof body !== 'object' || Array.isArray(body)) { refuse(res, 400, 'body', 'Send the request as a JSON object.'); return null; }
-    const extra = Object.keys(body).filter((k) => !allowed.has(k));
+    const extra = allowed ? Object.keys(body).filter((k) => !allowed.has(k)) : [];
     if (extra.length) { refuse(res, 400, 'fields', `This takes only ${[...allowed].join(', ')}: nothing else is read, so nothing was started.`); return null; }
     return body;
   }

@@ -14,10 +14,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export const MAX_LIVE = 4;
-export const MAX_STARTS = 10;
-export const STARTS_WINDOW_MS = 10 * 60 * 1000;
-export const IDLE_MS = 30 * 60 * 1000;
+const MAX_LIVE = 4;
+const MAX_STARTS = 10;
+const STARTS_WINDOW_MS = 10 * 60 * 1000;
+const IDLE_MS = 30 * 60 * 1000;
 const CHECK_MS = 60 * 1000;
 const STOP_GRACE_MS = 5 * 1000;
 const MAX_QUOTE = 8 * 1024;
@@ -28,10 +28,12 @@ export const ID = /^[a-f0-9]{32}$/;
 
 // The command a conversation runs, all of it built here. Permissions stay Claude Code's own for the
 // login and checkout: the default mode, no prompt tool, so a command outside the allow-list is refused.
+// Once a message has been sent the session id is Claude Code's, so it is resumed, never claimed again,
+// even when the restart came before that first turn finished.
 export function sessionArgs(e) {
   return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
     '--permission-mode', 'default', '--effort', 'medium',
-    ...(e.turns > 0 ? ['--resume', e.sessionId] : ['--session-id', e.sessionId]),
+    ...(e.turns > 0 || e.sent ? ['--resume', e.sessionId] : ['--session-id', e.sessionId]),
     ...(e.seed ? ['--append-system-prompt', e.seed] : [])];
 }
 // The same, as the audit log names it: the seed is the ticket's text, so it is not copied there.
@@ -77,7 +79,7 @@ export function makeBroker({ file, claude = 'claude', envOf, now = Date.now, log
   const find = (id) => items.find((e) => e.id === id) ?? null;
   const open = () => items.filter((e) => e.state !== 'ended');
 
-  // Starts the child for `e` (a fresh session, or a resume once a turn has completed). -> null, or the spawn error.
+  // Starts the child for `e` (a fresh session, or a resume once a message was sent). -> null, or the spawn error.
   function attach(e) {
     let child;
     try { child = spawn(claude, sessionArgs(e), { cwd: e.cwd, env: envOf(e), shell: false, stdio: ['pipe', 'pipe', 'pipe'] }); }
@@ -165,6 +167,7 @@ export function makeBroker({ file, claude = 'claude', envOf, now = Date.now, log
       if (error) { e.state = 'interrupted'; save(); log(`desk-ui: conversation ${id}: ${error.message}`); return [500, { error: { code: 'start', message: 'Claude did not start. See the server log.' } }]; }
     }
     live.get(id).stdin.write(`${JSON.stringify(userMessage(text))}\n`);
+    if (!e.sent) { e.sent = true; save(); }
     return [202, { id, state: e.state }];
   }
 
@@ -209,5 +212,5 @@ export function makeBroker({ file, claude = 'claude', envOf, now = Date.now, log
     save();
   }
 
-  return { start, send, end, check, list, stop, find, liveCount: () => open().length };
+  return { start, send, end, check, list, stop, find };
 }
