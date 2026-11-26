@@ -6,7 +6,7 @@
 // Reasons: `admit`, a run granted a slot above its pool's floor with admission on, held while its pid
 // runs; `headroom` and `floor`, shadow's would-admits above and on the floor; `express`, a small run
 // granted the light lock's express lane, which holds no pool slot but counts as a recent admit.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { alive } from './dir-lock.mjs';
 
@@ -20,6 +20,29 @@ export const ledgerFile = (dir) => join(dir, 'desk-admit.ledger');
 // which imports it.
 export const LOCK_OF = Object.freeze({ test: 'test', tsc: 'test', lint: 'test', light: 'light', browser: 'browser' });
 export const lockWaitingDir = (cls, dir) => join(dir, `desk-${LOCK_OF[cls] ?? cls}.waiting`);
+
+// The runs waiting for lock class `cls`'s lock in lock directory `dir`, as pids. Each marker is named by
+// its run's pid and holds that process's start time (startStamp), or nothing where it was not read. A
+// marker whose pid is not alive, or now has another start time (`startsOf`, as grant's: pids -> Map pid
+// -> startStamp; null skips the check), is a run that has exited: it is removed and not counted.
+export function liveWaiters(cls, dir, { isAlive = alive, startsOf = null } = {}) {
+  const wdir = lockWaitingDir(cls, dir);
+  let names = [];
+  try { names = readdirSync(wdir).filter((n) => /^\d+$/.test(n)); } catch { return []; }
+  const marks = names.map((n) => {
+    let start = null;
+    try { start = startStamp(readFileSync(join(wdir, n), 'utf8')); } catch { /* removed meanwhile */ }
+    return { pid: Number(n), start };
+  });
+  const stamped = marks.filter((m) => m.start).map((m) => m.pid);
+  let starts = null;
+  try { starts = startsOf && stamped.length ? startsOf(stamped) : null; } catch { /* unread: alive alone */ }
+  return marks.filter((m) => {
+    if (isAlive(m.pid) && (!m.start || !starts || starts.get(m.pid) === m.start)) return true;
+    try { unlinkSync(join(wdir, String(m.pid))); } catch { /* gone already */ }
+    return false;
+  }).map((m) => m.pid);
+}
 
 // The ledger's lines as [{ at, pool, pid, gb, load, reason, start }]; a line that does not read is
 // dropped. `start` is an `admit`'s run's process start time (startStamp), the line's seventh field, so

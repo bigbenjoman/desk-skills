@@ -25,15 +25,15 @@
 // store is unreadable, 1 the broker failed otherwise. The wrapper falls back to its legacy lock on 4 and 1.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import * as A from './admission.mjs';
-import { LOCK_OF, lockWaitingDir } from './admit-ledger.mjs';
+import { LOCK_OF, liveWaiters, lockWaitingDir } from './admit-ledger.mjs';
 import { alive, tryLock } from './dir-lock.mjs';
 import { tilde } from './logins.mjs';
-import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, LeaseStoreError, SAMPLE_TIMEOUT_MS, acquire, capacities, kindMode, logEvent, poolOf, sampleLoad, waitFields } from './leases.mjs';
+import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, LeaseStoreError, SAMPLE_TIMEOUT_MS, acquire, capacities, kindMode, ledgerStarts, logEvent, poolOf, sampleLoad, waitFields } from './leases.mjs';
 
 // How often a run waiting in `on` tries again: each try reads the process table.
 const POLL_MS = 2000;
@@ -65,15 +65,20 @@ function isLint(words) {
 // Each run waiting for a lock holds a marker file named by its wrapper's pid in that lock's waiting
 // directory, in the lock directory beside the lock files, from when it starts to wait until it is
 // granted or gives up; with-lock.sh keeps it on the lock files, `take` while it waits for a lease. The
-// queue at any moment is the markers whose pid is alive: a waiter killed mid-wait counts no longer.
+// queue at any moment is the markers whose run still runs (admit-ledger.mjs liveWaiters, which removes
+// the rest): a waiter killed mid-wait counts no longer, nor does a later process given its pid.
 export const waitingDir = (cls, dir = E.lockDir()) => lockWaitingDir(cls, dir);
+const startsOf = (pids) => ledgerStarts(pids, E.psRows);
 // How many runs other than `self` wait for `cls`'s lock now.
-function queueDepth(cls, self, dir = waitingDir(cls)) {
-  let names = [];
-  try { names = readdirSync(dir); } catch { return 0; }
-  return names.filter((n) => /^\d+$/.test(n) && Number(n) !== self && alive(Number(n))).length;
-}
-const enqueue = (cls, pid) => { try { mkdirSync(waitingDir(cls), { recursive: true }); writeFileSync(join(waitingDir(cls), String(pid)), ''); } catch { /* the queue is a measurement */ } };
+const queueDepth = (cls, self) => liveWaiters(cls, E.lockDir(), { startsOf }).filter((p) => p !== self).length;
+const enqueue = (cls, pid) => {
+  try {
+    mkdirSync(waitingDir(cls), { recursive: true });
+    let start = null;
+    try { start = startsOf([pid]).get(pid); } catch { /* unread: the marker holds none */ }
+    writeFileSync(join(waitingDir(cls), String(pid)), start ?? '');
+  } catch { /* the queue is a measurement */ }
+};
 const dequeue = (cls, pid) => { try { unlinkSync(join(waitingDir(cls), String(pid))); } catch { /* not queued */ } };
 // The git worktree this run's command runs in, else its directory.
 function worktree() {

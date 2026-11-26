@@ -6,6 +6,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { usageLocks } from '../desk/bin/prose-facts.mjs';
+import { ledgerStarts } from '../desk/bin/leases.mjs';
+import { psRows } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -293,6 +295,9 @@ try {
       await until(() => of(env, 'grant').length === 1);
       const b = run(env, ['light', '--', 'true']);
       await until(() => of(env, 'queued').length === 1);
+      const wdir = join(env.DESK_LOCK_DIR, 'desk-light.waiting');
+      const marks = readdirSync(wdir).map((p) => [readFileSync(join(wdir, p), 'utf8'), ledgerStarts([Number(p)], psRows).get(Number(p))]);
+      t(`#1480 AC3 ${label}: the waiting run's marker holds its process start time`, marks.length === 1 && !!marks[0][0] && marks[0][0] === marks[0][1], true);
       const c = run(env, ['light', '--', 'true']);
       await until(() => of(env, 'queued').length === 2);
       await sleep(2200);
