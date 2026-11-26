@@ -2101,6 +2101,7 @@ const home724 = () => JSON.parse(W310.run('--json', 'home').out).repos.find((r) 
 t('DS-724 AC2 home JSON lists a repo\'s named batch with its running and needs-you counts', JSON.stringify(home724().batches),
   '[{"id":"acme__desk-skills:X-1","name":"desk-skills:X-1","running":1,"needs_you":1}]');
 t('DS-724 AC7 no production-broken park, none listed', JSON.stringify(home724().production_broken), '[]');
+t('DS-724 AC10 a repo with no Jira site has no Jira browse prefix', home724().jira_browse, null);
 writeFileSync(q310, JSON.stringify({ ...JSON.parse(readFileSync(q310, 'utf8')), tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'PRODUCTION BROKEN: checkout 500s' } } } }));
 t('DS-724 AC7 a PRODUCTION BROKEN park is listed by its ticket', JSON.stringify(home724().production_broken), '["X-3"]');
 

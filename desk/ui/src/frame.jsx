@@ -10,7 +10,8 @@ export const COMPACT_BELOW = 1200;
 const NAME_MAX = 20;
 const OFFLINE = "You're offline. Queues and logs still update; PR and Jira panels show their last copy.";
 
-const drag = { WebkitAppRegion: 'drag' };
+// The window has no native title bar (hidden-inset): a region with this style is where it is dragged from.
+export const WINDOW_DRAG = { WebkitAppRegion: 'drag' };
 const noDrag = { WebkitAppRegion: 'no-drag' };
 
 export function useWidth() {
@@ -46,29 +47,22 @@ export function waited(iso, now = Date.now()) {
 export const shortName = (name) => (name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1)}…` : name);
 const fullName = (slug) => slug.replace('__', '/');
 
-// A ticket's Jira page on a repo's §4 Jira site, or null where the repo has none.
-export function jiraUrl(site, key) {
-  if (!site || !key) return null;
-  return `https://${site.replace(/^https?:\/\//, '').replace(/\/+$/, '')}/browse/${key}`;
-}
-
 // The link rule (§1.6): ⌘-click, or the ↗ that follows the key on hover and focus, opens the ticket's
-// Jira page in the Mac's browser and leaves the window where it was. A plain click opens it in the app
-// once the ticket page exists (`open`); until then it does nothing.
-export function TicketLink({ ticket, site, open = null, external = (u) => window.desk?.openExternal?.(u) }) {
-  const url = jiraUrl(site, ticket);
-  if (!url && !open) return <span className="font-mono text-[.93em] font-medium">{ticket}</span>;
-  const title = open ? `Open ${ticket}${url ? ' · ⌘-click to open in Jira' : ''}` : `⌘-click to open ${ticket} in Jira`;
+// Jira page in the Mac's browser and leaves the window where it was. `browse` is the repo's
+// `jira_browse` from the server; with none the key is plain text. A plain click does nothing until
+// the ticket page exists.
+export function TicketLink({ ticket, browse }) {
+  const url = browse ? `${browse}${ticket}` : null;
+  if (!url) return <span className="font-mono text-[.93em] font-medium">{ticket}</span>;
   const click = (e) => {
     e.preventDefault();
-    if (url && (e.metaKey || e.target.closest?.('[data-ext]'))) external(url);
-    else open?.();
+    if (e.metaKey || e.target.closest?.('[data-ext]')) window.desk?.openExternal?.(url);
   };
   return (
-    <a href={url ?? '#'} onClick={click} title={title} style={noDrag}
+    <a href={url} onClick={click} title={`⌘-click to open ${ticket} in Jira`} style={noDrag}
       className="group inline-flex items-center gap-0.5 rounded-sm font-mono text-[.93em] font-medium text-foreground no-underline hover:underline hover:decoration-ring hover:underline-offset-3">
       {ticket}
-      {url && <span data-ext="" className="hidden group-hover:inline-block group-focus-visible:inline-block"><Icon name="arrow-up-right" size={12} /></span>}
+      <span data-ext="" className="hidden group-hover:inline-block group-focus-visible:inline-block"><Icon name="arrow-up-right" size={12} /></span>
     </a>
   );
 }
@@ -82,7 +76,7 @@ export function bannersFor({ snapshot, online, routes, go }) {
     for (const key of r.production_broken ?? []) {
       out.push({
         id: `broken ${r.slug} ${key}`, tone: 'crit', glyph: '!',
-        body: <>Production is broken in {r.name}: <TicketLink ticket={key} site={r.jira_site} /> is waiting for your answer.</>,
+        body: <>Production is broken in {r.name}: <TicketLink ticket={key} browse={r.jira_browse} /> is waiting for your answer.</>,
         action: routes.inbox ? { label: 'Answer now', run: () => go('/inbox') } : null,
       });
     }
@@ -151,7 +145,7 @@ function TitleBar({ title, snapshot, compact, routes, go }) {
   const broken = (snapshot?.repos ?? []).some((r) => r.production_broken?.length);
   const m = snapshot?.machine;
   return (
-    <header style={drag} className="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border bg-sidebar pr-3 pl-[86px]">
+    <header style={WINDOW_DRAG}className="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border bg-sidebar pr-3 pl-[86px]">
       <div className="flex min-w-0 items-center gap-2.5">
         <span className="flex items-center gap-[7px] text-sm font-semibold tracking-tight">
           <span aria-hidden="true" className="relative size-4 shrink-0 rounded bg-primary after:absolute after:top-[5px] after:left-[5px] after:size-1.5 after:rotate-45 after:bg-needs-solid" />
@@ -180,21 +174,30 @@ function Counts({ running, needs }) {
   );
 }
 
-function RepoRow({ name, title, running, needs, sub, open, on }) {
+// A repo's row, or with `under` (its repo's id) one of its named batches, indented beneath it.
+function RepoRow({ name, title, running, needs, under = null, open, on }) {
+  const sub = under != null;
   const cls = `${ITEM} ${sub ? 'h-[26px] pl-8 text-[12.5px] text-muted-fg' : 'h-7 pl-4 text-[13px]'} pr-2 ${on ? ON : ''} ${open ? 'hover:bg-sidebar-accent' : ''}`;
   const body = <><span className="min-w-0 truncate">{shortName(name)}</span><Counts running={running} needs={needs} /></>;
   return (
-    <li title={title}>
+    <li title={title} data-under={under ?? undefined}>
       {open ? <button type="button" onClick={open} className={cls}>{body}</button> : <div className={cls}>{body}</div>}
     </li>
   );
 }
 
-function Sidebar({ snapshot, path, routes, go }) {
+// What the sidebar and the rail both draw: the shipped screens in order, Settings apart (or null
+// until it ships), and each screen's badge count.
+const navOf = (snapshot, routes) => ({
+  screens: SCREENS.filter((s) => routes[s.id] && s.id !== 'settings'),
+  settings: routes.settings ? SCREENS.find((s) => s.id === 'settings') : null,
+  badge: { inbox: snapshot?.needs_you?.count, workers: snapshot?.machine?.running },
+});
+
+function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge } }) {
   const repos = (snapshot?.repos ?? []).filter((r) => !r.error);
-  const shipped = SCREENS.filter((s) => routes[s.id] && s.id !== 'repos' && s.id !== 'settings');
+  const shipped = screens.filter((s) => s.id !== 'repos');
   const broken = repos.some((r) => r.production_broken?.length);
-  const badge = { inbox: snapshot?.needs_you?.count, workers: snapshot?.machine?.running };
   const item = (s) => (
     <li key={s.id}>
       <button type="button" onClick={() => go(s.path)} aria-current={path.startsWith(s.path) ? 'page' : undefined} title={`${s.label} ⌘${s.key}`}
@@ -220,19 +223,17 @@ function Sidebar({ snapshot, path, routes, go }) {
         {repos.flatMap((r) => [
           <RepoRow key={r.id} name={r.name} title={fullName(r.slug)} running={r.running} needs={r.needs_you} open={openRepo(r.id)} on={path === `/repos/${r.id}`} />,
           ...(r.batches ?? []).map((b) => (
-            <RepoRow key={b.id} sub name={b.name} title={b.name} running={b.running} needs={b.needs_you} open={openRepo(b.id)} on={path === `/repos/${b.id}`} />
+            <RepoRow key={b.id} under={r.id} name={b.name} title={b.name} running={b.running} needs={b.needs_you} open={openRepo(b.id)} on={path === `/repos/${b.id}`} />
           )),
         ])}
       </ul>
       <ul className="mt-2 flex flex-col gap-px">{shipped.filter((s) => s.id !== 'inbox').map(item)}</ul>
-      {routes.settings && <ul className="mt-auto border-t border-border pt-2">{item(SCREENS.find((s) => s.id === 'settings'))}</ul>}
+      {settings && <ul className="mt-auto border-t border-border pt-2">{item(settings)}</ul>}
     </nav>
   );
 }
 
-function Rail({ snapshot, path, routes, go }) {
-  const shipped = SCREENS.filter((s) => routes[s.id] && s.id !== 'settings');
-  const badge = { inbox: snapshot?.needs_you?.count, workers: snapshot?.machine?.running };
+function Rail({ path, go, nav: { screens, settings, badge } }) {
   const item = (s) => (
     <li key={s.id}>
       <button type="button" onClick={() => go(s.path)} aria-label={s.label} title={`${s.label} ⌘${s.key}`} aria-current={path.startsWith(s.path) ? 'page' : undefined}
@@ -249,8 +250,8 @@ function Rail({ snapshot, path, routes, go }) {
   );
   return (
     <nav aria-label="Desk" data-rail="" className="flex w-14 shrink-0 flex-col items-center gap-px border-r border-border bg-sidebar px-1.5 pt-2.5 pb-2">
-      <ul className="flex flex-col items-center gap-px">{shipped.map(item)}</ul>
-      {routes.settings && <ul className="mt-auto">{item(SCREENS.find((s) => s.id === 'settings'))}</ul>}
+      <ul className="flex flex-col items-center gap-px">{screens.map(item)}</ul>
+      {settings && <ul className="mt-auto">{item(settings)}</ul>}
     </nav>
   );
 }
@@ -284,7 +285,7 @@ export function Frame({ snapshot, live, path, go, routes, title, children }) {
     return () => window.removeEventListener('keydown', key);
   }, [routes, go]);
 
-  const side = { snapshot, path, routes, go };
+  const side = { snapshot, path, routes, go, nav: navOf(snapshot, routes) };
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       <TitleBar title={title} snapshot={snapshot} compact={compact} routes={routes} go={go} />

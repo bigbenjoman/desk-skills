@@ -36,9 +36,12 @@ button:focus-visible{outline:2px solid var(--muted-fg);outline-offset:2px}
 .status span{flex:1;font-variant-numeric:tabular-nums}
 .icon{width:20px;height:20px;color:var(--fail);flex:none}
 [hidden]{display:none!important}
+/* The window has no native title bar (hidden-inset), so the top 40 px is where it is dragged from. */
+.drag{position:fixed;top:0;left:0;right:0;height:40px;-webkit-app-region:drag}
 </style>
 </head>
 <body>
+<div class="drag" aria-hidden="true"></div>
 <main class="card" id="unreachable" hidden>
   <div class="row">
     <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 2h13a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-5"/><path d="M10 10 2.5 2.5C2 2 2 2.5 2 5v3a2 2 0 0 0 2 2h6z"/><path d="M22 17v-1a2 2 0 0 0-2-2h-1"/><path d="M4 14a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h16.5l1-.5.5.5-8-8H4z"/><path d="M6 18h.01"/><path d="m2 2 20 20"/></svg>

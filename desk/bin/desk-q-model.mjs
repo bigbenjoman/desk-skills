@@ -4162,7 +4162,7 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
  *   workers: { running: number, allowed: number | null, cap: number, ready_no_slot: number },
  *   all_done_by: string, wait_cause: string | null,
  *   batches: { id: string, name: string, running: number, needs_you: number }[], production_broken: string[],
- *   jira_site: string | null }} RepoFigures
+ *   jira_browse: string | null }} RepoFigures
  */
 /** @typedef {RepoIdentity & { error: string }} RepoFault */
 /**
@@ -4251,10 +4251,14 @@ function repoFigures(r, needs, now, checkin) {
     all_done_by: queueDone(r, now, checkin), wait_cause: waitCause(r) ?? null,
     batches: (r.batches ?? []).filter((b) => b.batch).map((b) => ({ id: b.id, name: b.word, running: count(b, 'running'), needs_you: needsCount(b).shown })),
     production_broken: needs.rows.filter((x) => PRODUCTION_BROKEN.test(x.t.park?.question ?? '')).map((x) => x.t.key),
-    jira_site: jiraSiteOf(r.slug) };
+    jira_browse: jiraBrowseOf(r.slug) };
 }
-// A repo's §4 Jira site as written, or null where it has none.
-const jiraSiteOf = (slug) => { const s = String(repoConfigValue(slug, 'jira-site') ?? '').trim(); return s && !isNone(s) ? s : null; };
+// Where a repo's ticket pages live on its §4 Jira site, `https://<site>/browse/`, the key to append;
+// null where it has no site.
+export function jiraBrowseOf(slug) {
+  const s = String(repoConfigValue(slug, 'jira-site') ?? '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return s && !isNone(s) ? `https://${s}/browse/` : null;
+}
 
 // The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
 // `figures` the view.json line it reads, `text` the line as home shows it.

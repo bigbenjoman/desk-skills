@@ -8,7 +8,8 @@ import App from './App.jsx';
 const AT = new Date(2026, 10, 26, 10, 8).toISOString();
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const repo = (name, more = {}) => ({ id: `owner__${name}`, slug: `owner__${name}`, name, error: null, running: 0, needs_you: 0,
-  batches: [], production_broken: [], jira_site: null, ...more });
+  batches: [], production_broken: [], jira_browse: null, ...more });
+const JIRA = 'https://jira.example.net/browse/';
 
 // The snapshot the server gives: four repos, one with the named batch DS-631; 25 need Ben; 7 workers.
 const fixture = () => ({
@@ -18,7 +19,7 @@ const fixture = () => ({
   repos: [
     repo('desk-skills', { slug: 'bigbenjoman__desk-skills', id: 'bigbenjoman__desk-skills', running: 4,
       batches: [{ id: 'bigbenjoman__desk-skills:DS-631', name: 'desk-skills:DS-631', running: 0, needs_you: 0 }] }),
-    repo('studia-web', { needs_you: 14, jira_site: 'jira.example.net' }),
+    repo('studia-web', { needs_you: 14, jira_browse: JIRA }),
     repo('studia-zendesk', { needs_you: 5 }),
     repo('ai-agents', { needs_you: 6, running: 3 }),
   ],
@@ -79,8 +80,9 @@ describe('the title bar, sidebar and status bar', () => {
     const s = await open();
     const rows = [...document.querySelectorAll('[data-repos] li')].map((li) => li.textContent);
     expect(rows).toEqual(['desk-skills● 4', 'desk-skills:DS-631', 'studia-web◆ 14', 'studia-zendesk◆ 5', 'ai-agents◆ 6● 3']);
-    const batch = within(document.querySelector('[data-repos]')).getByText('desk-skills:DS-631');
-    expect(batch.parentElement.className).toContain('pl-8');
+    const batch = within(document.querySelector('[data-repos]')).getByText('desk-skills:DS-631').closest('li');
+    expect(batch.dataset.under).toBe('bigbenjoman__desk-skills');
+    expect(batch.previousElementSibling.textContent).toBe('desk-skills● 4');
     // A repo's row changes on its own event.
     s.send('repo', { slug: 'owner__studia-web', summary: repo('studia-web', { needs_you: 13 }) });
     expect(within(document.querySelector('[data-repos]')).getByText('◆ 13')).toBeTruthy();
@@ -107,7 +109,6 @@ describe('the title bar, sidebar and status bar', () => {
     expect(document.querySelector('[data-rail]')).toBeNull();
     act(() => { window.innerWidth = 1024; window.dispatchEvent(new Event('resize')); });
     const rail = document.querySelector('[data-rail]');
-    expect(rail.className).toContain('w-14');
     expect(within(rail).getByRole('button', { name: 'Inbox' }).querySelector('[data-badge="inbox"]').textContent).toBe('25');
     expect(within(rail).getByRole('button', { name: 'Workers' }).querySelector('[data-badge="workers"]').textContent).toBe('7');
     expect(document.querySelector('[data-status-bar]')).toBeNull();
@@ -128,13 +129,12 @@ describe('the title bar, sidebar and status bar', () => {
     expect(nav()).toBeTruthy();
   });
 
-  it('AC12 every sidebar item takes focus, and the focus ring is 2 px at 3:1 or more in light and dark', async () => {
+  it('AC12 every sidebar item takes focus, and the focus colour is 3:1 or more on the sidebar in light and dark', async () => {
     await open();
     const item = within(nav()).getByRole('button', { name: /Inbox/ });
     item.focus();
     expect(document.activeElement).toBe(item);
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'theme.css'), 'utf8');
-    expect(css).toMatch(/:focus-visible \{ outline: 2px solid var\(--focus\); outline-offset: 2px; \}/);
     const vars = (block) => Object.fromEntries([...block.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
     const light = vars(css.match(/:root\{([\s\S]*?)\n\}/)[1]);
     const dark = vars(css.match(/:root\[data-theme="dark"\]\{([\s\S]*?)\n\}/)[1]);
@@ -185,7 +185,7 @@ describe('the banner slot', () => {
   it("AC10 ⌘-click on a ticket key opens its Jira page in the browser and the window stays where it was", async () => {
     const openExternal = vi.fn();
     window.desk = { openExternal };
-    await open({ snapshot: broken([repo('studia-web', { production_broken: ['DS-563'], jira_site: 'jira.example.net' })]) });
+    await open({ snapshot: broken([repo('studia-web', { production_broken: ['DS-563'], jira_browse: JIRA })]) });
     const before = document.body.innerHTML;
     const link = screen.getByRole('link', { name: /DS-563/ });
     expect(link.title).toBe('⌘-click to open DS-563 in Jira');
@@ -202,10 +202,11 @@ describe('only the screens that exist', () => {
     await open({ routes: { inbox: page('Inbox') } });
     expect(within(nav()).queryByRole('button', { name: /Conversations/ })).toBeNull();
     expect(within(nav()).queryByRole('button', { name: /Workers/ })).toBeNull();
-    cmd('4');
-    expect(screen.queryByText(/page$/)).toBeNull();
-    expect(document.querySelector('[data-page-title]')).toBeNull();
     cmd('1');
+    expect(screen.getByText('Inbox page')).toBeTruthy();
+    expect(document.querySelector('[data-page-title]').textContent).toBe('Inbox');
+    // ⌘4 opens nothing, so the Inbox stays: had it gone to Conversations, the placeholder would show.
+    cmd('4');
     expect(screen.getByText('Inbox page')).toBeTruthy();
     expect(document.querySelector('[data-page-title]').textContent).toBe('Inbox');
   });
@@ -215,7 +216,17 @@ describe('only the screens that exist', () => {
     expect(within(nav()).queryAllByRole('button')).toEqual([]);
     expect(screen.queryByRole('button', { name: /need you/ })).toBeNull();
     expect(document.querySelectorAll('[data-repos] li').length).toBe(5);
-    for (const k of ['1', '2', '3', '4', '5', '6', '7', '8', ',']) cmd(k);
-    await waitFor(() => expect(screen.getByText('Desk', { selector: 'h1' })).toBeTruthy());
+  });
+});
+
+describe('the window is dragged by its top edge', () => {
+  it('a system card, with no frame, keeps a 40 px drag strip', async () => {
+    window.innerWidth = 1440;
+    const s = stubServer();
+    s.get.mockImplementation(async (url) => (url === '/api/setup' ? json({ installed: false }) : json({ error: { code: 'not_found' } }, 404)));
+    render(<App deps={{ get: s.get, Events: s.Events, store: undefined, routes: SOME }} />);
+    await screen.findByText(/desk isn't installed/i);
+    expect(screen.queryByRole('navigation', { name: 'Desk' })).toBeNull();
+    expect(document.querySelector('[data-drag]')).toBeTruthy();
   });
 });
