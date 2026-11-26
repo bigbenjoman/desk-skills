@@ -163,7 +163,7 @@ export function perTicketDb(env = process.env) {
   if (!raw || E.isNone(raw)) return why(`config §4 Local database is ${raw ? 'none' : 'unset'}`);
   if (!m) return why(`config §4 Local database is "${raw}", which is not \`postgres container <name>\``);
   if (E.permission('db-per-ticket') !== 'yes') return why(`config §3 ${E.permissionKey('db-per-ticket')} is ${E.permission('db-per-ticket')}`);
-  const vars = [].concat(E.configValues('db-url-var') ?? []).filter((v) => !E.isNone(v) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(v));
+  const vars = [].concat(E.configValues('db-url-var') ?? []).filter((v) => !E.isNone(v) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(E.parseCommandItem(v).cmd));
   return why(vars.length ? null : 'config §4 Database URL variable names none');
 }
 
