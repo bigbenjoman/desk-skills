@@ -260,6 +260,12 @@ t('AC4 a step error the spawn recorded in the run record trips too', [cli.status
   t('AC1 the DS-1012 compound command failing elsewhere does not trip finder-model', tripsOn('acme__ds1012', 'finder-model',
     'desk-env tree-status; git rev-parse HEAD; desk-env model finder; desk-env get review-asks',
     'Exit code 3\ndesk-env tree-status: fatal: not a git repository (or any of the parent directories): .git\nsonnet\nnone'), ['trial', []]);
+  // The ticket's line puts `;` straight after `finder`, which the old whole-command match never read as the
+  // step; these shapes it did (DS-1012's trip), so they are what fails if the fix is undone.
+  t('AC1 the same command split by newlines or && does not trip finder-model either', [
+    'desk-env tree-status\ngit rev-parse HEAD\ndesk-env model finder\ndesk-env get review-asks',
+    'desk-env tree-status && git rev-parse HEAD && desk-env model finder && desk-env get review-asks',
+  ].map((c, i) => tripsOn(`acme__ds1012shape${i}`, 'finder-model', c, 'Exit code 3\ndesk-env tree-status: fatal: not a git repository\nsonnet\nnone')), [['trial', []], ['trial', []]]);
   t('AC2 desk-env model finder run on its own and exiting 3 trips finder-model', tripsOn('acme__finderalone', 'finder-model',
     'cd /wt && desk-env model finder', 'Exit code 3\nno finder model'), ['reverted', [['own_step_error', 'desk-env model finder exited 3: no finder model']]]);
   t('AC3 a lever_step record for finder-model with a non-zero exit still trips it', tripsOn('acme__finderrec', 'finder-model',

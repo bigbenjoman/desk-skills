@@ -158,8 +158,9 @@ function fromLogs(state, key, since, cache = new Map(), tag, parse) {
   return cache.get(k);
 }
 
-// A Bash command with any leading `cd <dir> &&` dropped and its spaces collapsed.
-const bare = (cmd) => String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, '').replace(/\s+/g, ' ');
+// A Bash command with any leading `cd <dir> &&` dropped, and then with its spaces collapsed too.
+const dropCd = (cmd) => String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, '');
+const bare = (cmd) => dropCd(cmd).replace(/\s+/g, ' ');
 // The binary a probe proves executes: its first word.
 const binOf = (probe) => bare(probe).split(' ')[0];
 const startsWithCommand = (cmd, stem) => !!stem && (cmd === stem || cmd.startsWith(`${stem} `));
@@ -224,7 +225,7 @@ export function oneCommand(cmd) {
 // first word (after an interpreter) is the step's program, by any path. Its exit is then the step's.
 export function runsStep(re, cmd) {
   // Separators are read before bare() collapses a newline into a space.
-  if (!re || !oneCommand(String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, ''))) return false;
+  if (!re || !oneCommand(dropCd(cmd))) return false;
   const c = bare(cmd);
   const rest = c.replace(/^(?:node|bash|sh)\s+/, '');
   const m = re.exec(rest);
