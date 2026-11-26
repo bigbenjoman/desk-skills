@@ -621,7 +621,8 @@ t('DS-1002 an unbraced guard\'s body is one expression on its line: a second sta
   drawEdit(chainQ("if (isMain) console.log(draw(), ';');")),
   drawEdit(chainQ('if (isMain) for (const a of [1]) { console.log(a); } draw();')) === everyClaimer,
   drawEdit(chainQ('if (isMain) while (false) { console.log(1); } draw();')) === everyClaimer,
-], [true, true, 'some: test_cli.sh test_lint.sh', true, true]);
+  drawEdit(chainQ('if (isMain) /* CLI */ {} +draw();')) === everyClaimer,
+], [true, true, 'some: test_cli.sh test_lint.sh', true, true, true]);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
