@@ -2073,8 +2073,13 @@ const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(r
 // it, and a Test sign-in item. A row unset is drift's MISSING, and `none` is a decision: neither is a
 // gap here, except the Test sign-in row unset.
 // -> [{ row, dir, value: [item], have?: [file] }]
+// An app directory as config items name it (`./apps/web/` -> `apps/web`, the root `.`), and whether a
+// §4 Env files item sits under it: both appSetupGaps and appPermissionGaps read an app's env files.
+const appDirOf = (dir) => String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+const envFileUnder = (app, f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`));
+
 export function appSetupGaps(parsed, root, dir) {
-  const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+  const app = appDirOf(dir);
   const gaps = [];
   const dev = configValuesIn(parsed, 'dev-cmd');
   const p = readPackage(root, app);
@@ -2083,7 +2088,7 @@ export function appSetupGaps(parsed, root, dir) {
     gaps.push({ row: 'Dev server', dir: app, value: [`${app === '.' ? '' : `${app}: `}${TS.packageManager(root, pm && !isNone(pm) ? pm[0] : null)} run dev`] });
   }
   const env = configValuesIn(parsed, 'env-files');
-  if (env && !isNone(env) && !env.some((f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`)))) {
+  if (env && !isNone(env) && !env.some((f) => envFileUnder(app, f))) {
     let have = [];
     try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
     if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
@@ -2105,7 +2110,7 @@ const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the
 // item, is no finding and makes no Clerk call. `fetch` is the one Clerk is called through.
 // -> [{ row: 'Test sign-in permissions', dir, email, need, lacks: [perm] } | { …, unread: why }]
 export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.fetch } = {}) {
-  const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+  const app = appDirOf(dir);
   const named = configValuesIn(parsed, 'test-signin-permissions');
   if (!named || isNone(named)) return [];
   const need = [...new Set(named.map(signinPermissionsOf).filter((x) => x?.dir === app).flatMap((x) => x.perms))];
@@ -2114,9 +2119,8 @@ export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.
   if (!email) return [];
   const gap = (more) => [{ row: 'Test sign-in permissions', dir: app, email, need, ...more }];
   const env = configValuesIn(parsed, 'env-files');
-  const under = (f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`));
   let envFile = null, key = null;
-  for (const f of env && !isNone(env) ? env.filter(under) : []) {
+  for (const f of env && !isNone(env) ? env.filter((f) => envFileUnder(app, f)) : []) {
     let text = '';
     try { text = readFileSync(join(root, f), 'utf8'); } catch { continue; }
     const m = /^[ \t]*(?:export[ \t]+)?CLERK_SECRET_KEY[ \t]*=[ \t]*["']?([^"'\s#]*)/m.exec(text);
@@ -2133,9 +2137,14 @@ export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.
     users = await r.json();
   } catch (e) { return gap({ unread: `Clerk could not be reached: ${String(e?.message ?? e).split('\n')[0]}` }); }
   if (!Array.isArray(users) || !users.length) return gap({ unread: 'Clerk has no user with that email' });
+  // `services` absent holds nothing; a list of names, or an object of flags, holds the names set. Any
+  // other shape is one desk cannot read, so it is PERMREAD, never a false "lacks".
   const services = users[0]?.public_metadata?.services;
-  const held = new Set(Array.isArray(services) ? services.map(String)
-    : services && typeof services === 'object' ? Object.keys(services).filter((k) => services[k]) : []);
+  const isFlags = services != null && typeof services === 'object' && !Array.isArray(services);
+  if (services != null && !(Array.isArray(services) && services.every((s) => typeof s === 'string')) && !isFlags) {
+    return gap({ unread: 'its public_metadata.services is neither a list of names nor an object of flags' });
+  }
+  const held = new Set(services == null ? [] : isFlags ? Object.keys(services).filter((k) => services[k]) : services);
   const lacks = need.filter((p) => !held.has(p));
   return lacks.length ? gap({ lacks }) : [];
 }

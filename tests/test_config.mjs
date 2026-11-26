@@ -424,6 +424,9 @@ t('DS-804 a Test sign-in item that is not an email is INVALID', drift(`${conf()}
   t('DS-1026 AC5 Clerk unreachable is could not read, not lacks', await run(NEED, new Error('fetch failed')), PERMREAD('Clerk could not be reached: fetch failed'));
   t('DS-1026 AC5 Clerk refusing is could not read', await run(NEED, { status: 401, body: {} }), PERMREAD('Clerk answered 401'));
   t('DS-1026 AC5 no such user is could not read', await run(NEED, { body: [] }), PERMREAD('Clerk has no user with that email'));
+  const SHAPE = PERMREAD('its public_metadata.services is neither a list of names nor an object of flags');
+  t('DS-1026 AC5 services as a string is could not read, not lacks', await run(NEED, holding('ADMIN')), SHAPE);
+  t('DS-1026 AC5 services as a list of objects is could not read, not lacks', await run(NEED, holding([{ name: 'ADMIN' }])), SHAPE);
   writeFileSync(join(repoDir, 'apps/portal/.env.local'), 'NEXT_PUBLIC_APP=portal\n');
   t('DS-1026 no env file under the app holding the key is could not read', await run(NEED, holding(['ADMIN'])),
     PERMREAD('no §4 Env files item under apps/portal holds a CLERK_SECRET_KEY in the primary checkout'));
