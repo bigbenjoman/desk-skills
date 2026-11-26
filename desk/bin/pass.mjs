@@ -130,7 +130,8 @@ import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owes
 const AS_JSON = process.argv.includes('--json');
 const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: EXIT.SHOW_PERSON, idle: EXIT.SHOW_PERSON, error: EXIT.SHOW_PERSON };
 // The queue's `pass` record, for desk-q: who ran the last pass and when, what held its spawns, how many
-// passes in a row have errored and the last error's first line, the last time a ticket started, merged
+// passes in a row have errored and the last error's first line, `idle_at` when the pass found the batch
+// idle (its loop stops on purpose then, so desk-q reads that stop as idle), the last time a ticket started, merged
 // or was released, and the tickets held and merged at that pass (a later pass that finds one no
 // longer held counts it released, and one newly merged counts it merged). `session_at` is the last
 // pass a session ran, kept through the supervisor's, so a session beside the supervisor shows. It is
@@ -6262,7 +6263,7 @@ const late = [...ledgerLate, ...recordPass((prev) => {
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, merge_gaps: mergeGapsEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
+  return { held: heldWhy, errors: 0, error: null, idle_at: idle ? PASS_AT : null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, merge_gaps: mergeGapsEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
 })];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
