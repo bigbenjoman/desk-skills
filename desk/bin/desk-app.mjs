@@ -51,7 +51,7 @@ export function sourceHash(src) {
 export const deskPaths = () => ({ configRoot: E.deskConfigRoot(), deskHome: E.deskHome() });
 // What a build is made from: the source, and the paths written into it.
 const buildKey = (src, paths) => createHash('sha256').update(`${sourceHash(src)}\0${JSON.stringify(paths)}`).digest('hex');
-const stamp = () => { try { return readFileSync(stampFile(), 'utf8').trim(); } catch { return null; } };
+const readStamp = (file) => { try { return readFileSync(file, 'utf8').trim(); } catch { return null; } };
 
 function step(log, cmd, args, cwd) {
   appendFileSync(log, `\n$ ${cmd} ${args.join(' ')}\n`);
@@ -62,14 +62,41 @@ function step(log, cmd, args, cwd) {
 }
 const built = (dist) => (existsSync(dist) ? readdirSync(dist).filter((d) => /^mac/.test(d)).map((d) => join(dist, d, 'Desk.app')).find((p) => existsSync(p)) : null);
 
-// Builds into the cache, signs, then swaps the new app in: until the swap the previous one stays.
-function build(src, paths, log) {
-  const work = join(cacheDir(), 'build');
+// Both builds run in a fresh copy of their source, so the checkout never gets node_modules or dist.
+function stage(src, work) {
   rmSync(work, { recursive: true, force: true });
   mkdirSync(work, { recursive: true });
   for (const f of files(src)) { mkdirSync(join(work, f, '..'), { recursive: true }); cpSync(join(src, f), join(work, f)); }
+}
+const npmInstall = (log, work) => step(log, 'npm', existsSync(join(work, 'package-lock.json')) ? ['ci', '--no-audit', '--no-fund'] : ['install', '--no-audit', '--no-fund'], work);
+// Puts next where live is, moving live aside to old first: until the rename the previous one stays.
+function swapIn(next, live, old) {
+  rmSync(old, { recursive: true, force: true });
+  if (existsSync(live)) renameSync(live, old);
+  renameSync(next, live);
+  rmSync(old, { recursive: true, force: true });
+}
+// Runs a build into a fresh log. A failure removes its work folder, names the log and returns false,
+// leaving the previous build where it was.
+function rebuild({ label, what, src, log, work, had, kept, none }, run) {
+  mkdirSync(join(log, '..'), { recursive: true });
+  writeFileSync(log, `${new Date().toISOString()} building ${what} from ${src}\n`);
+  try {
+    run(log);
+    return true;
+  } catch (e) {
+    rmSync(work, { recursive: true, force: true });
+    console.error(`${label}: the build failed (${e.message}); ${had ? kept : none}. Build log: ${tilde(log)}`);
+    return false;
+  }
+}
+
+// Builds into the cache, signs, then swaps the new app in: until the swap the previous one stays.
+function build(src, paths, log) {
+  const work = join(cacheDir(), 'build');
+  stage(src, work);
   writeFileSync(join(work, 'desk-paths.json'), `${JSON.stringify(paths)}\n`);
-  step(log, 'npm', existsSync(join(work, 'package-lock.json')) ? ['ci', '--no-audit', '--no-fund'] : ['install', '--no-audit', '--no-fund'], work);
+  npmInstall(log, work);
   step(log, join(work, 'node_modules', '.bin', 'electron-builder'), ['--mac', '--dir'], work);
   const app = built(join(work, 'dist'));
   if (!app) throw new Error('electron-builder wrote no Desk.app');
@@ -77,13 +104,10 @@ function build(src, paths, log) {
   step(log, 'codesign', ['--force', '--sign', '-', '--identifier', APP_ID, '--requirements', `=${REQUIREMENT}`, app], work);
   step(log, 'codesign', ['--verify', '--deep', '--strict', app], work);
   mkdirSync(appsDir(), { recursive: true });
-  const next = join(appsDir(), '.Desk.app.new'), old = join(appsDir(), '.Desk.app.old');
+  const next = join(appsDir(), '.Desk.app.new');
   rmSync(next, { recursive: true, force: true });
-  rmSync(old, { recursive: true, force: true });
   step(log, 'ditto', [app, next], work);
-  if (existsSync(appPath())) renameSync(appPath(), old);
-  renameSync(next, appPath());
-  rmSync(old, { recursive: true, force: true });
+  swapIn(next, appPath(), join(appsDir(), '.Desk.app.old'));
   rmSync(work, { recursive: true, force: true });
 }
 
@@ -93,16 +117,10 @@ export function install(src) {
   const paths = deskPaths();
   const hash = buildKey(src, paths);
   const had = existsSync(appPath());
-  if (had && stamp() === hash) { console.log(`Desk.app: unchanged since its last build (${tilde(appPath())})`); return 0; }
-  mkdirSync(join(logFile(), '..'), { recursive: true });
-  writeFileSync(logFile(), `${new Date().toISOString()} building Desk.app from ${src}\n`);
-  try {
-    build(src, paths, logFile());
-  } catch (e) {
-    rmSync(join(cacheDir(), 'build'), { recursive: true, force: true });
-    console.error(`Desk.app: the build failed (${e.message}); ${had ? 'the previous Desk.app is still in place' : 'no Desk.app was installed'}. Build log: ${tilde(logFile())}`);
-    return 1;
-  }
+  if (had && readStamp(stampFile()) === hash) { console.log(`Desk.app: unchanged since its last build (${tilde(appPath())})`); return 0; }
+  const job = { label: 'Desk.app', what: 'Desk.app', src, log: logFile(), work: join(cacheDir(), 'build'), had,
+    kept: 'the previous Desk.app is still in place', none: 'no Desk.app was installed' };
+  if (!rebuild(job, (log) => build(src, paths, log))) return 1;
   mkdirSync(cacheDir(), { recursive: true });
   writeFileSync(stampFile(), `${hash}\n`);
   if (!had) spawnSync('open', [appPath()], { stdio: 'ignore' });
@@ -116,25 +134,16 @@ const uiDir = () => join(E.deskHome(), 'ui');
 export const uiDist = () => join(uiDir(), 'dist');
 const uiStampFile = () => join(uiDir(), 'source-hash');
 export const uiLogFile = () => join(E.HOME, '.desk-autopilot', 'ui', 'desk-ui-build.log');
-const uiStamp = () => { try { return readFileSync(uiStampFile(), 'utf8').trim(); } catch { return null; } };
 
 // Builds in a copy of the source, then swaps the new build in for the one the server serves: until
 // the swap the previous build is served.
 function buildUi(src, log) {
   const work = join(uiDir(), 'build');
-  rmSync(work, { recursive: true, force: true });
-  mkdirSync(work, { recursive: true });
-  for (const f of files(src)) { mkdirSync(join(work, f, '..'), { recursive: true }); cpSync(join(src, f), join(work, f)); }
-  step(log, 'npm', existsSync(join(work, 'package-lock.json')) ? ['ci', '--no-audit', '--no-fund'] : ['install', '--no-audit', '--no-fund'], work);
+  stage(src, work);
+  npmInstall(log, work);
   step(log, 'npm', ['run', 'build'], work);
   if (!existsSync(join(work, 'dist', 'index.html'))) throw new Error('the build wrote no dist/index.html');
-  const next = join(uiDir(), 'dist.new'), old = join(uiDir(), 'dist.old');
-  rmSync(next, { recursive: true, force: true });
-  rmSync(old, { recursive: true, force: true });
-  renameSync(join(work, 'dist'), next);
-  if (existsSync(uiDist())) renameSync(uiDist(), old);
-  renameSync(next, uiDist());
-  rmSync(old, { recursive: true, force: true });
+  swapIn(join(work, 'dist'), uiDist(), join(uiDir(), 'dist.old'));
   rmSync(work, { recursive: true, force: true });
 }
 
@@ -142,16 +151,10 @@ export function installUi(src) {
   if (!src || !existsSync(join(src, 'package.json'))) { console.error(`desk app: no app source at ${src ?? '(none given)'}`); return 2; }
   const hash = sourceHash(src);
   const had = existsSync(join(uiDist(), 'index.html'));
-  if (had && uiStamp() === hash) { console.log(`desk app: unchanged since its last build (${tilde(uiDist())})`); return 0; }
-  mkdirSync(join(uiLogFile(), '..'), { recursive: true });
-  writeFileSync(uiLogFile(), `${new Date().toISOString()} building the desk app from ${src}\n`);
-  try {
-    buildUi(src, uiLogFile());
-  } catch (e) {
-    rmSync(join(uiDir(), 'build'), { recursive: true, force: true });
-    console.error(`desk app: the build failed (${e.message}); ${had ? 'the previous build is still served' : 'no build is installed'}. Build log: ${tilde(uiLogFile())}`);
-    return 1;
-  }
+  if (had && readStamp(uiStampFile()) === hash) { console.log(`desk app: unchanged since its last build (${tilde(uiDist())})`); return 0; }
+  const job = { label: 'desk app', what: 'the desk app', src, log: uiLogFile(), work: join(uiDir(), 'build'), had,
+    kept: 'the previous build is still served', none: 'no build is installed' };
+  if (!rebuild(job, (log) => buildUi(src, log))) return 1;
   writeFileSync(uiStampFile(), `${hash}\n`);
   console.log(`desk app: ${had ? 'rebuilt' : 'built'}: ${tilde(uiDist())}; an open window shows it once it reloads`);
   return 0;
