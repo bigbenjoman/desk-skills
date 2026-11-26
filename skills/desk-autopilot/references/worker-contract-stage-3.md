@@ -3,13 +3,6 @@
 Part of the autopilot worker contract, read when you reach Stage 3 (or earlier, as the core says).
 It binds exactly as the core does.
 
-**New decisions restart you at Stage 3, open PR or not.** Where your briefing has a "New decisions
-since PR #<n>'s last review" section, build those entries from here, on the same branch and PR,
-whatever stage a resume file, handoff or last round names. First check the branch for each one:
-where a commit on it already meets one, say so, naming the commit and the entry, and only then treat
-it as done. With every entry met that way, the PR is done with no new commit, and your final message
-names the commit that meets each entry.
-
 **The design skills are files too.** When `desk-ticket` Stage 3 loads `ux-designer`, `ui-designer`
 and `ux-copywriter` for a ticket that renders UI, Read `$DESK_SKILLS_DIR/ux-designer/SKILL.md`,
 `$DESK_SKILLS_DIR/ui-designer/SKILL.md` and `$DESK_SKILLS_DIR/ux-copywriter/SKILL.md` before the

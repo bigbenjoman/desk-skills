@@ -1143,7 +1143,7 @@ printf '#!/bin/sh\ncase "$*" in *createdAt,reviews*) echo "{\\"createdAt\\":\\"2
 for k in Q-1 Q-2; do handing "$k"; hfile "$k" 7 "typecheck: pass"; q set "$k" handoff_stage=7 result.pr=61; q park "$k" "which reviewer?"; done
 decided Q-1 2026-11-24 "widen it to the list page"; decided Q-2 2026-10-20 "the badge is green"
 respawn Q-1
-check "#1465 AC1 a handed-off ticket whose Decisions gained an entry after its PR's last review restarts at Stage 3" 'spawned_for Q-1 | grep -q "stage=3 " && [ "$(field Q-1 stage)" = "\"3\"" ] && echo "$out" | grep -qF "Q-1 fresh session from Stage 3 (handed off at Stage 7; restarted at Stage 3: 1 Decisions entry dated after PR #61'"'"'s last review"'
+check "#1465 AC1 a handed-off ticket whose Decisions gained an entry after its PR's last review restarts at Stage 3" 'spawned_for Q-1 | grep -q "stage=3 " && [ "$(field Q-1 stage)" = 3 ] && echo "$out" | grep -qF "Q-1 fresh session from Stage 3 (handed off at Stage 7; restarted at Stage 3: 1 Decisions entry dated after PR #61'"'"'s last review"'
 check "#1465 AC1 its briefing lists the new entry ahead of the handoff, and says to start at Stage 3" 'b=$(brief Q-1); grep -qF "## New decisions since PR #61'"'"'s last review: this session starts at Stage 3" <<< "$b" && grep -qxF -- "- 2026-11-24 ben: widen it to the list page" <<< "$b" && grep -qF "## Handoff: this session starts at Stage 7" <<< "$b"'
 check "#1465 AC2 the briefing has the worker check the branch first and name the commit that meets it" 'brief Q-1 | grep -qF "Where a commit on it already meets a decision, say so, naming that commit and the decision"'
 check "#1465 the restart records when it was delivered" 'field Q-1 decisions_seen | grep -qE "^\"20[0-9]{2}-"'
