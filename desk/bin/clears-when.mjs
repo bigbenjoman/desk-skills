@@ -259,12 +259,17 @@ function askedAt(question, at) {
 }
 
 // A clause after an ask that waits on someone else first (once the worker saves …, after run 991 finishes):
-// the actor is the when-clause's subject, straight after its word (or "the", "next"), so "once it is in,
-// the next worker commits" is not one. CI only capitalised, so "if npm ci fails" is not one either.
+// the actor is the when-clause's subject: after its word, an article and at most two words that are not
+// a pronoun (once a worker, once the recall capture script), so "once it is in, the next worker commits"
+// is not one. CI only capitalised, so "if npm ci fails" is not one either. Only words that wait for the
+// actor first: "since", "before", "while" and "unless" give a reason or an order, never a handoff.
 const anyCase = (w) => w.replace(/[a-z]/g, (ch) => `[${ch}${ch.toUpperCase()}]`);
-const WHEN_WORD = ['once', 'when', 'after', 'until', 'while', 'before', 'if', 'unless', 'since'].map(anyCase).join('|');
-const ACTOR = [...['workers?', 'pass(?:es)?', 'jobs?', 'scripts?', 'orchestrator', 'bots?'].map(anyCase), 'CI', `${anyCase('run')}\\s+#?\\d+`].join('|');
-const HANDOFF = new RegExp(`\\b(?:${WHEN_WORD})\\s+(?:${anyCase('the')}\\s+)?(?:${anyCase('next')}\\s+)?(?:${ACTOR})\\b`);
+const words = (list) => list.map(anyCase).join('|');
+const WHEN_WORD = words(['once', 'when', 'after', 'until', 'if']);
+const ARTICLE = words(['the', 'a', 'an', 'this', 'that', 'its', 'our', 'your']);
+const PRONOUN = words(['you', 'it', 'i', 'we', 'they', 'he', 'she', 'this', 'that']);
+const ACTOR = [words(['worker', 'pass', 'job', 'script', 'orchestrator', 'bot']), 'CI', `${anyCase('run')}\\s+#?\\d+`].join('|');
+const HANDOFF = new RegExp(`\\b(?:${WHEN_WORD})\\s+(?:(?:${ARTICLE})\\s+)?(?:(?!(?:${PRONOUN})\\b)[A-Za-z][\\w'-]*\\s+){0,2}?(?:${ACTOR})\\b`);
 // Whether question `q` asks the person for a step in any of its sentences. Unlike askedAt, a clause after
 // the ask that only says when (… before resuming) leaves it an ask; one waiting on another actor does not.
 export function asksStep(q) {
