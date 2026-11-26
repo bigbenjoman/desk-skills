@@ -118,6 +118,8 @@ t('AC3 a login with no fee says so, and its use still shows', lineOf(screen, '  
 const bare = Q.costsScreen([], { now: OCT27, costs: { exists: false, entries: [], budget: {}, logins: {} }, cache: null, use: octUse, subs, pinUsage: true });
 t('AC2 with no cost sources, each repo\'s use still shows', lineOf(bare, '  voicepa')?.trimEnd(), `  ${'voicepa'.padEnd(14)}${'$312.50'.padStart(12)}`);
 t('AC3 with no cost sources, the fee lines still show', lineOf(bare, '  codex default')?.includes('fee not set: /desk-setup costs'), true);
+const offSubs = { ...subs, logins: subs.logins.map((l) => (l.tool === 'codex' ? { ...l, rule: 'off' } : l)) };
+t('AC3 a login set off with no fee still says so', lineOf(Q.costsScreen([], { now: OCT27, costs, cache, use: octUse, subs: offSubs, pinUsage: true }), '  codex default')?.includes('fee not set: /desk-setup costs'), true);
 const none = Q.costsScreen([], { now: OCT27, costs, cache, use: null, subs: L.parseSubscriptions(''), pinUsage: true });
 t('with no use reading and no fee, Costs is as it was', /LIST PRICE|SUBSCRIPTION/.test(none), false);
 t('a use reading from another month is not shown', /LIST PRICE/.test(Q.costsScreen([], { now: OCT27, costs, cache, use: { ...octUse, period: { year: 2026, month: 9 } }, subs, pinUsage: true })), false);

@@ -1893,9 +1893,9 @@ function useOnlyLines(repos, use, width) {
 }
 // One monthly line per Claude and Codex login: its fee and plan as subscriptions.md records them, or
 // that none is, then the repos it ran this month, which share the fee. Shown once any login has a fee
-// or there is a use reading; a login set off with no fee is left out.
+// or there is a use reading. A login set off still has its line: it may still be paid for.
 function subscriptionLines(repos, { use, subs, width }) {
-  const logins = (subs?.logins ?? []).filter((l) => l.fee || l.rule !== 'off');
+  const logins = subs?.logins ?? [];
   if (!logins.length || (!use && !logins.some((l) => l.fee))) return [];
   const label = (l) => `${l.tool} ${l.name}`;
   const nw = Math.max(14, ...logins.map((l) => label(l).length + 1));
