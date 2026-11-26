@@ -2688,6 +2688,16 @@ const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, 
 t('a 30-ticket transitively held chain reads every state in well under a second', quick(Date.now() - denseStart, 0), true);
 t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
 
+// ---- issue-1491 AC4: a handoff the last pass found held by full slots shows as waiting for a slot, not ready or stalled.
+{
+  const held = { key: 'H', state: 'triaged', handoff: 'pending', handoff_stage: '4b', waits: { handoff: { since: '2026-11-26T02:06:00Z', escalate_to: 'requeue', stage: '4b', held_by: ['DS-1471', 'DS-1439'] } } };
+  const q = { tickets: { H: held } };
+  t('issue-1491 AC4 desk-q shows a handoff waiting for a slot as waiting, naming the holders as the pass does',
+    `${Q.shownState(q, held)} | ${Q.needText({ q, ctx: {}, live: true }, { t: held, k: Q.shownState(q, held) })}`, 'waiting | waiting for a slot (held by DS-1471, DS-1439)');
+  const freed = { ...held, waits: { handoff: { since: '2026-11-26T02:40:00Z', deadline: '2026-11-26T02:55:00Z', escalate_to: 'requeue', stage: '4b' } } };
+  t('issue-1491 AC4 once a slot frees it is ready again', Q.shownState({ tickets: { H: freed } }, freed), 'ready');
+}
+
 // ---- DS-1005: a park whose question asks the person for a host-side step, on a file only that step
 // makes, needs them even where the file was recorded without the person flag; a self-clearing one waits.
 const q1005 = 'DS-722\'s desk app needs its npm packages installed to make /w/DS-722/desk/ui/package-lock.json, and npm is refused to workers because §4 Package manager is none. Please run `npm install` in /w/DS-722/desk/ui (the next worker commits the lockfile and runs the tests). Not reached: the push, the draft PR.';

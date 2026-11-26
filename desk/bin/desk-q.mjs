@@ -46,7 +46,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -158,8 +158,13 @@ function stateOf(q, t, ctx, seen) {
   // unclaimed past its wait yet needs nobody either.
   if (claimOf(t) || (planFirst(t) && !planFirstDue(t, ctx.planFirstMs ?? NOBODY.planFirstMs))) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
+  if (slotWait(t)) return 'waiting';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
+
+// A pending handoff the last pass found held by full slots waits for a slot, and is not stalled.
+const slotWait = slotHeldBy;
+const slotWaitText = (t) => slotWaitWords(slotHeldBy(t));
 
 const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
@@ -3331,6 +3336,7 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'finishing') return [[FINISHING_TEXT, null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (clearsPark(t)) return [[clearsText(t), null]];
+  if (k === 'waiting' && slotWait(t)) return [[slotWaitText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
   if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
@@ -3602,8 +3608,8 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t))) {
-    const why = h ? h.text : clearsPark(t) ? clearsText(t) : '';
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t))) {
+    const why = h ? h.text : clearsPark(t) ? clearsText(t) : slotWait(t) ? slotWaitText(t) : '';
     const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
@@ -3614,6 +3620,7 @@ function moveOf(r, row, k, t, h, now) {
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
   if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
+  if (slotWait(t)) return { text: `Moves without you: ${slotWaitText(t)}. Its Stage ${t.handoff_stage ?? '?'} session starts once one frees.` };
   if (planFirstClaim(t)) {
     return { text: `Being worked in session ${planFirstClaim(t).session}, which claimed it. It is plan-first work, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it waits for a session again.` };
   }

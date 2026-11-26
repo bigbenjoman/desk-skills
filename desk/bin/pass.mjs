@@ -418,7 +418,8 @@ const { read: registryOk, sessions: live } = REGISTRY;
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
+// `waiting` is WAITING ON YOU, the person's; `waits` is what waits on a slot or the next pass, nobody's.
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], waits: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
 // The handlers every phase's actions share (pass/run-phase.mjs): a queue write and a report line.
 const PHASE_HANDLERS = {
   set: (a) => q('set', a.key, ...a.fields),
@@ -3274,7 +3275,7 @@ async function resumeKilled(t) {
   if (pre.limit) return preflightHitLimit(t, pre.cost, login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
-  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
@@ -3483,7 +3484,7 @@ async function spawnHandoff(t, pick) {
   if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
-  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
@@ -3564,7 +3565,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   // No room under the memory ceiling: no try is spent, as at the usage limit, and the next pass looks again.
   const memWhy = memHeld(key);
-  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
+  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
@@ -3627,7 +3628,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(key);
-  if (memWhy) { logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
+  if (memWhy) { logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort();
   const briefPath = join(STATE, 'briefings', `${key}.md`);
   const prompt = `Your previous run of this session ended (${ended}). Carry on with your base ${tryWhat(bf.tries[bf.tries.length - 1])} on ${BASE} from where you stopped, in your worktree ${wt}. ` +
@@ -3994,6 +3995,10 @@ const SPAWN_HANDLERS = {
   'hand-away': (a, s) => handAway(s.t, a.placement),
   start: () => {},
 };
+// Where in `spawnable` the loop stopped for want of a slot, or null; and the slots taken and workers
+// running as it began, so a stop on slots spent on tickets that did not start is told apart.
+let slotStopAt = null;
+const loopFrom = { attempts, running: runningKeys.size };
 for (const t of spawnable) {
   const [verdict] = runSteps({
     name: 'spawn loop',
@@ -4006,7 +4011,10 @@ for (const t of spawnable) {
     handlers: SPAWN_HANDLERS,
     report,
   }).slice(-1);
-  if (verdict?.type === 'skip' && verdict.stop) break;
+  if (verdict?.type === 'skip' && verdict.stop) {
+    if (!baseHold && !usageStop) slotStopAt = spawnable.indexOf(t);
+    break;
+  }
   if (verdict?.type !== 'start') continue;
   if (verdict.how === 'resume') {
     // eslint-disable-next-line no-await-in-loop
@@ -4057,7 +4065,7 @@ for (const t of spawnable) {
   const memWhy = memHeld(t.key);
   if (memWhy) {
     logPreflight(t.key, pre.cost);
-    report.waiting.push(`${t.key}: ${memWhy}; it and the tickets after it wait for the next pass`);
+    report.waits.push(`${t.key}: ${memWhy}; it and the tickets after it wait for the next pass`);
     break;
   }
 
@@ -4120,9 +4128,26 @@ for (const t of spawnable) {
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
 }
+// The pending handoffs the loop left for want of a slot, by key, each with what holds the slots: the
+// batch's own workers, and where they leave some of its number free, the cap that bound the pass's
+// slots (the machine's workers or memory reservations, or the repo's), which other repos' or batches'
+// workers fill. The deadline sweep says these wait for a slot, with no deadline until one frees.
+// Only a stop where every slot the loop took became a running worker is one: a slot spent on a ticket
+// that did not start (a failed preflight, the database down) frees again, so a handoff behind it keeps
+// its deadline. A spawn hold, low memory, maintenance or an unlocked repo cap is its own report, so it
+// makes none of these.
+const capFull = (b) => Number.isFinite(b.room) && b.room <= ticketSlots;
+const capHolder = runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency ? null
+  : capFull(MACHINE) ? (MACHINE.line === memLine ? "the machine's memory reservations" : "the machine's worker cap")
+  : capFull(REPO) ? "the repo's worker cap" : null;
+const slotHolders = [...runningKeys, ...(baseFixLive ? ['the base conflict fix'] : []), ...(capHolder ? [capHolder] : [])];
+const slotsAllStarted = runningKeys.size - loopFrom.running >= attempts - loopFrom.attempts;
+const slotsHeld = slotStopAt != null && slotsAllStarted && (capHolder != null || runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency);
+const SLOT_HELD = !slotsHeld || spawnHeld || lowMemory || MAINT.hold || repoUnlocked ? {}
+  : Object.fromEntries(spawnable.slice(slotStopAt).filter(toHandoff).map((t) => [t.key, slotHolders]));
 const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
 const lockQueueHeldText = LOCK_HELD?.line ?? null;
-if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waiting'].push(LOCK_HELD.line);
+if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waits'].push(LOCK_HELD.line);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
 // moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
 if (!DRY) {
@@ -6000,7 +6025,7 @@ runPhase({
 // ---- deadlines -----------------------------------------------------------
 // Each wait a ticket is in, read once this pass's PR reads, undrafts and spawns are made, with its
 // deadline; one past it is escalated once (pass/deadlines.mjs).
-runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
+runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY, slotHeld: SLOT_HELD }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
 
 // The red base as the batch's record (pass/base-gate.mjs decideBaseRed): its one line, the report's RED
 // BASE, only on the pass that records the spell, and its escalation once past its deadline. It is cleared
