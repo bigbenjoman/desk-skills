@@ -219,7 +219,7 @@ t('#1484 AC1 the own searches ask for the §1 account id, a priority tier each',
   `${OWN} AND cf[10300] = "P0" ORDER BY created DESC`,
   `${OWN} AND cf[10300] = "P1" ORDER BY created DESC`,
   `${OWN} AND cf[10300] = "P2" ORDER BY created DESC`,
-  `${OWN} AND (cf[10300] is EMPTY OR cf[10300] not in ("P0", "P1", "P2")) ORDER BY created DESC`,
+  `${OWN} AND (cf[10300] is EMPTY OR cf[10300] not in ("P0", "P1", "P2")) ORDER BY cf[10300] ASC, created DESC`,
 ]);
 t('#1484 AC1 with no account id, the signed-in Jira user', ownAssignee(null), 'assignee = currentUser()');
 {
