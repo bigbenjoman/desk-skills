@@ -3983,8 +3983,10 @@ const SPAWN_HANDLERS = {
   'hand-away': (a, s) => handAway(s.t, a.placement),
   start: () => {},
 };
-// Where in `spawnable` the loop stopped for want of a slot, or null.
+// Where in `spawnable` the loop stopped for want of a slot, or null; and the slots taken and workers
+// running as it began, so a stop on slots spent on tickets that did not start is told apart.
 let slotStopAt = null;
+const loopFrom = { attempts, running: runningKeys.size };
 for (const t of spawnable) {
   const [verdict] = runSteps({
     name: 'spawn loop',
@@ -4115,13 +4117,21 @@ for (const t of spawnable) {
   actedOn(t);
 }
 // The pending handoffs the loop left for want of a slot, by key, each with what holds the slots: the
-// batch's own workers, and where they leave some of its number free, the machine's or the repo's cap,
-// which other repos' or batches' workers fill. The deadline sweep says these wait for a slot, with no
-// deadline until one frees. A spawn hold, low memory, maintenance or an unlocked repo cap is its own
-// report, so it makes none of these.
-const slotHolders = [...runningKeys, ...(baseFixLive ? ['the base conflict fix'] : []),
-  ...(runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency ? [] : [MACHINE.room <= REPO.room ? "the machine's worker cap" : "the repo's worker cap"])];
-const SLOT_HELD = slotStopAt == null || spawnHeld || lowMemory || MAINT.hold || repoUnlocked ? {}
+// batch's own workers, and where they leave some of its number free, the cap that bound the pass's
+// slots (the machine's workers or memory reservations, or the repo's), which other repos' or batches'
+// workers fill. The deadline sweep says these wait for a slot, with no deadline until one frees.
+// Only a stop where every slot the loop took became a running worker is one: a slot spent on a ticket
+// that did not start (a failed preflight, the database down) frees again, so a handoff behind it keeps
+// its deadline. A spawn hold, low memory, maintenance or an unlocked repo cap is its own report, so it
+// makes none of these.
+const capFull = (b) => Number.isFinite(b.room) && b.room <= ticketSlots;
+const capHolder = runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency ? null
+  : capFull(MACHINE) ? (MACHINE.line === memLine ? "the machine's memory reservations" : "the machine's worker cap")
+  : capFull(REPO) ? "the repo's worker cap" : null;
+const slotHolders = [...runningKeys, ...(baseFixLive ? ['the base conflict fix'] : []), ...(capHolder ? [capHolder] : [])];
+const slotsAllStarted = runningKeys.size - loopFrom.running >= attempts - loopFrom.attempts;
+const slotsHeld = slotStopAt != null && slotsAllStarted && (capHolder != null || runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency);
+const SLOT_HELD = !slotsHeld || spawnHeld || lowMemory || MAINT.hold || repoUnlocked ? {}
   : Object.fromEntries(spawnable.slice(slotStopAt).filter(toHandoff).map((t) => [t.key, slotHolders]));
 const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
 const lockQueueHeldText = LOCK_HELD?.line ?? null;

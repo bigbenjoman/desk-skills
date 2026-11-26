@@ -361,7 +361,7 @@ forever) and **no preview build starts without its team's preview-build lease** 
   `NO MERGE ANSWER`), or with neither acting on it, twice that limit after the pass first saw it; a handoff
   whose next session has not started 15 minutes after it is under WAITING ON YOU as `HANDOFF NOT STARTED`,
   with the requeue to run. While no slot is free to it (the batch's own all held and none to borrow, or
-  the machine's or the repo's worker cap full), a pending handoff is instead listed under `waiting,
+  the machine's or the repo's worker cap, or the machine's memory reservations, full), a pending handoff is instead listed under `waiting,
   nothing for you to do` as `waiting for a slot (held by <keys>)`, naming the cap where it is the limit,
   as desk-q shows it, and its 15 minutes start at the first pass that finds a slot free. That list also
   carries what waits only for the next pass (the test-lock queue's `held for the next pass`, a memory
