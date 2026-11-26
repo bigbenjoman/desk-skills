@@ -27,6 +27,27 @@ export const MODEL_PRICES = {
 // The family a model id belongs to (`claude-opus-5-5` is `opus`), or null for one MODEL_PRICES lacks.
 export const modelFamily = (model) => Object.keys(MODEL_PRICES).find((f) => String(model ?? '').toLowerCase().includes(f)) ?? null;
 
+// OpenAI's API list prices for the models Codex runs, in USD per million tokens, standard tier:
+// uncached input, a cached input read, and output (reasoning included). `over` prices a request whose
+// input is past `above` tokens. From https://developers.openai.com/api/docs/pricing, read 2026-11-26.
+const LONG = 272000;
+export const CODEX_PRICES = {
+  'gpt-6.2-astra': { input: 8, read: 0.4, output: 40, over: { above: LONG, input: 16, read: 0.8, output: 60 } },
+  'gpt-6.2-sol': { input: 2, read: 0.1, output: 10, over: { above: LONG, input: 4, read: 0.2, output: 15 } },
+  'gpt-6.1-sol': { input: 2, read: 0.1, output: 10, over: { above: LONG, input: 4, read: 0.2, output: 15 } },
+  'gpt-6.1-terra': { input: 1, read: 0.05, output: 5, over: { above: LONG, input: 2, read: 0.1, output: 7.5 } },
+  'gpt-6-astra': { input: 10, read: 1, output: 50, over: { above: LONG, input: 20, read: 2, output: 75 } },
+  'gpt-6-sol': { input: 2, read: 0.2, output: 10, over: { above: LONG, input: 4, read: 0.4, output: 15 } },
+  'gpt-6-luna': { input: 0.1, read: 0.01, output: 0.5, over: { above: LONG, input: 0.2, read: 0.02, output: 0.75 } },
+};
+// The CODEX_PRICES entry a Codex model id is priced at: the longest id it starts with (a dated
+// `gpt-6.1-sol-2026-09-29` is `gpt-6.1-sol`), or null for a model with no list price here.
+export function codexPrice(model) {
+  const m = String(model ?? '').toLowerCase();
+  const id = Object.keys(CODEX_PRICES).filter((k) => m === k || m.startsWith(`${k}-`)).sort((a, b) => b.length - a.length)[0];
+  return id ? CODEX_PRICES[id] : null;
+}
+
 // pass.mjs writes one of these into the ticket's log before each spawn: the permissions preflight is
 // a claude -p call of its own, outside the worker's session, so its result event is not in the log.
 // A null figure is one the preflight did not report. Its time is `at`, not `timestamp`, which

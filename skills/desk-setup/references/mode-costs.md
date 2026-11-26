@@ -1,8 +1,9 @@
 # desk-setup costs: where each repo is billed
 
 Read for `/desk-setup costs`, which runs only this. The Modes table in `../SKILL.md` names this file
-for it. It reads and writes one file, `~/.config/desk/costs.md`, beside the machine profile and
-shared by every repo, and changes nothing else: no repo config, no settings.
+for it. It writes `~/.config/desk/costs.md`, beside the machine profile and shared by every repo,
+and the Fees table of `~/.config/desk/subscriptions.md` (step 4), and changes nothing else: no repo
+config, no settings.
 
 One GitHub account, Vercel team or AWS profile often bills several repos, and some bills belong to
 no repo in desk. The file records, for each name, its GitHub repo and account, its Vercel team (id,
@@ -51,6 +52,20 @@ AWS config), never a token.
 
    It overwrites the file, keeping the previous copy as `costs.md.bak`. A credit is stored with the
    day it was entered. **A no, or no answer, writes nothing**: say that no cost sources were saved.
+
+4. **Then each Claude and Codex subscription's monthly fee.** `desk-env logins list` names the
+   logins. In one `AskUserQuestion` call, ask for each login its plan and what it costs a month in
+   dollars. Never guess either one: a login nobody gave a fee for keeps none, and desk-q Costs says
+   `fee not set: /desk-setup costs` on its line. Write each answer as it is given:
+
+   ```bash
+   desk-env logins fee claude default "Max 20x" 200
+   ```
+
+   It goes in the Fees table of `~/.config/desk/subscriptions.md`, keeping the previous copy as
+   `subscriptions.md.bak`. `none` in place of the fee clears one. desk-q Costs shows each fee as a
+   monthly line per login, with the repos it is shared across, beside each repo's Claude and Codex use
+   at API list prices (a list-price equivalent, not a bill).
 
 **Neon is filled in by hand.** Nothing detects it: the user adds each name's row to the file's
 `## Neon` section from each org's Billing page (org id, plan, monthly fee, project ids, and the price

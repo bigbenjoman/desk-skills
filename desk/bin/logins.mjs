@@ -92,14 +92,17 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 
-// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A
+// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], fees: [{ tool, name, plan, usd }],
+// errors: ["line <n>: <why>"] }. A
 // malformed row is named and left out; a tool with no good row keeps its default login, except Claude in
 // a file with an Account column (`accounts`), which stays in multi-account mode with no login rather
 // than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder) names, so
-// setting a rule on one puts back its own folder.
+// setting a rule on one puts back its own folder. `fees` are the Fees table's rows (Tool, Name, Plan,
+// Monthly fee (USD)): each login's plan and what it costs a month, as the person entered them.
 export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
+  const fees = [];
   const errors = [];
   let header = null;
   let accounts = false;
@@ -114,6 +117,14 @@ export function parseSubscriptions(text, { exists = true } = {}) {
       const [tool, name, folder] = c;
       if (c.length !== 3 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name and a folder`);
       else removed.push(removedLogin(tool, name, folder));
+      return;
+    }
+    if (header.join('|') === FEE_HEADER) {
+      const [tool, name, plan, feeText] = c;
+      const usd = Number(String(feeText ?? '').replace(/^\$/, ''));
+      if (c.length !== 4 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !plan || !String(feeText ?? '').trim() || !(usd >= 0)) errors.push(`${at}: a fee wants a tool (claude or codex), a login's name, its plan and a monthly fee in dollars`);
+      else if (fees.some((f) => f.tool === tool && f.name === name)) errors.push(`${at}: ${tool} ${name} has a fee already`);
+      else fees.push({ tool, name, plan, usd });
       return;
     }
     const pinned = header.join('|') === 'tool|name|folder|account|rule';
@@ -141,8 +152,9 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   });
   // A file with pins has no ~/.claude login unless it lists one.
   for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool) && !(tool === 'claude' && multiAccount({ accounts, logins }))) logins.push(defaultLogin(tool));
-  return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
+  return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), fees, errors };
 }
+const FEE_HEADER = 'tool|name|plan|monthly fee (usd)';
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
 const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
 
@@ -177,7 +189,7 @@ export const migrateSubscriptions = (subs) => ({ ...subs, logins: migrateLogins(
 export const toolDefault = (subs, tool) => defaultOf(migrateLogins(subs.logins), tool);
 
 const cell = (v) => `\`${String(v).replace(/\|/g, '\\|')}\``;
-export function renderSubscriptions(logins, removed = []) {
+export function renderSubscriptions(logins, removed = [], fees = []) {
   const pinned = logins.some((l) => l.account);
   return [
     '# Subscriptions',
@@ -204,8 +216,39 @@ export function renderSubscriptions(logins, removed = []) {
       ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.name)} | ${cell(r.folder)} |`),
       '',
     ] : []),
+    ...(fees.length ? [
+      '## Fees',
+      '',
+      'What each login\'s subscription costs a month, as entered in `/desk-setup costs`: desk-q Costs',
+      'shows it as a monthly line per login. desk never guesses a fee.',
+      '',
+      '| Tool | Name | Plan | Monthly fee (USD) |',
+      '|---|---|---|---|',
+      ...sortLogins(fees).map((f) => `| ${cell(f.tool)} | ${cell(f.name)} | ${cell(f.plan)} | ${cell(f.usd)} |`),
+      '',
+    ] : []),
   ].join('\n');
 }
+
+// The file's text with one login's plan and monthly fee set, or cleared with `usd` `none`. The login
+// is one desk knows for the tool: listed, its default, or a folder found under its logins folder.
+//   -> { text, fee: { tool, name, plan, usd } | null }, or throws with the reason
+export function setFee(subs, { tool, name, plan, usd }) {
+  if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
+  if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  const names = toolLogins(tool, subs).map((l) => l.name);
+  if (!names.includes(name)) throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}`);
+  const clear = String(usd ?? '').trim().toLowerCase() === 'none';
+  const n = Number(String(usd ?? '').trim().replace(/^\$/, ''));
+  if (!clear && (!String(usd ?? '').trim() || !(n >= 0))) throw new Error(`logins: the fee is dollars a month, or none to clear it, not "${usd}"`);
+  const p = String(plan ?? '').trim();
+  if (!clear && (!p || p.includes('`'))) throw new Error('logins: the fee needs the plan it is for, e.g. "Max 20x"');
+  const fee = clear ? null : { tool, name, plan: p, usd: n };
+  const fees = [...(subs.fees ?? []).filter((f) => !(f.tool === tool && f.name === name)), ...(fee ? [fee] : [])];
+  return { text: renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed, fees), fee };
+}
+// The fee the file records for a login, or null.
+export const feeOf = (subs, l) => (subs?.fees ?? []).find((f) => f.tool === l.tool && f.name === l.name) ?? null;
 
 // ---- the account check -----------------------------------------------------------------------
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
@@ -442,7 +485,7 @@ function writeRule(subs, { tool, name, rule, check, repos = () => [] }) {
   const logins = listed
     ? subs.logins.map((l) => (l.tool !== tool ? l : l.name === target.name ? changed : demoted(l)))
     : [...subs.logins.map((l) => (l.tool === tool ? demoted(l) : l)), changed];
-  return { text: renderSubscriptions(logins, subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir))), login: changed };
+  return { text: renderSubscriptions(logins, subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)), subs.fees), login: changed };
 }
 // The tool's logins that setting `name` to `rule` turns from default to unused: setting one in
 // rotation, where the tool's rows say default and unused, makes it the tool's one default. An undo
@@ -556,7 +599,7 @@ export function removeLogin(subs, { tool, name, check, repos = () => [] }) {
     throw new Error(`logins: claude ${name} is the only Claude account desk has, and removing it would put desk back on ${tilde(TOOL.claude.dir())}: add another account first, or sign this one in again (${signInCommand(target)})`);
   }
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
-  return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
+  return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }], subs.fees), login: target };
 }
 
 // ---- pinning a folder to its account ---------------------------------------------------------
@@ -606,7 +649,7 @@ export function pinLogin(subs, { tool, name, check }) {
   const logins = listed ? kept.map((l) => (l.dir === changed.dir ? changed : l)) : [...kept, changed];
   const removed = removedFrom({ removed: subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)) }, defaultRows(subs));
   const kept2 = defaultKept(subs, logins, ownLive(checked));
-  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir) };
+  return { text: renderSubscriptions(kept2, removed, subs.fees), login: kept2.find((l) => l.dir === changed.dir) };
 }
 
 // True when the file exists, has no pins, and lists or finds a Claude folder under ~/.claude-logins that
@@ -638,7 +681,7 @@ export function migratePins(subs, check) {
   const found = claude.filter((l) => l.configDir && !subs.logins.some((o) => o.dir === l.dir)).map((l) => pin(foundLogin('claude', l.dir, subs)));
   const live = claude.find((l) => !l.configDir)?.liveEmail?.toLowerCase() ?? null;
   const rows = own.length ? own : [defaultLogin('claude')];
-  return { text: renderSubscriptions(defaultKept(subs, [...listed, ...found], live), removedFrom(subs, rows)), hint: live && !pins.has(live) ? live : null };
+  return { text: renderSubscriptions(defaultKept(subs, [...listed, ...found], live), removedFrom(subs, rows), subs.fees), hint: live && !pins.has(live) ? live : null };
 }
 
 // ---- what the person is shown ----------------------------------------------------------------

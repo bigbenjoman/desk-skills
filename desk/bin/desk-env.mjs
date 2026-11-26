@@ -158,6 +158,9 @@
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
 //                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs logins fee <claude|codex> <name> <plan> <usd|none>
+//                                             record one login's plan and monthly fee in the file's Fees
+//                                             table (only after the user gives them), or clear it with none
 //   node desk-env.mjs preview-slot [--wait <s>] <label>
 //                                             take the preview-build slot for §4 Vercel's team before a push
 //                                             that starts a preview build, waiting up to <s> (default 600)
@@ -2250,7 +2253,7 @@ export const PATH_VARS = Object.keys(PATHS);
 // or the lever freeze: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
-export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove', 'subscription set', 'levers freeze', 'levers thaw'];
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove', 'logins fee', 'subscription set', 'levers freeze', 'levers thaw'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -3096,7 +3099,7 @@ if (isMain) {
           const was = subs;
           subs = L.migrateSubscriptions(was);
           if (L.needsMigration(was) && !was.errors.length && process.env.DESK_AUTOPILOT_WORKER !== '1') {
-            writeWithBackup(path, L.renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed));
+            writeWithBackup(path, L.renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed, subs.fees));
             console.error(`${path}: now records one default per tool and every other login as unused; the previous copy is ${path}.bak`);
           }
           if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
@@ -3139,6 +3142,13 @@ if (isMain) {
           console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${L.ruleWord(r.login)}`);
           break;
         }
+        if (sub === 'fee' && rest.length === 4) {
+          const [tool, name, plan, usd] = rest;
+          const r = L.setFee(subs, { tool, name, plan, usd });
+          console.log(writeWithBackup(path, r.text));
+          console.log(r.fee ? `${tool} ${name}: ${r.fee.plan}, $${r.fee.usd.toFixed(2)} a month` : `${tool} ${name}: fee cleared`);
+          break;
+        }
         if (sub === 'migrate' && rest.length === 0) {
           if (!L.needsPinMigration(subs)) { console.log('nothing to migrate'); break; }
           const r = L.migratePins(subs, () => L.checkLogins(subs));
@@ -3147,7 +3157,7 @@ if (isMain) {
           if (r.hint) console.log(`add ${r.hint} with a in view 6`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | migrate`);
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | fee <claude|codex> <name> <plan> <usd|none> | migrate`);
         process.exit(2);
         break;
       }

@@ -71,7 +71,8 @@ import { holdOn } from './call-login.mjs';
 import { codexReading } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
-  multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
+  multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault, toolLogins, feeOf, TOOLS } from './logins.mjs';
+import { monthSoFar, repoFolders, useByRepo } from './list-price.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1815,28 +1816,90 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
   };
 }
 
+// ---- Subscriptions and list-price use on Costs --------------------------------------------------
+export const FEE_NOT_SET = 'fee not set: /desk-setup costs';
+export const LIST_PRICE_NOTE = 'What this month\'s Claude and Codex sessions in each repo, workers and interactive, would cost at API list prices. It is a list-price equivalent, not a bill: the subscriptions pay for it.';
+const TOOL_LABEL = { claude: 'Claude', codex: 'Codex' };
+// Each repo's Claude and Codex use this month at list price (list-price.mjs).   -> { [slug]: { usd, unpriced, … } }
+const listPriceUse = (now) => useByRepo({ repos: repoFolders(), ...monthSoFar(now) });
+// The logins Costs gives a fee line: each one desk runs or may run work on, and any with a fee.
+const feeLogins = (subs) => TOOLS.flatMap((t) => toolLogins(t, subs))
+  .filter((l) => feeOf(subs, l) || (l.source !== 'found' && l.rule != null && l.rule !== 'off'));
+// The repos a login's fee is shared across: a Claude login's are those whose Subscription row resolves
+// to it; the Codex default runs every repo's Codex calls.
+function feeRepos(subs, l, slugs) {
+  if (l.tool === 'codex') return toolDefault(subs, 'codex')?.dir === l.dir ? slugs : [];
+  return repoSubscriptions({ repoSubscription }, subs).filter((s) => s.login?.dir === l.dir).map((s) => s.slug).filter((s) => slugs.includes(s));
+}
+// Each fee line as data.   -> [{ tool, name, plan, usd, repos }]
+const feeRows = (subs, slugs) => feeLogins(subs).map((l) => {
+  const f = feeOf(subs, l);
+  return { tool: l.tool, name: l.name, plan: f?.plan ?? null, usd: f?.usd ?? null, repos: feeRepos(subs, l, slugs) };
+});
+
+// The SUBSCRIPTIONS block under Costs: a line per login with its monthly fee, its plan and the repos it
+// is shared across, or that no fee is set; their total; then the list-price use of any repo with no
+// row of its own above. Nothing where there is no subscriptions file and no use to show.
+function subscriptionLines(repos, { subs, use, rowed = new Set(), width = null }) {
+  const unrowed = Object.entries(use).filter(([slug, u]) => !rowed.has(slug) && u.usd > 0);
+  if (!subs.exists && !unrowed.length) return [];
+  const slugs = repos.map((r) => r.id);
+  const shown = Object.fromEntries(slugs.map((s, i) => [s, shownNames(slugs)[i]]));
+  const nameOf = (s) => shown[s] ?? shortName(s);
+  const fees = feeRows(subs, slugs);
+  const label = (f) => `${TOOL_LABEL[f.tool]} ${f.name}`;
+  const lw = Math.max(16, ...fees.map((f) => label(f).length + 1));
+  const set = fees.filter((f) => f.usd != null);
+  const sum = set.reduce((a, f) => a + Math.round(f.usd * 100), 0) / 100;
+  const aw = Math.max(10, usd(sum).length + 3);
+  const across = (f) => (!f.repos.length ? 'no repo runs on it' : `${f.repos.length > 1 ? 'shared by' : 'for'} ${andList(f.repos.map(nameOf))}`);
+  const lines = fees.map((f) => segLine(fitRuns([[`  ${pad(label(f), lw)}`, null], f.usd == null ? [rpad('–', aw), GREY] : [rpad(usd(f.usd), aw), null],
+    ['  ', null], f.usd == null ? [FEE_NOT_SET, WARN] : [f.plan, null], [`, ${across(f)}`, GREY]], width)));
+  const left = fees.length - set.length;
+  const total = set.length ? [segLine(fitRuns([[`  ${pad('total', lw)}`, GREY], [rpad(usd(sum), aw), BOLD], [' a month', GREY],
+    ...(left ? [['  ', null], [`leaves out ${left} login${left === 1 ? '' : 's'} with no fee`, GREY]] : [])], width))] : [];
+  const other = unrowed.length ? ['', segLine(fitRuns([['  list price, repos with no row above: ', GREY],
+    ...unrowed.flatMap(([slug, u], i) => [...(i ? [[' · ', GREY]] : []), [`${nameOf(slug)} `, GREY], [usd(u.usd), null]])], width))] : [];
+  return ['', bold(`  ${pad('SUBSCRIPTION', lw)}${rpad('A MONTH', aw)}`), ...lines, ...total, ...other];
+}
+
 // Every name's charge this month, most first, then shared and the total, under a line with the total
 // by supplier. A name the cost sources list with no figure reads –. A row ends in what its figure
 // leaves out, the total in how many figures were not read today, and a note under them says each.
 // With a `width`, a line too wide is cut at a whole field (fitRuns).
-function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
-  const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
-  if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
+// Where any repo has Claude or Codex use this month, a LIST PRICE column gives each row's at API list
+// prices. Under them, a line per subscription with its monthly fee (subscriptionLines).
+function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null,
+  subs = readSubscriptions(subscriptionsPath()), use = listPriceUse(now) } = {}) {
+  const usage = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
+  const slugOf = (name) => costs.entries.find((e) => e.name === name && e.repo)?.repo ?? null;
+  // With no rows, every repo's use is listed under the subscriptions.
+  const bare = [...subscriptionLines(repos, { subs, use, width }), ...usage];
+  if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot: bare };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
   const unread = unreadSources({ cache: fc, costs });
-  if (!c) return { head: noFigureHead(unread, costs, fc, width), rows: [], foot };
+  if (!c) return { head: noFigureHead(unread, costs, fc, width), rows: [], foot: bare };
+  const foot = [...subscriptionLines(repos, { subs, use, rowed: new Set(c.names.map((x) => slugOf(x.name)).filter(Boolean)), width }), ...usage];
   const charged = segLine(fitRuns([['charged ', GREY], ...chargedSegs(c)], width));
   const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
   const aw = Math.max(10, usd(c.total).length + 3);
+  // The LIST PRICE column, only once some row's repo has use this month.
+  const useOf = (name) => (name === 'shared' ? null : use[slugOf(name)] ?? null);
+  const showUse = c.names.some((x) => useOf(x.name)?.usd > 0);
+  const useSum = c.names.reduce((a, x) => a + Math.round((useOf(x.name)?.usd ?? 0) * 100), 0) / 100;
+  const lw = Math.max(13, usd(useSum).length + 3);
+  const useCell = (x) => (!showUse ? [] : x.name === 'shared' ? [[rpad('', lw), null]]
+    : useOf(x.name)?.usd > 0 ? [[rpad(usd(useOf(x.name).usd), lw), null]] : [[rpad('–', lw), GREY]]);
+  const unpriced = c.names.reduce((a, x) => a + (useOf(x.name)?.unpriced ?? 0), 0);
   const suppliersOf = (name) => SUPPLIERS.filter((s) => costs.entries.some((e) => e.name === name && e.supplier === s));
   const repoless = new Set(costs.entries.filter((e) => !costs.entries.some((o) => o.name === e.name && o.repo)).map((e) => e.name));
   const sharedTag = c.sharedParts.length ? [c.sharedParts.map((p) => `${SUPPLIER_LABEL[p.supplier]} ${p.label} ${usd(p.total)}`).join(' · '), GREY] : null;
   const rows = lines.map((x) => {
     const tag = x.name === 'shared' ? sharedTag : costTag(x, { now, suppliersOf, repoless });
     const open = x.name === 'shared' ? null : { kind: 'costs', ...costPlace(repos, costs, x.name) };
-    const r = segRow(`cost ${x.name}`, fitRuns([[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], width), open);
+    const r = segRow(`cost ${x.name}`, fitRuns([[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...useCell(x), ...(tag ? [['  ', null], tag] : [])], width), open);
     return { ...r, bill: x.name === 'shared' ? null : billOf(x, { costs }) };
   });
   const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
@@ -1849,9 +1912,11 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
       : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
     ...unreadNameNotes(unread, { said: (name, s) => c.names.some((x) => x.name === name && x.cantRead?.supplier === s) }),
+    ...(showUse ? [{ tag: 'list price', sgr: GREY, text: [[`${LIST_PRICE_NOTE}${unpriced ? ` It leaves out ${unpriced} request${unpriced === 1 ? '' : 's'} on a model with no list price.` : ''}`, null]] }] : []),
   ];
-  return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
-    foot: [segLine(fitRuns([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes], width)),...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
+  return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}${showUse ? rpad('LIST PRICE', lw) : ''}`)], rows,
+    foot: [segLine(fitRuns([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...(showUse ? [[rpad(usd(useSum), lw), BOLD]] : []), ...includes], width)),
+      ...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
 }
 
 export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
@@ -4243,13 +4308,20 @@ export function usageViewJson(repos, { now = Date.now() } = {}) {
 }
 
 // This month's charges by name, or one name's by supplier, from the cost cache.
+// The whole view also gives each login's fee (`subscriptions`) and each repo's list-price use this
+// month by slug (`list_price`).
 export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {
   const c = costs.exists && costs.entries.length ? chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] }) : null;
   const inputs = { costs: SUPPLIERS.filter((s) => cache?.[s]).map((s) => ({ supplier: s, ...inputAge(cache[s].at, now) })) };
-  const parts = v.name !== undefined ? supplierParts(repos, v.name, { now, costs, cache, label: v.label ?? v.name }) : costsParts(repos, { now, costs, cache });
-  const charges = !c ? null : v.name !== undefined ? { period: c.period, name: c.names.find((x) => x.name === v.name) ?? null }
-    : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
-  return envelope('costs', now, inputs, { name: v.name ?? null, charges }, parts);
+  if (v.name !== undefined) {
+    const parts = supplierParts(repos, v.name, { now, costs, cache, label: v.label ?? v.name });
+    return envelope('costs', now, inputs, { name: v.name, charges: c && { period: c.period, name: c.names.find((x) => x.name === v.name) ?? null } }, parts);
+  }
+  const subs = readSubscriptions(subscriptionsPath());
+  const use = listPriceUse(now);
+  const parts = costsParts(repos, { now, costs, cache, subs, use });
+  const charges = c && { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
+  return envelope('costs', now, inputs, { name: null, charges, subscriptions: feeRows(subs, repos.map((r) => r.id)), list_price: { ...monthSoFar(now), repos: use } }, parts);
 }
 
 const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';
