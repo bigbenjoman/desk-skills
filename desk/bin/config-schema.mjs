@@ -47,6 +47,15 @@ export function testSigninOf(item) {
   return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(cmd) ? { dir, email: cmd } : null;
 }
 
+// A §4 Test sign-in permissions item, `<app dir>: <PERMISSION>[, <PERMISSION>…]` or the names alone for
+// the root: what the app's §4 Test sign-in user must hold in its Clerk `public_metadata.services`.
+// -> { dir, perms }, or null where a name is not letters, digits, `_`, `.` or `-`.
+export function signinPermissionsOf(item) {
+  const { dir, cmd } = parseCommandItem(item);
+  const perms = cmd.split(/\s*,\s*/);
+  return perms.every((p) => /^[A-Za-z0-9_.-]+$/.test(p)) ? { dir, perms } : null;
+}
+
 // A §4 Preview database item, `<step>: <command>`: one step of the recipe that gives a PR adding a
 // migration a database branch and preview of its own (preview-db.mjs). A command names the PR's
 // branch, its database branch and its number only as {branch}, {db} and {pr}; a shell `${…}` is its own.
@@ -513,6 +522,7 @@ export const TYPES = Object.freeze({
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
+  'signin-permissions': matching('`[<app dir>: ]<PERMISSION>[, <PERMISSION>…]`', (s) => signinPermissionsOf(s) != null, signinPermissionsOf),
   'preview-db': matching(`\`<step>: <command>\`, the step one of ${PREVIEW_DB_STEPS.join(', ')} and its placeholders only ${PREVIEW_DB_PLACEHOLDERS.map((n) => `{${n}}`).join(', ')}`,
     (s) => previewDbStepOf(s) != null, previewDbStepOf),
   'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
@@ -757,6 +767,7 @@ export const ROWS = Object.freeze([
   l('pr-description-checks', '4', 'PR-description checks', 'command', ['node scripts/check-pr-body.mjs']),
   l('env-files', '4', 'Env files', 'text', ['frontend/.env.local', 'portal/.env.local']),
   l('test-signin', '4', 'Test sign-in', 'test-signin', ['dev-user@example.test', 'apps/portal: portal-dev@example.test']),
+  l('test-signin-permissions', '4', 'Test sign-in permissions', 'signin-permissions', ['apps/portal/apps/web: HELP_ARTICLES, ADMIN'], dflt(['none'])),
   // §4 Environments and services
   v('local-db', '4', 'Local database', 'text', 'postgres container voicepa-postgres-1'),
   l('db-url-var', '4', 'Database URL variable', 'text', ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']),

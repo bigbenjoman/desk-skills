@@ -116,7 +116,9 @@
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
 //                                             its primary-checkout directory holds (NOENV), and a Test sign-in
-//                                             user for an app it runs (NOSIGNIN); exit 1 if any
+//                                             user for an app it runs (NOSIGNIN); and, read from Clerk, each
+//                                             §4 Test sign-in permissions name that user lacks (NOPERM), or
+//                                             why it could not be read (PERMREAD); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -196,6 +198,7 @@ import {
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
+  signinPermissionsOf,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -378,7 +381,7 @@ const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
 
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
 // The result is shared between callers: read it, never change it.
-function parseConfigFile(path) {
+export function parseConfigFile(path) {
   let st = null;
   if (path) try { st = statSync(path, { bigint: true }); } catch { /* missing: parsed below as absent */ }
   if (!st) { parsedFiles.delete(path); return parseConfigText(path, null); }
@@ -2096,13 +2099,58 @@ export function appSetupGaps(parsed, root, dir) {
 }
 const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
+// The §4 Test sign-in permissions one app names that its §4 Test sign-in user lacks in Clerk, read
+// with the CLERK_SECRET_KEY of the app's first §4 Env files item in the primary checkout (`root`) that
+// holds one, a development key (`sk_test_`) only. An app naming no permissions, or with no Test sign-in
+// item, is no finding and makes no Clerk call. `fetch` is the one Clerk is called through.
+// -> [{ row: 'Test sign-in permissions', dir, email, need, lacks: [perm] } | { …, unread: why }]
+export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.fetch } = {}) {
+  const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+  const named = configValuesIn(parsed, 'test-signin-permissions');
+  if (!named || isNone(named)) return [];
+  const need = [...new Set(named.map(signinPermissionsOf).filter((x) => x?.dir === app).flatMap((x) => x.perms))];
+  const signin = configValuesIn(parsed, 'test-signin');
+  const email = !need.length || !signin || isNone(signin) ? null : signin.map((x) => parseCommandItem(x)).find((x) => x.dir === app)?.cmd;
+  if (!email) return [];
+  const gap = (more) => [{ row: 'Test sign-in permissions', dir: app, email, need, ...more }];
+  const env = configValuesIn(parsed, 'env-files');
+  const under = (f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`));
+  let envFile = null, key = null;
+  for (const f of env && !isNone(env) ? env.filter(under) : []) {
+    let text = '';
+    try { text = readFileSync(join(root, f), 'utf8'); } catch { continue; }
+    const m = /^[ \t]*(?:export[ \t]+)?CLERK_SECRET_KEY[ \t]*=[ \t]*["']?([^"'\s#]*)/m.exec(text);
+    if (m) { envFile = f; key = m[1]; break; }
+  }
+  if (!envFile) return gap({ unread: `no §4 Env files item under ${app} holds a CLERK_SECRET_KEY in the primary checkout` });
+  if (!key.startsWith('sk_test_')) return gap({ unread: `${envFile}'s CLERK_SECRET_KEY is not a development instance's (sk_test_), so desk read nothing` });
+  let users;
+  try {
+    const r = await fetch(`https://api.clerk.com/v1/users?email_address=${encodeURIComponent(email)}`, {
+      headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) return gap({ unread: `Clerk answered ${r.status}` });
+    users = await r.json();
+  } catch (e) { return gap({ unread: `Clerk could not be reached: ${String(e?.message ?? e).split('\n')[0]}` }); }
+  if (!Array.isArray(users) || !users.length) return gap({ unread: 'Clerk has no user with that email' });
+  const services = users[0]?.public_metadata?.services;
+  const held = new Set(Array.isArray(services) ? services.map(String)
+    : services && typeof services === 'object' ? Object.keys(services).filter((k) => services[k]) : []);
+  const lacks = need.filter((p) => !held.has(p));
+  return lacks.length ? gap({ lacks }) : [];
+}
+
 export function appGapLines(gaps, dir) {
   const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
   const lines = gaps.map((g) => (g.row === 'Dev server'
     ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
     : g.row === 'Env files'
       ? `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`
-      : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
+      : g.row === 'Test sign-in permissions'
+        ? (g.lacks
+          ? `NOPERM   §4 Test sign-in user ${g.email} for ${g.dir} lacks ${g.lacks.join(', ')} in its Clerk public_metadata.services, which §4 Test sign-in permissions names: a worker signed in as it cannot see the pages that need ${g.lacks.length > 1 ? 'them' : 'it'}`
+          : `PERMREAD §4 Test sign-in user ${g.email} for ${g.dir}: could not read its Clerk permissions (${g.unread}), so whether it holds ${g.need.join(', ')} is unknown`)
+        : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
   return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
@@ -2883,7 +2931,7 @@ if (isMain) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
           const root = configRepoRoot(parsed) || process.cwd();
-          const gaps = appSetupGaps(parsed, root, dir);
+          const gaps = [...appSetupGaps(parsed, root, dir), ...await appPermissionGaps(parsed, root, dir)];
           for (const l of appGapLines(gaps, dir)) console.log(l);
           process.exitCode = gaps.length ? 1 : 0;
           break;
