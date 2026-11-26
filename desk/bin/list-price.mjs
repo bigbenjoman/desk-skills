@@ -6,17 +6,16 @@
 // request, priced at worker-cost.mjs CODEX_PRICES by the model the session's last turn_context names.
 // A session is the repo's whose root or worktrees folder it ran in, so workers and interactive
 // sessions both count. A request on a model with no list price is counted as unpriced, never as $0.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import * as zlib from 'node:zlib';
-import { requestOf, requestUsd } from './cache-report.mjs';
+// Costs reads it over the days its charges cover (chargedWindow), so the two figures on a row agree.
+import { statSync } from 'node:fs';
+import { jsonLines as lines, keepRequest, requestOf, requestUsd, transcripts as transcriptPaths } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
-import { codexLogins, rolloutLogs } from './codex-usage.mjs';
+import { chargesWindow, readingPeriod } from './cost-cache.mjs';
+import { codexLogins, logText, rolloutLogs } from './codex-usage.mjs';
 import { configuredRepos, repoDirs } from './desk-env.mjs';
 import { codexPrice } from './worker-cost.mjs';
 
 const n = (v) => Number(v) || 0;
-const lines = (text) => String(text).split('\n').flatMap((l) => { if (!l.trim()) return []; try { return [JSON.parse(l)]; } catch { return []; } });
 
 // One Codex request's list-price dollars from its token_count `last_token_usage`, or null on a model
 // with no price. Input counts its cached part, which is priced as a cache read.
@@ -31,19 +30,13 @@ export function codexUsd(model, u) {
 // A Claude transcript as { cwd, reqs: [{ id, at, usd }] }, usd null where its model has no price.
 export function claudeSession(text) {
   const ds = lines(text);
-  const reqs = [];
-  const byId = new Map();
+  const requests = new Map();
   for (const d of ds) {
     const r = requestOf(d);
-    if (!r || !Number.isFinite(r.at)) continue;
-    const had = r.id ? byId.get(r.id) : null;
-    // A request is logged once per content block, each with the output so far: the largest stands.
-    if (had) { if (r.output > had.r.output) Object.assign(had, { r, usd: requestUsd(r)?.total ?? null }); continue; }
-    const q = { id: r.id, at: r.at, r, usd: requestUsd(r)?.total ?? null };
-    if (r.id) byId.set(r.id, q);
-    reqs.push(q);
+    if (r && Number.isFinite(r.at)) keepRequest(requests, r);
   }
-  return { cwd: ds.find((d) => typeof d?.cwd === 'string')?.cwd ?? null, reqs: reqs.map(({ id, at, usd }) => ({ id, at, usd })) };
+  return { cwd: ds.find((d) => typeof d?.cwd === 'string')?.cwd ?? null,
+    reqs: [...requests.values()].map(({ r }) => ({ id: r.id, at: r.at, usd: requestUsd(r)?.total ?? null })) };
 }
 
 // A Codex rollout as { cwd, reqs: [{ id: null, at, usd }] }. Codex can log one token_count twice;
@@ -71,24 +64,18 @@ const parsed = new Map();
 function sessionOf(path, st, read) {
   const had = parsed.get(path);
   if (had && had.size === st.size && had.mtimeMs === st.mtimeMs) return had.s;
-  let text = '';
-  try { text = path.endsWith('.zst') ? (zlib.zstdDecompressSync ? zlib.zstdDecompressSync(readFileSync(path)).toString('utf8') : '') : readFileSync(path, 'utf8'); } catch { /* unreadable: no use */ }
-  const s = read(text);
+  const s = read(logText(path, st.size, true));
   parsed.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
   return s;
 }
 
-function transcripts(dir) {
-  let names = [];
-  try { names = readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.jsonl')); } catch { return []; }
-  return names.flatMap((f) => { const path = join(dir, f); try { const st = statSync(path); return st.isFile() ? [{ path, st }] : []; } catch { return []; } });
-}
+const transcripts = (dir) => transcriptPaths(dir).flatMap((path) => { try { return [{ path, st: statSync(path) }]; } catch { return []; } });
 
 const inside = (cwd, dirs) => typeof cwd === 'string' && dirs.some((d) => cwd === d || cwd.startsWith(`${d}/`));
 
 // repos: [{ slug, dirs }]; from and to in epoch ms, `to` exclusive.
 //   -> { [slug]: { usd, claude, codex, unpriced } } for each repo with any use in the window
-export function useByRepo({ repos, from, to, claudeDirs, codexDirs }) {
+export function useByRepo({ repos, from, to }) {
   const out = {};
   const mine = repos.filter((r) => r.dirs.length);
   if (!mine.length) return out;
@@ -105,14 +92,14 @@ export function useByRepo({ repos, from, to, claudeDirs, codexDirs }) {
       u[tool] += q.usd;
     }
   };
-  for (const dir of new Set(claudeDirs ?? projectsDirs())) {
+  for (const dir of new Set(projectsDirs())) {
     for (const { path, st } of transcripts(dir)) {
       if (st.mtimeMs < from) continue;
       const s = sessionOf(path, st, claudeSession);
       add('claude', s.cwd, s.reqs);
     }
   }
-  for (const dir of new Set(codexDirs ?? codexLogins().map((l) => l.dir))) {
+  for (const dir of new Set(codexLogins().map((l) => l.dir))) {
     for (const { path, st } of rolloutLogs(dir) ?? []) {
       if (st.mtimeMs < from) continue;
       const s = sessionOf(path, st, codexSession);
@@ -128,8 +115,9 @@ export const repoFolders = () => configuredRepos().map(({ slug }) => {
   return { slug, dirs: [d.root, d.worktrees].filter(Boolean) };
 });
 
-// The calendar month `now` is in, local time, from its first day to `now`.  -> { from, to }
-export function monthSoFar(now = Date.now()) {
-  const d = new Date(now);
-  return { from: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), to: now + 1 };
+// The days a cost reading's charges cover (cost-cache.mjs: `period`, else the one a reading at `now`
+// would cover), as the window the list-price use beside them is read over.  -> { from, to } in epoch ms
+export function chargedWindow({ period = null, now = Date.now() } = {}) {
+  const w = chargesWindow(period ?? readingPeriod(now));
+  return { from: Date.parse(w.from), to: Date.parse(w.to) };
 }

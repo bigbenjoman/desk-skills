@@ -27,7 +27,7 @@ import { parkKind } from './batch-state.mjs';
 import { parseLevers, repoConfigValues } from './desk-env.mjs';
 import { markersIn, readLogFile, saidIn } from './harvest.mjs';
 import { logRound, resultTokens, workerLogs } from './worker-cost.mjs';
-import { requestOf, requestUsd } from './cache-report.mjs';
+import { jsonLines, keepRequest, requestOf, requestUsd } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { DECIDER_TIMEOUT_MS } from './decider.mjs';
 
@@ -147,7 +147,7 @@ export const readAsks = (state) => Object.values(state?.tickets ?? {})
 // How far a round's log time may lie from the time desk recorded for it: a park's since is the pass's
 // harvest, after the worker's last line; an act is recorded once spawn-worker.sh has written its start.
 const SLACK_MS = 10 * 60 * 1000;
-const parsed = (text) => text.split('\n').flatMap((l) => { if (!l.trim()) return []; try { return [JSON.parse(l)]; } catch { return []; } });
+const parsed = jsonLines;
 const round6 = (n) => Math.round(n * 1e6) / 1e6;
 const noFigures = { input: null, output: null, cache_read: null, cache_write: null, usd: null };
 
@@ -157,14 +157,11 @@ function sumRequests(events) {
   const byId = new Map();
   for (const d of events) {
     const r = requestOf(d);
-    if (!r) continue;
-    const k = r.id ?? `line-${byId.size}`;
-    const had = byId.get(k);
-    if (had) had.output = Math.max(had.output, r.output); else byId.set(k, { ...r });
+    if (r) keepRequest(byId, r);
   }
   const t = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
   let usd = 0, priced = true;
-  for (const r of byId.values()) {
+  for (const { r } of byId.values()) {
     t.input += r.uncached; t.output += r.output; t.cache_read += r.read; t.cache_write += r.w1h + r.w5m;
     const u = requestUsd(r);
     if (u) usd += u.total; else priced = false;

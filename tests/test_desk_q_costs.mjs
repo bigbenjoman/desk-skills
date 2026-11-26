@@ -115,7 +115,9 @@ t('AC2 the first name\'s row is selected', f2[at2 + 3].startsWith('› voicepa')
 const cents = (s) => Math.round(Number(s.replace(/[$,]/g, '')) * 100);
 const at3 = f2.findIndex((l) => l.startsWith('charged '));
 const charged3 = cents(/^charged (\S+)/.exec(f2[at3] ?? '')?.[1] ?? 'NaN');
-const lines3 = f2.slice(at3 + 3).filter((l) => /^[ ›] \S/.test(l)).map((l) => l.slice(1).trim().split(/\s+/));
+// The table's rows to its total row: the SUBSCRIPTION block under the notes is not one of them.
+const rows3 = f2.slice(at3 + 3).filter((l) => /^[ ›] \S/.test(l)).map((l) => l.slice(1).trim().split(/\s+/));
+const lines3 = rows3.slice(0, rows3.findIndex(([n]) => n === 'total') + 1);
 const sum3 = lines3.filter(([n, a]) => n !== 'total' && a !== '–').reduce((a, [, s]) => a + cents(s), 0);
 const total3 = cents(lines3.find(([n]) => n === 'total')?.[1] ?? 'NaN');
 t('AC3 the rows sum to the total row and to the charged line, in cents', `${sum3 === total3} ${total3 === charged3} ${lines3.length}`, `true true ${TABLE.length - 1}`);
@@ -141,7 +143,11 @@ const out13 = Q.run(['costs'], { now: FIXED, costWith: noRead });
 const lines13 = out13.split('\n');
 t('AC13 desk-q costs prints the charged line, a blank line and the table, as plain text',
   `${/\x1b/.test(out13)} | ${lines13.slice(0, 2 + TABLE.length).join('\n')}`, `false | ${[CHARGED, '', ...TABLE].join('\n')}`);
-t('AC13 then a blank line, the notes unwrapped, a blank line and the Claude usage line', lines13.slice(2 + TABLE.length).join('|'), ['', ...NOTES, '', 'Claude usage  no reading yet'].join('|'));
+// With no subscriptions file, each tool's default login still gets its line, saying no fee is set.
+const SUBS = [`  ${'SUBSCRIPTION'.padEnd(16)}${'A MONTH'.padStart(10)}`,
+  ...['Claude default', 'Codex default'].map((n) => `  ${n.padEnd(16)}${'–'.padStart(10)}  fee not set: /desk-setup costs, shared by solo and voicepa`)];
+t('AC13 then a blank line, the notes unwrapped, the subscriptions, a blank line and the Claude usage line', lines13.slice(2 + TABLE.length).join('|'),
+  ['', ...NOTES, '', ...SUBS, '', 'Claude usage  no reading yet'].join('|'));
 const S13 = screen({ kind: 'costs' });
 await sleep(20);
 t('AC13 desk-q costs in a terminal opens home on its Costs tab', `${S13.crumbs()} | ${S13.tabOn()}`, 'desk-q › costs | 5 Costs');

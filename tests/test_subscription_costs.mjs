@@ -4,7 +4,7 @@
 // `logins fee`), the Codex list prices, the per-repo list-price reader over Claude transcripts and
 // Codex rollouts, and desk-q costs with a fee recorded for one login and none for the other. A
 // scratch HOME, DESK_HOME and DESK_CONFIG_ROOT on a fixed clock; nothing reads this computer's logins.
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
@@ -91,13 +91,25 @@ writeFileSync(join(rollouts, 'rollout-a.jsonl'), [JSON.stringify({ type: 'sessio
   tc('2026-10-22T10:01:00Z', 1900000, { input_tokens: 3e5, cached_input_tokens: 0, output_tokens: 0 }),
   JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-9-x' } }),
   tc('2026-10-22T10:02:00Z', 2000000, { input_tokens: 1e5, cached_input_tokens: 0, output_tokens: 0 })].join('\n'));
+// solo's Codex: two requests on a model with no price, and none priced.
+writeFileSync(join(rollouts, 'rollout-b.jsonl'), [JSON.stringify({ type: 'session_meta', payload: { cwd: SOLO } }),
+  JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-9-x' } }),
+  tc('2026-10-22T11:00:00Z', 1000, { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 0 }),
+  tc('2026-10-22T11:01:00Z', 2000, { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 0 })].join('\n'));
+
+// ---- the window: the days the charges beside it cover
+const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+const w1 = P.chargedWindow({ now: Date.UTC(2026, 11, 1, 12) });
+t('chargedWindow: on the 1st, the month of yesterday (UTC), as the charges read then', `${day(w1.from)} ${day(w1.to)}`, '2026-11-01 2026-12-01');
+const w2 = P.chargedWindow({ period: { from: '2026-10-01', to: '2026-10-20' }, now: Date.UTC(2026, 11, 1, 12) });
+t('chargedWindow: a reading\'s own period wins, to the end of its last day', `${day(w2.from)} ${day(w2.to)}`, '2026-10-01 2026-10-21');
 
 // Tuesday 27 October 2026, 11:05, as the Costs fixture's reading.
 const FIXED = new Date(2026, 9, 27, 11, 5).getTime();
-const use = P.useByRepo({ repos: P.repoFolders(), ...P.monthSoFar(FIXED) });
+const use = P.useByRepo({ repos: P.repoFolders(), ...P.chargedWindow({ now: FIXED }) });
 const money = (u) => (u ? `${u.usd.toFixed(2)} claude ${u.claude.toFixed(2)} codex ${u.codex.toFixed(2)} unpriced ${u.unpriced}` : 'none');
 t('useByRepo: voicepa\'s worker and interactive Claude use, and its Codex use, each request once, this month only', money(use.bigbenjoman__voicepa), '7.91 claude 6.00 codex 1.91 unpriced 1');
-t('useByRepo: solo\'s own', money(use.acme__solo), '0.11 claude 0.11 codex 0.00 unpriced 0');
+t('useByRepo: solo\'s own, its unpriced Codex requests counted apart', money(use.acme__solo), '0.11 claude 0.11 codex 0.00 unpriced 2');
 t('useByRepo: a session outside every repo counts for none', Object.keys(use).sort().join(' '), 'acme__solo bigbenjoman__voicepa');
 
 // ---- desk-q costs: a fee for Claude's login, none for Codex's
@@ -112,7 +124,7 @@ t('AC2 the table gains a LIST PRICE column', out[head], `  ${'REPO'.padEnd(14)}$
 t('AC2 voicepa\'s row gives its list-price use', out.find((l) => l.startsWith('  voicepa')), `  ${'voicepa'.padEnd(14)}${'$317.11'.padStart(10)}${'$7.91'.padStart(13)}`);
 t('AC2 a row whose repo has no use reads –', out.find((l) => l.startsWith('  pr-ninja')), `  ${'pr-ninja'.padEnd(14)}${'$277.48'.padStart(10)}${'–'.padStart(13)}  ▲ credits covered $31.73`);
 t('AC2 the total adds the rows\' use', out.find((l) => l.startsWith('  total')).startsWith(`  ${'total'.padEnd(14)}${'$899.97'.padStart(10)}${'$7.91'.padStart(13)}`), true);
-const note = out.findIndex((l) => /list price +What this month/.test(l));
+const note = out.findIndex((l) => /list price +What each repo/.test(l));
 t('AC2 a note says it is a list-price equivalent, not a bill, and what it leaves out',
   note > 0 && out.slice(note, note + 4).join(' ').replace(/\s+/g, ' ').includes('It is a list-price equivalent, not a bill: the subscriptions pay for it. It leaves out 1 request on a model with no list price.'), true);
 const subsAt = out.findIndex((l) => l.startsWith('  SUBSCRIPTION'));
@@ -120,7 +132,8 @@ t('AC1 a SUBSCRIPTION block under the notes', out[subsAt], `  ${'SUBSCRIPTION'.p
 t('AC1 Claude\'s fee as a monthly line, shared across the repos it runs', out[subsAt + 1], `  ${'Claude default'.padEnd(16)}${'$200.00'.padStart(10)}  Max 20x, shared by solo and voicepa`);
 t('AC3 Codex\'s line says its fee is not set', out[subsAt + 2], `  ${'Codex default'.padEnd(16)}${'–'.padStart(10)}  fee not set: /desk-setup costs, shared by solo and voicepa`);
 t('AC1 the total of the fees set, and how many it leaves out', out[subsAt + 3], `  ${'total'.padEnd(16)}${'$200.00'.padStart(10)} a month  leaves out 1 login with no fee`);
-t('AC2 a repo with no row above still shows its list-price use', out[subsAt + 5], '  list price, repos with no row above: solo $0.11');
+t('AC2 a repo with no row above still shows its list-price use, labelled not a bill, with its unpriced requests', out[subsAt + 5],
+  '  list price, not a bill, of repos with no row above: solo $0.11 and 2 requests on a model with no list price');
 const js = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead }));
 t('--json gives each login\'s fee', JSON.stringify(js.subscriptions.map((s) => [s.tool, s.plan, s.usd, s.repos.length])), JSON.stringify([['claude', 'Max 20x', 200, 2], ['codex', null, null, 2]]));
 t('--json gives each repo\'s list-price use', js.list_price.repos.bigbenjoman__voicepa.usd.toFixed(2), '7.91');
@@ -132,6 +145,13 @@ t('logins fee: says what it recorded', said.trim().split('\n').at(-1), 'codex de
 const after = L.parseSubscriptions(readFileSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'), 'utf8'));
 t('logins fee: the Fees table holds both, the login rows unchanged', `${after.fees.length} ${after.logins.length} ${after.errors.length}`, '2 2 0');
 t('AC3 once set, the Codex line gives its fee', Q.run(['costs'], { now: FIXED, costWith: noRead }).includes('Pro, shared by solo and voicepa'), true);
+
+// ---- AC3 with no subscriptions file at all: each login still says its fee is not set
+rmSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'));
+const none = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
+const noneAt = none.findIndex((l) => l.startsWith('  SUBSCRIPTION'));
+t('AC3 no subscriptions file: Claude\'s login says its fee is not set', none[noneAt + 1]?.includes('fee not set: /desk-setup costs'), true);
+t('AC3 no subscriptions file: the list-price figure still shows', none.some((l) => l.startsWith('  voicepa') && l.includes('$7.91')), true);
 
 console.log(fails ? `${fails} FAILED` : 'all subscription cost checks passed');
 process.exit(fails ? 1 : 0);

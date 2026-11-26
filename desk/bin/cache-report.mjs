@@ -75,8 +75,21 @@ export function requestUsd(r) {
   return usdAt(base.over && r.uncached + r.w1h + r.w5m + r.read > base.over.above ? base.over : base, r);
 }
 
+// A JSONL text's objects, a line that is not JSON left out.
+export const jsonLines = (text) => String(text).split('\n').flatMap((l) => { if (!l.trim()) return []; try { return [JSON.parse(l)]; } catch { return []; } });
+
+// Claude Code logs a request once per content block, each line with the same usage but the output so
+// far, so `requests` (a Map) holds each request once by its id, with its largest output, and `extra`
+// beside it. A request with no id is its own.
+export function keepRequest(requests, r, extra = {}) {
+  const key = r.id ?? `line-${requests.size}`;
+  const had = requests.get(key);
+  if (had) had.r.output = Math.max(had.r.output, r.output);
+  else requests.set(key, { r: { ...r }, ...extra });
+}
+
 // Every .jsonl under a folder, subagent transcripts in session folders included.
-function transcripts(dir) {
+export function transcripts(dir) {
   let entries = [];
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return []; }
   return entries.flatMap((e) => (e.isDirectory() ? transcripts(join(dir, e.name)) : e.name.endsWith('.jsonl') ? [join(dir, e.name)] : []));
@@ -86,8 +99,7 @@ const emptyRow = () => ({ sessions: new Set(), requests: 0, uncached: 0, w1h: 0,
 
 // windows: [{ name, from, to }] in epoch ms, `to` exclusive. -> { windows: [{ name, from, to, rows: { <caller>: row } }],
 // skipped, other } where `skipped` counts lines that are not JSON and `other` the sessions no caller claimed.
-// Claude Code logs a request once per content block, each line with the same usage but the output
-// so far, so a repeated request keeps its largest output (as worker-cost.mjs stageUsage does).
+// A repeated request keeps its largest output (keepRequest).
 export function cacheReport({ dirs = projectsDirs(), windows, worktrees = worktreeDirs() }) {
   const out = windows.map((w) => ({ ...w, rows: Object.fromEntries(CALLERS.map((c) => [c, emptyRow()])) }));
   const earliest = Math.min(...windows.map((w) => w.from));
@@ -107,11 +119,7 @@ export function cacheReport({ dirs = projectsDirs(), windows, worktrees = worktr
     const caller = callerOf({ prompt: textOf(first?.message?.content), cwd: main.find((d) => d.cwd)?.cwd ?? '', entrypoint: main.find((d) => d.entrypoint)?.entrypoint ?? null }, worktrees);
     for (const d of lines) {
       const r = requestOf(d);
-      if (!r || !Number.isFinite(r.at)) continue;
-      const key = r.id ?? `line-${requests.size}`;
-      const had = requests.get(key);
-      if (had) had.r.output = Math.max(had.r.output, r.output);
-      else requests.set(key, { r, who: r.sidechain ? 'subagent' : caller, file });
+      if (r && Number.isFinite(r.at)) keepRequest(requests, r, { who: r.sidechain ? 'subagent' : caller, file });
     }
   }
   const otherSessions = new Set();
