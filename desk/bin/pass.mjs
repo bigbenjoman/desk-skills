@@ -2608,7 +2608,7 @@ const suiteBound = (r) => {
 // its first suite is a stage or more away and is counted then, through the lock's own queue. It is held
 // only while the test lock's queue, as read, already had no room, as runs wait on it now.
 const lockRoom = Object.fromEntries(['test', 'light'].map((l) => [l, LOCK_QUEUE?.queues.find((q) => q.lock === l)?.room ?? Infinity]));
-const testQueueFull = (LOCK_QUEUE?.queues.find((q) => q.lock === 'test')?.room ?? Infinity) <= 0;
+const testQueueFull = lockRoom.test <= 0;
 const takeLockRoom = (locks) => {
   if (locks.some((l) => lockRoom[l] <= 0)) return true;
   for (const l of locks) lockRoom[l] -= 1;
