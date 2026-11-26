@@ -2218,6 +2218,11 @@ t('DS-1015 AC1 AC3 a green PR in a granted session-run batch with no merge drive
   'true true 0 | Moves without you: PR #830, all 2 checks passed · waits on whoever merges for the batch.');
 t('DS-1015 AC3 batchMerging gives needs-you the green PR in the Merging row\'s words, and not one still running',
   JSON.stringify(Q.batchMerging(rMb)), '[{"key":"M-1","pr":830,"text":"all 2 checks passed · waits on whoever merges for the batch"}]');
+// The same batch with ci-rerun granted, so only the missing driver, not a missing rerun grant, keeps a red PR the person's.
+put(I.T, I.env, 'mergeby1015red', { port: 5652, conc: '3 / 5', beat: 1, runBy: 'session', perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'mergeby1015red', concurrency: 3, tickets: {
+  'M-3': prOn(832, [okCheck('build'), red]) } } });
+const rMbRed = Q.loadRepos(NOW).find((r) => r.name === 'mergeby1015red');
+t('DS-1015 a red PR in a granted session-run batch with no merge driver stays the person\'s: no driver reruns it', Q.prWhy(rMbRed, rMbRed.q.tickets['M-3'])?.code, 'red');
 const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
 const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',

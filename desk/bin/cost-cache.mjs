@@ -695,10 +695,14 @@ function sharedPartsOf(r, s) {
 //        names: [{ name, total | null, by: { supplier: usd }, credits, cantRead | null, free, freePlan, reads: [{ supplier, at, failedAt }] }],
 //        shared | null, sharedParts: [{ supplier, label, total }], credits },
 //      most charged first; null with no reading
-export function chargesByName({ cache, names = [] }) {
+// The suppliers with a figure, and the newest month among them: the month the charges are for.
+const figureMonth = (cache) => {
   const read = Object.keys(BILLED_BY).filter((s) => cache?.[s] && periodOf(cache[s], s) && hasFigure(cache[s], s));
+  return { read, period: read.length ? newest(read.map((s) => periodOf(cache[s], s))) : null };
+};
+export function chargesByName({ cache, names = [] }) {
+  const { read, period } = figureMonth(cache);
   if (!read.length) return null;
-  const period = newest(read.map((s) => periodOf(cache[s], s)));
   const by = new Map();
   const row = (name) => {
     if (!by.has(name)) by.set(name, { name, c: null, by: {}, credits: 0, cantRead: null, minutes: 0, freeMinutes: 0, freePlan: false, reads: {} });
@@ -818,11 +822,15 @@ const UNREAD = {
   },
   aws: (s, cache) => {
     const p = cache?.aws?.profiles?.[s.key];
-    return p?.failed && !p.lines ? { label: s.key, ...failureFix('aws', p.failed.why, s.key) } : null;
+    // Lines kept from an earlier month are no figure once another source has read this one (figureIn).
+    const kept = p?.lines && samePeriod(p.period, figureMonth(cache).period);
+    return p?.failed && !kept ? { label: s.key, ...failureFix('aws', p.failed.why, s.key) } : null;
   },
   neon: (s, cache) => {
     const o = cache?.neon?.orgs?.[s.orgId];
-    if (!o?.failed || o.usage) return null;
+    // Usage kept from an earlier reading is a figure only as neonCharges counts one: this period's,
+    // with the key still read. A key now missing or refused, or last month's usage, gives none.
+    if (!o?.failed || (o.usage && !o.cantRead && samePeriod(o.period, cache.neon.period))) return null;
     const label = s.key.split('/')[0], file = neonKeyFile();
     if (o.cantRead === 'missing') return { label, why: o.failed.why, fix: `save a Neon API key in ${file}` };
     if (o.cantRead === 'refused') return { label, why: o.failed.why, fix: `replace the API key in ${file} with one that can read this org` };
