@@ -45,7 +45,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { repoConfigValue, availableGiB, costsPath, subscriptionsPath } from './desk-env.mjs';
+import { availableGiB,costsPath, subscriptionsPath } from './desk-env.mjs';
 import { describeCrash } from './batch-state.mjs';
 import { backend } from './run-by.mjs';
 import { probe, PROBE_EVERY_MS } from './usage-probe.mjs';
@@ -62,7 +62,7 @@ import { LABEL, cut, wrap, stateStamp, attention, epicShort, epicIn, GREY, DIM, 
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, usageLines, usageOf, forgetLogins, overviewParts, hhmm, repoParts, logPath, ticketParts, prToOpen, shownState, shownRepos, repoPlace,
   forecastOf, runningOn, andList, probesDue, ZOOMS, Usage, resolveRepo, isWrite, isCommand, target, apply, supervisorState, noSupervisor, readHidden, writeHidden,
-  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener, REREAD_MS, costCheck } from './desk-q-model.mjs';
+  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener, REREAD_MS, costCheck, jiraBrowseOf } from './desk-q-model.mjs';
 
 export * from './desk-q-model.mjs';
 
@@ -96,9 +96,8 @@ export const NO_USAGE_HERE = 'An epic has no Usage view: every login is on esc, 
 export const onlyCosts = (name) => `${name} isn't set up in desk here, so it has only Costs.`;
 
 function jiraUrlFor(slug, key) {
-  const site = repoConfigValue(slug, 'jira-site');
-  if (!site || /^none$/i.test(site)) return null;
-  return `https://${site.replace(/^https?:\/\//, '').replace(/\/+$/, '')}/browse/${key}`;
+  const browse = jiraBrowseOf(slug);
+  return browse ? `${browse}${key}` : null;
 }
 
 // Text onto the clipboard: pbcopy on macOS, else wl-copy or xclip, else the terminal's own clipboard

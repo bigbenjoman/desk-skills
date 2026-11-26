@@ -107,8 +107,19 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
     // A repo set up from the first-run list ends the list: with no batch yet it shows in `home`'s
     // no_batch, and once it has one, as a `repo`.
     const firstRunEnds = () => { if (cur.current.view === 'first-run') check(); };
-    es.addEventListener('home', firstRunEnds);
-    es.addEventListener('repo', firstRunEnds);
+    // Each change also lands on the snapshot held: `home` carries the machine-wide figures, `repo` one
+    // repo's row (null once it has gone), in place.
+    const onto = (e, fn) => {
+      firstRunEnds();
+      try { const d = JSON.parse(e.data); set((s) => (s.snapshot ? { snapshot: fn(s.snapshot, d) } : {})); } catch { /* not JSON */ }
+    };
+    es.addEventListener('home', (e) => onto(e, (s, d) => ({ ...s, ...d })));
+    es.addEventListener('repo', (e) => onto(e, (s, { slug, summary }) => {
+      const repos = s.repos ?? [];
+      const at = repos.findIndex((r) => r.slug === slug);
+      if (!summary) return { ...s, repos: repos.filter((r) => r.slug !== slug) };
+      return { ...s, repos: at < 0 ? [...repos, summary] : repos.map((r, i) => (i === at ? summary : r)) };
+    }));
     es.onerror = () => {
       if (t.current.stream !== es) return;
       closeStream();

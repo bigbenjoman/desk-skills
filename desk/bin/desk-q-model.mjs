@@ -17,6 +17,7 @@ import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPo
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
+import { PRODUCTION_BROKEN } from './promotion.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
@@ -4149,7 +4150,7 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
  * A repo row (repoRow) as homeJson and repoFigures read it: only the fields their JSON copies, so a
  * field computed from the wrong one, or from one not listed here, fails the check.
  * @typedef {RepoIdentity & { error: string | null, live: boolean, last: number | null, done: number,
- *   workers: number | null, cap: number }} Batch
+ *   workers: number | null, cap: number, batch?: string | null, word?: string, batches?: Batch[] }} Batch
  */
 /**
  * Any loaded batch or repo row, as usageOf reads it: its name typed, the rest open.
@@ -4159,7 +4160,9 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
  * @typedef {RepoIdentity & { error: null, live: boolean, last_pass_at: string | null, last_pass: string,
  *   running: number, ready: number, merging: number, waiting: number, needs_you: number, put_off: number, done: number,
  *   workers: { running: number, allowed: number | null, cap: number, ready_no_slot: number },
- *   all_done_by: string, wait_cause: string | null }} RepoFigures
+ *   all_done_by: string, wait_cause: string | null,
+ *   batches: { id: string, name: string, running: number, needs_you: number }[], production_broken: string[],
+ *   jira_browse: string | null }} RepoFigures
  */
 /** @typedef {RepoIdentity & { error: string }} RepoFault */
 /**
@@ -4245,7 +4248,16 @@ function repoFigures(r, needs, now, checkin) {
     running: count(r, 'running'), ready: count(r, 'ready'), merging: count(r, 'merging'), waiting: count(r, 'waiting'),
     needs_you: needs.shown, put_off: needs.putOff, done: r.done,
     workers: { running: workersRunning(r), allowed: r.workers, cap: r.cap, ready_no_slot: Math.max(0, unslotted(r)) },
-    all_done_by: queueDone(r, now, checkin), wait_cause: waitCause(r) ?? null };
+    all_done_by: queueDone(r, now, checkin), wait_cause: waitCause(r) ?? null,
+    batches: (r.batches ?? []).filter((b) => b.batch).map((b) => ({ id: b.id, name: b.word, running: count(b, 'running'), needs_you: needsCount(b).shown })),
+    production_broken: needs.rows.filter((x) => PRODUCTION_BROKEN.test(x.t.park?.question ?? '')).map((x) => x.t.key),
+    jira_browse: jiraBrowseOf(r.slug) };
+}
+// Where a repo's ticket pages live on its §4 Jira site, `https://<site>/browse/`, the key to append;
+// null where it has no site.
+export function jiraBrowseOf(slug) {
+  const s = String(repoConfigValue(slug, 'jira-site') ?? '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return s && !isNone(s) ? `https://${s}/browse/` : null;
 }
 
 // The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
