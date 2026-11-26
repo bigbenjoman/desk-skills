@@ -3140,7 +3140,8 @@ if (isMain) {
         }
         if (sub === 'pin' && rest.length === 2 && rest[0] === 'claude') {
           const r = L.pinLogin(subs, { tool: 'claude', name: rest[1], check: () => L.checkLogins(subs) });
-          console.log(writeWithBackup(path, r.text));
+          console.log(writeWithBackup(path, r.text, { dated: r.migrated }));
+          if (r.migrated) for (const l of L.migrationLines(subs, r.text)) console.log(l);
           console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${L.ruleWord(r.login)}`);
           break;
         }

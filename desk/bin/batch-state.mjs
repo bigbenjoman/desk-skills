@@ -7,6 +7,7 @@ import { personClears } from './clears-when.mjs';
 import { attachArchive, mergedPrs } from './queue-store.mjs';
 import { PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
+import { isRealDay, localDay } from './machine.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -282,14 +283,11 @@ export function heldBehindOf(q, key) {
 
 // A label that holds a ticket until a calendar day, read on this machine's local date.
 const UNTIL_LABEL = /^blocked-until-(.*)$/i;
-export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export { localDay };
 // The YYYY-MM-DD day a blocked-until label names, or null when that is not a real day.
 export function untilDay(label) {
   const m = UNTIL_LABEL.exec(String(label ?? '').trim());
-  const d = m && /^(\d{4})-(\d{2})-(\d{2})$/.exec(m[1]);
-  if (!d) return null;
-  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
-  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]) ? m[1] : null;
+  return m && isRealDay(m[1]) ? m[1] : null;
 }
 // The hold a ticket's labels ask for: { label, bad: true } for a blocked-until label whose date cannot
 // be read (it wins), else { label, until } for the latest day one names, else null.

@@ -453,6 +453,17 @@ export function sizingWarnings(rows, hw, r = RULES) {
   return [`(\`test-lock-max\` ${v['test-lock-max']} + \`light-lock-max\` ${v['light-lock-max']}) x \`test-cap\` ${v['test-cap']} is ${workers} test workers at the ceilings, more than twice the ${counted} counted cores (efficiency cores at ${r.efficiencyCoreWeight})`];
 }
 
+// ---- days ------------------------------------------------------------------------------------
+// This machine's local date as YYYY-MM-DD.
+export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Whether `s` is a YYYY-MM-DD that names a real calendar day (not 2026-02-30).
+export function isRealDay(s) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s ?? ''));
+  if (!d) return false;
+  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
+  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]);
+}
+
 // ---- the file --------------------------------------------------------------------------------
 // Split a markdown table row into cells. A `|` inside backticks is part of the value (a regex such
 // as `KAN-[0-9]+|VPL-[0-9]+`), not a column break; `\|` is a literal pipe too. desk-env's config

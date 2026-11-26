@@ -4747,9 +4747,10 @@ export function interactive({
     saveStarted();
     loginsWith(args, (r) => {
       lastLogins = null;
-      // A migration that moved ~/.claude to Removed says so here too, as it does in the terminal.
-      const moved = String(r?.out ?? '').split('\n').filter((l) => / moved to Removed: /.test(l));
-      if (args[0] === 'migrate' && moved.length) msg = moved.join('\n');
+      // A migration (or a pin that moved ~/.claude to Removed) shows what it printed in the terminal: the
+      // dated backup, each row's before and after, and why ~/.claude moved.
+      const out = String(r?.out ?? '').split('\n').filter((l) => l.trim());
+      if (r?.code === 0 && (args[0] === 'migrate' || out.some((l) => / moved to Removed: /.test(l)))) msg = out.join('\n');
       saveEnded(true);
     });
   }

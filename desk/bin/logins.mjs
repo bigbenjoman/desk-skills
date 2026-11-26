@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { splitRow } from './machine.mjs';
+import { isRealDay, localDay, splitRow } from './machine.mjs';
 
 export const TOOLS = Object.freeze(['claude', 'codex']);
 export const RULES = Object.freeze(['in rotation', 'standby', 'off']);
@@ -90,7 +90,6 @@ export function loginEnv(l, env = process.env) {
 // ---- the file --------------------------------------------------------------------------------
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DAY = /^\d{4}-\d\d-\d\d$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 
 // -> { exists, accounts, logins, removed: [{ tool, name, folder, dir, at }], errors: ["line <n>: <why>"] }. A
@@ -117,7 +116,7 @@ export function parseSubscriptions(text, { exists = true } = {}) {
       const [tool, name, folder, day = '-'] = c;
       const when = day === '-' || day === '' ? null : day;
       if (c.length !== (dated ? 4 : 3) || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name, a folder${dated ? ' and the day it was removed' : ''}`);
-      else if (when && !DAY.test(when)) errors.push(`${at}: ${tool} ${name}: removed "${when}" wants a day as YYYY-MM-DD, or -`);
+      else if (when && !isRealDay(when)) errors.push(`${at}: ${tool} ${name}: removed "${when}" wants a day as YYYY-MM-DD, or -`);
       else removed.push(removedLogin(tool, name, folder, when));
       return;
     }
@@ -150,11 +149,8 @@ export function parseSubscriptions(text, { exists = true } = {}) {
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
 const removedLogin = (tool, name, folder, at = null) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir, at }; };
-// This computer's date today, as the Removed table records it.
-const pad2 = (n) => String(n).padStart(2, '0');
-export const today = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-// `rows` as Removed table entries, removed today.
-const asRemoved = (rows) => rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir, at: today() }));
+// `rows` as Removed table entries, removed today (this computer's date).
+const asRemoved = (rows) => rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir, at: localDay() }));
 
 export const readSubscriptions = (path) => (path && existsSync(path)
   ? parseSubscriptions(readFileSync(path, 'utf8'))
@@ -590,7 +586,8 @@ const ownLive = (checked) => checked.logins.find((l) => l.tool === 'claude' && !
 // The file's text with one Claude folder pinned to the email it is signed in to. A folder the file does
 // not list is added unused (a Removed one with its own folder, or a folder of that name under
 // ~/.claude-logins); a listed one keeps its rule. `check` is -> checkLogins' result.
-//   -> { text, login }, or throws with the reason
+//   -> { text, login, migrated }, or throws with the reason; migrated is true when the pin also moves a
+//   ~/.claude row to Removed, which makes the write a migration
 export function pinLogin(subs, { tool, name, check }) {
   if (tool !== 'claude') throw new Error(`logins: only a Claude login is pinned, not ${tool}`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
@@ -617,7 +614,7 @@ export function pinLogin(subs, { tool, name, check }) {
   const logins = listed ? kept.map((l) => (l.dir === changed.dir ? changed : l)) : [...kept, changed];
   const removed = removedFrom({ removed: subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)) }, defaultRows(subs));
   const kept2 = defaultKept(subs, logins, ownLive(checked));
-  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir) };
+  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir), migrated: defaultRows(subs).length > 0 };
 }
 
 // True when the file exists, has no pins, and lists or finds a Claude folder under ~/.claude-logins that

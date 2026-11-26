@@ -9,8 +9,9 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, wr
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, removeLogin, loginEnv, normRule, multiAccount, toolLogins, needsPinMigration, codexAccount, today,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, removeLogin, loginEnv, normRule, multiAccount, toolLogins, needsPinMigration, codexAccount,
 } from '../desk/bin/logins.mjs';
+import { localDay } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -380,7 +381,7 @@ t('AC1 migrate: login-2 pinned and unused', `${pinState(after, 'login-2')} ${lg(
 t('AC1 migrate: the found login-3 is pinned, and the default as ~/.claude was', `${pinState(after, 'login-3')} ${lg(after, 'login-3').stored}`, 'x@a.io/in rotation default');
 t('AC1 migrate: ~/.claude is in the Removed table', `${after.removed.some((r) => r.tool === 'claude' && r.folder === '~/.claude')} ${lg(after, 'default')}`, 'true undefined');
 t('AC1 migrate: no add hint when x@a.io is pinned', `${m.rc} ${m.out.includes('with a in view 6')}`, '0 false');
-t('#1489 AC3 migrate: ~/.claude is recorded as removed today', after.removed.find((r) => r.folder === '~/.claude')?.at, today());
+t('#1489 AC3 migrate: ~/.claude is recorded as removed today', after.removed.find((r) => r.folder === '~/.claude')?.at, localDay());
 t('#1489 AC1 migrate: one line names the login moved, why, and how to list it again', m.out.split('\n').filter((l) => l.includes('moved to Removed')).join('\n'),
   'claude default (~/.claude) moved to Removed: once a Claude login is pinned to an account, desk signs in only through pinned folders, never ~/.claude. To list it again: desk-env logins set claude default unused');
 t('#1489 AC2 migrate: a before and after for each row whose rule or section changed', m.out.split('\n').filter((l) => / -> /.test(l)).join('\n'),
@@ -442,11 +443,15 @@ t('AC5 migrate: no file, nothing written', `${m.out.trim()} ${sc.has()}`, 'nothi
 
 // pin
 const ROT = ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |', '| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |']);
-sc = scenario(ROT, { default: 'x@a.io', 'login-4': 'z@a.io' });
-let p = await sc.run('pin', 'claude', 'login-4');
+sc = scenario(ROT, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-4': 'z@a.io' });
+let p =await sc.run('pin', 'claude', 'login-4');
 after = sc.read();
 t('AC7 pin: an unlisted login-4 is added, pinned, on standby', `${p.rc} ${pinState(after, 'login-4')}`, '0 z@a.io/standby');
-t('AC11 pin: the previous file kept as a backup', readFileSync(`${sc.path}.bak`, 'utf8') === ROT, true);
+t('AC11 #1489 AC2 pin: a first pin moves ~/.claude, so the previous file is kept as a dated backup', `${baks(sc).length} ${/^subscriptions\.md\.bak-/.test(baks(sc)[0])} ${readFileSync(join(dirname(sc.path), baks(sc)[0]), 'utf8') === ROT}`, '1 true true');
+t('#1489 AC1 AC2 pin: and it prints the before and after and why ~/.claude moved', `${p.out.includes('claude default (~/.claude): in rotation -> Removed')} ${p.out.includes('claude default (~/.claude) moved to Removed: ')}`, 'true true');
+const pinned1 = sc.text();
+p = await sc.run('pin', 'claude', 'login-2');
+t('#1489 pin: a later pin moves nothing, so keeps the plain .bak and prints no migration lines', `${p.rc} ${readFileSync(`${sc.path}.bak`, 'utf8') === pinned1} ${baks(sc).length} ${/ -> | moved to Removed: /.test(p.out)}`, '0 true 2 false');
 
 sc = scenario(ROT, { default: 'x@a.io', 'login-2': 'y@a.io' });
 p = await sc.run('pin', 'claude', 'login-2');
@@ -510,6 +515,7 @@ t('migrate #1489 AC2 the previous copy is kept as a dated backup', `${dated.leng
 t('migrate #1489 AC2 each changed row is shown before and after', ['login-2 (~/.claude-logins/login-2): in rotation -> default', 'login-3 (~/.claude-logins/login-3): in rotation -> unused', 'login-4 (~/.claude-logins/login-4): standby -> unused', 'codex-3 (~/.codex-logins/codex-3): in rotation -> default'].every((l) => c.out.includes(l)), true);
 t('migrate #1489 AC3 an old three-column Removed table reads with no date, and is written with -', `${readSubscriptions(SUBS).removed[0].at} ${/^\| `claude` \| `old` \| `~\/\.claude-logins\/old` \| `-` \|$/m.test(readFileSync(SUBS, 'utf8'))}`, 'null true');
 t('#1489 a Removed date that is not a day is named', parseSubscriptions('| Tool | Name | Folder | Removed |\n|---|---|---|---|\n| `claude` | `old` | `~/.claude-logins/old` | `soon` |\n').errors[0], 'line 3: claude old: removed "soon" wants a day as YYYY-MM-DD, or -');
+t('#1489 a Removed date that is no calendar day is named', parseSubscriptions('| Tool | Name | Folder | Removed |\n|---|---|---|---|\n| `claude` | `old` | `~/.claude-logins/old` | `2026-13-40` |\n').errors[0], 'line 3: claude old: removed "2026-13-40" wants a day as YYYY-MM-DD, or -');
 const once = readFileSync(SUBS, 'utf8');
 await cli('list');
 t('migrate AC4 a second list leaves the file byte for byte', readFileSync(SUBS, 'utf8'), once);

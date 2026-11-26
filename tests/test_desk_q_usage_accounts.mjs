@@ -144,6 +144,7 @@ t('DS-533 AC17 AC19 and the found spare is pinned, unused', /^\| `claude` \| `sp
 t('DS-533 AC17 #1489 ~/.claude goes to the Removed table, dated today', subsText().includes(`| \`claude\` | \`personal\` | \`~/.claude\` | \`${TODAY.ymd}\` |`), true);
 t('DS-533 AC17 once: the file has one Account column', subsText().split('| Account |').length, 2);
 t('#1489 AC1 desk-q says ~/.claude moved, as the migration printed it', prose(f).includes('claude personal (~/.claude) moved to Removed: once a Claude login is pinned to an account'), true);
+t('#1489 AC2 desk-q shows the migration\'s before and after for ~/.claude, and its dated backup', `${/claude personal \(~\/\.claude\): \S+ -> Removed/.test(prose(f))} ${prose(f).includes('(previous copy: ')}`, 'true true');
 t('DS-533 AC18 #1489 AC3 the footer says ~/.claude\'s account was removed, and when', prose(f).includes(`me@example.test was removed from desk's accounts on ${TODAY.text}, when accounts were pinned. Press a to add it again.`), true);
 t('#1489 AC3 and never that it was not added', prose(f).includes('isn\'t one of desk\'s accounts yet'), false);
 t('DS-533 AC2 no row for ~/.claude', `${rowOf(f, 'me@example.test')} ${rowOf(f, 'personal')} ${rowOf(f, 'default')}`, 'null null null');
