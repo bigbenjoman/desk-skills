@@ -34,6 +34,12 @@
 // <slug> is the snapshot's repos[].slug; <repo> is that repo's name, as needs-you names it.
 // DESK_UI_TEST_BIN names the folder those commands run from, read only under a test HOME.
 //
+// The Inbox: GET /api/inbox is needs-you.mjs list --json --no-settle, which writes nothing, with
+// `settled_at` (the last settling list's time), `github` (what the last check of GitHub found:
+// { ok } or { ok: false, reason: 'down' | 'signin', detail }) and `next_pass_at` / `next_checkin_at`.
+// ?settle=1 first checks GitHub, then, while it answers, runs the settling list: at most once a
+// minute, and a request while one runs gets that one's answer.
+//
 // First run: GET /api/setup is { installed, checkout, repos, found }: whether desk's commands are
 // installed, the checkout install.sh last ran from (~-relative), how many repos are configured, and,
 // while installed with none configured, the git repos directly under ~/studia ([{ name, path }]).
@@ -130,6 +136,24 @@ function audit(route, argv, exit) {
   } catch (e) { console.error(`desk-ui: audit: ${e.message}`); }
 }
 
+// ---- the Inbox -------------------------------------------------------------------------------
+
+const SETTLE_EVERY_MS = 60 * 1000;
+const PROBE_TIMEOUT_MS = 20 * 1000;
+// What a failed gh call says about GitHub: its sign-in gone, or GitHub not answering.
+export function githubState(stderr) {
+  const text = String(stderr ?? '');
+  if (/HTTP 401|Bad credentials|gh auth login|not logged in|token .*invalid/i.test(text)) return { ok: false, reason: 'signin', detail: null };
+  const http = /HTTP (\d{3})/.exec(text);
+  const line = text.trim().split('\n')[0].slice(0, 120);
+  return { ok: false, reason: 'down', detail: http ? `gh: HTTP ${http[1]}` : `gh: ${line || 'no answer'}` };
+}
+// One cheap GitHub read (rate_limit counts against no limit): { ok: true }, or githubState's answer.
+const probeGitHub = () => new Promise((resolve) => {
+  execFile('gh', ['api', 'rate_limit', '--silent'], { shell: false, timeout: PROBE_TIMEOUT_MS, encoding: 'utf8' },
+    (err, _out, stderr) => resolve(err ? githubState(stderr || err.message) : { ok: true }));
+});
+
 // ---- the app build ---------------------------------------------------------------------------
 
 const appDir = () => join(E.deskHome(), 'ui', 'dist');
@@ -188,8 +212,9 @@ const openTerminal = (dir) => new Promise((resolve) => {
 });
 
 // `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
-// `terminal(dir)` opens Terminal for /api/terminal (openTerminal); the tests pass a stub.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal } = {}) {
+// `terminal(dir)` opens Terminal for /api/terminal (openTerminal), and `github()` checks GitHub before
+// the Inbox settles (probeGitHub); the tests pass stubs.
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -356,6 +381,42 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return refuse(res, 500, 'terminal', "Terminal didn't open. See the server log.");
   }
 
+  // needs-you's list as data, from a child so its reads stall no other request; `settle` runs the
+  // settling list, which records what has shipped.
+  async function needsYouList(settle) {
+    const listed = await run(join(HERE, 'needs-you.mjs'), ['list', '--json', ...(settle ? [] : ['--no-settle'])], { env: E.otherRepoEnv() }, READ_TIMEOUT_MS);
+    if (listed.exit !== 0) throw new Error(`needs-you list exited ${listed.exit}: ${listed.stderr.trim().slice(0, 300)}`);
+    return JSON.parse(listed.stdout);
+  }
+  const inboxState = { settling: null, settledAt: null, lastSettle: -Infinity, github: null };
+  // The settling list only once GitHub answers, as its reads of GitHub fail silently.
+  function settleInbox() {
+    inboxState.settling ??= (async () => {
+      const gh = await github();
+      inboxState.github = gh;
+      if (!gh.ok) return needsYouList(false);
+      inboxState.lastSettle = clock();
+      const list = await needsYouList(true);
+      inboxState.settledAt = list.generated_at;
+      return list;
+    })().finally(() => { inboxState.settling = null; });
+    return inboxState.settling;
+  }
+  async function inbox(res, query) {
+    try {
+      const want = query.get('settle') === '1';
+      const list = inboxState.settling ? await inboxState.settling
+        : want && clock() - inboxState.lastSettle >= SETTLE_EVERY_MS ? await settleInbox() : await needsYouList(false);
+      const { all } = await loadAll();
+      const { nextCheckin } = await import('./desk-q-eta.mjs');
+      const now = clock();
+      const passes = all.filter((r) => r.live && Number.isFinite(Number(r.next)) && Number(r.next) > now).map((r) => Number(r.next));
+      const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
+      return send(res, 200, { ...list, settled_at: inboxState.settledAt, github: inboxState.github,
+        next_pass_at: iso(passes.length ? Math.min(...passes) : null), next_checkin_at: iso(nextCheckin(now)) });
+    } catch (e) { console.error(`desk-ui: inbox: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+  }
+
   async function handle(req, res) {
     const [path, query = ''] = String(req.url ?? '/').split('?');
     const method = req.method ?? 'GET';
@@ -398,6 +459,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       if (path === '/api/setup') {
         try { return send(res, 200, setup()); } catch (e) { console.error(`desk-ui: setup: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }
+      if (path === '/api/inbox') return inbox(res, new URLSearchParams(query));
       if (path === '/api/snapshot') {
         try { return send(res, 200, await snapshot()); } catch (e) { console.error(`desk-ui: snapshot: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }

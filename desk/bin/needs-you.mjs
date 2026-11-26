@@ -11,7 +11,8 @@
 //       review left requirement gaps quotes each gap from that review on GitHub, and a PR under a
 //       person's merge hold reads its files and checks there, to say once the hold's step is done.
 //       --no-settle skips that settling, so it writes nothing; --json prints the list as data
-//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it
+//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it,
+//       its PR, and the exact text its park waits for approval of
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
@@ -2313,12 +2314,17 @@ export function causeOf(i) {
 }
 
 // One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
-// behind it. `id` is stable while the item is the same item: its batch, key and kind.
+// behind it. `id` is stable while the item is the same item: its batch, key and kind. `pr` is the
+// ticket's PR, and `approve` the write its park waits for the person to approve, its body verbatim.
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
+  const a = i.t.state === 'parked' ? i.t.park?.approve : null;
+  const pr = Number(i.t.result?.pr);
   return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
     ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
+    pr: Number.isInteger(pr) && pr > 0 ? pr : null,
+    approve: a?.body ? { kind: String(a.kind ?? ''), target: String(a.target ?? ''), body: String(a.body) } : null,
     actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
 }
 

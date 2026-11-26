@@ -21,7 +21,7 @@ const BUTTON = {
   outline: 'border-border bg-background text-foreground',
   secondary: 'border-border bg-secondary text-secondary-fg',
 };
-function Button({ variant = 'secondary', className = '', ...props }) {
+export function Button({ variant = 'secondary', className = '', ...props }) {
   return (
     <button type="button" {...props}
       className={`inline-flex h-7 shrink-0 items-center rounded-md border px-2.5 text-[13px] font-medium disabled:opacity-50 ${BUTTON[variant]} ${className}`} />
@@ -53,7 +53,7 @@ function Copy({ text }) {
   return <Button onClick={copy} aria-label={`Copy ${text}`}>{copied ? 'Copied' : 'Copy'}</Button>;
 }
 
-function Command({ text }) {
+export function Command({ text }) {
   return (
     <div className="flex items-center gap-2 rounded-md border border-border bg-muted py-2 pr-2 pl-3">
       <code className="flex-1 font-mono text-[12.5px] break-all select-all">{text}</code>
