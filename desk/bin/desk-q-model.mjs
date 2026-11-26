@@ -1700,6 +1700,7 @@ const unreadNotes = (unread) => unread.map((u) => ({ tag: `◌ ${SUPPLIER_LABEL[
 // Beside figures, one per name it bills, tagged as a figure not read today is, so the notes keep their
 // column; on one name's screen (`supplier`), tagged by supplier. A name whose row already says why
 // (`said(name, supplier)`, its can't-read tag) gets a note only where desk knows the fix.
+/** @type {(unread: any[], opts?: { supplier?: boolean, said?: (name: any, supplier: any) => boolean }) => any[]} */
 const unreadNameNotes = (unread, { supplier = false, said = () => false } = {}) => unread.flatMap((u) => (supplier ? [null] : u.names)
   .filter((name) => u.fix || !said(name, u.supplier)).map((name) => ({
     tag: `◌ ${name ?? SUPPLIER_LABEL[u.supplier]}`, sgr: GREY, text: [[whyFix(u, `Its ${name ? `${SUPPLIER_LABEL[u.supplier]} ` : ''}bill can't be read: `), null]] })));

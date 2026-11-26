@@ -102,7 +102,8 @@ if [ "$ROLLBACK" = 1 ]; then
   exit 0
 fi
 
-# --uninstall-ui unloads the desk-ui server's launchd job, removes its plist and ~/Applications/Desk.app.
+# --uninstall-ui unloads the desk-ui server's launchd job, removes its plist, ~/Applications/Desk.app
+# and the app build (~/.claude/desk/ui).
 # No queue or state file changes.
 if [ "$UNINSTALL_UI" = 1 ]; then
   rc=0
@@ -1433,6 +1434,26 @@ install_desk_ui() {
   fi
 }
 install_desk_ui
+
+# ---------------------------------------------------------------------------------------------
+section "Desk app  -> ~/.claude/desk/ui/dist (built from desk/ui, served by desk-ui)"
+
+# Rebuilt only when desk/ui changed since the last build; an open window shows the new build once it
+# reloads. A failed build keeps the previous one in service and is a warning, never a failed install.
+install_desk_ui_app() {
+  local out
+  if [ "$OS" != mac ]; then
+    note "skipped: the desk app's server runs under macOS launchd only"
+  elif ! has npm; then
+    warn "the desk app was not built: npm is not on PATH"
+  elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-app.mjs" install-ui --src "$SRC/desk/ui" 2>&1)"; then
+    ok "$out"
+    case "$out" in *unchanged*) ;; *) wrote "desk app ~/.claude/desk/ui/dist (./install.sh --uninstall-ui removes it)" ;; esac
+  else
+    warn "the desk app was not rebuilt"; show_err "$out"
+  fi
+}
+install_desk_ui_app
 
 # ---------------------------------------------------------------------------------------------
 section "Desk.app  -> ~/Applications/Desk.app (built from desk/shell)"

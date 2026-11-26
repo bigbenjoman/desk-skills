@@ -20,6 +20,8 @@
 // from it, since no route takes one yet.
 // GET /api/model is desk-q's: the listing the model was read from (desk-q-model.mjs modelWire), signed
 // with `Authorization: Bearer <the token file's token>` and no Origin or session cookie (desk-q-server.mjs).
+// Every other GET, from a signed-in window, is a file of the app build install.sh made
+// (~/.claude/desk/ui/dist, desk-app.mjs install-ui); / is its index.html.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 //
 // Writes: every POST below runs one of desk's own commands, from WRITES, through execFile with no
@@ -36,7 +38,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
@@ -120,6 +122,28 @@ function audit(route, argv, exit) {
   } catch (e) { console.error(`desk-ui: audit: ${e.message}`); }
 }
 
+// ---- the app build ---------------------------------------------------------------------------
+
+const appDir = () => join(E.deskHome(), 'ui', 'dist');
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2', '.woff': 'font/woff', '.txt': 'text/plain; charset=utf-8' };
+// A file of the installed build for a request path (/ is its index.html), or null: only a file of a
+// known type inside the build, never a dot name, a directory or a link that leads out of it.
+function appFile(path) {
+  let rel;
+  try { rel = decodeURIComponent(path === '/' ? '/index.html' : path).slice(1); } catch { return null; }
+  if (!rel || /[\\\0]/.test(rel) || rel.split('/').some((seg) => !seg || seg.startsWith('.'))) return null;
+  const type = TYPES[extname(rel).toLowerCase()];
+  if (!type) return null;
+  try {
+    const root = realpathSync(appDir());
+    const real = realpathSync(join(root, rel));
+    if (!real.startsWith(`${root}${sep}`) || !statSync(real).isFile()) return null;
+    return { body: readFileSync(real), type };
+  } catch { return null; }
+}
+
 // `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
 export function makeServer({ p = port(), log = (line) => console.log(line), events = {} } = {}) {
   const origin = `http://${HOST}:${p}`;
@@ -133,7 +157,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   const clock = events.now ?? Date.now; // the feed's, which dates each model it reads
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
-    const text = type.startsWith('application/json') ? JSON.stringify(body) : String(body);
+    const text = Buffer.isBuffer(body) ? body : type.startsWith('application/json') ? JSON.stringify(body) : String(body);
     res.writeHead(status, { ...BASE_HEADERS, 'X-Desk-Boot': boot, 'Content-Type': type, 'Content-Length': Buffer.byteLength(text), ...extra });
     res.end(text);
   };
@@ -323,11 +347,13 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       if (path === '/api/meta') return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p });
       return refuse(res, 404, 'not_found', 'No such route.');
     }
-    if (path === '/') {
-      if (!s) return send(res, 401, 'Not signed in. Open Desk.app.\n', 'text/plain; charset=utf-8');
-      if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
-      return send(res, 200, `<!doctype html><meta charset="utf-8"><title>desk-ui</title><p>desk-ui ${version()}: no app build is installed.</p>\n`, 'text/html; charset=utf-8');
-    }
+    if (!s) return send(res, 401, 'Not signed in. Open Desk.app.\n', 'text/plain; charset=utf-8');
+    if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
+    // The app build install.sh made, read from disk on every request, so a new build shows on the
+    // window's next reload.
+    const file = appFile(path);
+    if (file) return send(res, 200, file.body, file.type);
+    if (path === '/') return send(res, 200, `<!doctype html><meta charset="utf-8"><title>desk-ui</title><p>desk-ui ${version()}: no app build is installed.</p>\n`, 'text/html; charset=utf-8');
     return refuse(res, 404, 'not_found', 'No such route.');
   }
 
