@@ -76,7 +76,7 @@ export function requestUsd(r) {
 }
 
 // Every .jsonl under a folder, subagent transcripts in session folders included.
-function transcripts(dir) {
+export function transcripts(dir) {
   let entries = [];
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return []; }
   return entries.flatMap((e) => (e.isDirectory() ? transcripts(join(dir, e.name)) : e.name.endsWith('.jsonl') ? [join(dir, e.name)] : []));
