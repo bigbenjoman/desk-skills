@@ -20,13 +20,11 @@ const isInit = (r) => r.pid === 1 || INIT.test(r.args);
 const DRIVER = /^(?:\S*\/)?node(?:js)?(?:\s|$)|\/desk\/(?:bin|releases\/[^/\s]+\/bin)\//;
 
 // The process table, read once per call (ps-rows.mjs psRows): [{ pid, ppid, pgid, stat, tty, args }],
-// zombies, and the lines of a multi-line command line that read as rows, left out. `tty` is the
-// controlling terminal, null for none. Null when ps cannot be read.
+// zombies left out. `tty` is the controlling terminal, null for none. Null when ps cannot be read.
 export function readRows() {
   let rows;
   try { rows = psRows('pid=,ppid=,pgid=,stat=,tty=,args='); } catch { return null; }
-  return rows.filter((r) => Number.isInteger(r.pid) && Number.isInteger(r.ppid) && Number.isInteger(r.pgid) && !r.stat.startsWith('Z'))
-    .map((r) => ({ ...r, tty: /^[?-]+$/.test(r.tty) ? null : r.tty }));
+  return rows.filter((r) => !r.stat.startsWith('Z')).map((r) => ({ ...r, tty: /^[?-]+$/.test(r.tty) ? null : r.tty }));
 }
 
 // Who process `pid` answers to: its parent and every pass-through shell above it, up to and with the

@@ -8,11 +8,14 @@ const PS_MAX_BUFFER = 64 * 1024 * 1024;
 const PS_NUMERIC = new Set(['pid', 'ppid', 'pgid', 'rss']);
 // `ps` output for `columns` (e.g. 'pid=,args=') as one object per process keyed by column name:
 // every column but the last is one word, the last runs to the end of the line. pid, ppid, pgid and
-// rss are numbers. A line of another shape is skipped. The last column is matched greedily and
-// trimmed after: a lazy match crawls a command line megabytes long one character at a time.
+// rss are numbers, matched as digits. A line of another shape is skipped, so a line of a multi-line
+// command line fails at its first word. The last column is matched greedily and trimmed after: a
+// lazy match crawls a command line megabytes long one character at a time.
 export function parsePs(text, columns) {
   const names = columns.split(',').map((c) => c.replace(/=.*$/, ''));
-  const re = new RegExp(`^\\s*${names.slice(0, -1).map(() => '(\\S+)\\s+').join('')}(.*)$`);
+  const word = (n) => (PS_NUMERIC.has(n) ? '(\\d+)' : '(\\S+)');
+  const lastCol = names.at(-1);
+  const re = new RegExp(`^\\s*${names.slice(0, -1).map((n) => `${word(n)}\\s+`).join('')}${PS_NUMERIC.has(lastCol) ? '(\\d+)' : '(.*)'}\\s*$`);
   const last = names.length;
   const rows = [];
   for (const line of String(text).split('\n')) {
