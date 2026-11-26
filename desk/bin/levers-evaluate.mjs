@@ -41,7 +41,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints, isValued } from './lever-registry.mjs';
 import { appendWith, read, stampAfter } from './lever-log.mjs';
@@ -532,6 +532,12 @@ function commitRange(rows) {
   return starts.length ? [starts[0].desk_commit.slice(0, 12), starts.at(-1).desk_commit.slice(0, 12)] : null;
 }
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+// An outcome file as a reason names it: by its path under the repo's state folder `state`, or by its
+// file name where it sits outside it. The `missing` lists keep the full paths.
+const shortName = (state, p) => {
+  const rel = relative(state, p);
+  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : basename(p);
+};
 const excludedCounts = (rows) => {
   const out = { pin_mismatch: 0, cost_incomplete: 0, fp_reset: 0 };
   for (const r of rows) if (r.excluded) out[r.excluded] += 1;
@@ -555,7 +561,7 @@ export function evaluate({
   const prepared = repos.filter((r) => Object.values(r.states).includes('auto')).map((r) => {
     let log = null;
     let unreadable = null;
-    try { log = read(r.slug); if (log.bad.length) unreadable = `line ${log.bad.map((b) => b.line).join(', ')} of its lever log does not parse`; } catch (e) { unreadable = e.message; }
+    try { log = read(r.slug); if (log.bad.length) unreadable = `line ${log.bad.map((b) => b.line).join(', ')} of its lever log does not parse`; } catch (e) { unreadable = `its lever log, levers.jsonl, cannot be read (${e.code ?? e.message})`; }
     const outcomes = withOutcomes(r.rows, r.batches, now);
     // A lever weighed on asks reads the repo's ticket ledger, once.
     if (levers.some((l) => registry[l].rows === ASKING)) outcomes.rows = withAsks(outcomes.rows, r.batches);
@@ -628,6 +634,7 @@ export function evaluate({
         n: { ...counts(rs), pooled_on: (pl?.n ?? counts(rs)).on, pooled_off: (pl?.n ?? counts(rs)).off, excluded: excludedCounts(p.rows) },
       });
       const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
+      const named = incomplete.map((f) => shortName(r.state, f));
       const priorReverts = priorRevertsOf(r.log.events, lever);
       const changedAt = s.at ? Date.parse(s.at) : null;
       // A quality-risk lever on trial, or reverted from one, adopts only on audit evidence from this repo
@@ -635,7 +642,7 @@ export function evaluate({
       const quality = reg.layer === 'quality-risk' && ['trial', 'reverted'].includes(s.state);
       const audits = quality ? auditCount(r.audits, s.state === 'trial' ? trialId(r.slug, lever, s) : p.rows[0]?.pin?.trial_ids?.[lever] ?? null) : null;
       const auditP0 = quality && s.state === 'reverted' && (r.log.events ?? []).filter((e) => e.lever === lever && e.id === s.id).some((e) => e.reason_code === 'audit_p0');
-      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
+      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete: named, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
       // A valued lever's values are weighed at once: each clears the rule's probability shared among them.
       const others = isValued(reg) ? reg.values.filter((v) => v !== reg.baseline) : [];
       const pRequired = r4(1 - (1 - DECISION_RULE.probability) / Math.max(1, others.length));
@@ -681,7 +688,7 @@ export function evaluate({
         const lastIncomplete = (r.log.events ?? []).filter((e) => e.kind === 'evidence_incomplete' && e.lever === lever).at(-1);
         const lastRow = r.prior.filter((x) => x.lever === lever).at(-1);
         const same = lastIncomplete && lastRow?.reason_code === 'evidence_incomplete' && JSON.stringify(lastIncomplete.missing) === JSON.stringify(incomplete);
-        if (!same) append({ kind: 'evidence_incomplete', lever, actor: ACTOR, reason_code: 'evidence_incomplete', at, ...evidence, missing: incomplete, reason: `${lever} in ${r.name}: nothing adopts while outcome files are missing: ${incomplete.join(', ')}` });
+        if (!same) append({ kind: 'evidence_incomplete', lever, actor: ACTOR, reason_code: 'evidence_incomplete', at, ...evidence, missing: incomplete, reason: `${lever} in ${r.name}: nothing adopts while outcome files are missing: ${named.join(', ')}` });
       }
 
       let to = null;
@@ -757,7 +764,7 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
   const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
   const audits = auditCount(r.audits, pt.id);
   const kept = pt.levers.map((l) => Date.parse(r.byLever[l]?.at)).filter(Number.isFinite);
-  const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, guardrails, frozen, incomplete,
+  const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, guardrails, frozen, incomplete: incomplete.map((f) => shortName(r.state, f)),
     changedAt: kept.length ? Math.max(...kept) : null, now, holdbackWeeks: registry[pt.levers[0]].ramp.holdback_weeks, audits, pair: true });
   const evidence = writeEvidence(r.state, evalId, rows);
   let to = null;
