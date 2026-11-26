@@ -2330,7 +2330,9 @@ const needsText = (i, action) => {
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
   const a = i.t.state === 'parked' ? i.t.park?.approve : null;
-  const pr = Number(ownPr(i.t));
+  // A ticketless PR's item carries its PR as `pr`, and a promotion PR's as `promotion`: their tickets
+  // are a key alone, with no result for ownPr to read.
+  const pr = Number(i.pr ?? i.promotion ?? ownPr(i.t));
   return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
     ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
