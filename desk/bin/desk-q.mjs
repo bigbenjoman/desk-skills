@@ -241,8 +241,9 @@ function holdContext(r) {
   if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
   // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
-  // relaying its merge lines), not on the person.
-  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  // relaying its merge lines), not on the person. `mergeHolds`: §4 Merge holds names a path, and only the
+  // driver records a PR's hold (merge_blocked), so with none running the words say a hold makes it theirs.
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -424,6 +425,9 @@ export function parseHoldNote(note) {
 // What a green PR waits on where the grant covers it, passes run and no merge driver does (holdContext
 // batchMerges): its merge driver, or the session relaying the batch's merge lines.
 export const BATCH_MERGES = 'waits on whoever merges for the batch';
+// Where §4 Merge holds is set, no driver has read the PR's files against it, so a hold may make it the person's.
+export const HOLD_CAVEAT = ', or on you where a merge hold covers its files';
+const batchMergesText = (ctx) => `${BATCH_MERGES}${ctx?.mergeHolds ? HOLD_CAVEAT : ''}`;
 function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
   const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
@@ -525,7 +529,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
         : `${passed} check${passed === 1 ? '' : 's'} passed`;
     const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
     if (ctx.merges) return merging(all, [' · merges at the next pass', null]);
-    return ctx.batchMerges ? { ...merging(all, [` · ${BATCH_MERGES}`, null]), byBatch: true } : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
+    return ctx.batchMerges ? { ...merging(all, [` · ${batchMergesText(ctx)}`, null]), byBatch: true } : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
   return ctx.merges || ctx.batchMerges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);

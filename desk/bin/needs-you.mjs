@@ -137,7 +137,7 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, batchMerging } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -468,7 +468,7 @@ const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : 
 // Once the person's step is done: desk merges it where it may, whoever merges for the batch does where
 // the grant covers it with no merge driver running, else merging is theirs too.
 const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green'
-  : r.ctx?.batchMerges ? `it then ${BATCH_MERGES} (its merge driver, or the session relaying its merge lines) once its checks are green`
+  : r.ctx?.batchMerges ? `it then ${BATCH_MERGES} (its merge driver, or the session relaying its merge lines)${r.ctx.mergeHolds ? HOLD_CAVEAT : ''} once its checks are green`
     : 'then merge it on GitHub once its checks are green');
 const REPAIRED = "desk's own repairs did not fix";
 // A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.

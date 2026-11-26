@@ -104,6 +104,7 @@ function put(name, r) {
     `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.holds ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Merge holds | ${r.holds.map((h) => `\`${h}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
@@ -503,6 +504,11 @@ t('DS-1015 AC3 needs-you shows the PR as desk-q\'s Merging row does, outside the
   `${N.listText(g1015)} | ${JSON.stringify(N.listItems({ word: 'granted1015', reads: null }).moving)} | ${/Moves without you/.test(N.listText(u1015))}`,
   'Nothing needs you in granted1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch.'
   + ' | [{"batch":"granted1015","key":"G-1","pr":71,"text":"1 check passed · waits on whoever merges for the batch"}] | false');
+// With §4 Merge holds set no driver has read the PR's files against them, so the words say a hold makes it the person's.
+put('holds1015', { port: 3730, beat: 1, merge: 'yes', holds: ['backend/**: build the images first'], tickets: { 'G-1': green1015 } });
+t('DS-1015 a granted batch with merge holds and no merge driver says a hold covering its files makes the PR the person\'s',
+  N.listText(N.collect({ word: 'holds1015' })),
+  'Nothing needs you in holds1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch, or on you where a merge hold covers its files.');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 // DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.
