@@ -51,7 +51,7 @@ const quote = (s) => { const t = s.trim(); return t.length > 90 ? `${t.slice(0, 
 const OPEN = [/\bTBD\b/, /\bTBC\b/, /\bTODO\b/, /\bto be (?:decided|confirmed)\b/i, /\bdecide\b/i, /\bneeds? a decision\b/i,
   /\bproposals? for\b/i, /\(to confirm\)/i, /\bpending sign-?off\b/i];
 const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\b/i;
-const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
+export const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
 // A Given/When/Then criterion: a line opening with Given (after a list mark, a list number or an AC1:
 // label), or a one-line "given …, when …, then …". When and Then alone are left out: both open code
 // lines too (a shell `then`, Kotlin's `when`).

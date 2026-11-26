@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sections } from './desk-design.mjs';
 import * as E from './desk-env.mjs';
-import { designRoot, lintTicket, unlabelledCriteria, withoutLines } from './ticket-lint.mjs';
+import { CRITERIA, designRoot, lintTicket, unlabelledCriteria, withoutLines } from './ticket-lint.mjs';
 
 export const DRAFTED_NOTE = 'Drafted by desk from the proposal: reviewed like any other criteria.';
 const NO_DESIGN = /^no design link and no "No UI\." line/;
@@ -53,10 +53,11 @@ export function fillSections(rec, text, { test = testCommand() } = {}) {
   const has = (re) => [...have].some((n) => re.test(n));
   const out = [];
   const drafted = draftedCriteria(rec);
-  // Criteria the ticket wrote as Given/When/Then with no AC labels are numbered and moved under its
-  // criteria heading, in place of any triage drafted.
-  const own = unlabelledCriteria(text);
-  const heading = sections(text).find((s) => /^(?:acceptance criteria|definition of done)\b/i.test(s.name))?.name.replace(/:/g, '').trim();
+  // Where lint refused the ticket for no criteria and its criteria section is still empty, criteria it
+  // wrote as Given/When/Then with no AC labels are numbered and moved under that heading, in place of
+  // any triage drafted. A ticket with filled criteria is never rewritten for them.
+  const own = blocking(rec, 'criteria') && !has(CRITERIA) ? unlabelledCriteria(text) : [];
+  const heading = sections(text).find((s) => CRITERIA.test(s.name))?.name.replace(/:/g, '').trim();
   if (own.length) {
     out.push({ name: heading || 'Acceptance criteria', body: own.map((c, i) => `- AC${i + 1}: ${c.text}`).join('\n'), drop: own.flatMap((c) => c.lines) });
   } else if (blocking(rec, 'criteria') && drafted?.length) {

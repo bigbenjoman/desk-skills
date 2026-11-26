@@ -662,14 +662,21 @@ G="$T/state/tickets/gwt-ledger.md"
 check "#1488 AC1 unlabelled Given/When/Then blocks in a preformatted block are numbered AC1, AC2 under an Acceptance criteria heading, keeping their text" 'grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC1: Given a refund When it is issued Then the ledger has a row for it" && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC2: Given two refunds when both are issued then the ledger has two rows"'
 check "#1488 AC1 they are moved, not copied, and the emptied block goes" '[ "$(grep -c "Given" "$G")" = 2 ] && ! grep -q "^\`\`\`" "$G" && grep -qxF "Refunds show in the ledger." "$G"'
 check "#1488 AC1 the ticket is linted again and admitted, with no needs-you ask" '[ $rc -ne 11 ] && grep -qF "TICKET FILE EDIT gwt-ledger — posted" <<< "$out" && grep -q "^admitted gwt-ledger by hand" <<< "$out" && [ "$(jget "$T/state/triage/gwt-ledger.json" lint.length)" = 0 ] && ! grep -q "acceptance criteria for gwt-ledger" "$T/state/asks.json" 2>/dev/null'
-# Under the criteria heading already, plain or in a list, they are numbered in place; prose and a shell
-# block elsewhere stay as they are.
-printf '# gwt-inline\n\nSource: the user\n\nGiven that the ledger is slow, we cache it.\n\n```\nif [ -f x ]\nthen echo ok\nfi\n```\n\n## Acceptance criteria\n- Given a refund, when it is issued, then the ledger has a row\n- Given two refunds, when both are issued, then it has two\n\n## Design\nNo UI.\n\n## Verification\nGiven a checkout, when tests run, then they pass.\n' > "$T/state/tickets/gwt-inline.md"
-rec gwt-inline A '"renders":false'
+# In a list in another section, under an empty criteria heading, they are numbered under that heading;
+# prose and a shell block elsewhere stay as they are.
+printf '# gwt-inline\n\nSource: the user\n\nGiven that the ledger is slow, we cache it.\n\n```\nif [ -f x ]\nthen echo ok\nfi\n```\n\n## Proposal\n- Given a refund, when it is issued, then the ledger has a row\n- Given two refunds, when both are issued, then it has two\n\n## Acceptance criteria\n\n## Design\nNo UI.\n\n## Verification\nGiven a checkout, when tests run, then they pass.\n' > "$T/state/tickets/gwt-inline.md"
+rec gwt-inline A "\"renders\":false,\"lint\":[$LINT_GWT]"
 out=$(admit gwt-inline --session); rc=$?
 G="$T/state/tickets/gwt-inline.md"
-check "#1488 AC1 unlabelled criteria under the heading are numbered there, once" '[ "$(grep -c "^## Acceptance criteria" "$G")" = 1 ] && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC1: Given a refund, when it is issued, then the ledger has a row" && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC2: Given two refunds, when both are issued, then it has two" && [ "$(grep -c "^- Given" "$G")" = 0 ]'
+check "#1488 AC1 unlabelled criteria in a list are numbered under the empty criteria heading, once" '[ "$(grep -c "^## Acceptance criteria" "$G")" = 1 ] && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC1: Given a refund, when it is issued, then the ledger has a row" && grep -A2 -xF "## Acceptance criteria" "$G" | grep -qxF -- "- AC2: Given two refunds, when both are issued, then it has two" && [ "$(grep -c "^- Given" "$G")" = 0 ]'
 check "#1488 a Given line with no then, a shell block and the Verification section are left alone" 'grep -qxF "Given that the ledger is slow, we cache it." "$G" && grep -qxF "then echo ok" "$G" && grep -A1 -xF "## Verification" "$G" | grep -qxF "Given a checkout, when tests run, then they pass." && grep -q "^admitted gwt-inline by hand" <<< "$out"'
+# A ticket lint passed, its criteria section filled, is never rewritten for Given/When/Then lines: not
+# under that heading, nor in its prose.
+printf '# gwt-filled\n\nSource: the user\n\nGiven a slow page, when it loads, then it shows a spinner.\n\n## Acceptance criteria\n- Given a refund, when it is issued, then the ledger has a row\n- The page loads in 2s\n\n## Design\nNo UI.\n' > "$T/state/tickets/gwt-filled.md"
+G="$T/state/tickets/gwt-filled.md"; before=$(cat "$G")
+rec gwt-filled A '"renders":false'
+out=$(admit gwt-filled --session); rc=$?
+check "#1488 filled criteria and a Given/When/Then line in the prose are left as written, and the ticket is admitted" '[ "$(cat "$G")" = "$before" ] && ! grep -qF "TICKET FILE EDIT gwt-filled" <<< "$out" && grep -q "^admitted gwt-filled by hand" <<< "$out"'
 check "#1383 desk-admit says admit writes what it drafted itself, and how to write it at gh-issue-edit ask" 'grep -q "^\*\*Admit has already written what it could.\*\*" "$SK" && grep -q "triage drafted <n> from its goal and proposal" "$SK" && grep -q "its text states no testable outcome" "$SK"'
 config yes '`none`'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
