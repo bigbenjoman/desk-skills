@@ -189,6 +189,14 @@ const vsnap = (tickets, fields = {}) => {
   return { tickets: queue.tickets, queue, report: emptyReport(), blocked: [], putOff: new Set(), parkNotes: new Map(), prStates: {},
     gatePending: false, epicPending: false, promotionPending: false, spawned: 0, slug: 'o__r', ...fields, queue };
 };
+// issue-1491 AC5: what waits on a slot or the next pass is listed as waiting, apart from WAITING ON YOU, and notifies nobody.
+{
+  const report = { ...emptyReport(), waits: ['held for the next pass, not a stall (A, B): …', 'H: waiting for a slot (held by A, B) — …'] };
+  t('issue-1491 AC5 tickets held for the next pass or a slot are listed under waiting, not WAITING ON YOU', j(lines(decideReportLines(after({ report })))),
+    j(['waiting, nothing for you to do:\n  held for the next pass, not a stall (A, B): …\n  H: waiting for a slot (held by A, B) — …']));
+  const v = vsnap([{ key: 'R-1', state: 'running' }], { report });
+  t('issue-1491 AC5 and set off no NOTIFY', j([verdictOf(v).needsYou, verdictOf(v).status, decideVerdict(v)]), j([[], 'nothing_yet', []]));
+}
 {
   const tickets = [
     { key: 'P-1', state: 'parked', park: { question: 'Which copy?' } },

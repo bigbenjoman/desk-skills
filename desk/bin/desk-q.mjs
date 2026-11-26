@@ -11,7 +11,8 @@
 //                                        per epic first; with --plain, one line per ticket, then one per
 //                                        epic with children in the queue
 //   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
-//   desk-q costs                         every name's charge this month, from the cost cache
+//   desk-q costs                         every name's charge this month, from the cost cache, each repo's
+//                                        Claude and Codex use at list prices, and each subscription's fee
 //   desk-q costs <repo>                  one repo's (or name's) charge this month by supplier
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets

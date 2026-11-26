@@ -58,6 +58,13 @@ export const openUnknowns = (unknowns, t) => {
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 
+// The words for a pending handoff that full slots hold, `heldBy` naming what holds them: the pass report
+// (pass/deadlines.mjs) and desk-q both say it in these words.
+export const slotWaitWords = (heldBy) => `waiting for a slot (held by ${heldBy.join(', ')})`;
+// What holds the slots a pending handoff waits for, as the last pass recorded on its handoff wait
+// (pass/deadlines.mjs), or null where none holds it.
+export const slotHeldBy = (t) => (t?.state === 'triaged' && t.handoff === 'pending' && t.waits?.handoff?.held_by?.length ? t.waits.handoff.held_by : null);
+
 // merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it: only
 // its current PR merging counts (merge-driver.sh release_chain, queue.mjs requeue's own holds). Whether t,
 // merged once, has gone round again since: waiting for its next worker (triaged or running, held behind its
