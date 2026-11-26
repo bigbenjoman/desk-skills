@@ -625,7 +625,13 @@ t('DS-1002 an unbraced guard\'s body is one expression on its line: a second sta
   // A line comment ends at a CR or U+2028 as at a line feed, so the body after it is the statement there.
   drawEdit(chainQ('if (isMain) // c\rconsole.log(1);\n  draw();')) === everyClaimer,
   drawEdit(chainQ('if (isMain) // CLI   {}\n  draw();')) === everyClaimer,
-], [true, true, 'some: test_cli.sh test_lint.sh', true, true, true, true, true]);
+  // A load-time call after a comment's CR, U+2028 or U+2029, before the next LF.
+  drawEdit(chainQ('if (isMain) { } // c\rdraw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) // CLI   {} +draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) { } // c draw();')) === everyClaimer,
+  drawEdit(chainQ('console.log(1); // note draw();')) === everyClaimer,
+  drawEdit(chainQ('// x\rdraw();')) === everyClaimer,
+], [true, true, 'some: test_cli.sh test_lint.sh', true, true, true, true, true, true, true, true, true, true]);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
