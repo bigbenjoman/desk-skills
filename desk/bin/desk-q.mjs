@@ -62,8 +62,8 @@ import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, su
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
-import { readHistory, recentHistory, sizeIn, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
-  readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
+import { readHistory, recentHistory, sizeIn, forecast, epicsOf, wquantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
+  readEstimates, saveEstimates, hitRate, calibration, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, workLoginDirs } from './claude-logins.mjs';
@@ -1077,13 +1077,23 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeIn(triageOf(r, t.key)), stage: st.stage, held: blockersOf(t), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
-  const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
+  // Each merged PR's undraft and merge (merge-stages.mjs), the outside reviewer's open outage, and the
+  // saved estimates the forecast calibrates from and marks a passed first estimate by.
+  let stages = [];
+  try { stages = MS.readStages(repoStateOf(r.stateDir)).flatMap((e) => { const ready = MS.readyAt(e); return ready == null ? [] : [{ key: e.key, ready, merged: Date.parse(e.merged) }]; }); } catch { /* none read */ }
+  const reviewers = new Set((r.ctx?.stateChecks ?? []).map((c) => c.login).filter(Boolean));
+  const outageFrom = Math.min(...(r.ctx?.outages ?? []).filter((o) => o?.to == null && reviewers.has(o.login)).map((o) => Date.parse(o.from)).filter(Number.isFinite));
+  let est = new Map();
+  try { est = readEstimates(r.stateDir); } catch { /* none saved */ }
+  const calib = calibration(est);
+  const first = Object.fromEntries([...est.values()].filter((e) => !e.merged_at && Number.isFinite(Date.parse(e.ships))).map((e) => [e.key, Date.parse(e.ships)]));
+  const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours]), stages, outageFrom, calib, first]);
   const slot = JSON.stringify([r.id, Boolean(r.batches), checkin]);
   const kept = forecasts.get(slot);
   if (kept?.id !== id) {
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
     const paused = passesPaused(r);
-    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
+    const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open, stages, outageFrom: Number.isFinite(outageFrom) ? outageFrom : null, calib }), sizes, first,
       paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
@@ -1115,7 +1125,14 @@ const shipWhen = (at, now) => (at <= now + SOON ? 'overdue' : when(at, now));
 // An undated ticket held behind a blocker whose code waits on another branch's promotion shows that
 // promotion PR's state (none, draft, open or red) in place of "no date".
 const promoOf = (t) => unpromotedHolds(t)[0]?.[1] ?? null;
-const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? shipWhen(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
+// A dated ticket whose saved first estimate has passed unmerged: its date is the forecast from now,
+// marked overdue.
+const pastFirst = (F, key, now) => !undatable(F) && !!F.T[key] && F.first?.[key] != null && F.first[key] <= now + SOON;
+const OVERDUE = '▲';
+const OVERDUE_KEY = 'overdue: its first estimate passed, re-forecast from now';
+const overdueNote = (F, key, now) => (pastFirst(F, key, now) ? `overdue: first estimate ${dayAndTime(F.first[key])}, re-forecast from now` : '');
+const shipDate = (F, key, now) => { const s = shipWhen(F.T[key].likely, now); return s !== 'overdue' && pastFirst(F, key, now) ? `${OVERDUE}${s}` : s; };
+const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? shipDate(F, x.t.key, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 // The same under a note's repo tag, which already names the repo.
 const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
@@ -1135,14 +1152,20 @@ function idleNote(r) {
 const MERGED = ' merged tickets';
 const CHECKIN_DATED = ' · tickets that need your answer dated at the next check-in';
 const hitWords = (h) => ` shipped before their could-run-to time (last ${h.n} tickets)`;
+const hours = (x) => `${Math.abs(x).toFixed(1)} h`;
+// The median error of those estimates' ships times, signed and either way.
+const errWords = (h) => `median error ${h.signed < 0 ? '-' : '+'}${hours(h.signed)} ${h.signed < 0 ? 'early' : 'late'}, ${hours(h.abs)} either way`;
+// The calibrated range's share of the merges it was fitted to.
+const calibWords = (c) => `range holds ${c.holds}% of the last ${c.n} merges`;
 
-// How often the repo's saved first estimates held, for a ships view's header.
+// How often the repo's saved first estimates held, and by how far they missed, for a ships view's header.
 function hitLine(r) {
   const h = hitRate(readEstimates(r.stateDir));
   return h.pct == null ? `No hit rate yet: ${h.n} merged ticket${h.n === 1 ? ' has' : 's have'} a saved first estimate, and a rate needs ${MIN_HITS}.`
-    : `${h.pct}%${hitWords(h)}`;
+    : `${h.pct}%${hitWords(h)} · ${errWords(h)}`;
 }
-const typical = (F, key) => quantile(durationsFor(F.d, F.sizes[key]).v, 0.5).toFixed(1);
+// A ticket's typical slot time, plus the typical outside review and merge where the forecast splits them.
+const typical = (F, key) => (wquantile(F.P[F.sizes[key]].v, 0.5) + (F.ext ? wquantile(F.ext, 0.5) : 0)).toFixed(1);
 const listed = (keys) => keys.join(', ');
 
 // The blockers in this queue that the forecast could not date.
@@ -1184,7 +1207,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     const kw = keyW(r.rows.map((x) => x.t.key));
     out.push(`  ${pad('TICKET', kw)}${pad('STATE', STATE_W)}${pad('STARTS', 13)}SHIPS`);
     for (const x of r.rows) {
-      out.push(`  ${pad(x.t.key, kw)}${pad(LABEL[x.k], STATE_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? '' : undatedWhy(r, F, x)}`.trimEnd());
+      out.push(`  ${pad(x.t.key, kw)}${pad(LABEL[x.k], STATE_W)}${pad(startsCell(F, x, now), 13)}${pad(shipsCell(F, x, now), 14)}${etaOf(F, x.t.key) ? overdueNote(F, x.t.key, now) : undatedWhy(r, F, x)}`.trimEnd());
     }
     if (!r.rows.length) out.push('  No unfinished tickets.');
   };
@@ -1198,7 +1221,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
       continue;
     }
     if (note) { out.push(note); continue; }
-    out.push(forecastLine(r.name, now, F.count, r.workers, checkin), passLines(r, now)[0], hitLine(r));
+    out.push(forecastLine(r.name, now, F.count, r.workers, checkin, F.calib), passLines(r, now)[0], hitLine(r));
     table(r, F);
     out.push(`All done by: ${F.clears ? shipWhen(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
@@ -1364,7 +1387,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
-  const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null)] : [])].flatMap(wrapped);
+  const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null, slug && dated.length === 1 ? dated[0].F.calib : null)] : [])].flatMap(wrapped);
   const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => warnNote(`▲ ${tagOf(r)}`, `${lead(r)}${stoppedNote(r, now)}. `, `${resumeLine(r)}.`)), w, width);
   return { list, per, notes, items, head, stopped, manyBatches: !!slug && list.length > 1 };
 }
@@ -1378,13 +1401,14 @@ function tabHead(repos, r, now, solid, pinUsage) {
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
 // merged tickets, then with one repo's batches, their hit rate.
-function forecastSegs(now, count, checkin, ep, batches) {
+function forecastSegs(now, count, checkin, ep, batches, calib = null) {
   const h = batches ? hitRate(new Map(batches.flatMap((b) => [...readEstimates(b.stateDir)]))) : null;
   return segLine([['forecast  ', GREY], ['from ', GREY], [clock(now), null], [' · ', GREY], [RUNS.toLocaleString('en-GB'), BOLD], [' runs over ', GREY], [String(count), BOLD], [MERGED, GREY],
+    ...(calib ? [[' · range holds ', GREY], [`${calib.holds}%`, BOLD], [` of the last ${calib.n} merges`, GREY]] : []),
     ...(ep ? [[` · ${ep.key}: `, GREY], [`${ep.done} of ${ep.total}`, BOLD], [' children done', GREY]] : []),
     ...(checkin ? [[CHECKIN_DATED, GREY]] : []),
     ...(!h ? [] : [BAR, ['hit rate  ', GREY], ...(h.pct == null ? [['none yet', null], [`: ${h.n} of the ${MIN_HITS} saved estimates it needs`, GREY]]
-      : [[`${h.pct}%`, BOLD], [hitWords(h), GREY]])])]);
+      : [[`${h.pct}%`, BOLD], [hitWords(h), GREY], [' · median error ', GREY], [`${h.signed < 0 ? '-' : '+'}${hours(h.signed)}`, BOLD], [h.signed < 0 ? ' early, ' : ' late, ', GREY], [hours(h.abs), BOLD], [' either way', GREY]])])]);
 }
 
 // A ships view's key line: each entry a list of coloured runs, split by a grey bar. Narrower than the
@@ -1409,8 +1433,8 @@ const lateOf = (sgr) => (sgr == null || sgr === BOLD ? FAINT : `2;${sgr}`);
 const solidBars = (width) => width != null && !process.env.NO_COLOR;
 
 // `desk-q ships`' first line: the forecast line's runs, the repo's name and workers added.
-const forecastLine = (name, now, count, workers, checkin) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count}${MERGED}`
-  + ` · ${workers} workers${checkin ? CHECKIN_DATED : ''}`;
+const forecastLine = (name, now, count, workers, checkin, calib) => `${name} · forecast from ${dayAndTime(now)} · ${RUNS.toLocaleString('en-GB')} runs over ${count}${MERGED}`
+  + ` · ${workers} workers${calib ? ` · ${calibWords(calib)}` : ''}${checkin ? CHECKIN_DATED : ''}`;
 
 // A ticket row's key, in a TICKET column `kw` wide, and state, the state in its colour.
 const ticketLead = (i, indent, kw) => [[`${indent}${pad(i.x.t.key, kw)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]];
@@ -1538,7 +1562,9 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
       [['█', STATE_SGR.waiting], [' provisional epic', null]], rail, ...(shown.length ? [statesKey(shown)] : [])], width, [`enter on an epic shows its tickets · ${dates}`]));
   } else {
     const sgr = STATE_SGR[shown.find((k) => STATE_SGR[k]) ?? 'running'];
-    foot.push('', ...keyLine([[['█', sgr], [' starts to ships  ', null], late(sgr), [' could run to (1 run in 5 is later)', null]], rail, ...(shown.length ? [statesKey(shown)] : [])], width, [dates]));
+    const overdue = dated.some((i) => pastFirst(i.F, i.x.t.key, now)) ? [[[OVERDUE, null], [` ${OVERDUE_KEY}`, null]]] : [];
+    const runTo = dated.some((i) => i.F.calib) ? ' could run to (fitted to past merges)' : ' could run to (1 run in 5 is later)';
+    foot.push('', ...keyLine([[['█', sgr], [' starts to ships  ', null], late(sgr), [runTo, null]], rail, ...overdue, ...(shown.length ? [statesKey(shown)] : [])], width, [dates]));
   }
   return { head, rows, foot };
 }
@@ -1589,7 +1615,8 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
   const shown = shownOf(s.items.map((i) => i.x.k));
-  foot.push('', ...(s.items.length ? keyLine([statesKey(shown), [['grouped by ship date: day by day for a week, then week by week', GREY]]], width) : ['Nothing unfinished here.']));
+  const overdue = s.items.some((i) => i.e && pastFirst(i.F, i.x.t.key, now)) ? [[[OVERDUE, null], [` ${OVERDUE_KEY}`, null]]] : [];
+  foot.push('', ...(s.items.length ? keyLine([statesKey(shown), ...overdue, [['grouped by ship date: day by day for a week, then week by week', GREY]]], width) : ['Nothing unfinished here.']));
   return { head, rows, foot };
 }
 
@@ -3645,14 +3672,20 @@ function timingFields(r, F, x, h, now) {
   const { t, k } = x;
   const e = F && !undatable(F) ? F.T[t.key] : null;
   if (e) {
-    const { v, own } = durationsFor(F.d, F.sizes[t.key]);
-    const size = F.sizes[t.key], n = F.d.bySize[size]?.length ?? 0;
-    // Drawn from the whole history, the line still says how many of this size it holds, or that triage gave none.
-    const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
+    const size = F.sizes[t.key];
+    const { v, own, n, from } = F.P[size];
+    // Not its size's own, the line says how many of this size it holds, and which sizes it borrowed, or that triage gave none.
+    const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)'
+      : from.length ? ` (${n} of size ${size}; sizes ${from.join(', ')} scaled to ${size})` : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
+    const q = (p) => wquantile(v, p).toFixed(1);
+    const took = F.ext ? `typical ${q(0.5)} h spawn to undraft, then ${wquantile(F.ext, 0.5).toFixed(1)} h undraft to merge`
+      : `typical ${q(0.5)} h spawn to merge, 4 in 5 within ${q(0.8)} h`;
+    const range = F.calib ? `${F.calib.holds}% of the last ${F.calib.n} merged inside their range` : '1 run in 5 is later';
     return [
       ['Starts', [[k === 'finishing' ? 'started' : e.start <= now + SOON ? (k === 'running' ? 'running now' : 'now') : when(e.start, now), null]]],
-      ['Ships', [[shipWhen(e.likely, now), BOLD], ...(shipWhen(e.late, now) === 'overdue' ? [] : [[`  could run to ${when(e.late, now)} (1 run in 5 is later)`, DIM]])]],
-      ['Based on', [[`${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of} · typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h`, DIM]]],
+      ['Ships', [[shipDate(F, t.key, now), BOLD], ...(pastFirst(F, t.key, now) ? [[`  ${overdueNote(F, t.key, now)}`, STATE_SGR.needs]] : []),
+        ...(shipWhen(e.late, now) === 'overdue' ? [] : [[`  could run to ${when(e.late, now)} (${range})`, DIM]])]],
+      ['Based on', [[`${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of} · ${took} · recent merges count most`, DIM]]],
     ];
   }
   const open = h ? unmergedBlockers(r.q, t).map((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key]))) : [];

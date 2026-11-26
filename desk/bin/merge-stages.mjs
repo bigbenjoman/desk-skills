@@ -156,6 +156,15 @@ export function summary(all) {
   return { prs: entries.length, stages, outage };
 }
 
+// When a recorded PR left draft, as ms: desk's verdict round's end plus the undraft stage, or null
+// for a PR with no undraft read.
+export function readyAt(e) {
+  const rounds = e?.desk?.rounds ?? [];
+  const v = [...rounds].reverse().find((r) => r.clean) ?? rounds.at(-1);
+  const t = ms(v?.end) + e?.undraft * 60000;
+  return v && Number.isFinite(e?.undraft) && Number.isFinite(t) ? t : null;
+}
+
 export const fmt = (m) => (m == null ? '—' : m >= 90 ? `${Math.round(m / 6) / 10}h` : `${Math.round(m)}m`);
 
 // The summary as one line, or null with nothing recorded.

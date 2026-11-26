@@ -154,7 +154,8 @@ export function recordMerge({ state, queue, key, mergedPrs, now = Date.now() }) 
 //
 // The first date the forecast gave each ticket, kept so a ship date can be checked against what
 // happened: <state>/eta.jsonl gains {key, at, starts, ships, could_run_to} the first time a ticket is
-// dated, then {key, merged_at} when it merges. Appended only, and the first line of each kind per key
+// dated (with shift_h and stretch, the calibration applied to it, once there is one), then
+// {key, merged_at} when it merges. Appended only, and the first line of each kind per key
 // wins, so a later forecast never overwrites an estimate and two writers racing count once.
 
 export const ESTIMATES_FILE = 'eta.jsonl';
@@ -173,7 +174,10 @@ export function readEstimates(state) {
     let d;
     try { d = JSON.parse(raw); } catch { continue; }
     if (!d?.key) continue;
-    if (d.could_run_to != null) { if (!est.has(d.key)) est.set(d.key, { key: d.key, at: d.at, starts: d.starts, ships: d.ships, could_run_to: d.could_run_to }); }
+    if (d.could_run_to != null) {
+      if (!est.has(d.key)) est.set(d.key, { key: d.key, at: d.at, starts: d.starts, ships: d.ships, could_run_to: d.could_run_to,
+        ...(d.shift_h != null ? { shift_h: d.shift_h } : {}), ...(d.stretch != null ? { stretch: d.stretch } : {}) });
+    }
     else if (d.merged_at != null && !merges.has(d.key)) merges.set(d.key, d.merged_at);
   }
   for (const [k, m] of merges) if (est.has(k)) est.get(k).merged_at = m;
@@ -185,7 +189,8 @@ export function saveEstimates(state, T, now) {
   const have = readEstimates(state);
   const iso = (t) => new Date(t).toISOString();
   const lines = Object.entries(T ?? {}).filter(([k, e]) => e && !have.has(k))
-    .map(([key, e]) => ({ key, at: iso(now), starts: iso(e.start), ships: iso(e.likely), could_run_to: iso(e.late) }));
+    .map(([key, e]) => ({ key, at: iso(now), starts: iso(e.start), ships: iso(e.likely), could_run_to: iso(e.late),
+      ...(e.stretch != null ? { shift_h: Math.round((e.shift / HOUR) * 100) / 100, stretch: e.stretch } : {}) }));
   append(estimatesPath(state), lines);
   return lines;
 }
@@ -199,26 +204,73 @@ export function recordEstimateMerge(state, key, mergedAt) {
   return { ...e, merged_at: mergedAt };
 }
 
-// How many of the last HIT_LAST merged estimates merged before their could-run-to time:
-// {n, hits, pct}, with pct null under MIN_HITS.
+const okTime = (s) => Number.isFinite(Date.parse(s));
+// The saved estimates that have merged, oldest merge first.
+const scored = (est) => [...est.values()].filter((e) => okTime(e.merged_at) && okTime(e.could_run_to) && okTime(e.ships))
+  .sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
+const middle = (v) => { const s = [...v].sort((a, b) => a - b); return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : null; };
+const tenth = (h) => Math.round(h * 10) / 10;
+
+// How many of the last HIT_LAST merged estimates merged before their could-run-to time, and how far
+// their ships time was from the merge, in hours (merge minus ships, so late is positive):
+// {n, hits, pct, signed, abs}, with pct, signed and abs null under MIN_HITS.
 export function hitRate(est) {
-  const ok = (s) => Number.isFinite(Date.parse(s));
-  const merged = [...est.values()].filter((e) => ok(e.merged_at) && ok(e.could_run_to))
-    .sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at)).slice(-HIT_LAST);
+  const merged = scored(est).slice(-HIT_LAST);
   const hits = merged.filter((e) => Date.parse(e.merged_at) < Date.parse(e.could_run_to)).length;
-  return { n: merged.length, hits, pct: merged.length < MIN_HITS ? null : Math.round((hits / merged.length) * 100) };
+  const errs = merged.map((e) => (Date.parse(e.merged_at) - Date.parse(e.ships)) / HOUR);
+  const few = merged.length < MIN_HITS;
+  return { n: merged.length, hits, pct: few ? null : Math.round((hits / merged.length) * 100),
+    signed: few ? null : tenth(middle(errs)), abs: few ? null : tenth(middle(errs.map(Math.abs))) };
+}
+
+// The forecast corrects itself from the last CALIBRATE_LAST merged estimates: ships moves by their
+// median error, and the span from ships to could-run-to stretches until RANGE_HOLDS of them merged
+// inside it. Each estimate's own calibration (shift_h, stretch) is taken off first, so the fit is
+// always of the uncorrected forecast.
+export const CALIBRATE_LAST = 10;
+export const RANGE_HOLDS = 0.8;
+export const MAX_STRETCH = 10;
+// -> {n, shift (ms), stretch, holds (% of the n inside the calibrated range)}, or null with fewer than
+// CALIBRATE_LAST merged.
+export function calibration(est) {
+  const last = scored(est).slice(-CALIBRATE_LAST);
+  if (last.length < CALIBRATE_LAST) return null;
+  const raw = last.map((e) => {
+    const ships = Date.parse(e.ships) - (Number(e.shift_h) || 0) * HOUR;
+    return { merged: Date.parse(e.merged_at), ships, span: Math.max(0, (Date.parse(e.could_run_to) - Date.parse(e.ships)) / (Number(e.stretch) || 1)) };
+  });
+  const shift = middle(raw.map((r) => r.merged - r.ships));
+  const need = raw.map((r) => { const over = r.merged - (r.ships + shift); return over <= 0 ? 0 : r.span > 0 ? over / r.span : Infinity; }).sort((a, b) => a - b);
+  const kth = need[Math.ceil(RANGE_HOLDS * need.length) - 1];
+  const stretch = Math.round(Math.min(MAX_STRETCH, Math.max(1, kth)) * 100) / 100;
+  const holds = raw.filter((r) => r.merged <= r.ships + shift + stretch * r.span).length;
+  return { n: last.length, shift: Math.round(shift), stretch, holds: Math.round((holds / last.length) * 100) };
+}
+
+// One date {start, likely, late} under calibration `c`: likely moved by c.shift (an early correction
+// never takes away more than half the time left to it), late stretched from it by c.stretch.
+export function calibrated(d, c, now) {
+  if (!d || !c) return d;
+  const likely = Math.max(d.likely + c.shift, (d.likely + Math.max(d.start ?? now, now)) / 2);
+  return { ...d, likely, late: likely + c.stretch * (d.late - d.likely), shift: likely - d.likely, stretch: c.stretch };
 }
 
 // ---- the forecast ------------------------------------------------------------------------------
 //
-// Each repo's queue run forward RUNS times, each ticket's duration drawn from the repo's own history
-// by size. Starts and ships are the 50th percentile of a ticket's start and finish across the runs,
-// "could run to" the 80th. Seeded, so the same queue, history and clock give the same dates.
+// Each repo's queue run forward RUNS times. A ticket holds a worker slot from its spawn to its PR's
+// undraft, drawn from the repo's own history by size, then waits on the outside review and the merge,
+// drawn from its recent merge stages and holding no slot. Each merge weighs half as much every
+// HALF_LIFE_DAYS. Starts and ships are the 50th percentile of a ticket's start and finish across the
+// runs, "could run to" the 80th, then calibrated from the saved estimates. Seeded, so the same queue,
+// history and clock give the same dates.
 
 export const RUNS = 2000;
 export const MIN_HISTORY = 10;
-// A size with fewer merged tickets than this draws from the whole history instead.
+// A size with fewer merged tickets than this borrows from its neighbouring sizes.
 export const MIN_OF_SIZE = 5;
+// Fewer merge-stage records than this, and the spawn-to-merge time is drawn whole.
+export const MIN_EXTERNAL = 5;
+export const HALF_LIFE_DAYS = 7;
 // The user's check-ins: a ticket waiting on them is dated at the next one when they press c.
 export const CHECKIN_HOURS = [8, 17];
 export const HOUR = 3_600_000, DAY = 86_400_000;
@@ -231,22 +283,88 @@ export function recentHistory(lines, now) {
   return (lines ?? []).filter((l) => Number.isFinite(l.hours) && l.hours >= 0 && Date.parse(l.merged_at) >= since && Date.parse(l.merged_at) <= now);
 }
 
-// Durations in hours, ascending: every line under `all`, and each size's own.
-export function durations(lines) {
-  const all = lines.map((l) => l.hours).sort((a, b) => a - b);
-  const bySize = {};
-  for (const l of lines) (bySize[l.size] ??= []).push(l.hours);
-  for (const v of Object.values(bySize)) v.sort((a, b) => a - b);
-  return { all, bySize };
-}
-
-// The durations a ticket of `size` draws from, and whether they are its size's own.
-export function durationsFor(d, size) {
-  const own = d.bySize[size];
-  return own?.length >= MIN_OF_SIZE ? { v: own, own: true } : { v: d.all, own: false };
-}
-
 export const quantile = (v, p) => v[Math.min(v.length - 1, Math.floor(p * v.length))];
+
+// A merge's weight at `now`: halved every HALF_LIFE_DAYS since it merged; 1 with no merge time.
+export function weightOf(mergedAt, now) {
+  const m = typeof mergedAt === 'number' ? mergedAt : Date.parse(mergedAt ?? '');
+  return Number.isFinite(m) ? 0.5 ** (Math.max(0, now - m) / (HALF_LIFE_DAYS * DAY)) : 1;
+}
+
+// The weighted p-quantile of [{h, w}] entries, or null with none: quantile's pick when the weights are equal.
+export function wquantile(v, p) {
+  if (!v?.length) return null;
+  const s = [...v].sort((a, b) => a.h - b.h);
+  const total = s.reduce((a, e) => a + e.w, 0);
+  let acc = 0;
+  for (const e of s) { acc += e.w; if (acc > p * total) return e.h; }
+  return s.at(-1).h;
+}
+
+// A draw from [{h, w}] entries by weight, with `rand` in [0, 1).
+function sampler(v, rand) {
+  const cum = [];
+  let total = 0;
+  for (const e of v) cum.push(total += e.w);
+  return () => {
+    const x = rand() * total;
+    let lo = 0, hi = cum.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] > x) hi = mid; else lo = mid + 1; }
+    return v[lo].h;
+  };
+}
+
+// The history split at each PR's undraft. `stages` are [{key, ready, merged}] (ms) from merge-stages;
+// each one inside the window is an external stage, undraft to merge. With MIN_EXTERNAL of them, a
+// line's slot time is spawn to its own undraft, or its spawn to merge less the typical external stage
+// where its PR has none read. -> {slot: [{size, h, w}], ext: [{h, w}] | null, all: [{h, w}]}
+export function splitHistory(history, stages, now) {
+  const since = now - WINDOW_DAYS * DAY;
+  const read = (stages ?? []).filter((e) => Number.isFinite(e?.ready) && Number.isFinite(e?.merged) && e.merged >= e.ready && e.merged >= since && e.merged <= now);
+  const all = history.map((l) => ({ h: l.hours, w: weightOf(l.merged_at, now) }));
+  if (read.length < MIN_EXTERNAL) return { slot: history.map((l, i) => ({ size: l.size, h: l.hours, w: all[i].w })), ext: null, all };
+  const ext = read.map((e) => ({ h: (e.merged - e.ready) / HOUR, w: weightOf(e.merged, now) }));
+  const typical = wquantile(ext, 0.5);
+  const ready = new Map(read.map((e) => [e.key, e.ready]));
+  const slot = history.map((l, i) => {
+    const r = ready.get(l.key), sp = Date.parse(l.spawned_at);
+    const h = r != null && Number.isFinite(sp) && r >= sp ? (r - sp) / HOUR : Math.max(0, l.hours - typical);
+    return { size: l.size, h, w: all[i].w };
+  });
+  return { slot, ext, all };
+}
+
+// How much longer each size up the scale takes: the geometric mean, over every pair of sizes with
+// MIN_OF_SIZE lines each, of their typical times' ratio per step. 1 with no such pair.
+export function sizeStep(slot) {
+  const med = SIZES.map((s) => { const v = slot.filter((l) => l.size === s); return v.length >= MIN_OF_SIZE ? wquantile(v, 0.5) : null; });
+  const logs = [];
+  for (let i = 0; i < med.length; i++) for (let j = i + 1; j < med.length; j++) if (med[i] > 0 && med[j] > 0) logs.push(Math.log(med[j] / med[i]) / (j - i));
+  return logs.length ? Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length) : 1;
+}
+
+// The slot times a ticket of `size` draws from: its size's own with MIN_OF_SIZE of them; else its own
+// and its neighbouring sizes', nearest first, each scaled by sizeStep per step, until MIN_OF_SIZE;
+// else, or with no size, the whole history. -> {v: [{h, w}], own, n (its size's own count), from: [sizes borrowed]}
+export function poolFor(slot, size, step = sizeStep(slot)) {
+  const of = (s) => slot.filter((l) => l.size === s);
+  const n = of(size).length, idx = SIZES.indexOf(size);
+  if (idx >= 0 && n >= MIN_OF_SIZE) return { v: of(size), own: true, n, from: [] };
+  if (idx >= 0) {
+    const v = [...of(size)], from = [];
+    for (let d = 1; d < SIZES.length && v.length < MIN_OF_SIZE; d++) {
+      for (const j of [idx - d, idx + d]) {
+        const near = j >= 0 && j < SIZES.length ? of(SIZES[j]) : [];
+        if (!near.length) continue;
+        const k = step ** (idx - j);
+        v.push(...near.map((l) => ({ ...l, h: l.h * k })));
+        from.push(SIZES[j]);
+      }
+    }
+    if (v.length >= MIN_OF_SIZE) return { v, own: false, n, from };
+  }
+  return { v: slot, own: false, n, from: [] };
+}
 
 // Local calendar arithmetic, so "today" and a weekday are the user's own: `days` after the day `t`
 // falls on, at `hours` past its midnight; and how many calendar days `t` is after `now`.
@@ -377,25 +495,34 @@ export function epicsOf(tickets, triage, { jira = true } = {}) {
 
 // `rows` are the queue's unfinished tickets in spawn order, each {key, k, size, stage, held, collides,
 // epic} with `k` desk-q's shown state. `epics` is {KEY: {missing}}: children not queued yet join the end
-// of the queue, each with a duration drawn from the whole history, shared across the workers. Returns
-// {none, count} with too little history; otherwise {T: {key: {start, likely, late} | null}, E: {epic:
-// {start, likely, late, setBy} | null}, clears, undated, count}.
-export function forecast({ rows, workers, history, now, checkin = false, epics = {} }) {
+// of the queue, each with a duration drawn from the whole history, shared across the workers.
+// `stages`: splitHistory's. `outageFrom`: when the outside reviewer's open outage began (ms), or null;
+// no outside review starts until it has lasted as long again. `calib`: calibration's, or null.
+// Returns {none, count} with too little history; otherwise {T: {key: {start, likely, late} | null},
+// E: {epic: {start, likely, late, setBy} | null}, clears, undated, count, P: {size: poolFor}, ext, calib}.
+export function forecast({ rows, workers, history, now, checkin = false, epics = {}, stages = [], outageFrom = null, calib = null }) {
   const count = history.length;
   if (count < MIN_HISTORY) return { none: true, count };
-  const d = durations(history);
+  const { slot, ext, all } = splitHistory(history, stages, now);
+  const step = sizeStep(slot);
+  const P = Object.fromEntries([...new Set(rows.map((x) => x.size))].map((s) => [s, poolFor(slot, s, step)]));
   const inQ = new Set(rows.map((x) => x.key));
   // A collision recorded on either ticket keeps both apart.
   const coll = Object.fromEntries(rows.map((x) => [x.key, new Set()]));
   for (const x of rows) for (const c of x.collides ?? []) if (inQ.has(c) && c !== x.key) { coll[x.key].add(c); coll[c].add(x.key); }
   const avail = (x) => (x.k === 'needs' ? (checkin ? nextCheckin(now) : null) : ['stuck', 'failed'].includes(x.k) ? null : now);
-  const pool = Object.fromEntries(rows.map((x) => [x.key, durationsFor(d, x.size).v]));
   const rand = rng(42);
-  const draw = (x) => pool[x.key][Math.floor(rand() * pool[x.key].length)] * HOUR;
+  const draws = Object.fromEntries(Object.entries(P).map(([s, p]) => [s, sampler(p.v, rand)]));
+  const draw = (x) => draws[x.size]() * HOUR;
+  const extDraw = ext ? sampler(ext, rand) : () => 0;
+  const reviewFrom = Number.isFinite(outageFrom) ? now + Math.max(0, now - outageFrom) : -Infinity;
+  // The ticket's merge, once its slot time ends at `freed`.
+  const merged = (freed, e) => Math.max(freed, reviewFrom) + e;
   const starts = Object.fromEntries(rows.map((x) => [x.key, []]));
   const ends = Object.fromEntries(rows.map((x) => [x.key, []]));
   // The epics' own draws come from their own generator, so a ticket's dates are the same with or without them.
   const erand = rng(7);
+  const allDraw = sampler(all, erand);
   const kids = Object.fromEntries(Object.keys(epics).map((ep) => [ep, rows.filter((x) => x.epic === ep).map((x) => x.key)]));
   const epicEnds = Object.fromEntries(Object.keys(epics).map((ep) => [ep, []]));
   for (let run = 0; run < RUNS; run++) {
@@ -404,13 +531,14 @@ export function forecast({ rows, workers, history, now, checkin = false, epics =
     for (const x of rows.filter((y) => y.k === 'running')) {
       const i = least();
       s[x.key] = now;
-      f[x.key] = now + draw(x) * (1 - stageDone(x.stage));
-      slots[i] = Math.max(slots[i], f[x.key]);
+      const freed = now + draw(x) * (1 - stageDone(x.stage));
+      f[x.key] = merged(freed, extDraw() * HOUR);
+      slots[i] = Math.max(slots[i], freed);
     }
     // A finished worker (`finishing`) holds no slot: it is dated where its stage left it.
     for (const x of rows.filter((y) => y.k === 'finishing')) {
       s[x.key] = now;
-      f[x.key] = now + draw(x) * (1 - stageDone(x.stage));
+      f[x.key] = merged(now + draw(x) * (1 - stageDone(x.stage)), extDraw() * HOUR);
     }
     let pending = workers > 0 ? rows.filter((x) => !['running', 'finishing'].includes(x.k)) : [];
     while (pending.length) {
@@ -432,14 +560,15 @@ export function forecast({ rows, workers, history, now, checkin = false, epics =
         if (t < bestT) { best = x; bestT = t; }
       }
       if (!best) break;
-      const dur = draw(best);
+      const held = draw(best), e = extDraw() * HOUR;
       // Never alongside a ticket it collides with, whichever of the two was placed first.
       for (let moved = true; moved;) {
         moved = false;
-        for (const c of coll[best.key]) if (f[c] != null && s[c] < bestT + dur && f[c] > bestT) { bestT = f[c]; moved = true; }
+        for (const c of coll[best.key]) if (f[c] != null && s[c] < merged(bestT + held, e) && f[c] > bestT) { bestT = f[c]; moved = true; }
       }
       s[best.key] = bestT;
-      f[best.key] = slots[i] = bestT + dur;
+      slots[i] = bestT + held;
+      f[best.key] = merged(bestT + held, e);
       pending = pending.filter((x) => x !== best);
     }
     let end = now;
@@ -453,7 +582,7 @@ export function forecast({ rows, workers, history, now, checkin = false, epics =
       if (missing && workers <= 0) continue;
       if (missing) {
         let extra = 0;
-        for (let j = 0; j < missing; j++) extra += d.all[Math.floor(erand() * d.all.length)] * HOUR;
+        for (let j = 0; j < missing; j++) extra += allDraw() * HOUR;
         m = Math.max(m, end + extra / Math.max(1, workers));
       }
       epicEnds[ep].push(m);
@@ -462,20 +591,19 @@ export function forecast({ rows, workers, history, now, checkin = false, epics =
   const T = {};
   for (const x of rows) {
     const v = ends[x.key].sort((a, b) => a - b), st = starts[x.key].sort((a, b) => a - b);
-    T[x.key] = v.length >= RUNS * 0.9 ? { start: quantile(st, 0.5), likely: quantile(v, 0.5), late: quantile(v, 0.8) } : null;
+    T[x.key] = v.length >= RUNS * 0.9 ? calibrated({ start: quantile(st, 0.5), likely: quantile(v, 0.5), late: quantile(v, 0.8) }, calib, now) : null;
   }
   // An epic starts when its first child starts, and is set by the child that ships last.
   const E = {};
   for (const [ep, ks] of Object.entries(kids)) {
     const v = epicEnds[ep].sort((a, b) => a - b);
-    E[ep] = v.length >= RUNS * 0.9 && ks.every((k) => T[k]) ? {
-      start: ks.length ? Math.min(...ks.map((k) => T[k].start)) : null,
-      likely: quantile(v, 0.5), late: quantile(v, 0.8),
-      setBy: ks.length ? ks.reduce((a, k) => (T[k].likely > T[a].likely ? k : a)) : null,
-    } : null;
+    if (!(v.length >= RUNS * 0.9 && ks.every((k) => T[k]))) { E[ep] = null; continue; }
+    const start = ks.length ? Math.min(...ks.map((k) => T[k].start)) : null;
+    const { shift, stretch, ...d } = calibrated({ start, likely: quantile(v, 0.5), late: quantile(v, 0.8) }, calib, now);
+    E[ep] = { ...d, setBy: ks.length ? ks.reduce((a, k) => (T[k].likely > T[a].likely ? k : a)) : null };
   }
   const dated = rows.filter((x) => T[x.key]);
-  return { T, E, count, clears: dated.length ? Math.max(...dated.map((x) => T[x.key].likely)) : null, undated: rows.length - dated.length };
+  return { T, E, count, clears: dated.length ? Math.max(...dated.map((x) => T[x.key].likely)) : null, undated: rows.length - dated.length, P, ext, calib };
 }
 
 export function describe(r) {
