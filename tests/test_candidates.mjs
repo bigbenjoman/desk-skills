@@ -284,10 +284,12 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
   t('#1501 AC3 one whose PRs are all closed unmerged is offered clean', got.offered.find((c) => c.key === 'ACME-72')?.flags, []);
   t('#1501 the open PRs are read once a listing', r.calls.openPrs, 1);
   t('#1501 VERIFY the listing names them', renderLines(got, { project: 'ACME' }).filter((l) => /ACME-7[01]/.test(l)), [
-    '  3. ACME-71  P1  Bug  ACME-71 summary — open PR #3480',
+    '  3. ACME-71  P1  Bug  ACME-71 summary — open PR #3480; adopt it with node ~/.claude/desk/bin/queue.mjs adopt ACME-71 3480 --filed, not /desk-admit, which would open a second PR',
     'left out: ACME-70 (open PR #3478 by mousedown), ACME-74 (open PR #3483 by someone)',
   ]);
-  const noHandle = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc, open }) });
+  t('#1501 AC2 the person\'s own flagged one is adopted on its PR, not admitted to a second', renderLines(got, { project: 'ACME' }).find((l) => l.includes('ACME-73')),
+    '  1. ACME-73  P2  Task  ACME-73 summary — open PR #3481; adopt it with node ~/.claude/desk/bin/queue.mjs adopt ACME-73 3481 --filed, not /desk-admit, which would open a second PR');
+  t('#1501 a clean one names no adopt command', renderLines(got, { project: 'ACME' }).find((l) => l.includes('ACME-72')).includes('adopt'), false);  const noHandle = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc, open }) });
   t('#1501 with no GitHub handle every open PR is someone else\'s', noHandle.left.map((l) => l.key), ['ACME-73', 'ACME-70', 'ACME-71', 'ACME-74']);
   const unread = readsOf({ issues, desc });
   unread.openPrs = () => null;

@@ -40,6 +40,7 @@ import { keyPattern } from './batch-state.mjs';
 import { lintTicket } from './ticket-lint.mjs';
 import { mergedNaming, prNames } from './recoveries.mjs';
 import { listBatches, liveBatch, repoTickets } from './batches.mjs';
+import { loginIn } from './gate.mjs';
 
 // Jira's largest page for a search returning fields.
 export const SEARCH_MAX = 100;
@@ -177,8 +178,6 @@ export function onMain(key, { prs = [], commits = [] } = {}) {
 
 // An open PR's author's login, or null where gh gave none.
 const authorOf = (p) => String(p?.author?.login ?? '').trim() || null;
-// Whether open PR `p` is by the person whose GitHub handle is `handle`; never with no handle.
-const byPerson = (p, handle) => !!handle && authorOf(p)?.toLowerCase() === String(handle).trim().replace(/^@/, '').toLowerCase();
 
 // The listing, read through `reads` (defaultReads gives the real ones):
 //   search(jql, max, fields)  -> {ok, issues, more} (one page; `more` when one lies behind it) | {ok: false, why}
@@ -218,7 +217,7 @@ export function listCandidates({ project, priority, person = null, handle = null
       if (!why) {
         if (open === undefined) open = reads.openPrs();
         const naming = (open ?? []).filter(prNames(i.key));
-        const theirs = naming.find((p) => !byPerson(p, handle));
+        const theirs = naming.find((p) => !(handle && loginIn(authorOf(p), handle)));
         if (theirs) why = `open PR #${theirs.number} by ${authorOf(theirs) ?? 'an unknown author'}`;
         else if (naming.length) openPr.set(i.key, naming[0].number);
       }
@@ -270,8 +269,11 @@ export function renderLines(r, { project }) {
   const rest = r.offered.filter((c) => !c.own);
   if (r.ownOnly && !mine.length) return [];
   const out = [];
+  // One the person's own open PR names is taken in on that PR (queue.mjs adopt), which the merge driver
+  // then merges: /desk-admit would start a worker opening a second one.
+  const adopt = (c) => (c.openPr != null ? [`adopt it with node ~/.claude/desk/bin/queue.mjs adopt ${c.key} ${c.openPr} --filed, not /desk-admit, which would open a second PR`] : []);
   const line = (c, i) => {
-    const n = notes(c);
+    const n = [...notes(c), ...adopt(c)];
     return `  ${i}. ${c.key}  ${c.priority ?? 'no priority'}  ${c.type ?? '?'}  ${c.summary}${n.length ? ` — ${n.join('; ')}` : ''}`;
   };
   if (mine.length) {
@@ -325,7 +327,7 @@ export function trackerOf() {
   const project = /^[`"]?([A-Z][A-Z0-9_]*)\b/.exec(String([].concat(E.configValues('jira-project') ?? [])[0] ?? '').trim())?.[1];
   if (!project) return { why: 'config §4 Jira project is not set' };
   let handle = null;
-  try { handle = E.githubHandle() || null; } catch { /* unset: every open PR reads as someone else's */ }
+  try { handle = String(E.githubHandle() ?? '').trim().replace(/^@/, '') || null; } catch { /* unset: every open PR reads as someone else's */ }
   return { project, priority: E.configValues('jira-priority'), person: personOf(), handle };
 }
 
