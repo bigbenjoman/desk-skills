@@ -150,6 +150,7 @@ const win = shell.open();
 await settle();
 const prefs = win.opts.webPreferences;
 t('the window is sandboxed, isolated and has no Node', [prefs.sandbox, prefs.contextIsolation, prefs.nodeIntegration, prefs.partition], [true, true, false, PARTITION]);
+t('the page draws the title bar, with the traffic lights inset in it', win.opts.titleBarStyle, 'hiddenInset');
 t('the session cookie goes into the window\'s own store, HttpOnly and SameSite=Strict',
   [f.ses.partition, f.cookies.length, f.cookies[0]?.name, f.cookies[0]?.httpOnly, f.cookies[0]?.sameSite, f.cookies[0]?.url], [PARTITION, 1, 'desk_ui', true, 'strict', ORIGIN]);
 t('the window loads the server, not a card', [win.loads, shell.view], [[`${ORIGIN}/`], 'app']);
