@@ -608,6 +608,13 @@ t('DS-1002 an else-if chain each of whose conditions is the guard, alone or firs
   drawEdit(chainQ('if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  console.log(draw());\n}')),
   drawEdit(chainQ('if (process.argv[1] !== fileURLToPath(import.meta.url)) {\n  console.log(draw());\n}')) === everyClaimer,
 ], ['some: test_cli.sh test_lint.sh', 'some: test_cli.sh test_lint.sh', true, true, true, true, true, 'some: test_cli.sh test_lint.sh', true]);
+// A launch test calling one of the module's own functions, which runs on import whatever the block does.
+const entryQ = `${chainQ('if (process.argv[1] === entryPath(import.meta.url)) {\n  console.log(draw());\n}')}function entryPath(u) {\n  return fileURLToPath(u);\n}\n`;
+t('DS-1002 a function a guard\'s condition calls runs on load, so an edit to it runs every suite reaching the module; the block stays command-only', [
+  onQ(entryQ, 'return fileURLToPath(u);', 'return fileURLToPath(u) + "";') === everyClaimer,
+  decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(entryQ, entryQ.replace('return fileURLToPath(u);', 'return fileURLToPath(u) + "";')) }], hubWith({ 'desk/bin/desk-q.mjs': entryQ }), { byName: true }).reason.includes('runs one at load: if (process.argv[1] === entryPath(import.meta.url)) { (entryPath)'),
+  drawEdit(entryQ),
+], [true, true, 'some: test_cli.sh test_lint.sh']);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
@@ -629,6 +636,14 @@ t('DS-1002 a shell script\'s embedded code importing a reached name runs its sui
   fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await load('desk-q.mjs');\nconsole.log(keys(1));")),
 ], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', true, true, true,
   'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs']);
+// A rest element (`...rest`) in a destructured import() or import helper takes every name not listed.
+const restImp = triWith("const { keys, ...rest } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rest.rows(1));");
+const restHelper = triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys, ...rest } = await load('desk-q.mjs');\nconsole.log(rest.rows(1));");
+t('DS-1002 a destructured import() or import helper with a rest element takes the module whole (AC4)', [
+  ns("const { rows, ...rest } = await IMP'./desk-q.mjs');\nexport const nsUse = () => rest.keys(2);"),
+  hscope(Q(keysEdit), hubWith({ 'tests/test_q.mjs': `// suite: q\nconst { rows, ...rest } = await ${'imp'}ort('../desk/bin/desk-q.mjs');\nrest.keys(1);` })),
+  fmtOn(restImp) === everyOn(restImp), fmtOn(restHelper) === everyOn(restHelper),
+], [everyClaimer, 'some: test_lint.sh test_pass.mjs test_q.mjs', true, true]);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through

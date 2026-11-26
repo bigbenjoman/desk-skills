@@ -393,24 +393,29 @@ function guardedBy(cond, guards) {
 // Whether a top-level statement runs only when the module is run as a command: an `if`, or a chain of
 // `else if`s with no final `else`, each of whose conditions is guardedBy(). A condition ends at the
 // first `)` that closes it as an expression, and a block where it first compiles, each read with
-// `import.meta` (which no script compiles) renamed to a name of the same length.
+// `import.meta` (which no script compiles) renamed to a name of the same length. -> its conditions'
+// text, one per line (they still run on load), or null when it is not such a statement.
 function mainOnly(c, guards) {
   const read = c.replace(/(?<![\w$.])import\.meta(?![\w$])/g, 'import_meta');
+  const conds = [];
   for (let at = 0; ;) {
     const head = read.slice(at).match(/^if\s*(?=\()/);
-    if (!head) return false;
+    if (!head) return null;
     at += head[0].length;
     const close = groupEnd(read.slice(at), ')', asExpression);
-    if (close < 0 || !guardedBy(c.slice(at + 1, at + close - 1).trim(), guards)) return false;
+    if (close < 0) return null;
+    const cond = c.slice(at + 1, at + close - 1).trim();
+    if (!guardedBy(cond, guards)) return null;
+    conds.push(cond);
     at += close;
     at += read.slice(at).match(/^\s*/)[0].length;
-    if (read[at] !== '{') return !/\belse\b/.test(read.slice(at));
+    if (read[at] !== '{') return /\belse\b/.test(read.slice(at)) ? null : conds.join('\n');
     const end = groupEnd(read.slice(at), '}', (p) => `(async function () {\n${p}\n})`);
-    if (end < 0) return false;
+    if (end < 0) return null;
     at += end;
     const next = read.slice(at).match(/^\s*(?:$|else\s+(?=if\b))/);
-    if (!next) return false;
-    if (at + next[0].length === read.length) return true;
+    if (!next) return null;
+    if (at + next[0].length === read.length) return conds.join('\n');
     at += next[0].length;
   }
 }
@@ -455,7 +460,14 @@ function reach(text, seeds, { mainGuard = false } = {}) {
       for (const item of list[1].split(',')) { const [local, as] = item.trim().split(/\s+as\s+/); if (names.has(local)) exported.add(as ?? local); }
       continue;
     }
-    if (mainGuard && mainOnly(c, guards)) { if (named(c)) main = true; continue; }
+    // A mainOnly() statement's conditions run on load, so a name in one is module-level code.
+    const conds = mainGuard ? mainOnly(c, guards) : null;
+    if (conds !== null) {
+      const inCond = named(conds);
+      if (inCond) code ??= `${c.split('\n')[0]} (${inCond})`;
+      else if (named(c)) main = true;
+      continue;
+    }
     const cli = cliCases(c);
     const hit = named(cli ? cli.shared : c);
     if (hit) code ??= `${c.split('\n')[0]} (${hit})`;
@@ -689,7 +701,11 @@ export function buildMap(files, read) {
       const before = code.slice(0, start);
       const bound = before.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$/);
       if (bound) binds.push(bound[1]);
-      else if (/\b(?:const|let|var)\s*\{[^{}]*\}\s*=\s*(?:await\s+)?$/.test(before)) continue;
+      else if (/\b(?:const|let|var)\s*\{[^{}]*\}\s*=\s*(?:await\s+)?$/.test(before)) {
+        // A rest element (`...rest`) takes every name not listed, which no name can be followed through.
+        if (/\{[^{}]*\.\.\.[^{}]*\}\s*=\s*(?:await\s+)?$/.test(before)) return `${f} takes the rest of ${mod} whole by a destructured import()`;
+        continue;
+      }
       else if (/\(\s*await\s+$/.test(before) && /^\s*\)\s*\??\.\s*[A-Za-z_$]/.test(code.slice(end))) inline = true;
       else return `${f} takes ${mod} by an import() no name can be followed through`;
     }
@@ -739,10 +755,11 @@ export function buildMap(files, read) {
     // name (whole, or so no name can be followed), every suite claiming the module does, as for a script.
     const file = mod.slice(mod.lastIndexOf('/') + 1);
     const quotedFile = new RegExp(`['"\`]${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`);
-    // `const { a, b: c } = await <helper>('<file>')`: the names an import helper's result is read by.
+    // `const { a, b: c } = await <helper>('<file>')`: the names an import helper's result is read by,
+    // none where a rest element (`...rest`) takes the others, so no name can be followed.
     const helperNames = (l) => {
       const m = l.match(/\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?[A-Za-z_$][\w$.]*\(\s*(['"`])[^'"`]*\2\s*\)/);
-      return new Set(m ? m[1].split(',').map((x) => x.trim().split(/\s*:\s*|\s+as\s+/)[0]).filter(Boolean) : []);
+      return new Set(m && !m[1].includes('...') ? m[1].split(',').map((x) => x.trim().split(/\s*:\s*|\s+as\s+/)[0]).filter(Boolean) : []);
     };
     if (r.exported.length) for (const f of shells) {
       if (f === mod || isSuite(f)) continue;
