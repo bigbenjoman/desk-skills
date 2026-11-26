@@ -10,7 +10,7 @@ import * as MS from './merge-stages.mjs';
 import * as ST from './stuck-time.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, quietStateName } from './desk-env.mjs';
@@ -3161,7 +3161,19 @@ function leaseNotes(repos, now) {
     trial.push({ tag: '  leases', sgr: GREY, text: [[`${today.length} clash${today.length === 1 ? '' : 'es'} today: ${leaseHolder(e.kind, e.label).name} was given ${leaseThing(e.kind, e.key, e.units)} while ${who} held it, at ${clock(Date.parse(e.at))}.`, null]],
       more: [[[`Leases are on trial, so it went through.${t ? ` The trial ${t.ends > now ? 'ends' : 'ended'} ${dmy(t.ends)}.` : ''}`, null]]] });
   }
+  const heavy = heaviestRuns(log.peaks, now);
+  if (heavy) trial.push({ tag: '  memory', sgr: GREY, text: [[heavy, null]] });
   return { warn, trial };
+}
+
+// The three locked runs of the last 24 hours that took the guest's memory highest (readLog's peaks),
+// as one sentence, or null with none.
+export function heaviestRuns(peaks, now) {
+  const top = (peaks ?? []).filter((e) => now - Date.parse(e.at) < 86_400_000 && Date.parse(e.at) <= now)
+    .sort((a, b) => b.peak_rss_gb - a.peak_rss_gb).slice(0, 3);
+  if (!top.length) return null;
+  const who = (e) => e.ticket ?? (e.worktree ? basename(e.worktree) : 'a session');
+  return `Heaviest locked runs today: ${top.map((e) => `${who(e)} ${SLOT_RUN[e.step] ?? e.step} ${e.peak_rss_gb} GB at ${clock(Date.parse(e.at))}`).join(', ')}.`;
 }
 
 // A stuck lease's note: who holds what, since when it stopped checking in, and the command that frees it.

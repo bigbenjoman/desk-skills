@@ -349,6 +349,22 @@ t('DS-437 AC1 the root is never a gap, though its package.json has a dev script'
 rmSync(join(repoDir, 'package.json'), { force: true });
 rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 
+// #1526 AC4: a Unit tests or Typecheck item starting Jest with no worker cap, or turbo run with no
+// --concurrency, directly or through its package.json script, is named UNBOUND with its bounded form.
+writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ scripts: { test: 'jest --ci', typecheck: 'turbo run typecheck', both: 'jest && eslint .' } }));
+const UNBOUND = (row, item, why, bounded) => `UNBOUND  §4 ${row} item "${item}" ${why}, so one locked run can take the whole machine: set it to \`${bounded}\``;
+d = drift(`${conf()}| Unit tests | \`bun run test\` \`npm test\` |\n| Typecheck | \`bun run typecheck\` \`apps/web: turbo run typecheck\` |\n`);
+t('#1526 AC4 each unbounded Unit tests and Typecheck item is named with its bounded form', d.out, [
+  UNBOUND('Unit tests', 'bun run test', 'runs the test script, which starts Jest with no worker cap', 'bun run test --maxWorkers=4'),
+  UNBOUND('Unit tests', 'npm test', 'runs the test script, which starts Jest with no worker cap', 'npm test -- --maxWorkers=4'),
+  UNBOUND('Typecheck', 'bun run typecheck', 'runs the typecheck script, which starts turbo run with no --concurrency', 'bun run typecheck --concurrency=1'),
+  UNBOUND('Typecheck', 'apps/web: turbo run typecheck', 'starts turbo run with no --concurrency', 'apps/web: turbo run typecheck --concurrency=1'),
+].join('\n'));
+t('#1526 AC4 and exits 1', d.code, 1);
+t('#1526 AC4 items that bound themselves, or whose script is not one simple command, are not drift',
+  drift(`${conf()}| Unit tests | \`bun run test --maxWorkers=2\` \`bun run both\` |\n| Typecheck | \`turbo run typecheck --concurrency=2\` |\n`).out, 'no drift');
+rmSync(join(repoDir, 'package.json'), { force: true });
+
 // One app's setup gaps, each §4 row it lacks with the value to add, in one call.
 mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
 writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
