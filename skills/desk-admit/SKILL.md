@@ -25,14 +25,20 @@ from the tracker by hand:
 node ~/.claude/desk/bin/candidates.mjs
 ```
 
-It lists §4 Jira project's unassigned, unstarted Bugs and self-contained Tasks (no open "is blocked
-by" link, and not a child of an epic whose feature batch is running) by §4 Priority, clean ones first.
+It lists §4 Jira project's unstarted Bugs and self-contained Tasks (no open "is blocked by" link, and
+not a child of an epic whose feature batch is running): first those already assigned to the person
+§1 names (§1 Jira account id, else the signed-in Jira user) with no open PR naming their key, under
+`your unstarted assigned tickets … ready to admit`, then the unassigned ones, each by §4 Priority, then
+Bugs before Tasks, then newest, clean unassigned ones first. A ticket assigned to anyone else is never
+listed. One whose summary or labels read as a decision, or as access, key
+or infrastructure work outside the repo, is left out naming the word.
 A ticket a merged PR or a commit on the default branch already names is shown as `already on main (PR
 #n)` and not offered; one missing its Acceptance criteria or Design section says so, and one naming a
 file a PR merged in the last 7 days changed names that PR as possible overlap. Show the list and ask
 which to admit, then run step 0 and step 1 for the ones chosen. It admits nothing itself. Exit 3 means
-the repo has no Jira tracker or project to list from: say so. With config §3b "Propose candidates for
-a free slot" on, the pass prints the same list under `free slot:` while a slot stays free.
+the repo has no Jira tracker or project to list from: say so. While a slot stays free, the pass prints
+the person's own under `free slot:`, and with config §3b "Propose candidates for a free slot" on, the
+whole list.
 
 ## 0. Snapshot each design
 
@@ -184,13 +190,16 @@ no design link is not the user's where the ticket's comments answer it: read the
   A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`). Where the line
   adds `triage drafted <n> from its goal and proposal`, it lists them: write them as they are, under
   the note it quotes. Where it adds `its text states no testable outcome`, admit has put that one
-  ask on `/desk-needs-you`: say so, and do not ask it again below.
+  ask on `/desk-needs-you`: say so, and do not ask it again below. Where the line reads `no acceptance
+  criteria section, but <n> Given/When/Then criteria with no AC labels`, they are the ticket's own:
+  move them under an `Acceptance criteria` heading as the `AC1: …` items it lists, keeping their text.
 - **no design link** where the line adds `triage found nothing renders` (its change is confined to
   tests, CI, tooling or config): no comment is needed. Write `No UI.` and the reason the line gives
   (`No UI. Triage found nothing renders: it changes …`) as the Design section.
 
 **Admit has already written what it could.** For a GitHub issue where config §3 `gh-issue-edit` is
-`yes`, and for a ticket in a ticket file, it writes the criteria triage drafted and `No UI.` itself,
+`yes`, and for a ticket in a ticket file, it numbers Given/When/Then criteria written with no AC
+labels (moving them under the criteria heading), writes the criteria triage drafted and `No UI.` itself,
 with `None.` under a missing Out of scope and §4 Unit tests (`desk-env cmds test-cmd`) under a missing
 Verification, prints the `ISSUE EDIT` (or `TICKET FILE EDIT`) block marked `posted`, lints the
 ticket again and places it on that: nothing is left to do for it. Where `gh-issue-edit` is not

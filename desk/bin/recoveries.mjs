@@ -9,6 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { parseDecision } from './decisions.mjs';
 import { refusedStep, keyPattern } from './batch-state.mjs';
+import { acceptCall } from './accept-gaps.mjs';
 
 export const RECOMMENDS_MARK = 'AUTOPILOT_PARK_RECOMMENDS';
 
@@ -25,8 +26,10 @@ export function parkRecommends(raw, question) {
   return parseDecision(JSON.stringify({ ...d, question: d.question ?? question }));
 }
 
-// May the pass take this call for the worker?
-export const takeable = (decision, judgement) => !!decision && (!JUDGEMENT.includes(decision.category) || judgement === 'yes');
+// May the pass take this call for the worker? Never one accepting a review gap, which only the person's
+// own comment on the PR does (accept-gaps.mjs acceptCall).
+export const takeable = (decision, judgement) => !!decision && !acceptCall(decision.question, decision.chose)
+  && (!JUDGEMENT.includes(decision.category) || judgement === 'yes');
 
 // The answer the next worker reads in its briefing; `by` is who took it (the pass, or the decider).
 export const recommendedAnswer = (d, by = 'the pass') => `${d.chose}. This was the option the last worker recommended when it parked on this ${d.category} call, `

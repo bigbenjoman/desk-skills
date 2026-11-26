@@ -86,7 +86,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   the file as one absolute or `$DESK_STATE` path, the condition looks where the question says (a
   question giving it another relative path, or more than one place, is refused, saying so), and
   where the question asks the person to make or save it, the park is still put to them while each
-  pass checks for the file.
+  pass checks for the file. So is one whose question asks the person for any step, in any sentence
+  (`Please run npm install in …` for a lockfile): no pass or worker makes a file for a parked ticket.
+  That is read whenever the park is shown, so a park recorded before still reaches the person.
   The forms, each beside a line written in it. `<path> exists` with no `file` reads as a file only
   for an absolute or `$DESK_STATE` path, or a file name with an extension; write `file <path> exists`
   otherwise.
@@ -274,7 +276,16 @@ running passes for every other ticket, and put the question where an answer come
   which option stands and whether it was chosen or applied by default. Act on that. Pass
   `--never-default "<why>"` where the recommendation contacts anyone outside the team, widens a §3
   permission or cannot be undone: that one stays open until the person chooses. One that spends money
-  or touches production never defaults whatever you pass.
+  or touches production never defaults whatever you pass, and nor does one accepting a review gap.
+- **A review gap only the person's own comment accepts** (desk-review's `PERSON'S CALL` whose pick
+  is to accept it) is not yours to take or post: a comment from the person's
+  GitHub account is what accepts it. desk-needs-you already gives them the PR, the criterion, the
+  evidence and a ready `gh pr comment` line, and the next pass requeues the ticket once they post it.
+  Never post it as them, and never ask for it as an option to default. The one exception is config §3
+  `accept-review-gaps` at `yes`: then the pass posts it as their handle itself, once per gap, naming
+  the criterion and quoting only what the PR already holds (`fix-tries.mjs` `grantedPost`), and
+  requeues the ticket. You still post nothing: a gap the pass has posted for once and a later review
+  still lists is theirs.
 
 **A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**
 Your loop prompt, a pending note, a handoff or a summary is read by no one but you. A wait kept there

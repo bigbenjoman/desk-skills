@@ -71,9 +71,10 @@ classifier entries go in ~/.claude/settings.json, each naming its repo ("In owne
 `automode` takes a plan of facts, never prose:
   {"repo": "owner/name", "granted": ["pr-merge-green", …], "merge": "--merge",
    "migrate": "<§4 Database migrate>" or null, "scope_environment": ["<exact entry>", …]}
-and writes at most two `autoMode.allow` entries from the templates below: pinned merges (owner
-pr-merge-green) and migrations through the repo's runner against a local or per-ticket database
-(owner db-migrate, present while §4 Database migrate is set). No template covers a deploy, and
+and writes at most three `autoMode.allow` entries from the templates below: pinned merges (owner
+pr-merge-green), migrations through the repo's runner against a local or per-ticket database
+(owner db-migrate, present while §4 Database migrate is set), and the acceptance comment for a
+review gap the review recommends accepting (owner accept-review-gaps). No template covers a deploy, and
 `permissions` is never touched. Each entry is recorded in --ledger (the repo's own), so `remove
 <row>` with that ledger drops it from --user-settings and leaves other repos' entries alone; an
 entry the ledger did not record is never changed. Re-running it with a changed plan swaps an entry
@@ -768,6 +769,8 @@ def cmd_unset_default_mode(settings_path):
 
 
 MERGE_FLAGS = ("--squash", "--merge", "--rebase")
+# The kinds of entry automode_entries can write, each at most once per repo.
+AUTOMODE_KINDS = ("merge", "migrate", "accept-gaps")
 
 
 def scope(repo):
@@ -790,6 +793,14 @@ def automode_entries(plan):
             f"local database or a per-ticket database is sanctioned by the user (desk-setup, §4 Database "
             f"migrate). Migrating a shared, staging or production database, and any production deploy, "
             f"is not covered.", ["db-migrate"])
+    if "accept-review-gaps" in plan.get("granted", []):
+        out["accept-gaps"] = (
+            f"{scope(repo)}posting, as the user's own GitHub handle, a pull request comment "
+            f"(`gh pr comment <n> --repo {repo} --body …`) that accepts a desk-review requirement gap "
+            f"the review tagged as the person's call and recommends accepting is sanctioned by the user "
+            f"(desk-setup row accept-review-gaps): the comment names each gap's criterion and quotes "
+            f"only evidence already on the PR. Approving a pull request, accepting any other gap, and "
+            f"a comment on a pull request in any other repo are not covered.", ["accept-review-gaps"])
     return out
 
 
@@ -900,7 +911,7 @@ def cmd_automode(st, user_settings, plan_path):
     except Unreadable as e:
         die(f"{e}; no auto-mode entry was written")
     today = datetime.date.today().isoformat()
-    for kind in ("merge", "migrate"):
+    for kind in AUTOMODE_KINDS:
         rec = next((r for r in st.ledger["automode"] if r["repo"] == repo and r["kind"] == kind), None)
         text, rows = want.get(kind, (None, None))
         if rec and rec["text"] != text:

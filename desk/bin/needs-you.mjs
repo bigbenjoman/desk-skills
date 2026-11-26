@@ -120,9 +120,9 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { evidenceHold } from './preview-db.mjs';
-import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
-import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
-import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
+import { cellPlan, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
+import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
+import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
 import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
@@ -137,7 +137,7 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -155,6 +155,9 @@ import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
 import { askAnswered, ledgerOnIn } from './ask-ledger.mjs';
+import { lostAt, readRearm } from './loop-tick.mjs';
+import { dueTick } from './borrow.mjs';
+import { acceptNeed, acceptOnly, evidenceIn, gapParts } from './accept-gaps.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -223,7 +226,6 @@ const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stat
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
 // A PR out of draft has no such record: the pass marks it stuck on the gaps only its person can settle.
-const draftHasGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
 const reviewGaps = (t, stuck) => draftHasGaps(t) || (t.pr_status?.isDraft === false && personGapsIn(stuck?.why).length > 0);
 // The requirement gaps a draft's review lists (fix-tries.mjs reviewGaps), read from GitHub: the latest
 // of desk's own reviews whose verdict is the one its undraft record names (`verdict at <sha>`). null
@@ -233,12 +235,17 @@ function draftGapsOf(r, t, reads) {
   const logins = repoVerdictLogins(r.slug);
   if (!at || !logins) return null;
   const { v } = reads.pr(r, t.result.pr, ',reviews');
-  const review = (v?.reviews ?? []).filter((x) => loginIn(x.author?.login, logins)).filter((x) => {
-    const sha = parseVerdict(x.body)?.sha;
-    return !!sha && (sha.startsWith(at) || at.startsWith(sha));
-  }).pop();
+  const review = verdictReviewAt(v?.reviews, logins, at);
   const gaps = review ? reviewGapLines(review.body) : [];
   return gaps.length ? gaps : null;
+}
+// The evidence a PR's body already holds for each gap only the person accepts (accept-gaps.mjs
+// acceptNeed): the body's lines naming the gap's criterion label, keyed by label (`AC2`), at most
+// three each. {} without reads, or when the body cannot be read.
+function prEvidence(r, t, reads, gaps) {
+  if (!reads || !gaps.some((g) => gapParts(g).ac) || t?.result?.pr == null) return {};
+  const body = String(reads.pr(r, t.result.pr, ',body').v?.body ?? '');
+  return Object.fromEntries(Object.entries(evidenceIn(body, gaps)).map(([ac, lines]) => [ac, lines.map(one)]));
 }
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 // Every open PR takes an instruction for a worker on it, whatever else the item offers.
@@ -460,8 +467,11 @@ const SHA = String.raw`(?<![\w./-])[0-9a-f]{7,40}(?![\w/-]|\.\w)`;
 const passWords = (s) => s.replace(new RegExp(String.raw`,\s*at ${SHA},`, 'g'), '').replace(new RegExp(String.raw`\s*\bat ${SHA}`, 'g'), '').replace(new RegExp(SHA, 'g'), 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
-// Once the person's step is done: desk merges it where it may, else merging is theirs too.
-const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green' : 'then merge it on GitHub once its checks are green');
+// Once the person's step is done: desk merges it where it may, whoever merges for the batch does where
+// the grant covers it with no merge driver running, else merging is theirs too.
+const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green'
+  : r.ctx?.batchMerges ? `it then ${BATCH_MERGES} (its merge driver, or the session relaying its merge lines)${r.ctx.mergeHolds ? HOLD_CAVEAT : ''} once its checks are green`
+    : 'then merge it on GitHub once its checks are green');
 const REPAIRED = "desk's own repairs did not fix";
 // A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.
 const CAPTURE = /^(\d+) screenshot\(s\) still not taken after a capture try: (.+?)(?:; the capture try said: ([^]*))?$/;
@@ -509,7 +519,7 @@ function conflictPlain(r, t, n, base, why = '') {
   return `${n} is in conflict with ${base ?? 'its base'}${files ? ` in ${files}` : ''}, and ${how}. Resolve the conflict on its branch; ${thenMerge(r)}.`;
 }
 
-function stuckPlain(r, n, s, t) {
+function stuckPlain(r, n, s, t, reads = null) {
   const checks = s?.checks ?? [];
   if (checks.length) {
     const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : c.unread ? ' (desk could not read which step failed)' : ''}`;
@@ -530,14 +540,18 @@ function stuckPlain(r, n, s, t) {
     const k = Number(shots[1]);
     return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}, so nothing desk has can fill ${k === 1 ? 'its cell' : 'their cells'}. Edit the PR body so no cell is left; the next pass then takes it out of draft.`;
   }
-  const personGaps = personGapsIn(why).map(one).join('; ');
-  const yours = `requirement gaps only you can settle: ${personGaps}. Say how to settle them; a worker on the PR carries out your call.`;
-  if (personGaps && !/^review not clean/.test(why)) return `${n}'s code review left ${yours}`;
+  const tagged = personGapsIn(why);
+  const accepts = tagged.filter(acceptOnly);
+  const personGaps = tagged.filter((g) => !acceptOnly(g)).map(one).join('; ');
+  const toAccept = accepts.length && t?.result?.pr ? `${accepts.length === 1 ? 'a requirement gap' : 'requirement gaps'} only you can accept: ${acceptNeed(t.result.pr, ghRepoOf(r), accepts.map(one), prEvidence(r, t, reads, accepts))}` : '';
+  const settleYours = personGaps ? `requirement gaps only you can settle: ${personGaps}. Say how to settle them; a worker on the PR carries out your call.` : '';
+  const yours = [settleYours, toAccept && (settleYours ? `It also left ${toAccept}` : toAccept)].filter(Boolean).join(' ');
+  if (yours && !/^review not clean/.test(why)) return `${n}'s code review left ${yours}`;
   // Before the conflict test: a review reason names the conflict tries it was made after.
   if (/^review not clean/.test(why)) {
     const left = stuckFindings(why);
     const named = left.length ? `: ${left.map((f) => `${f.sev} ${one(f.text)}`).join('; ')}` : '';
-    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.${personGaps ? ` It also left ${yours}` : ''}`;
+    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.${yours ? ` It also left ${yours}` : ''}`;
   }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
@@ -559,7 +573,7 @@ function stuckPlain(r, n, s, t) {
 
 // `gapLines`: the gaps its review lists (draftGapsOf), quoted after their count; null when they could
 // not be read, which the need says.
-function draftPlain(r, n, u, gapLines = null) {
+function draftPlain(r, n, u, gapLines = null, t = null, reads = null) {
   const why = String(u?.why ?? '');
   const dirty = /not clean \(([^)]*)\)/.exec(why);
   if (dirty) {
@@ -568,6 +582,13 @@ function draftPlain(r, n, u, gapLines = null) {
     const gaps = Number(kv.find(([k]) => k === 'gaps')?.[1] ?? 0);
     const what = andList([...(found.length ? [`${andList(found)} finding${found.length === 1 && found[0].startsWith('1 ') ? '' : 's'}`] : []), ...(gaps ? [`${gaps} requirement gap${gaps === 1 ? '' : 's'}`] : [])]);
     const settle = `Say how to settle ${gaps === 1 && !found.length ? 'it' : 'them'}; a worker on the PR carries out your call.`;
+    // Gaps only the person's own comment accepts are given the ready comment, not a call to say.
+    const accepts = t?.result?.pr ? (gapLines ?? []).filter(acceptOnly) : [];
+    if (gaps && accepts.length) {
+      const rest = gapLines.filter((g) => !accepts.includes(g)).map((g) => one(g).replace(/[.;]$/, ''));
+      const toAccept = `${accepts.length === 1 ? 'The gap' : 'Gaps'} only you can accept: ${acceptNeed(t.result.pr, ghRepoOf(r), accepts.map(one), prEvidence(r, t, reads, accepts))}`;
+      return `${n} is a draft, and its code review left ${what}${rest.length ? `: ${rest.join('; ')}. ${settle}` : '.'} ${toAccept}`;
+    }
     if (gaps && gapLines?.length) return `${n} is a draft, and its code review left ${what}: ${gapLines.map((g) => one(g).replace(/[.;]$/, '')).join('; ')}. ${settle}`;
     if (gaps) return `${n} is a draft, and its code review left ${what}. Desk could not read the review to quote ${gaps === 1 ? 'the gap' : 'the gaps'}, so read ${gaps === 1 ? 'it' : 'them'} on the PR. ${settle}`;
     // No fix try ran on these: one that did and ran out is stuck (stuckPlain), so the reason is the review's.
@@ -684,10 +705,10 @@ function prPlain(r, t, gapLines = null, reads = null) {
   const also = ask ? ` It also ${needsIt}` : '';
   switch (w.code) {
     case 'closed': return `${n} was closed without merging, so nothing will merge it. Drop the ticket, or requeue it; a requeued ticket gets a worker that opens a new PR.`;
-    case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck, t)}${also}`;
+    case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck, t, reads)}${also}`;
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
-    case 'draft': return draftPlain(r, n, w.undraft, gapLines);
+    case 'draft': return draftPlain(r, n, w.undraft, gapLines, t, reads);
     case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
@@ -967,7 +988,7 @@ function stepItem(key, ws) {
   const summary = ws.map(({ b, t }) => (triageOf(b, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
   const what = ({ t }) => (t.state === 'done' && t.result?.pr != null ? `PR #${t.result.pr} (${t.key})` : `${t.key} (${t.state === 'running' ? 'being built' : t.state === 'done' ? 'no PR' : 'not built yet'})`);
   const starts = ws.filter((w) => w.start).map(({ t }) => t.key), mw = ws.filter((w) => !w.start);
-  const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges).length;
+  const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges || b.ctx?.batchMerges).length;
   const merger = merges === n ? 'desk merges them in order' : merges === 0 ? 'you merge them on GitHub'
     : 'desk merges those in batches it merges, and you merge the rest on GitHub';
   // `m` tickets wait to `verb` on it; after the first clause, one is "one", not "one ticket".
@@ -1763,12 +1784,23 @@ function cloudItems(batches) {
 // LIVE_MS, its next pass due more than PASS_GRACE_MS ago, and a ticket autopilot could move), it is
 // one item, `stalled` for the standing batch and `stalled:<batch>` for a named one, listed and put
 // off in that batch alone, so every scope that lists it lists the same item. Its need names its last
-// pass, so not-now holds until a later stall; done records nothing: the next pass drops it.
+// pass and what the session did about it (rearmOf), so not-now holds until a later stall or a re-arm;
+// done records nothing: the next pass drops it.
 const STALLED = 'stalled';
+// What the session running the batch did about its lost tick: hooks/desk-handoff.py tells it to re-arm
+// the loop on its first turn once the loop reads lost, which is never later than this item shows, and
+// queue.mjs next-pass logs the re-arm (loop-tick.mjs).
+function rearmOf(b) {
+  const rec = readRearm(b.stateDir, b.last);
+  if (rec?.why) return `the session could not re-arm it: ${one(rec.why)}`;
+  if (rec?.rearmed_at) return `the session re-armed it at ${utc(rec.rearmed_at)}, but no pass has run since`;
+  if (rec?.told_at) return `the session could not re-arm it yet: it was told to at ${utc(rec.told_at)} and has not recorded a next pass since`;
+  return `the session could not re-arm it: it has taken no turn since ${utc(lostAt(b))}, when it was due to`;
+}
 const stalledItems = (batches, now = Date.now()) => batches
   .filter((b) => !b.error && b.q && sessionStalled(b))
   .map((b) => ({ r: b, dir: b.stateDir, t: { key: b.batch == null ? STALLED : `${STALLED}:${b.batch}` }, item: { kind: STALLED, repoLevel: true,
-    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${b.next != null ? `, and the next was due at ${utc(b.next)}` : ''}. The session running it looks stalled: resume it, or ${resumeOf(b)}`,
+    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${dueTick(b) != null ? `, and the next was due at ${utc(dueTick(b))}` : ''}. The loop lost its next tick, and ${rearmOf(b)}: resume the session, or ${resumeOf(b)}`,
     note: `Passes stopped ${since(now - b.last)} ago.${b.rows.some((x) => x.k === 'running') ? ' Running workers carry on.' : ''}`,
     actions: [['done', 'once a pass runs again this item leaves the list; done records nothing'], ['not-now']],
     since: b.last } }));
@@ -1816,11 +1848,18 @@ function itemOf(r, x, reads = null, finds = reads) {
   // takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
     const stuck = stuckOf(t, r.ctx);
-    const need = prPlain(r, t, reads && draftHasGaps(t) ? draftGapsOf(r, t, reads) : null, reads), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
+    const gapLines = reads && draftHasGaps(t) ? draftGapsOf(r, t, reads) : null;
+    const need = prPlain(r, t, gapLines, reads), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch and removes its clean worktree'], ['requeue'], ['not-now']] };
     const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
-    // Findings left beside the gaps are still a worker's to fix, so fix stays on offer.
+    // Findings left beside the gaps are still a worker's to fix, so fix stays on offer. Gaps that only
+    // the person's own comment accepts take no answer desk would post: the need gives the ready comment,
+    // and the pass reads it from the PR once it is there.
+    const tagged = draftHasGaps(t) ? gapLines ?? [] : personGapsIn(stuck?.why);
+    if (reviewGaps(t, stuck) && tagged.length && tagged.every(acceptOnly)) {
+      return { kind: 'pr', need, note, actions: [['not-now', 'post the ready comment from your own GitHub account: not-now keeps it off this list, and the next pass reads your comment and sends the PR to a worker that records the acceptance'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your comment']] : []), SEND_BACK] };
+    }
     if (reviewGaps(t, stuck)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your answer']] : []), ['done']);
     // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
     const ask = approvalAsk(t, prWhy(r, t) ?? {});
@@ -2207,7 +2246,9 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
   items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
-  return { repos, scope, items, named, putOff, off };
+  // Green PRs whoever merges for the batch takes (desk-q batchMerging): shown, never the person's items.
+  const moving = scope.filter((x) => !x.error && x.q).flatMap((r) => batchMerging(r).map((m) => ({ r, ...m })));
+  return { repos, scope, items, named, putOff, off, moving };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -2220,6 +2261,8 @@ const runLine = (r) => {
 
 // The put-off count, after the item count: they are not listed again until their inputs change.
 const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left out until ${c.putOff === 1 ? 'it changes' : 'they change'}.` : '');
+// The PRs that move without the person, on the same line, in desk-q's words for its Merging row.
+const movingLine = (c) => (c.moving ?? []).map((m) => ` Moves without you: PR #${m.pr} (${m.key}${c.named ? '' : `, ${m.r.name}`}), ${m.text}.`).join('');
 
 // A parked write awaiting approval, as listText prints it under its item: a header naming its kind and
 // target, the body line for line as the worker wrote it, and an end line, so the body is never cut or
@@ -2231,7 +2274,7 @@ export const approvalLines = (key, a) => [
 ];
 
 export function listText(c, now = Date.now()) {
-  if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}`;
+  if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}${movingLine(c)}`;
   // A repo-level item is the person's own step, so who runs the batch says nothing about it.
   const lines = [...new Set(c.items.filter((i) => !i.repoLevel).map((i) => i.r))].map(runLine);
   const repos = [...new Set(c.items.map((i) => i.r))];
@@ -2246,7 +2289,7 @@ export function listText(c, now = Date.now()) {
     if (a?.body) lines.push(...approvalLines(i.t.key, a));
   }
   const n = new Set(repos.map((r) => r.slug)).size;
-  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);
+  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}${movingLine(c)}`);
   return lines.join('\n');
 }
 
@@ -2287,7 +2330,8 @@ export function listItems({ word = null, settle = false, now = Date.now(), repos
   const batches = [...new Set(c.scope.filter((x) => !x.error && x.q))];
   return { v: 1, generated_at: new Date(now).toISOString(), settled: settle, settled_lines: settled,
     inputs: { queues: batches.map((b) => ({ batch: b.word, ...inputAge(mtimeOf(b.queuePath), now) })) },
-    scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)) };
+    scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)),
+    moving: c.moving.map(({ r, key, pr, text }) => ({ batch: r.word, key, pr, text })) };
 }
 
 // A queue.mjs command run from the named repo's checkout, so the permissions and GitHub repo it reads

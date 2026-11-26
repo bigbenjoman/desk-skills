@@ -86,7 +86,11 @@ const NOTES = [
   BUDGET_NOTE,
   '      ▲ credits      AWS credits are covering $61.24 of use. It becomes a charge when they run out.',
   "      ◌ forewatt     Its AWS bill couldn't be read today, so this shows the 25 Oct figure. desk-q tries again every hour.",
+  "      ◌ pranicuk     Its GitHub bill can't be read: billing not readable from the signed-in account. Sign in to pranichealinguk with desk-env logins.",
 ];
+// desk-q costs, plain or --json, runs the cost cache's check: here it starts nothing, and records each call.
+const costChecks = [];
+const noRead = (o) => { costChecks.push(o.now); return { started: false }; };
 const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
 const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('←→ or 1–6 view') || l.startsWith('move  '));
 
@@ -133,7 +137,7 @@ t('AC12 at 104 columns no line is cut or wider', f2.filter((l) => l.endsWith('�
 H.ui.finish(0);
 
 // ---- AC13: desk-q costs, piped, prints this screen as plain text
-const out13 = Q.run(['costs'], { now: FIXED });
+const out13 = Q.run(['costs'], { now: FIXED, costWith: noRead });
 const lines13 = out13.split('\n');
 t('AC13 desk-q costs prints the charged line, a blank line and the table, as plain text',
   `${/\x1b/.test(out13)} | ${lines13.slice(0, 2 + TABLE.length).join('\n')}`, `false | ${[CHARGED, '', ...TABLE].join('\n')}`);
@@ -143,7 +147,7 @@ await sleep(20);
 t('AC13 desk-q costs in a terminal opens home on its Costs tab', `${S13.crumbs()} | ${S13.tabOn()}`, 'desk-q › costs | 5 Costs');
 S13.ui.finish(0);
 let refused = '';
-try { Q.run(['costs', 'voicepa', 'github'], { now: FIXED }); } catch (e) { refused = e.message; }
+try { Q.run(['costs', 'voicepa', 'github'], { now: FIXED, costWith: noRead }); } catch (e) { refused = e.message; }
 t('AC13 desk-q costs takes a repo and no further words', refused, 'Unknown command "costs voicepa github". Try desk-q costs [<repo>].');
 
 // ---- DS-291: each row's tag and its note, and o to a billing page
@@ -199,6 +203,25 @@ await D.press('o');
 t('DS-291 AC10 o opens the largest supplier\'s billing page: GitHub for voicepa, AWS for fansurge, the team\'s Vercel page for yield-index', D.opened.join(' '),
   'https://github.com/settings/billing/usage https://console.aws.amazon.com/costmanagement/home#/cost-explorer https://vercel.com/ben-lavenders-projects/~/usage');
 D.ui.finish(0);
+
+// ---- At 60, 80 and 120 columns each line of the table fits, whole or cut at a whole
+// field with " …": what it keeps is its 104-column line up to a blank, so no tag or figure shows in part.
+for (const width of [60, 80, 120]) {
+  const S = await costsAt(null, width);
+  const f = S.frame().map((l) => l.replace(/^›/, ' '));
+  const at = f.findIndex((l) => l.startsWith('charged '));
+  const got = f.slice(at, at + 2 + TABLE.length);
+  const fits = [CHARGED, '', ...TABLE].map((full, i) => {
+    const l = got[i] ?? '';
+    if (l === full) return [...l].length <= width;
+    const kept = l.slice(0, -2);
+    return l.endsWith(' …') && [...l].length <= width && kept.trim() !== '' && full.startsWith(kept) && /\s/.test(full[kept.length]);
+  });
+  t(`issue-1485 AC2: costs at ${width} columns, every line whole or cut at a whole field`, fits.every(Boolean), true);
+  t(`issue-1485 AC2: costs at ${width} columns cuts where its 104-column lines are wider`, got.filter((l) => l.endsWith(' …')).length,
+    [CHARGED, ...TABLE].filter((l) => [...l].length > width).length);
+  S.ui.finish(0);
+}
 
 // AC3: a public repo whose CI minutes the cache marks as discounted in full.
 const pub = fixture();
@@ -408,10 +431,10 @@ t('DS-292 AC9 5 on a repo with no cost sources says how to add them', SO.frame()
 SO.ui.finish(0);
 
 // AC13: desk-q costs <repo>, piped, prints this screen as plain text.
-const out292 = Q.run(['costs', 'voicepa'], { now: FIXED });
+const out292 = Q.run(['costs', 'voicepa'], { now: FIXED, costWith: noRead });
 t('DS-292 AC13 desk-q costs voicepa prints the screen as plain text', `${/\x1b/.test(out292)} | ${out292}`, `false | ${[...VOICEPA, '', BUDGET_NOTE, '', 'Claude usage  no reading yet'].join('\n')}`);
-t('DS-292 AC13 and pr-ninja\'s, its notes unwrapped', Q.run(['costs', 'pr-ninja'], { now: FIXED }), [...PR_NINJA, '', BUDGET_NOTE, CREDITS_NOTE, '', 'Claude usage  no reading yet'].join('\n'));
-t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo'], { now: FIXED }).split('\n')[0], Q.noCostSourcesFor('solo'));
+t('DS-292 AC13 and pr-ninja\'s, its notes unwrapped', Q.run(['costs', 'pr-ninja'], { now: FIXED, costWith: noRead }), [...PR_NINJA, '', BUDGET_NOTE, CREDITS_NOTE, '', 'Claude usage  no reading yet'].join('\n'));
+t('DS-292 AC13 and a repo with no cost sources says so', Q.run(['costs', 'solo'], { now: FIXED, costWith: noRead }).split('\n')[0], Q.noCostSourcesFor('solo'));
 // A second AWS profile under voicepa, read today and since removed from costs.md.
 const gone = fixture();
 gone.aws.profiles['voicepa-old'] = { ...gone.aws.profiles['voicepa-admin'], profile: 'voicepa-old', lines: [{ service: 'Amazon EC2', used: 40, credits: 0, charged: 40 }], total: 40 };
@@ -631,6 +654,77 @@ t('AC10 AWS counts only the profiles read for this month',
   `${f10a.find((l) => l.startsWith('charged '))} | ${f10a.filter((l) => /^[ ›] (forewatt|fansurge) /.test(l)).map((l) => l.slice(1).trim().split(/\s+/).slice(0, 2).join(' ')).join(', ')}`,
   'charged $1.59 in October, 1–26 │ AWS $1.59 | fansurge –, forewatt –');
 S10a.ui.finish(0);
+
+// ---- issue-1425: every mode starts the reading, and a source that can't be read says why
+// AC1: plain, --json and the full screen opened on Costs each run the check, the screen at once.
+costChecks.length = 0;
+Q.run(['costs'], { now: FIXED, costWith: noRead });
+Q.run(['costs', 'voicepa'], { now: FIXED, costWith: noRead });
+Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead });
+t('issue-1425 AC1 desk-q costs, plain, for a name and --json, each runs the cost check', costChecks.join(), [FIXED, FIXED, FIXED].join());
+costChecks.length = 0;
+Q.run(['--json', 'usage'], { now: FIXED, costWith: noRead });
+t('issue-1425 AC1 a view other than Costs runs no check', costChecks.length, 0);
+const in1425 = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
+const out1425 = { buf: '', columns: 104, rows: 50, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+const ui1425 = Q.interactive({ input: in1425, output: out1425, start: { kind: 'costs' }, exit() {}, refreshMs: 600000, probeMs: 600000, clock: () => FIXED,
+  probeWith: async () => ({ ran: false }), costWith: noRead });
+t('issue-1425 AC1 the full screen opened on Costs runs the check at once, not at its timer\'s first tick', costChecks.join(), String(FIXED));
+ui1425.finish(0);
+let threw1425 = null;
+try { Q.run(['costs'], { now: FIXED, costWith: () => { throw new Error('spawn failed'); } }); } catch (e) { threw1425 = e.message; }
+t('issue-1425 AC1 a check that throws still prints Costs', threw1425, null);
+
+// AC2 and AC3: a GitHub account gh is not signed in to, and a Vercel team whose billing the login can't see.
+process.env.DESK_COSTS = join(T, 'costs-1425.md');
+writeFileSync(process.env.DESK_COSTS, ['# Cost sources', '', '## GitHub', '', '| Name | Repo | GitHub repo | Account | Readable |', '|---|---|---|---|---|',
+  '| `sophos` | `none` | `Sophos-Education/site` | `Sophos-Education` | `no` |', '| `sophos-api` | `none` | `Sophos-Education/api` | `Sophos-Education` | `no` |', '',
+  '## Vercel', '', '| Name | Repo | Team id | Team | Plan | Plan shared | Projects |', '|---|---|---|---|---|---|---|',
+  '| `sophos` | `none` | `team_soph` | `sophos-education` | `pro` | `no` | `site` |', ''].join('\n'));
+process.env.DESK_COST_DIR = join(T, 'unreadable-1425');
+mkdirSync(process.env.DESK_COST_DIR);
+const cant = (name) => ({ name, cantRead: { account: 'Sophos-Education' } });
+const github1425 = { at: FIXED, period: october, repos: { 'Sophos-Education/site': cant('sophos'), 'Sophos-Education/api': cant('sophos-api') }, shared: {}, login: 'av-rx' };
+const vercel1425 = { at: FIXED, period: october, teams: { team_soph: { team: 'sophos-education', plan: 'pro', owner: 'sophos', failed: { at: FIXED, why: 'HTTP 404' } } }, names: {}, shared: 0 };
+const write1425 = (cache) => writeFileSync(join(process.env.DESK_COST_DIR, 'cache.json'), JSON.stringify(cache));
+const GH_NOTE = 'note  ◌ GitHub Sophos-Education  Billing not readable from av-rx. Sign in to Sophos-Education with desk-env logins.';
+const VC_NOTE = '      ◌ Vercel sophos-education  No billing access (HTTP 404). Use a login with billing access to sophos-education.';
+write1425({ github: github1425, vercel: vercel1425 });
+const all1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
+t('issue-1425 AC3 every source unreadable: one line at the top says so, not that a reading is pending',
+  `${all1425[0]} | ${all1425.includes(Q.NO_COST_READING)}`, `${Q.NO_COST_READABLE} | false`);
+t('issue-1425 AC2 each unreadable source says why and what would fix it, the account once for both its repos', all1425.slice(1, 4).join('\n'), ['', GH_NOTE, VC_NOTE].join('\n'));
+t('issue-1425 AC2 a name\'s own Costs say the same for its sources', Q.run(['costs', 'sophos'], { now: FIXED, costWith: noRead }).split('\n').slice(0, 4).join('\n'),
+  [Q.NO_COST_READABLE, '', GH_NOTE, VC_NOTE].join('\n'));
+const json1425 = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead }));
+t('issue-1425 AC2 --json carries the same lines', `${json1425.charges} | ${json1425.lines.head.join('\n')}`, `null | ${[Q.NO_COST_READABLE, '', GH_NOTE, VC_NOTE].join('\n')}`);
+// A Vercel team just added, with no record yet beside the one that can't be read: still to come.
+const costs1425 = readFileSync(process.env.DESK_COSTS, 'utf8');
+writeFileSync(process.env.DESK_COSTS, costs1425.replace('`site` |\n', '`site` |\n| `newco` | `none` | `team_new` | `newco` | `pro` | `no` | `web` |\n'));
+const new1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
+t('issue-1425 AC3 a source with no record yet keeps the reading pending, though its supplier was read', `${new1425[0]} | ${new1425.includes(VC_NOTE)}`, `${Q.NO_COST_READING} | true`);
+writeFileSync(process.env.DESK_COSTS, costs1425);
+// GitHub read, Vercel not yet: a reading is still to come, and the account that can't be read still says why.
+write1425({ github: github1425 });
+const some1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
+t('issue-1425 AC3 with a supplier not read yet, the reading is pending, and the unreadable source still says why',
+  some1425.slice(0, 3).join('\n'), [Q.NO_COST_READING, '', GH_NOTE].join('\n'));
+// Vercel read with figures, GitHub still unreadable: the figures show, and a note per name says why.
+write1425({ github: { ...github1425, login: undefined }, vercel: { ...vercel1425, teams: { team_soph: { team: 'sophos-education', plan: 'pro', owner: 'sophos', at: FIXED, total: 20, failed: null,
+  lines: [{ kind: 'project', project: 'site', name: 'sophos', charged: 20 }] } }, names: { sophos: 20 }, shared: 0 } });
+const fig1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
+t('issue-1425 AC2 beside figures, each name the unreadable account bills gets a note saying why and the fix', fig1425.filter((l) => l.includes('◌ sophos')).join('\n'), [
+  "note  ◌ sophos       Its GitHub bill can't be read: billing not readable from the signed-in account. Sign in to Sophos-Education with desk-env logins.",
+  "      ◌ sophos-api   Its GitHub bill can't be read: billing not readable from the signed-in account. Sign in to Sophos-Education with desk-env logins."].join('\n'));
+const text1425 = (ls) => ls.map((l) => (typeof l === 'string' ? l : l.line)).join('\n');
+const page1425 = Q.supplierPageParts([], 'sophos', 'github', { now: FIXED });
+t('issue-1425 AC2 the GitHub page of a name with figures elsewhere says why and the fix', text1425(page1425.foot),
+  ['', "note  ◌ GitHub       Its bill can't be read: billing not readable from the signed-in account. Sign in to Sophos-Education with desk-env logins."].join('\n'));
+write1425({ github: github1425, vercel: vercel1425 });
+t('issue-1425 AC3 a supplier page with every source unreadable says so at the top', text1425(Q.supplierPageParts([], 'sophos', 'vercel', { now: FIXED }).head.slice(0, 3)),
+  [Q.NO_COST_READABLE, '', '      ◌ Vercel sophos-education  No billing access (HTTP 404). Use a login with billing access to sophos-education.'.replace(/^ {6}/, 'note  ')].join('\n'));
+process.env.DESK_COSTS = env.DESK_COSTS;
+process.env.DESK_COST_DIR = MAIN;
 
 // ---- AC9: no cost sources on the machine
 process.env.DESK_COSTS = join(T, 'no-costs.md');

@@ -378,6 +378,23 @@ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
 for k in LQ-13 LQ-14 LQ-15; do q set "$k" state=done session_id=null; done
+# A light repo whose light queue is deep (one run holds its 1 slot, two wait) and whose test
+# lock is idle starts a new ticket, which begins at triage, and holds a resume into Stage 4.
+{ echo ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh'
+  echo ' 9102  9101 bash tests/run.sh'
+  for p in 9201 9202; do echo " $p     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh"; done; } > "$T/ps.out"
+printf ' 9101  10:05\n 9102  10:04\n 9201  00:30\n 9202  00:20\n' > "$T/ps-ages.out"
+printf 'p9101\ncbash\nfcwd\nn%s/repo\np9201\ncbash\nfcwd\nn%s/repo\np9202\ncbash\nfcwd\nn%s/repo\n' "$T" "$T" "$T" > "$T/lsof.out"
+mkdir -p "$T/locks-ll/desk-light.lock.d"; echo "9101 9102" > "$T/locks-ll/desk-light.lock.d/pid"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n| Light lock slots | `2` | `1` |\n'
+  printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Suite weight | `light` |\n'; } > "$T/config-ll.md"
+git -C "$T/repo" worktree add -q -b fix/LL-2 "$T/wt/LL-2"
+q add LL-1; q set LL-1 state=triaged lane=A branch=fix/LL-1
+q add LL-2; q set LL-2 state=triaged lane=A branch=fix/LL-2 "worktree=$T/wt/LL-2" session_id=sess-ll2 stage=4/9 resume=pending resume_why=x
+out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-ll" DESK_CONFIG="$T/config-ll.md" DESK_MACHINE="$T/no-machine.md" node "$B/pass.mjs" 2>&1)
+check "#1458 AC2 with only the light queue full, a new ticket starts and a resume into Stage 4 is held, naming the light lock queue" \
+  '[ "$(spawns_of LL-1)" = 1 ] && [ "$(spawns_of LL-2)" = 0 ] && [ "$(field LL-2 resume)" = "\"pending\"" ] && echo "$out" | grep -qF "light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2" && echo "$out" | grep -q "Stage 4 (LL-2)"'
+for k in LL-1 LL-2; do q set "$k" state=done session_id=null; done
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
@@ -1977,6 +1994,32 @@ check "DS-894 AC5 the pass whose spawn missed its append counts it, and names th
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-894 AC7 with the lever off, no difference line and no difference count" \
   '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
+
+# ---- DS-905: with the ledger and ledger-record levers on, a pass's writes go to the log first and
+# queue.json records the log's position; a queue.json deleted is rebuilt from the log by the next pass,
+# which says so. The record lever alone is ignored, and the pass says it needs the ledger lever.
+export DESK_QUEUE="$T/rec/queue.json" DESK_AUTOPILOT_STATE="$T/state-rec"; mkdir -p "$T/rec" "$T/state-rec/logs"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger ledger-record` |\n'; } > "$T/config-rec.md"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger-record` |\n'; } > "$T/config-reconly.md"
+q init rec; q set-batch concurrency=2
+q add RC-1; q set RC-1 state=triaged lane=A branch=fix/RC-1
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC1 in record mode a pass's spawn is a spawned event, and queue.json records the log position it holds" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && jq -e "select(.key == \"RC-1\" and .type == \"spawned\")" "$T/rec/ledger/events.jsonl" >/dev/null && [ "$(jq .ledger_seq "$T/rec/queue.json")" = "$(tail -1 "$T/rec/ledger/events.jsonl" | jq .seq)" ] && ! echo "$out" | grep -q "differ between queue.json"'
+rm "$T/rec/queue.json"
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC2 a deleted queue.json is rebuilt from the log by the next pass, which says so and stops for the batch fields" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && [ "$(field RC-1 branch)" = "\"fix/RC-1\"" ] && echo "$out" | grep -q "ledger: queue.json was missing, so it was rebuilt from the log at .* (1 ticket(s)).*the pass stops until they are set again"'
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 every pass after the rebuild stops too, until the batch fields are set again" \
+  'echo "$out" | grep -q "the pass stops until they are set again"'
+q set-batch concurrency=2 rebuilt_from_log=null
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 and once they are, the pass runs" \
+  '! echo "$out" | grep -q "the pass stops until" && [ "$(jq .rebuilt_from_log "$T/rec/queue.json")" = "null" ]'
+out=$(DESK_CONFIG="$T/config-reconly.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC6 the record lever without the ledger lever is ignored, and the pass says it needs the ledger lever" \
+  'echo "$out" | grep -q "ledger: the ledger-record lever is ignored: it needs the ledger lever on as well"'
 
 # ---- the ask ledger: with the ledger lever on, the first worker after a park's requeue acts on its
 # answer, on a plain spawn and a handoff's alike; a production-broken park pushed now is an ask presented

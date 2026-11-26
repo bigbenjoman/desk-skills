@@ -178,9 +178,12 @@ function incomingBlock(git, dir, to) {
 
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
 // clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
-// untracked files in its way block it. `merges` counts main's own commits since the old head (first
-// parent only), so a PR merged with a merge commit is one however many commits its branch held.
-// -> {ok, old, new, merges, restarted} | {ok: false, why, old}
+// untracked files in its way block it. `merges` counts main's own commits since `from`, the installed
+// commit where the new head is past it and else the old head (first parent only), so a PR merged with a
+// merge commit is one however many commits its branch held.
+// -> {ok, old, from, new, merges, restarted} | {ok: false, why, old}
+// main's own commits after `from`, up to `to` (first parent only).
+const pendingMerges = (git, from, to) => Number(git('rev-list', '--first-parent', '--count', `${from}..${to}`).out) || 0;
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -192,11 +195,15 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   const pull = to ? git('merge', '--ff-only', '-q', to) : git('pull', '--ff-only', '-q', 'origin', 'main');
   if (!pull.ok) return { ok: false, old, why: `git ${to ? 'merge' : 'pull'} --ff-only failed in ${dir}: ${said(pull)}` };
   const head = git('rev-parse', 'HEAD').out;
-  const merges = old === head ? 0 : Number(git('rev-list', '--first-parent', '--count', `${old}..${head}`).out) || 0;
+  // Counted from the installed commit where it is behind the new head, as install.sh's record step counts
+  // the release watch's row (installed.mjs), so the log and the row give the same figure.
+  const inst = readInstalled()?.commit;
+  const from = inst && inst !== head && git('merge-base', '--is-ancestor', inst, head).ok ? inst : old;
+  const merges = from === head ? 0 : pendingMerges(git, from, head);
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
-  const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
-  if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
-  return { ok: true, old, new: head, merges, restarted: restartedDrivers(inst.out) };
+  const done = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
+  if (!done.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(done)}` };
+  return { ok: true, old, from, new: head, merges, restarted: restartedDrivers(done.out) };
 }
 
 // The merge drivers install.sh restarted (installed.mjs restartDriver's line), as "<who> (pid <old> -> <new>)".
@@ -242,9 +249,10 @@ const restart = () => (process.env.DESK_RESTART_CMD
 // Between windows, a pass installs desk-skills main once origin/main has moved past the installed
 // commit and main's `tests` check passed on it, so merged work runs within minutes. While the head's
 // check has not passed, it installs the newest commit between the two whose check has. It waits while
-// any repo has a worker at Stage 7 (opening its PR), and does nothing while a window is open. Its
-// state is release.json beside the window's: when origin was last fetched, the last reason recorded
-// for a commit, and the last commit whose check failed with the repo that pushes it. Tests stand in for
+// any repo has a worker at Stage 7 (opening its PR), up to a bound (stage7Wait), and does nothing while
+// a window is open. Its state is release.json beside the window's: when origin was last fetched, the
+// last reason recorded for a commit, the last commit whose check failed with the repo that pushes it,
+// and the wait on Stage 7 sessions. Tests stand in for
 // the check with DESK_RELEASE_CHECK_CMD (run with sh -c, the commit appended; it prints success,
 // pending, cancelled or failure).
 export const RELEASE_CHECK = 'tests';
@@ -287,6 +295,24 @@ const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == nu
 // pending (pass.mjs), not running, and its next spawn would start on whatever bin is installed then.
 const awaitingStage7 = (t) => t?.handoff === 'pending' && String(t.handoff_stage) === '7' && !runsInCloud(t);
 const stage7Rows = (q) => [...runningWorkers(q), ...Object.values(q?.tickets ?? {}).filter((t) => !runningHere(t) && awaitingStage7(t))];
+
+// How long the install waits on Stage 7 sessions: once any one repo's passes have waited WAIT_PASSES
+// times, or WAIT_MERGES merges are pending, it installs with them running.
+export const WAIT_PASSES = 2;
+export const WAIT_MERGES = 3;
+// The wait on Stage 7 sessions, carried in release.json as {since, base, merges, passes: {<repo>: n}}
+// while main stays uninstalled behind them; it starts again once the installed commit moves.
+// -> {over, next}: `over` once it has waited past the bound, `next` the record with this pass counted.
+export function stage7Wait(prev, { base, merges, at, slug = selfSlug() }) {
+  const was = prev?.base === base ? prev : null;
+  const passes = { ...(was?.passes ?? {}) };
+  const over = Math.max(0, ...Object.values(passes)) >= WAIT_PASSES || merges >= WAIT_MERGES;
+  passes[slug] = (passes[slug] ?? 0) + 1;
+  return { over, next: { since: was?.since ?? at.toISOString(), base, merges, passes } };
+}
+const minutesText = (ms) => (ms >= 3600e3 ? `${Math.floor(ms / 3600e3)}h ${Math.round((ms % 3600e3) / 60e3)}m` : `${Math.round(ms / 60e3)}m`);
+const waitedText = (w, at) =>
+  `waited ${minutesText(Math.max(0, at - Date.parse(w.since)))} over ${Math.max(0, ...Object.values(w.passes))} pass(es), ${w.merges} merge(s) pending`;
 
 // The notification for main's failed check, which release.json gives to the repo whose pass first saw
 // it fail. That repo returns it from every pass while origin/main is still at that commit, whatever
@@ -372,21 +398,33 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     const o = othersRunning(selfQueue, { self: true, selfView, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
       label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
     const pushing = [...o.running, ...o.unreadable];
+    let past = '';
     if (pushing.length) {
-      lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')}`);
-      return { lines };
+      const w = stage7Wait(s.waiting, { base, merges: pendingMerges(git, base, to), at });
+      if (!w.over) {
+        s.waiting = w.next;
+        save();
+        lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')} (${waitedText(w.next, at)}; installs anyway past ${WAIT_PASSES} passes or ${WAIT_MERGES} pending merges)`);
+        return { lines };
+      }
+      // `current` moves under the session: the scripts it has running keep their release folder (runBin),
+      // which install.sh's record step holds from pruning while the release watch may roll back to it,
+      // and its next call to the bin runs the new release.
+      past = `; installed past the Stage 7 wait (${waitedText(w.next, at)}) with ${pushing.join(', ')} running: the scripts it has running stay on their release, and its next call to the bin runs this one`;
     }
 
     // The workers still running here pick the new bin up on their next call to it.
     const live = othersRunning(selfQueue, { self: true, selfView }).running;
     const u = updateDesk(src, { to });
+    // A failed install keeps the wait, so the next pass is still past the bound and tries again.
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
+    delete s.waiting;
     save();
-    watch.recordRelease(dir, { at, from: base, to: u.new, merges: u.merges });
+    // install.sh's record step wrote the release watch's row for this move (installed.mjs).
     // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
     const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
-    const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
+    const reach = `${past}${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
     record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.merges} merge(s) to main), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
     lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.merges} merge(s) to main) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
     return { lines };
@@ -521,18 +559,15 @@ function step(s, { dir, at, running, stop, selfQueue, watch }) {
         lines.push(`maintenance: desk-skills not updated: ${held}`);
         save({ phase: 'checking' });
       } else {
-        // The release before this one is what is installed, as the auto-release records it.
-        const base = readInstalled()?.commit ?? null;
+        // install.sh's record step writes the release watch's row for the move (installed.mjs).
         const u = updateDesk();
         if (!u.ok) {
           log(`update failed: ${u.why}${u.old ? ` (installed version stays at ${short(u.old)})` : ''}`);
           note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
           return finish(`desk-skills update failed (${u.why}), so no restart`);
         }
-        const from = base ?? u.old;
-        if (u.new !== from) watch.recordRelease(dir, { at, from, to: u.new, merges: u.merges });
-        log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
-        lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
+        log(`update: desk-skills ${short(u.from)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
+        lines.push(`maintenance: desk-skills updated ${short(u.from)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
         save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
       }
     } finally { rl.release?.(); }

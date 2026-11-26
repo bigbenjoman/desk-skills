@@ -108,9 +108,15 @@ async function summary(gh, login, period, repo) {
   catch (e) { return { why: e.message || String(e) }; }
 }
 
+// The login gh reads as, or null when it does not say.
+async function signedIn(gh) {
+  try { const u = await gh('/user'); return typeof u?.login === 'string' && u.login ? u.login : null; } catch { return null; }
+}
+
 // One GitHub reading folded into the last one (`last`, the cache's `github`, or null).
-// sources: costs.md's GitHub entries. gh(path) -> parsed body.
-//   -> the new `github`: { at, period, repos, shared, lastMonth }
+// sources: costs.md's GitHub entries. gh(path) -> parsed body. With a repo gh cannot read, the
+// reading also names the login gh reads as (`login`), so Costs can say whose billing it can't see.
+//   -> the new `github`: { at, period, repos, shared, lastMonth, login? }
 export async function readGithub({ sources, last = null, gh = ghApi, now }) {
   const period = readingPeriod(now);
   const before = samePeriod(last?.period, period) ? last : null;
@@ -139,7 +145,8 @@ export async function readGithub({ sources, last = null, gh = ghApi, now }) {
     const items = sharedItems(got.items, read[account]);
     shared[account] = { at: now, total: totalOf(items), items, failed: null };
   }
-  return { at: now, period, repos, shared, lastMonth: await lastMonthOf({ sources, last, period, gh, now }) };
+  const login = sources.some((s) => s.readable === false) ? await signedIn(gh) : null;
+  return { at: now, period, repos, shared, lastMonth: await lastMonthOf({ sources, last, period, gh, now }), ...(login ? { login } : {}) };
 }
 
 // Last month's charged total per repo, for comparison: carried over when the previous reading was
@@ -688,10 +695,14 @@ function sharedPartsOf(r, s) {
 //        names: [{ name, total | null, by: { supplier: usd }, credits, cantRead | null, free, freePlan, reads: [{ supplier, at, failedAt }] }],
 //        shared | null, sharedParts: [{ supplier, label, total }], credits },
 //      most charged first; null with no reading
-export function chargesByName({ cache, names = [] }) {
+// The suppliers with a figure, and the newest month among them: the month the charges are for.
+const figureMonth = (cache) => {
   const read = Object.keys(BILLED_BY).filter((s) => cache?.[s] && periodOf(cache[s], s) && hasFigure(cache[s], s));
+  return { read, period: read.length ? newest(read.map((s) => periodOf(cache[s], s))) : null };
+};
+export function chargesByName({ cache, names = [] }) {
+  const { read, period } = figureMonth(cache);
   if (!read.length) return null;
-  const period = newest(read.map((s) => periodOf(cache[s], s)));
   const by = new Map();
   const row = (name) => {
     if (!by.has(name)) by.set(name, { name, c: null, by: {}, credits: 0, cantRead: null, minutes: 0, freeMinutes: 0, freePlan: false, reads: {} });
@@ -765,6 +776,91 @@ const sourcesOf = (costs) => ({
   aws: costs.entries.filter((e) => e.supplier === 'aws'),
   neon: costs.entries.filter((e) => e.supplier === 'neon' && e.orgId),
 });
+
+// What would let desk read a source whose last call failed, from the failure's text, where desk knows:
+// a failure that may pass by itself (a timeout, a 429 or 5xx) is tried again at the next cost reading,
+// due an hour after the failed one (READ_EVERY_MS); a missing CLI, a sign-in or a
+// profile that is wrong names its command. A why ending ": run <command>" is split into the two.
+// An unexpected answer has no fix desk knows.  -> { why, fix | null }
+export const RETRY_FIX = 'desk tries again at the next cost reading';
+// The Neon key file as a line names it.
+export const neonKeyFile = () => tilde(neonKeyPath());
+const CLI_NAME = { gh: 'the GitHub CLI (gh)', aws: 'the AWS CLI' };
+export function failureFix(supplier, why, key = null) {
+  const run = /^(.*\S):\s*(run \S.*)$/.exec(why);
+  if (run) return { why: run[1], fix: run[2] };
+  const cli = /\bspawn (gh|aws) ENOENT\b/.exec(why);
+  const fix = (() => {
+    if (cli) return `install ${CLI_NAME[cli[1]]}`;
+    if (/^timed out\b|^could not reach\b|\bHTTP (429|5\d\d)\b/.test(why)) return RETRY_FIX;
+    if (supplier === 'github' && /gh auth login|not logged in|HTTP 401\b/i.test(why)) return 'run gh auth login';
+    if (supplier !== 'aws' || !key) return null;
+    if (/\bSSO\b|token has expired/i.test(why)) return `run aws sso login --profile ${key}`;
+    if (/profile .* could not be found/i.test(why)) return `add the profile ${key} to ~/.aws/config, or correct it in costs.md`;
+    if (/unable to locate credentials/i.test(why)) return `give the profile ${key} credentials: aws configure --profile ${key}`;
+    if (/AccessDenied|not authorized/i.test(why)) return `allow ce:GetCostAndUsage for the profile ${key}`;
+    return null;
+  })();
+  return { why, fix };
+}
+
+// Why one source has no figure because it could not be read, or null: a GitHub account gh is not
+// signed in to, a Neon key missing or refused, else a last call that failed with no good figures
+// kept. `fix` is what would let desk read it, where desk knows (failureFix).
+//   -> { label, why, fix | null } | null
+const UNREAD = {
+  github: (s, cache) => {
+    const g = cache?.github, e = g?.repos?.[s.key];
+    if (e?.cantRead) return { label: e.cantRead.account, why: `billing not readable from ${g.login ?? 'the signed-in account'}`, fix: `sign in to ${e.cantRead.account} with desk-env logins` };
+    return e?.failed && e.total == null ? { label: s.key, ...failureFix('github', e.failed.why) } : null;
+  },
+  vercel: (s, cache) => {
+    const t = cache?.vercel?.teams?.[s.teamId];
+    if (!t?.failed || t.lines) return null;
+    const team = t.team ?? s.team;
+    return /^HTTP 404\b/.test(t.failed.why) ? { label: team, why: 'no billing access (HTTP 404)', fix: `use a login with billing access to ${team}` } : { label: team, ...failureFix('vercel', t.failed.why) };
+  },
+  aws: (s, cache) => {
+    const p = cache?.aws?.profiles?.[s.key];
+    // Lines kept from an earlier month are no figure once another source has read this one (figureIn).
+    const kept = p?.lines && samePeriod(p.period, figureMonth(cache).period);
+    return p?.failed && !kept ? { label: s.key, ...failureFix('aws', p.failed.why, s.key) } : null;
+  },
+  neon: (s, cache) => {
+    const o = cache?.neon?.orgs?.[s.orgId];
+    // Usage kept from an earlier reading is a figure only as neonCharges counts one: this period's,
+    // with the key still read. A key now missing or refused, or last month's usage, gives none.
+    if (!o?.failed || (o.usage && !o.cantRead && samePeriod(o.period, cache.neon.period))) return null;
+    const label = s.key.split('/')[0], file = neonKeyFile();
+    if (o.cantRead === 'missing') return { label, why: o.failed.why, fix: `save a Neon API key in ${file}` };
+    if (o.cantRead === 'refused') return { label, why: o.failed.why, fix: `replace the API key in ${file} with one that can read this org` };
+    return { label, ...failureFix('neon', o.failed.why) };
+  },
+};
+const eachSource = (costs) => Object.entries(sourcesOf(costs)).flatMap(([supplier, list]) => list.map((s) => [supplier, s]));
+
+// Each source the cache has no figure for because it could not be read, and why (UNREAD), one per
+// GitHub account, Vercel team, AWS profile or Neon org; `names` the cost names it bills.
+//   -> [{ supplier, label, why, fix | null, names }]
+export function unreadSources({ cache, costs }) {
+  if (!costs?.exists) return [];
+  const out = [];
+  for (const [supplier, s] of eachSource(costs)) {
+    const u = UNREAD[supplier](s, cache);
+    if (!u) continue;
+    const had = out.find((x) => x.supplier === supplier && x.label === u.label);
+    if (had) { if (!had.names.includes(s.name)) had.names.push(s.name); }
+    else out.push({ supplier, ...u, names: [s.name] });
+  }
+  return out;
+}
+
+// Whether every source in costs.md has been tried and could not be read, so no reading is pending.
+// A source with no record yet (just added, or its supplier not read) is still to come.
+export function allUnread({ cache, costs }) {
+  const all = costs?.exists ? eachSource(costs) : [];
+  return all.length > 0 && all.every(([supplier, s]) => UNREAD[supplier](s, cache) != null);
+}
 
 // GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS. AWS is due
 // when any profile is, or when a profile's credit in costs.md differs from the cache's: that alone

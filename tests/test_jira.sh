@@ -639,6 +639,9 @@ lint "$LD/gwt2.md" customfield_10208=M
 check "DS-824 lint: another block under the criteria heading stays code" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link" && ! printf "%s\n" "$out" | grep -q -e "no acceptance criteria" -e "leaves a decision open"'
 gwtblock '{noformat}' '{noformat}' 'Given the job|When it runs|Then p95 in production is under 300 ms'
 check "DS-824 lint: a production run in preformatted criteria is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
+clean | grep -v -e '^## Acceptance criteria' -e '^1\. AC1' | awk '{ print } /^Reviewers see/ { print "{noformat}"; print "Given a draft"; print "When lint runs"; print "Then it lists each finding"; print ""; print "Given a clean draft"; print "Then it says ok"; print "{noformat}" }' > "$LD/gwtout.md"
+lint "$LD/gwtout.md" customfield_10208=M
+check "#1488 AC1 lint: unlabelled Given/When/Then criteria outside a criteria heading are listed numbered, for admit to move" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria section, but 2 Given/When/Then criteria with no AC labels (line [0-9]*, [0-9]*): move them under an \"Acceptance criteria\" heading as AC1: … items$"'
 clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://www.figma.com/design/Ab/x?node-id=1-2" }' > "$LD/figmaref.md"
 lint "$LD/figmaref.md" customfield_10208=M
 check "DS-824 AC2 lint: a Figma URL under a References heading is a design link" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no design link"'
@@ -687,6 +690,41 @@ acline 'Given the release, when it ships, then p95 latency in production is unde
 check "lint: a then-clause only production can meet is still a production run" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
 acline 'Given the billing tables, when a read-only query is run against the live database, then it returns no orphaned subscriptions.'
 check "lint: a read-only query run against the live database is still a production run" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
+# Words that sit only in quoted copy, an example list or a note naming where a value comes from
+# leave nothing open and ask nobody to act; the same words in the ticket's own prose still block.
+# desk-jira reads a body only from inside the repo's worktree, so each fixture is copied into it first.
+for n in 1436 1423 1447; do
+  cp "$S/fixtures/ticket-lint/gh-$n-v1.md" "$LD/gh-$n-v1.md"
+  lint "$LD/gh-$n-v1.md" customfield_10208=M
+  check "DS-1014 lint: the first version of GitHub #$n has no blocking finding" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "^blocking"'
+done
+openline(){ clean | awk -v o="$1" '{ print } /^Reviewers see/ { print o }' > "$LD/open2.md"; lint "$LD/open2.md" customfield_10208=M; }
+for o in 'A "Decide whether…" Task is left out.' 'A “TBD” label is left out.' 'A `decide` task is left out.' 'It skips work (rotate a key, promote rules, decide a policy).' 'It skips work (for example tickets marked TBD).' 'It reports one ("decide") per line.' 'Neither leaves anything for anyone to decide.' \
+  'It reports "leaves a decision open ("decide")" per line.' "The label is 'TBD'." "The label is ‘TBD’." 'Skip unfinished labels (e.g. the TBD label).' 'Nothing is left to decide.' 'The filter omits placeholder statuses (draft, TBD, and archived).'; do
+  openline "$o"
+  check "DS-1014 AC1 lint: an open-decision word only in quotes, backticks or an example list is not an open decision ($o)" '[ $rc -eq 0 ]'
+done
+for o in 'Decide whether to ship it.' 'The fee is TBD (rotate a key, promote rules, set a policy).' 'Ship it (decide by Friday).' 'The fee (to confirm) is 5.' \
+  'The currency is unresolved (decide the currency, confirm the tax treatment, and ask Finance to approve).' 'Ship it (decide by Friday, then notify X, and publish).' \
+  'Ship it (decide the price, with the PO, at the review).' 'Do not ship until we decide whether there is anything left to decide.' \
+  'Do not ship anything until the owner gets to decide.' 'Nothing else remains but to decide the fee.' "Don't skip it: it's TBD." \
+  "For '90s invoices, decide how long to retain customers' records." 'Use a supported tier (e.g. Standard; decide which tier to use before shipping).'; do
+  openline "$o"
+  check "DS-1014 AC3 lint: an open-decision word in plain prose still blocks ($o)" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* leaves a decision open"'
+done
+for a in 'Given a fee (entered by hand in /desk-setup costs, never guessed), when Costs renders, then it shows the fee.' 'Given a fee (set by hand in subscriptions.md), when Costs renders, then it shows the fee.' 'Given a fee, when Costs renders, then it says "set it by hand".' \
+  'Given a fee (entered by hand in the operator console), when Costs loads, then it shows the fee.'; do
+  acline "$a"
+  check "DS-1014 AC2 lint: a person-step word only in a value-source note or a quote is not a person step ($a)" '[ $rc -eq 0 ]'
+done
+for a in 'Given a fee, when Costs renders, then an operator enters it by hand (recorded in /desk-setup costs).' 'Given a fee, when Costs renders, then it is checked (manually, by the reviewer).' \
+  'Given the form, when it opens, then the fee is saved (entered by the operator after the reviewer signs off).' \
+  'Given a fee, when it is applied, then it is kept (read the logs, then run it manually).' \
+  'Given an account, when it opens, then it is ready (set up the account manually by phone).' \
+  'Given a fee, when it is saved, then it is kept (from then on the operator signs off).'; do
+  acline "$a"
+  check "DS-1014 AC3 lint: a person step in the criterion's own action still blocks ($a)" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, an operator or human step"'
+done
 # Advisory findings do not fail the lint.
 clean | grep -v -e '^## Out of scope' -e '^\* None' -e '^## Verification' -e '^\* Unit' > "$LD/adv0.md"
 { cat "$LD/adv0.md"; printf '\nPriority: P2\n'; } > "$LD/adv.md"

@@ -13,14 +13,15 @@ const without = (name, drop) => ({ ...ENTRIES, [name]: drop({ ...ENTRIES[name], 
 
 // AC1: all seven, in their layers, and the same names desk-env levers parses.
 const byLayer = (layer) => Object.values(REGISTRY).filter((l) => l.layer === layer).map((l) => l.name).sort().join(' ');
-t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class ledger memory preflight question-handling wrappers');
+t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class ledger ledger-record memory preflight question-handling wrappers');
 t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort finder-model review-reuse');
 const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex'));
 t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
 t('AC1 an entry desk-env does not know fails loading, by name', loadError({ ...ENTRIES, turbo: ENTRIES.memory }), 'lever-registry: entry "turbo" is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)');
 t('AC1 the quality-risk layer is trialled (DS-646)', Object.values(REGISTRY).filter((l) => l.layer === 'quality-risk').every((l) => l.trialled === true), true);
-t('AC1 the low-risk layer is trialled, but the ledger', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk' && l.name !== 'ledger').every((l) => l.trialled === true), true);
+t('AC1 the low-risk layer is trialled, but the ledger levers', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk' && !['ledger', 'ledger-record'].includes(l.name)).every((l) => l.trialled === true), true);
 t('AC1 the ledger is declared but not trialled (DS-893)', REGISTRY.ledger.trialled, false);
+t('the ledger-record lever is declared but not trialled', REGISTRY['ledger-record'].trialled, false);
 t('AC1 the loaded registry is frozen', Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY.preflight) && Object.isFrozen(REGISTRY.preflight.code), true);
 
 // AC2: a name in a repo's levers row that the registry does not declare is refused, by name.

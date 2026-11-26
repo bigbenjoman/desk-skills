@@ -30,7 +30,10 @@
 # machine profile's `test-lock-slots` row (DESK_TEST_LOCK_SLOTS wins over it), 1 without either, so
 # a machine nobody sized keeps the old one-at-a-time lock. Slot 1 is the original lock path, so a
 # command waiting under an older copy of this script still queues for it correctly. The browser lock
-# is always one slot. Slots raise throughput; the profile keeps the memory bound.
+# is always one slot. The light lock's slots are desk-env lightLockSlots (admission.mjs pool light):
+# §3b "Light lock slots" of the repo whose run asks, else the profile's light-lock-slots, else 1, and 1
+# while available memory is under the spawn gate's start. Slots raise throughput; the profile keeps
+# the memory bound.
 #
 # Each run also takes its slot as a lease from the machine's lease broker (slot-lease.mjs), so every
 # holder on the machine is in `desk-env lease list` with where it runs and what. test and tsc share the
@@ -79,7 +82,7 @@ set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
 name="${1:?usage: with-lock.sh <test|tsc|browser|light|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
-# A repo whose §4 Suite weight is `light` runs its suites under the light lock instead: one slot of its
+# A repo whose §4 Suite weight is `light` runs its suites under the light lock instead: slots of its
 # own, box-wide, so a long light suite neither holds nor queues behind the heavy suites and typechecks
 # that share the test lock. It runs again under that name, so the pass, which counts only `test` and
 # `tsc` wrappers and the test lock's files (suite-wait.mjs), counts none of it. Typechecks stay heavy.
@@ -214,7 +217,22 @@ queued=""; w=""
 waited_s() { if [ -n "$w" ]; then echo "$w"; elif [ -n "$queued" ]; then echo $((SECONDS - t0)); else echo 0; fi; }
 # Logs this run's queued, grant or gave-up line ($1), saying nothing whatever happens.
 note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(waited_s)" ${lane:+--lane "$lane"} </dev/null >/dev/null 2>&1 || true; }
-queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && : > "$wdir/$$" 2>/dev/null; note queued; }
+# This wrapper's process start time as leases.mjs startTimes reads it and admit-ledger.mjs startStamp
+# writes it (/proc's starttime, else ps's lstart in UTC), which the marker holds so a reader tells a
+# later process given its pid from it; empty where it does not read.
+start_stamp() {
+  local s
+  if [ -r "/proc/$$/stat" ]; then
+    s="$(cat "/proc/$$/stat" 2>/dev/null)"; s="${s##*) }"
+    # shellcheck disable=SC2086
+    set -- $s; printf '%s' "${20:-}"
+  else
+    s="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$$" 2>/dev/null)"
+    # shellcheck disable=SC2086
+    set -- $s; local IFS=_; printf '%s' "$*"
+  fi
+}
+queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && start_stamp > "$wdir/$$" 2>/dev/null; note queued; }
 unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
 gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 # Headroom admission's look at this run while it waits (admission.mjs watch): in the background, so the
@@ -310,14 +328,17 @@ admit_on=""; ceiling="$slots"
 case "$name" in
   test|tsc|light)
     read -r amode afloor aceil <<<"$(node "$here/admission.mjs" pool "$name" 2>/dev/null)"
-    if [ "${amode:-}" = on ]; then
-      case "${afloor:-}${aceil:-}" in ''|*[!0-9]*) ;; *)
-        if [ "$afloor" -ge 1 ] && [ "$aceil" -ge "$afloor" ]; then
+    case "${afloor:-}${aceil:-}" in ''|*[!0-9]*) ;; *)
+      if [ "$afloor" -ge 1 ] && [ "$aceil" -ge "$afloor" ]; then
+        if [ "${amode:-}" = on ]; then
           slots="$afloor"; ceiling="$aceil"
           [ "$aceil" -gt "$afloor" ] && admit_on=1
-        fi ;;
-      esac
-    fi ;;
+        elif [ "$name" = light ]; then
+          # The light floor is desk-env lightLockSlots whatever the admission mode.
+          slots="$afloor"; ceiling="$afloor"
+        fi
+      fi ;;
+    esac ;;
 esac
 recheck="${DESK_ADMIT_RECHECK_S:-10}"
 # A leading zero is refused too: bash reads 08 as octal, and the arithmetic error would end the wait.

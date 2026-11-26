@@ -32,12 +32,13 @@
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, loginIn, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { IDLE_RECHECK_MS } from './batch-state.mjs';
-import { normaliseLine } from './evidence.mjs';
+import { normaliseLine, readError } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
+import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, nameable, personsCall, recommendedOf, spokenFor } from './accept-gaps.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
 import { statesPhrase, leftOver } from './review-plain.mjs';
 import { pairs } from './desk-env.mjs';
@@ -214,6 +215,34 @@ const stateClears = (kind) => (kind === 'verdict'
   ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
   : kind === 'external' ? 'a §4 State check, which reads an outside reviewer\'s review at the head and not the code, so only that reviewer\'s review of a new head turns it green'
   : 'a §4 State check, which reads the PR\'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads');
+// A red §4 State check whose error lines say a read from GitHub failed (evidence.mjs readError) failed
+// on that read, not on the state it reads, so its job is re-run once at the head before the PR is
+// called stuck, through rerun.sh, whose record (r.reruns, r.rerunsOk) counts it. r: { perm (§3
+// ci-rerun), reruns(name), rerunsOk(name) }. -> { hit: [{ name, runId, jobId, line }], call (the rerun,
+// while one is left), note (why none is, otherwise) }.
+const READ_STATE = 'a §4 State check failing on a GitHub read error';
+function readErrorRerun(state, checks, r) {
+  const latest = latestPerCheck(checks ?? []);
+  const checkOf = (f) => latest.find((c) => c.name === f.name);
+  const hit = [...new Map(state.map((f) => [f.name, { name: f.name, runId: f.runId, jobId: checkOf(f)?.jobId ?? null, line: errorLines(checkOf(f)).find(readError) ?? null }])).values()].filter((f) => f.line);
+  if (!hit.length) return { hit };
+  const rerun = rerunGate(hit);
+  if (!rerun) return { hit, note: 'it has no run to re-run' };
+  if (r?.perm !== 'yes') return { hit, note: `config §3 ci-rerun is "${r?.perm ?? 'no'}", so it is not re-run` };
+  const used = runnerRerunsSpent(hit, (f) => r.rerunsOk?.(f.name) ?? 0, (f) => r.reruns?.(f.name) ?? 0);
+  if (used === 'ran') return { hit, note: 're-run once at this head, it failed the same way' };
+  if (used === 'refused') return { hit, note: `GitHub refused desk's ${RERUNS_MAX} re-runs at this head` };
+  // A check alone in its run among these is re-run by its job, so `--failed` re-runs no other red job of
+  // that run with it; two in one run share the run's re-run, as a job re-run puts the run in progress,
+  // which refuses the next (gate.mjs failedJobs).
+  const alone = hit.filter((f) => f.runId && f.jobId && hit.filter((x) => String(x.runId) === String(f.runId)).length === 1);
+  const gate = { ...rerun.gate, failedRuns: rerun.gate.failedRuns.filter((id) => !alone.some((f) => String(f.runId) === id)),
+    failedJobs: alone.map((f) => ({ runId: String(f.runId), jobId: String(f.jobId), name: f.name, why: 'alone, so no other red job of its run is re-run with it' })) };
+  const names = hit.map((f) => `"${f.name}"`).join(', '), one = hit.length === 1;
+  return { hit, call: { call: 'rerun', why: `its ${names} ${one ? 'state check' : 'state checks'} failed on a GitHub read error ("${hit[0].line.slice(0, LINE_CHARS)}"), not on what ${one ? 'it reads' : 'they read'}, so ${one ? 'its job is' : 'their jobs are'} re-run once at this head before the PR is called stuck`, gate } };
+}
+// What clears a state check readErrorRerun found failing on a read error, once no re-run is left.
+const readClears = (f, note) => `${READ_STATE} ("${f.line.slice(0, LINE_CHARS)}"): ${note}; re-run it once GitHub answers again`;
 const withLines = (mine, checks) => {
   const latest = latestPerCheck(checks ?? []);
   return mine.map((f) => ({ ...f, lines: errorLines(latest.find((c) => c.name === f.name)).slice(0, LINES_PER_CHECK).map((l) => l.slice(0, LINE_CHARS)) }));
@@ -384,10 +413,13 @@ export function fixCall(t, s, ctx) {
     if (!mine.length) {
       // Red only on state checks. One reading the verdict or an approval has its route; one reading other
       // state (a title) nothing reruns or fixes, so it is the person's, unless one of those may be its cause.
-      const bare = [...new Set(state.filter((x) => !x.kind).map((x) => `"${x.name}"`))];
-      return bare.length && !state.some((x) => x.kind)
-        ? { call: 'stuck', why: `red on ${bare.join(', ')}, a §4 State check: it reads the PR's state, not its code, so no rerun or fix try turns it green; a person clears what it reads` }
-        : null;
+      // One that failed on a read from GitHub is re-run once first (readErrorRerun), after its run's other checks finish.
+      if (!state.length || state.some((x) => x.kind)) return null;
+      const read = readErrorRerun(state, s.checks, { perm: ctx.rerunPerm, reruns: ctx.reruns, rerunsOk: ctx.rerunsOk });
+      if (read.call) return gate.pending.length ? null : { ...read.call, ready: true };
+      const bare = [...new Set(state.filter((x) => !read.hit.some((h) => h.name === x.name)).map((x) => `"${x.name}"`))];
+      return { call: 'stuck', why: [...read.hit.map((f) => `red on "${f.name}", ${readClears(f, read.note)}`),
+        ...(bare.length ? [`red on ${bare.join(', ')}, a §4 State check: it reads the PR's state, not its code, so no rerun or fix try turns it green; a person clears what it reads`] : [])].join('; ') };
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     // A check red on several open PRs at once with the same error line (ctx.outage, outagePlan) reads as
@@ -783,17 +815,7 @@ export function reviewGaps(body) {
   }
   return gaps.filter((g) => !/UNVERIFIED CODE CLAIM/.test(g) && !/^none\b/i.test(g));
 }
-// The tag a review puts on a gap only the person can settle (desk-review phase-5-requirements.md).
-const personsCall = (gap) => /PERSON['’]S CALL/.test(gap);
-// The option a tagged gap ends with (`Recommended: <option>`), or null where it names none. Only the
-// bold around the label and the emphasis around the whole option go: the option is kept as written.
-export function recommendedOf(gap) {
-  const s = String(gap ?? '');
-  const at = [...s.matchAll(/\bRecommended:/gi)].at(-1);
-  const option = !at ? '' : s.slice(at.index + at[0].length).replace(/^(\*\*|__)/, '').trim()
-    .replace(/\s*\.$/, '').replace(/^(\*\*|__|[*_`])(.+)\1$/, '$2').trim();
-  return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
-}
+export { recommendedOf };
 // What a recommendation may need that §3 can deny workers: the row, what it reads like, and the action.
 // A worker under a row that is not yes cannot carry it out, so no try is spent on it.
 const WORKER_ROUTES = [
@@ -808,12 +830,13 @@ export function deniedRoute(gap, workerMay) {
 }
 // The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
 // autopilot-judgement yes, only when they are all the review leaves open (`alone`), and only when every
-// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn) and none needs
-// a route §3 denies workers (deniedRoute); otherwise [] and all of them stay the person's.
+// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn), none needs
+// a route §3 denies workers (deniedRoute) and none recommends accepting it, which only the person's own
+// comment does (accept-gaps.mjs acceptOnly); otherwise [] and all of them stay the person's.
 function takenGaps(person, judgement, alone, workerMay) {
   if (judgement !== 'yes' || !alone || !person.length) return [];
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
-  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay)) ? taken : [];
+  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay) && !acceptOnly(x.gap)) ? taken : [];
 }
 // A gap the review did not tag whose recommendation needs a denied route is the person's all the same:
 // tagged as their call wherever it is quoted, so a stuck reason gives it up to needs-you (personGapsIn).
@@ -934,11 +957,11 @@ function scopeQuestion({ acs, outside }, title) {
 // any other review. Asked once reviewFix has returned null, so never for gaps it sends to a try on
 // their recommendations.
 const PERSON_GAPS = 'review gaps only you can settle: ';
-// The tagged gaps a stuck reason names: all of a personGapsCall reason, or those a review stuck reason
-// (reviewFix) carries beside what outlasted its tries. [] for any other reason.
+// The tagged gaps a stuck reason names, one each: all of a personGapsCall reason, or those a review
+// stuck reason (reviewFix) carries beside what outlasted its tries. [] for any other reason.
 export function personGapsIn(why) {
   const s = String(why ?? '');
-  if (s.startsWith(PERSON_GAPS)) return [s.slice(PERSON_GAPS.length)];
+  if (s.startsWith(PERSON_GAPS)) return s.slice(PERSON_GAPS.length).split(/; (?=PERSON['’]S CALL)/);
   const i = /^review not clean\b/.test(s) ? s.indexOf(' — ') : -1;
   const rest = s.slice(i + 3);
   return i < 0 ? [] : (rest.startsWith(SURVIVED) ? rest.slice(SURVIVED.length) : rest).split(/; (?=P[0-2]: |PERSON['’]S CALL)/).filter((x) => /^PERSON['’]S CALL/.test(x));
@@ -955,6 +978,53 @@ export function personGapsCall(review, opts = {}) {
 // FIX_TRIES_MAX tries, which are the pass's own. `ready` is a PR out of draft, which its worker leaves
 // out of draft.
 export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
+
+// A draft whose review verdict at its head has requirement gaps open, as its undraft record says.
+export const draftHasGaps = (t) => t?.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
+// The latest of desk's own reviews (posted by `logins`, loginIn) whose verdict is at `sha`, or null.
+export const verdictReviewAt = (reviews, logins, sha) => (!sha ? null : (reviews ?? []).filter((x) => loginIn(x.author?.login, logins)).filter((x) => {
+  const at = markerOf(String(x.body ?? '').trim())?.sha;
+  return !!at && (sha.startsWith(at) || at.startsWith(sha));
+}).pop() ?? null);
+// A PR left for the person on requirement gaps: a draft whose review at its head has gaps, or one stuck
+// on gaps only its person settles, some of which only their own comment accepts (accept-gaps.mjs).
+export const awaitsAcceptance = (t) => t?.result?.pr != null && t.pr_status?.state !== 'MERGED' && t.pr_status?.state !== 'CLOSED'
+  && (draftHasGaps(t) || personGapsIn(t.stuck?.why).some(acceptOnly));
+// The gaps fix the person's acceptance on the PR sends it to (gapsFix), so its worker posts the round's
+// verdict again with those gaps accepted. `v`: the PR as `gh pr view --json
+// state,isDraft,headRefOid,comments,reviews` gives it; `logins`: desk's verdict logins, the §1 GitHub
+// handle first, whose comment alone accepts. Read against desk's latest review at the head: only a
+// comment or review posted after it counts, so the verdict that records the acceptance is not read as
+// waiting on it again. null where nothing is accepted, or this acceptance already went to a worker.
+export function acceptedFix(t, v, { logins }) {
+  const handle = String(logins ?? '').split(',')[0].trim();
+  if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
+  const head = v.headRefOid;
+  const review = verdictReviewAt(v.reviews, logins, head);
+  if (!review) return null;
+  const gaps = reviewGaps(review.body).filter(acceptOnly);
+  const a = acceptanceOn(gaps, [...(v.comments ?? []), ...(v.reviews ?? [])], { handle, since: review.submittedAt });
+  if (!a || (t.fix?.kind === 'gaps' && t.fix.accepted === (a.url ?? a.at))) return null;
+  return { acceptance: a, fix: { ...gapsFix({ pr: t.result.pr, head, ready: v.isDraft === false, answer: acceptedAnswer(a) }), accepted: a.url ?? a.at } };
+}
+// The acceptance the pass posts as the §1 GitHub handle where config §3 accept-review-gaps is yes
+// (accept-gaps.mjs grantComment), for the gaps only that comment accepts on desk's latest review at the
+// head: { gaps, body }, or null where there are none. `v` as acceptedFix reads it, with `body` (the PR's,
+// for its evidence). Once per gap, and never over the person's words: a gap the handle has named on the
+// PR at any time (accepted, refused or asked about: spokenFor) is left out, and so is one desk posted
+// for under the grant from any account (GRANTED), so a later review that still lists it, or a gh signed
+// in as someone else, puts it to the person rather than posting again. So is a gap with neither a label
+// nor a quoted criterion, which no comment can name, so nothing could show it was posted for.
+export function grantedPost(t, v, { logins }) {
+  const handle = String(logins ?? '').split(',')[0].trim();
+  if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
+  const review = verdictReviewAt(v.reviews, logins, v.headRefOid);
+  const items = [...(v.comments ?? []), ...(v.reviews ?? [])].map((x) => (String(x?.body ?? '').includes(GRANTED) ? { ...x, author: { login: handle } } : x));
+  const open = review ? reviewGaps(review.body).filter(acceptOnly).filter(nameable) : [];
+  const spoken = spokenFor(open, items, { handle });
+  const gaps = open.filter((g) => !spoken.includes(g));
+  return gaps.length ? { gaps, body: grantComment(gaps, evidenceIn(v.body, gaps)) } : null;
+}
 
 // The rule a reviewed fix worker's task states for a push of nothing, and its one exception, which only
 // a gaps call carries (fixTaskText). Whether the call accepts a gap is the worker's reading of the
@@ -1318,12 +1388,17 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   // named in the brief as not theirs, and on its own it is stuck with the step it failed at.
   const latest = latestPerCheck(checks ?? []);
   const lineOf = (f) => checkLines(latest.find((x) => x.name === f.name))[0] ?? null;
-  const state = [...new Map(stateFailing(failing, ctx.stateChecks, lineOf).map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: stateClears(f.kind) }])).values()];
+  const failingState = stateFailing(failing, ctx.stateChecks, lineOf);
+  // One that failed on a read from GitHub is re-run once (readErrorRerun) where the answer would be stuck.
+  const read = readErrorRerun(failingState, checks, ctx.classRerun);
+  const clears = (f) => { const h = !read.call && read.hit.find((x) => x.name === f.name); return h ? readClears(h, read.note) : stateClears(f.kind); };
+  const state = [...new Map(failingState.map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: clears(f) }])).values()];
   const split = splitFailing((failing ?? []).filter((f) => !state.some((x) => x.name === f.name)), ctx);
   let mine = split.mine, notMine = [...split.notMine, ...state];
   // A stuck answer names a state check in its reason only: its record's checks are those a worker or an
   // off-GitHub step clears, and a record left with none holds at this head, as fixCall's does.
   const unstated = (c) => {
+    if (c?.call === 'stuck' && read.call) return read.call;
     if (c?.call !== 'stuck' || !state.length || !Array.isArray(c.checks)) return c;
     const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
     return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };

@@ -17,6 +17,10 @@ for (const c of ['product', 'design', 'wording']) {
   t(`AC3 a ${c} call is not taken where it is not`, take(c, 'ask'), false);
 }
 
+const GAPQ = 'PR #12\'s review left a requirement gap on AC3 (only a live run checks it): accept it as built (recommended), or amend AC3?';
+t('#1434 AC1 a park recommending accepting a review gap is never taken for the person', takeable(parkRecommends(JSON.stringify({ options: ['accept', 'amend'], chose: 'accept', category: 'review' }), GAPQ).decision, 'yes'), false);
+t('#1434 the same park choosing the other option is taken as any review call', takeable(parkRecommends(JSON.stringify({ options: ['accept', 'amend'], chose: 'amend', category: 'review' }), GAPQ).decision, 'yes'), true);
+
 t('AC5 a refused push is a push park', pushPark('git push origin fix/A-1 was refused: push it and open the draft'), true);
 t('AC5 a PR that could not be opened is one', pushPark('gh pr create failed (HTTP 422): open the draft PR from the body above'), true);
 t('AC5 a force-push is not: a plain push cannot finish it', pushPark('the force-push to fix/A-1 was refused: approve it once'), false);

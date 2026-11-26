@@ -1,13 +1,13 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
-import { errorLinesIn } from '../desk/bin/evidence.mjs';
+import { errorLinesIn, readError } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -317,7 +317,7 @@ t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BR
 t('PR files or a triage scope that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { outside: () => null })?.call, 'requeue');
 t('a pass that reads no scope leaves the try', wideFix(personBody(1, BROAD2), widened, { outside: undefined })?.call, 'requeue');
 const withPerson = reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, BROAD2, PERSON_GAP) }, wideOpts());
-t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x.endsWith(PERSON_GAP.slice(2))])), '[[true,true]]');
+t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x === PERSON_GAP.slice(2)])), '[[true,false],[false,true]]');
 t('a P1 beside the widened gap gets its try', reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: `${p1Body}\n\n### Requirement gaps\n${BROAD2}` }, wideOpts())?.call, 'requeue');
 t('the same gap still open after its try is a survivor, as before', wideFix(personBody(1, `- ${BROAD1}`))?.why.startsWith('review not clean after 1 fix try'), true);
 t('one repeating the earlier gap\'s words at a new site is a new site, not a survivor', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/card.tsx:9')}`))?.why.startsWith("review gaps only you can settle: PERSON'S CALL: AC2"), true);
@@ -403,6 +403,61 @@ t('DS-585 AC5 and the stuck reason gives the person\'s gap up to needs-you', JSO
 const newHead = gapFix(personBody(1, REC_GAP), 1, [{ ...recOnly.fix, head: 'b'.repeat(40) }]);
 t('DS-585 AC5 at a new head the gap survived its try and goes to the person', newHead?.why, `review not clean after 1 fix try (1 review): 1 gap — still open after the fix try that quoted it: ${REC_GAP.slice(2)}`);
 t('DS-585 AC5 and its reason gives that gap up to needs-you, so a ready PR offers the answer', JSON.stringify(personGapsIn(newHead?.why)), JSON.stringify([REC_GAP.slice(2)]));
+// #1434: a gap whose recommendation is to accept it is settled only by the person's own comment.
+const ACC_GAP = `- PERSON'S CALL · AC3: "the pass requeues it" — only a live run can check it. Recommended: accept AC3 as built`;
+t('#1434 AC1 a recommended gap that accepts it starts no fix try', gapFix(personBody(1, ACC_GAP), 1), null);
+t('#1434 AC1 nor beside a takeable one: both go to the person', gapFix(personBody(2, REC_GAP, ACC_GAP), 2), null);
+t('#1434 AC1 the ready PR goes to the person with the gap named', JSON.stringify(personGapsIn(gapsCall(personBody(1, ACC_GAP), { gaps: '1' })?.why)), JSON.stringify([ACC_GAP.slice(2)]));
+t('#1434 AC1 adding an acceptance test is a recommendation a worker carries out', gapFix(personBody(1, `${PERSON_GAP}. Recommended: add an acceptance test for it`), 1)?.call, 'requeue');
+const accBody = (gaps) => personBody(gaps.length, ...gaps);
+const accPr = (comments, o = {}) => ({ state: 'OPEN', isDraft: false, headRefOid: HEAD, comments, reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([ACC_GAP]) }], ...o });
+const said = (login, at, body) => ({ author: { login }, createdAt: at, body, url: `https://github.com/acme/w/pull/702#issuecomment-${at.slice(11, 13)}` });
+const ACCEPTS = 'I accept this requirement gap as it stands on this PR:\n- AC3: "the pass requeues it"';
+const accT = (o = {}) => tk({ result: { pr: 702 }, pr_status: { state: 'OPEN', isDraft: false }, stuck: { why: `review gaps only you can settle: ${ACC_GAP.slice(2)}` }, ...o });
+const accOpts = { logins: 'me,desk-bot' };
+const accepted = acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts);
+t('#1434 AC3 the person\'s comment after the review, naming AC3 and accepting it, sends a gaps fix at the head',
+  `${accepted?.fix.kind} ${accepted?.fix.ready} ${accepted?.fix.head === HEAD} ${accepted?.fix.accepted} ${JSON.stringify(accepted?.acceptance.gaps)}`, `gaps true true https://github.com/acme/w/pull/702#issuecomment-11 ${JSON.stringify([ACC_GAP.slice(2)])}`);
+t('#1434 AC3 its answer quotes the comment and links it, for the worker\'s accepted entry', accepted?.fix.answer, `${ACCEPTS}\n\n(Posted on the PR by me at 2026-11-20T11:00:00Z: https://github.com/acme/w/pull/702#issuecomment-11. Record as accepted only the gaps these words accept.)`);
+for (const [what, body] of [['a refusal', 'I don\'t accept AC3 as built, implement it'], ['one accepting with a "not"', 'I accept these on this PR, but not AC3'],
+  ['a note that leaves it to the person', 'AC3 is left for the person to accept on this PR.'], ['one only quoting the word', 'Will you accept AC3, or should the worker change it?']]) {
+  t(`#1434 AC3 negative: ${what} is not an acceptance`, acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', body)]), accOpts), null);
+}
+t('#1434 AC3 a "not" inside the quoted criterion is the ticket\'s, not a refusal', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'I accept this requirement gap as it stands on this PR:\n- AC3: "the pass requeues it, not the session"')]), accOpts)?.fix.kind, 'gaps');
+const accBrief = fixBrief(tk({ key: 'T-1', fix: accepted.fix }));
+t('#1434 AC3 the worker is told to post the verdict again at the same head with the gap accepted', accBrief.includes('A gap the call accepts, with no code change') && accBrief.includes(ACCEPTS.split('\n')[0]), true);
+t('#1434 AC3 a review by the person accepts too', acceptedFix(accT(), accPr([], { reviews: [...accPr([]).reviews, { author: { login: 'me' }, submittedAt: '2026-11-20T12:00:00Z', body: 'Accepted: AC3 stands as built.', url: 'r1' }] }), accOpts)?.fix.accepted, 'r1');
+t('#1434 AC3 negative: the review account\'s comment is not the person\'s', acceptedFix(accT(), accPr([said('desk-bot', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: nor anyone else\'s', acceptedFix(accT(), accPr([said('stranger', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: a comment before the review is not read as accepting it', acceptedFix(accT(), accPr([said('me', '2026-11-20T09:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: one naming another criterion', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'I accept AC4 as it is')]), accOpts), null);
+t('#1434 AC3 negative: one naming it without accepting', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'AC3: let me think about it')]), accOpts), null);
+t('#1434 AC3 the criterion\'s quoted text names it as well as its label', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'Accepting "the pass requeues it" as built.')]), accOpts)?.fix.kind, 'gaps');
+t('#1434 AC3 negative: an acceptance already sent to a worker is not sent again', acceptedFix(accT({ fix: { ...accepted.fix, finished: true } }), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: nor while another fix waits for its worker', acceptedFix(accT({ fix: { kind: 'review' } }), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: a review at another head lists nothing to accept', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { headRefOid: 'b'.repeat(40) }), accOpts), null);
+t('#1434 AC3 negative: a closed PR', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { state: 'CLOSED' }), accOpts), null);
+t('#1434 AC3 a draft\'s fix stays in draft', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { isDraft: true }), accOpts)?.fix.ready, false);
+t('#1434 AC3 the pass reads a ready PR stuck on such a gap, and a draft whose review left gaps', `${awaitsAcceptance(accT())} ${awaitsAcceptance(tk({ result: { pr: 1 }, pr_status: { state: 'OPEN', isDraft: true }, undraft: { why: 'its review verdict at abc1234 is not clean (gaps=1)' } }))}`, 'true true');
+// #1434 grant path: config §3 accept-review-gaps yes, so the pass posts the acceptance as the handle.
+const grantPr = (comments, o = {}) => accPr(comments, { body: '### Testing\n- AC3: `pass.mjs` requeues it, "covered" by spec 12\n- AC2: not this one', ...o });
+const grant = grantedPost(accT(), grantPr([]), accOpts);
+t('#1434 grant: a gap only the person\'s comment accepts gets a comment naming its criterion', `${JSON.stringify(grant?.gaps)} ${grant?.body.split('\n').slice(0, 2).join(' | ')}`, `${JSON.stringify([ACC_GAP.slice(2)])} I accept this requirement gap as it stands on this PR: | - AC3: "the pass requeues it"`);
+t('#1434 grant: it quotes only the review\'s finding and the PR body\'s lines naming the criterion', grant?.body.includes('The review found: “only a live run can check it”') && grant.body.includes("The PR's evidence for it: “AC3: `pass.mjs` requeues it, 'covered' by spec 12”") && !grant.body.includes('AC2'), true);
+const posted = said('me', '2026-11-20T11:00:00Z', grant?.body ?? '');
+t('#1434 grant: what it posts reads as the person\'s acceptance, so the same pass requeues it', acceptedFix(accT(), grantPr([posted]), accOpts)?.fix.kind, 'gaps');
+t('#1434 grant negative: not again once the handle has accepted the gap, even before a later review', grantedPost(accT(), grantPr([said('me', '2026-11-20T09:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 grant negative: nor once desk posted it under the grant from another account', grantedPost(accT(), grantPr([said('other-login', '2026-11-20T11:00:00Z', grant?.body ?? '')]), accOpts), null);
+t('#1434 grant negative: nor for a gap the person settles another way', grantedPost(accT(), grantPr([], { reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([REC_GAP]) }] }), accOpts), null);
+for (const [what, body] of [['refused', 'I don\'t accept AC3 as built, implement it'], ['asked about', 'AC3: let me think about it'], ['answered through needs-you', 'The person\'s call on this PR\'s review gaps, recorded through desk-needs-you:\n\n> Fix AC3 rather than accept it']]) {
+  t(`#1434 grant negative: never over the person's words: not for a gap the handle ${what} on the PR`, grantedPost(accT(), grantPr([said('me', '2026-11-20T11:00:00Z', body)]), accOpts), null);
+}
+t('#1434 grant: another account naming the gap does not stop it', grantedPost(accT(), grantPr([said('stranger', '2026-11-20T11:00:00Z', 'I don\'t accept AC3')]), accOpts)?.gaps.length, 1);
+t('#1434 grant: nor does desk\'s own reply under the handle', grantedPost(accT(), grantPr([said('me', '2026-11-20T11:00:00Z', '<!-- desk-review:reply -->\nAC3 is left for the person to accept.')]), accOpts)?.gaps.length, 1);
+const UNNAMED = `- PERSON'S CALL · the export button — only a live run can check it. Recommended: accept it as built`;
+t('#1434 grant negative: a gap with no label or quoted criterion, which no comment could name, is left to the person', grantedPost(accT(), grantPr([], { reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([UNNAMED]) }] }), accOpts), null);
+t('#1434 grant negative: nor on a closed PR, nor while another fix waits for its worker', `${grantedPost(accT(), grantPr([], { state: 'CLOSED' }), accOpts)} ${grantedPost(accT({ fix: { kind: 'review' } }), grantPr([]), accOpts)}`, 'null null');
+t('#1434 AC3 negative: not one stuck on a gap the person settles another way, nor a merged PR', `${awaitsAcceptance(accT({ stuck: { why: `review gaps only you can settle: ${PERSON_GAP.slice(2)}` } }))} ${awaitsAcceptance(accT({ pr_status: { state: 'MERGED' } }))}`, 'false false');
 t('DS-585 recommendedOf reads the last Recommended: and drops a trailing full stop', `${recommendedOf(`${REC_GAP}.`)}|${recommendedOf(PERSON_GAP)}`, `${REC}|null`);
 t('DS-585 recommendedOf keeps the option as written, dropping only emphasis around it', JSON.stringify(['Recommended: rename it to batch_name', 'Recommended: **keep `__init__`**.', '**Recommended:** _the batch name_'].map(recommendedOf)), JSON.stringify(['rename it to batch_name', 'keep `__init__`', 'the batch name']));
 t('DS-585 askCategoryIn finds each category and none in a plain engineering call', JSON.stringify(['costs £5 a month', 'GDPR', 'the prod database', 'the SMS text', 'the catalog entry', 'split it to DS-12'].map(askCategoryIn)), JSON.stringify(['money', 'legal', 'production', 'customer-copy', 'user-fact', null]));
@@ -810,6 +865,43 @@ const stateRed = pr([ok('tests'), red('🌿 Local Adversarial Code Review', '414
 t('DS-422 AC1 red only on state checks, reruns spent: no fix try is sent', fixCall(tk(), stateRed, ctx({ stateChecks: STATE })), null);
 const bareRed = fixCall(tk(), pr([ok('tests'), red('PR title', '77')]), ctx({ stateChecks: [...STATE, { name: 'PR title', kind: null }], reruns: () => 0 }));
 t('DS-422 AC1 red only on a state check of no kind, never rerun: put to the person as stuck', `${bareRed?.call} ${bareRed?.why}`, 'stuck red on "PR title", a §4 State check: it reads the PR\'s state, not its code, so no rerun or fix try turns it green; a person clears what it reads');
+// A state check that failed on a read from GitHub is re-run once before the PR is called stuck.
+const READ_LOG = ['PR title\tValidate PR title\t2026-11-20T10:00:00.0000000Z Validating the PR title',
+  'PR title\tValidate PR title\t2026-11-20T10:00:01.0000000Z ##[error]unexpected end of JSON input'].join('\n');
+const titleState = [{ name: 'PR title', kind: null }];
+const readRed = (o = {}) => ({ ...red('PR title', '77'), jobId: '7701', errors: [], log_errors: errorLinesIn(READ_LOG), ...o });
+const readCtx = (o = {}) => ctx({ stateChecks: titleState, rerunPerm: 'yes', reruns: () => 0, rerunsOk: () => 0, ...o });
+t('#1435 the fixture log\'s read error is kept as its error line', errorLinesIn(READ_LOG).join('|'), 'unexpected end of JSON input');
+const rr1435 = fixCall(tk(), pr([ok('tests'), readRed()]), readCtx());
+const rerunOf = (c) => `${c?.call} runs ${c?.gate?.failedRuns?.join(',')} jobs ${(c?.gate?.failedJobs ?? []).map((j) => `${j.runId}/${j.jobId}`).join(',')}`;
+t('#1435 AC1 a state check red on a GitHub read error has its job re-run once, not stuck', `${rerunOf(rr1435)} ${rr1435?.ready}`, 'rerun runs  jobs 77/7701 true');
+t('#1435 AC1 with no job id read, its run is re-run instead', rerunOf(fixCall(tk(), pr([ok('tests'), readRed({ jobId: null })]), readCtx())), 'rerun runs 77 jobs ');
+const twoState = [...titleState, { name: 'PR labels', kind: null }];
+t('#1435 AC1 two in one run share the run\'s re-run, as a job re-run would refuse the second', rerunOf(fixCall(tk(), pr([ok('tests'), readRed(), readRed({ name: 'PR labels', jobId: '7702' })]), readCtx({ stateChecks: twoState }))), 'rerun runs 77 jobs ');
+for (const [form, line] of [['Node\'s truncated body', 'SyntaxError: Unterminated string in JSON at position 120'], ['Node\'s HTML body', 'SyntaxError: Unexpected token \'<\', "<!DOCTYPE "... is not valid JSON'],
+  ['jq\'s', 'parse error: Unfinished JSON term at EOF at line 2, column 0'], ['Python\'s', 'json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)'], ['gh\'s', 'gh: Server Error (HTTP 502)']]) t(`#1435 AC1 ${form} read error is one`, readError(line), true);
+t('#1435 AC3 a title quoted in the failure is not read as one', readError('No release type found in pull request title "Fix HTTP 502 on upload"'), false);
+t('#1435 AC3 nor one holding quotes of its own', readError('No release type found in pull request title "Rename "HTTP 502" handler"'), false);
+t('#1435 AC1 the re-run says why', /"PR title" state check failed on a GitHub read error \("unexpected end of JSON input"\)/.test(rr1435?.why ?? ''), true);
+t('#1435 AC1 nor is the state check named in the gate rerun.sh skips', rr1435?.gate?.stateFailing, undefined);
+t('#1435 AC1 not while another check is still running, its tries spent', fixCall(tk({ fix_tries: [{ head: HEAD }] }), pr([ok('tests'), readRed(), { name: 'e2e', status: 'in_progress', conclusion: null }]), readCtx()), null);
+const st1435 = fixCall(tk(), pr([ok('tests'), readRed()]), readCtx({ reruns: () => 1, rerunsOk: () => 1 }));
+t('#1435 AC2 re-run once and red on a read error again: stuck as a read error, not a state a person clears', `${st1435?.call} ${/a §4 State check failing on a GitHub read error \("unexpected end of JSON input"\): re-run once at this head, it failed the same way/.test(st1435?.why ?? '')} ${/a person clears what it reads/.test(st1435?.why ?? '')}`, 'stuck true false');
+const noPerm1435 = fixCall(tk(), pr([ok('tests'), readRed()]), readCtx({ rerunPerm: 'ask' }));
+t('#1435 with §3 ci-rerun not granted it is stuck as a read error, saying so', `${noPerm1435?.call} ${/failing on a GitHub read error .*ci-rerun is "ask"/.test(noPerm1435?.why ?? '')}`, 'stuck true');
+const own1435 = fixCall(tk(), pr([ok('tests'), readRed({ log_errors: ['No release type found in pull request title "Fix things"'] })]), readCtx());
+t('#1435 AC3 a state check red on its own condition is stuck as before', `${own1435?.call} ${own1435?.why}`, 'stuck red on "PR title", a §4 State check: it reads the PR\'s state, not its code, so no rerun or fix try turns it green; a person clears what it reads');
+const quoted1435 = fixCall(tk(), pr([ok('tests'), readRed({ log_errors: ['No release type found in pull request title "Fix HTTP 502 on upload"'] })]), readCtx());
+t('#1435 AC3 so is one whose quoted title reads like a read error', `${quoted1435?.call} ${quoted1435?.why}`, `${own1435?.call} ${own1435?.why}`);
+// A draft's: beside a red code check whose tries are spent, the read-error state check is re-run first.
+const draftRead = (o = {}) => draftChecksFix(tk({ fix_tries: [{ head: HEAD }] }), { pr: 701, head: HEAD, failing: [red('Unit', '8'), red('PR title', '77')], checks: [{ ...red('Unit', '8'), errors: [] }, readRed()] },
+  { repo: 'acme/widgets', stateChecks: titleState, classRerun: { perm: 'yes', reruns: () => 0, rerunsOk: () => 0, ...o } });
+t('#1435 a draft red on a read-error state check is re-run once where it would be stuck', rerunOf(draftRead()), 'rerun runs  jobs 77/7701');
+const draftSpent = draftRead({ reruns: () => 1, rerunsOk: () => 1 });
+t('#1435 and once re-run, its stuck reason names the read error', `${draftSpent?.call} ${draftSpent?.why?.includes('PR title · a §4 State check failing on a GitHub read error ("unexpected end of JSON input"): re-run once at this head')}`, 'stuck true');
+const draftTry = draftChecksFix(tk(), { pr: 701, head: HEAD, failing: [red('Unit', '8'), red('PR title', '77')], checks: [{ ...red('Unit', '8'), errors: [] }, readRed()] },
+  { repo: 'acme/widgets', stateChecks: titleState, classRerun: { perm: 'yes', reruns: () => 0, rerunsOk: () => 0 } });
+t('#1435 a draft with a fix try left still gets it', draftTry?.call, 'requeue');
 const codeAndState = pr([...stateRed.checks, red('Backend tests', '901')]);
 t('DS-422 AC2 a red test beside them still waits on its own reruns', fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 1 : 0) })), null);
 const c422 = fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 2 : 0) }));

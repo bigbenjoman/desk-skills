@@ -8,6 +8,8 @@
 // every acceptance spec and the repo's Typecheck, Lint and Unit tests. It passes only when each one
 // passes and no spec under the acceptance directory is still marked expected-fail or skipped; then the
 // promotion PR is marked ready (config §3 pr-ready). Merging the promotion PR stays the person's.
+// An acceptance directory several epics share holds the batch to its own specs only: those the base
+// changed against the default branch (spine-check.mjs batchSpecPaths). Another epic's are not run.
 //
 // The result is the queue's `gate`: { state: 'passed' | 'failed', sha, started, finished, failures,
 // close_out, pr, ready, note, slice, conflict }. `close_out` is the epic's criteria no spec covers, which the
@@ -20,7 +22,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash } from './batch-state.mjs';
 import { ensureBaseWorktree, syncBase, mergedTreeCheck } from './base-sync.mjs';
-import { declarations, ownedSpecs, specFilesAt, runSpecs } from './spine-check.mjs';
+import { declarations, ownedSpecs, specFilesAt, runSpecs, batchSpecPaths, idScope } from './spine-check.mjs';
 import { runItem } from './baseline.mjs';
 import { takesFiles } from './test-scope.mjs';
 
@@ -125,8 +127,10 @@ function gate() {
   }
 
   // Every acceptance spec: none still held, and the specs of every criterion id passing when run: the
-  // ids this epic's spine was asked for, and any other id a spec there is titled with (an earlier
-  // epic's), since the command runs specs by id.
+  // ids this epic's spine was asked for, and any other id a spec there is titled with. Where the base
+  // changed specs under the directory, only those are this batch's: another epic's, titled with the
+  // same ids, are neither held to nor run (each run takes only its id's files). Where it changed none,
+  // every spec there counts and the command runs as configured, as before.
   let specDir = null;
   let cmd = null;
   try {
@@ -135,7 +139,8 @@ function gate() {
   } catch (e) { failures.push(e.message); }
   if (!specDir || !cmd) failures.push('config §4 Acceptance specs names no spec directory and command taking {ids}');
   else {
-    const files = specFilesAt(path, 'HEAD', specDir);
+    const mine = batchSpecPaths({ worktree: path, source: SOURCE, base: BASE, baseRef: 'HEAD', specDir });
+    const files = specFilesAt(path, 'HEAD', specDir, mine);
     for (const f of files) {
       for (const d of declarations(f.path, f.text).filter((x) => x.held)) failures.push(`"${d.title}" in ${f.path} is still ${d.held}`);
     }
@@ -145,7 +150,7 @@ function gate() {
     const ids = [...new Set([...(Q.spine_ids ?? []), ...titled])];
     for (const { id, specs } of ownedSpecs(files, ids)) {
       if (!specs.length) { failures.push(`${id}: no spec titled with it on ${BASE}`); continue; }
-      const r = runSpecs({ bin: BIN, root: path, item: cmd, id });
+      const r = runSpecs({ bin: BIN, root: path, item: cmd, id, scope: idScope(specDir, mine, specs) });
       if (!r.ok) failures.push(`${id}: ${specs.map((x) => `"${x.title}" in ${x.path}`).join(', ')} fails when run (${r.command}): ${tail(r.out)}`);
     }
   }
