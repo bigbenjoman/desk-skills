@@ -94,6 +94,7 @@ export const MECHANISMS = Object.freeze({
   'finder-model': { num: (r) => r.cost, den: (r) => r.starts },
   // Dollars at list prices over every measured step of the ticket's asks (withAsks), per asking ticket.
   'question-handling': { num: (r) => r.ask_usd, den: () => 1 },
+  'handoff-threshold': { num: (r) => r.cost, den: () => 1 },
 });
 
 // The tickets a lever is weighed on, by the registry's `rows`: every ticket unless it names some.
@@ -228,13 +229,17 @@ function withAsks(rows, batches) {
 // and how they reached the person: tokens and dollars per ticket by step (over the tickets whose step
 // was whole), pushes and digest presentations per ticket, the share of answered asks answered by
 // default, and the median answer latency in seconds.
-function askReport(rows) {
+// `rows` by arm (its `arm`, else on or off), sorted, each arm's rows given to `report`; and a mean per ticket.
+function byArm(rows, report) {
   const by = new Map();
   for (const r of rows) { const k = r.arm ?? (r.on ? 'on' : 'off'); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
-  const per = (rs, f) => (rs.length ? r4(rs.reduce((n, r) => n + f(r), 0) / rs.length) : null);
-  return Object.fromEntries([...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([arm, rs]) => {
+  return Object.fromEntries([...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([arm, rs]) => [arm, report(rs)]));
+}
+const per = (rs, f) => (rs.length ? r4(rs.reduce((n, r) => n + f(r), 0) / rs.length) : null);
+function askReport(rows) {
+  return byArm(rows, (rs) => {
     const answered = rs.reduce((n, r) => n + (r.answered ?? 0), 0);
-    return [arm, {
+    return {
       tickets: rs.length, asks: rs.reduce((n, r) => n + (r.asks ?? 0), 0),
       steps: Object.fromEntries(ASK_TOKEN_STEPS.map((k) => {
         const whole = rs.filter((r) => r.ask_steps?.[k]?.usd != null);
@@ -243,8 +248,19 @@ function askReport(rows) {
       pushes_per_ticket: per(rs, (r) => r.pushes ?? 0), digests_per_ticket: per(rs, (r) => r.digests ?? 0),
       defaulted_share: answered ? r4(rs.reduce((n, r) => n + (r.defaulted ?? 0), 0) / answered) : null,
       median_latency_s: quantile(rs.flatMap((r) => r.latencies ?? []), 0.5),
-    }];
-  }));
+    };
+  });
+}
+
+// Per value of `rows` (a valued lever's tickets, each with its `arm`; in a holdback, `adopted` read as the
+// adopted `value` and `holdback` as the `baseline`), the tickets, dollars per ticket and handoffs to a
+// fresh session per ticket: what the handoff-threshold lever's row shows for each value.
+export function handoffReport(rows, value, baseline) {
+  const named = rows.map((r) => {
+    const a = r.pin?.arms?.[r.lever] ?? r.arm;
+    return a === 'adopted' && value ? { ...r, arm: value } : a === 'holdback' ? { ...r, arm: baseline } : r;
+  });
+  return byArm(named, (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)) }));
 }
 
 // ---- outcome files -----------------------------------------------------------------------------------
@@ -699,6 +715,7 @@ export function evaluate({
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
         ...(reg.rows === ASKING ? { ask_report: askReport(used) } : {}),
+        ...(lever === 'handoff-threshold' ? { handoff_report: handoffReport(used.map((x) => ({ ...x, lever })), s.value ?? null, reg.baseline) } : {}),
         ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });

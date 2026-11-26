@@ -110,4 +110,13 @@ out=$(cd "$T/repo" && env -u DESK_REPO_OVERRIDE -u DESK_SLUG -u DESK_REPO_DIR -u
   node "$SRC/desk/bin/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" 2>&1); rc=$?
 check "worker-settings: Stop runs the installed hook"      '[ $rc -eq 0 ] && [ "$(jq -r ".hooks.Stop[0].hooks[0].command" "$T/ws.json")" = "python3 \"$HOME/.claude/hooks/desk-worker-stop.py\"" ]'
 
+# DS-1037: with the handoff hook installed, a worker's settings run it on PostToolUse, Stop and SessionStart.
+: > "$HOME/.claude/hooks/desk-handoff.py"
+out=$(cd "$T/repo" && env -u DESK_REPO_OVERRIDE -u DESK_SLUG -u DESK_REPO_DIR -u DESK_DEFAULT_BRANCH -u DESK_SKILLS_DIR \
+  DESK_HOME="$SRC/desk" DESK_CONFIG="$T/config.md" DESK_AUTOPILOT_STATE="$T/state" DESK_STATE="$T/state" DESK_QUEUE="$T/queue.json" \
+  node "$SRC/desk/bin/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" 2>&1); rc=$?
+HO="python3 \"$HOME/.claude/hooks/desk-handoff.py\""
+check "DS-1037 worker-settings: the handoff hook runs on PostToolUse, Stop and SessionStart" '[ $rc -eq 0 ] && for e in PostToolUse Stop SessionStart; do jq -r ".hooks.$e[].hooks[].command" "$T/ws.json" | grep -qxF "$HO" || exit 1; done'
+check "DS-1037 and the worker Stop hook still runs first"   '[ "$(jq -r ".hooks.Stop[0].hooks[0].command" "$T/ws.json")" = "python3 \"$HOME/.claude/hooks/desk-worker-stop.py\"" ]'
+
 echo "worker stop hook: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

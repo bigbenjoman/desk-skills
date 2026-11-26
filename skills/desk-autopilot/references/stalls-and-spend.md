@@ -165,6 +165,13 @@ parked or failed starts again at the stage that handoff named (`queue.mjs set <T
 handoff_stage=null` first starts it from Stage 0); one that finished, and is sent back for rework,
 starts from Stage 0.
 
+**A worker also hands off partway through a stage on context.** From Stage 3 on, once a worker's
+context passes its threshold (the ticket's `handoff-threshold` value, else config §2's Handoff at
+context % rows), `hooks/desk-handoff.py` has it commit, write a briefing with what is left of the
+stage, and print `AUTOPILOT_HANDOFF: <that stage>`. The next pass starts a fresh session at that
+same stage (`handed off partway through Stage 5 on context (31% used; handoff-threshold 30)`). The
+third such handoff in a row at one stage parks the ticket instead, naming the stage.
+
 **A requeue after a park at Stage 3 or later resumes that round.** When a worker parks, the pass
 records the stage it reached and its question on the ticket (`last_round`). The fresh spawn after a
 requeue starts at that stage, with a summary of the round in its briefing: the stage, the park
@@ -173,3 +180,16 @@ Stage 4, where its last round parked`). A park before Stage 3, a worktree remove
 and a stalled or failed worker start at Stage 0. So does a worktree on another branch, or
 a resume file there that records another branch: the briefing says why, and the worker's first stage
 line repeats it.
+
+**A requeue after the ticket file's Decisions change restarts at Stage 3.** For a ticket with a PR and
+a ticket file (`$DESK_STATE/tickets/<TICKET>.md`), the spawn compares its `## Decisions` entries with
+the PR's last desk review (the latest verdict review the person's logins posted, else the PR's open
+time). An entry dated after that review's day, or on it when the file was written since, restarts the
+worker at Stage 3, whatever stage a handoff or last round names. The briefing lists the new entries,
+and the worker checks the branch for each before building it (`spawned: … restarted at Stage 3: 1
+Decisions entry dated after PR #<n>'s last review`). The spawn records the time as the queue's
+`decisions_seen`, and later spawns compare with it where it is after the review, so the restarted
+session's own handoff to 4b, and a requeue after a session that found every entry met and pushed
+nothing, do not restart again. A round whose worktree or resume file is refused starts at Stage 0
+with the entries instead. An unfinished fix try keeps its own task, and a PR gh cannot read is said in
+the report and resumes as before.

@@ -19,7 +19,8 @@
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
 # AUTOPILOT_START_STAGE starts a fresh session at that stage: 4b or 7 after a handoff, or Stage 3 on
-# when a requeue resumes the round its worker parked in. AUTOPILOT_LOGIN_DIR is the Claude login it
+# when a requeue resumes the round its worker parked in, or 3 when a requeue's ticket file gained
+# Decisions since its PR's last review (pass.mjs decisionsRestart). AUTOPILOT_LOGIN_DIR is the Claude login it
 # runs on, its preflight too: a config folder, or empty for the default login. Unset, it keeps the
 # caller's own.
 set -euo pipefail
@@ -576,6 +577,14 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# Where hooks/desk-handoff.py's worker mode has the worker write its handoff briefing, once its context
+# passes the handoff threshold partway through a stage. A task worker (a fix or base try, AUTOPILOT_TASK,
+# or one resumed with AUTOPILOT_NO_HANDOFF) never hands off, so its hook stays off.
+if [ -z "${AUTOPILOT_TASK:-}" ] && [ -z "${AUTOPILOT_NO_HANDOFF:-}" ]; then
+  export DESK_HANDOFF_FILE="$STATE/handoffs/$TICKET.json"
+else
+  unset DESK_HANDOFF_FILE
+fi
 # Caches on disk, in the repo's cache folder (desk-env paths), never a tmpfs /tmp: the Node compile
 # cache here, and with-lock.sh gives each test run a temporary folder there with the Jest cache in it.
 if mkdir -p "$DESK_CACHE_DIR/node-compile-cache" "$DESK_CACHE_DIR/jest" "$DESK_CACHE_DIR/runs" 2>/dev/null; then

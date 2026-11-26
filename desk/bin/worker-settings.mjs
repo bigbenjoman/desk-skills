@@ -855,6 +855,15 @@ if (existsSync(REREAD_HOOK)) {
   const hooks = settings.hooks || {};
   settings.hooks = { ...hooks, PreToolUse: [...(hooks.PreToolUse || []), h('Read')], PostToolUse: [...(hooks.PostToolUse || []), h('Read')], PreCompact: [h()] };
 }
+// Hands a worker off to a fresh session partway through a stage once its context passes the handoff
+// threshold (the handoff-threshold lever's value, else config §2's rows). It acts only in a worker
+// (DESK_AUTOPILOT_WORKER=1 with DESK_HANDOFF_FILE, which spawn-worker.sh exports).
+const HANDOFF_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-handoff.py');
+if (mode === 'worker' && existsSync(HANDOFF_HOOK)) {
+  const h = () => ({ hooks: [{ type: 'command', command: `python3 "${HANDOFF_HOOK}"`, timeout: 30 }] });
+  const hooks = settings.hooks || {};
+  settings.hooks = { ...hooks, PostToolUse: [...(hooks.PostToolUse || []), h()], Stop: [...(hooks.Stop || []), h()], SessionStart: [...(hooks.SessionStart || []), h()] };
+}
 // With the wrappers lever on, a command the allow-list refuses anyway is refused naming the single
 // command that does the same (desk-env lines, the one test file through §4 Unit tests, no `cd`).
 // It only ever denies, so it grants nothing; with the lever off it is not registered.
