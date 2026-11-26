@@ -81,7 +81,7 @@ const { threw, calls } = withNoIo(() => {
 
   // Handoffs and resumes.
   {
-    t('handoff stages in stage order', j(S.HANDOFF_ORDER), '["4b","7"]');
+    t('handoff stages in stage order: every stage a resume starts at', j(S.HANDOFF_ORDER), '["3","4","4b","5","6","7","8","9"]');
     t('starting again from Stage 0', S.FROM_ZERO({ key: 'K-1' }), 'To start it again from Stage 0 instead: queue.mjs set K-1 handoff_stage=null, then queue.mjs requeue K-1');
     const ROW = 'Resume a killed worker (times)';
     t('resume unset is 2', j(S.resumeSetting(null, ROW)), j({ row: ROW, limit: 2, bad: null }));

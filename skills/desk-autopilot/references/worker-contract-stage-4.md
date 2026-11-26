@@ -269,16 +269,6 @@ To hand off:
    your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
    is not done.
 
-**Partway through a stage, when your context passes the handoff threshold.** From Stage 3 on, a hook
-tells you when your context has passed this ticket's threshold (the `handoff-threshold` lever's
-value on its pin, else config §2's Handoff at context % rows), naming your stage. Finish the tool
-step you are on and start nothing new, then hand off at that same stage: commit what you have (work
-in progress is fine), update your resume file, write the briefing with `--stage <that stage>`, a
-`--left` for each piece of the stage still to do with the next step first, and `--context <the
-percentage it names>`, then print `AUTOPILOT_HANDOFF: <that stage>`. The fresh session carries on
-that stage from the briefing's "Left of Stage" list. A ticket that hands off partway through one
-stage three times in a row parks.
-
 The orchestrator then spawns a new session for the same ticket, worktree and branch, with the
 handoff in its briefing. **When your prompt says your session starts at a stage**, read that stage's
 file and the Stage 3 file (its §6 holds every command form you may run, a dev server's included),
