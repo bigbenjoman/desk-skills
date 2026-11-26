@@ -408,8 +408,9 @@ function mainOnly(c, guards) {
     if (!guardedBy(cond, guards)) return null;
     conds.push(cond);
     at += close;
-    // Whitespace and comments before the body: a `{` after a comment still opens a braced body.
-    at += read.slice(at).match(/^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*/)[0].length;
+    // Whitespace and comments before the body: a `{` after a comment still opens a braced body. A line
+    // comment ends at any line terminator, as JavaScript's does.
+    at += read.slice(at).match(/^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n\r\p{Zl}\p{Zp}]*)*/u)[0].length;
     // An unbraced body is one expression on the `if`'s line, ended by its `;` with nothing after it. A
     // second statement there, one on a later line after a line break ends the first, or a body that is
     // not an expression (a `for`, `while`, `if` or block, whose own `}` can hide a statement after it)
@@ -417,7 +418,7 @@ function mainOnly(c, guards) {
     if (read[at] !== '{') {
       const tail = read.slice(at);
       const end = groupEnd(tail, ';', (p) => `(async function () {\n${asExpression(p.slice(0, -1))}\n})`);
-      return end > 0 && !tail.slice(0, end).includes('\n') && !tail.slice(end).trim() ? conds.join('\n') : null;
+      return end > 0 && !/[\n\r\p{Zl}\p{Zp}]/u.test(tail.slice(0, end)) && !tail.slice(end).trim() ? conds.join('\n') : null;
     }
     const end = groupEnd(read.slice(at), '}', (p) => `(async function () {\n${p}\n})`);
     if (end < 0) return null;
