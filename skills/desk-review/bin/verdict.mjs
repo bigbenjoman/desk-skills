@@ -102,7 +102,7 @@
 //     accepted: one a test could check before the merge is refused, never counted out of gaps.
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
@@ -340,14 +340,16 @@ export function checkAnchors(findings, head, { cwd = process.cwd() } = {}) {
   if (git('cat-file', '-e', `${head}^{commit}`).status !== 0) no(`${head.slice(0, 9)} is not a commit in ${cwd}`)
   const top = git('rev-parse', '--show-toplevel').stdout.trim()
   const lines = new Map()
-  // The cited file's line count at head, or -1 when no file is there.
+  // The cited file's line count at head, 0 when no file is there. git grep counts the lines of each
+  // file under the pathspec, a last line with no newline included, and exits 1 when it matched none:
+  // an empty file, or no file. Any other exit is git failing, which throws rather than reject.
   const lineCount = (path) => {
     if (!lines.has(path)) {
-      const type = git('cat-file', '-t', `${head}:${path}`)
-      const blob = type.status === 0 && type.stdout.trim() === 'blob' ? git('cat-file', 'blob', `${head}:${path}`) : null
-      if (blob && blob.status !== 0) no(`cannot read ${path} at ${head.slice(0, 9)}: ${blob.stderr.trim()}`)
-      const text = blob ? blob.stdout : null
-      lines.set(path, text == null ? -1 : text.split('\n').length - (text === '' || text.endsWith('\n') ? 1 : 0))
+      const r = git('--literal-pathspecs', 'grep', '--text', '-z', '-c', '-e', '', head, '--', path)
+      if (r.status !== 0 && r.status !== 1) no(`cannot count the lines of ${path} at ${head.slice(0, 9)}: ${(r.stderr || '').trim() || `git exited ${r.status}`}`)
+      // -z prints each file as <head>:<path>\0<count>\n; a directory lists its files, never itself.
+      const own = (r.stdout || '').split('\n').find((l) => l.startsWith(`${head}:${path}\0`))
+      lines.set(path, own ? Number(own.slice(own.indexOf('\0') + 1)) : 0)
     }
     return lines.get(path)
   }
@@ -356,15 +358,16 @@ export function checkAnchors(findings, head, { cwd = process.cwd() } = {}) {
     if (!f || typeof f !== 'object' || f.severity === 'PREMISE' || f.result != null) return f
     const m = /^([^\s:]+):(\d+)/.exec(String(f.where ?? ''))
     if (!m) return f
-    let path = m[1].replace(/^(?:\.\/)+/, '')
+    let path = m[1]
     if (path.startsWith('/')) {
       if (!top || !path.startsWith(`${top}/`)) return f
       path = path.slice(top.length + 1)
     }
-    if (path.split('/').includes('..')) return f
+    // One file has many spellings (./a, a//b, a/./b, a/x/../b): the tree knows only the plain one.
+    path = posix.normalize(path)
+    if (path === '..' || path.startsWith('../') || path === '.') return f
     const line = Number(m[2])
-    const count = lineCount(path)
-    if (count >= 0 && line >= 1 && line <= count) return f
+    if (line >= 1 && line <= lineCount(path)) return f
     const marked = { ...f, result: 'REJECTED', anchor: ANCHOR_MISSING }
     delete marked.refuted_by
     rejected.push(marked)
