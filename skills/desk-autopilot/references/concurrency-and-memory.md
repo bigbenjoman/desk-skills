@@ -72,11 +72,12 @@ and the tighter binds; a heavy repo is never held by the light queue. A pool's h
 current slots (its floor plus the runs headroom admission let in above it) × `test-lock-queue-factor` (1 × 2 with no profile).
 The light floor is §3b "Light lock slots" (else the machine profile's `light-lock-slots`, else 1), 1
 while available memory is under the spawn gate's start. With `lock-admission` on, the light ceiling
-is the larger of it and `light-lock-max`, and runs above the floor come only through an admit. A full light queue holds only what would run a suite next; a new worker, which
-starts at triage, is held by the test lock's queue alone. At or over it, each repo with a
+is the larger of it and `light-lock-max`, and runs above the floor come only through an admit. A new worker, which
+starts at triage, takes none of a queue's room, as its first suite is counted when it reaches one; it
+is held only while the test lock's queue already has no room for this repo. At or over the hold, each repo with a
 run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass starts
 at most its share less its own runs; below it, at most the hold less the runs waiting. That room covers
-new local workers, fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4
+fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4
 or 4b, and a base try (conflict fix, epic review, promotion checks), which takes its unit first; the
 ones past it are held, and the STALLED line names the queue depth, each repo's runs and the share. A
 resume at any other stage goes ahead. So

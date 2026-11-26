@@ -327,13 +327,16 @@ export function borrowPlan({ on, share, cap, running, wanted, others = [], machi
   return plan(`borrowing: ${where}: no free machine slot (${count})`);
 }
 
-// The report line once the pass has spawned: how many of its new workers were borrowed.
-export function borrowedLine(plan, { share, running, spawned }) {
+// The report line once the pass has spawned: how many of its new workers were borrowed. `lockHeld` is
+// how many tickets the pass's lock-queue gate held: with borrowed slots left unused, the line names it.
+export function borrowedLine(plan, { share, running, spawned, lockHeld = 0 }) {
   if (plan.line != null || !plan.borrow) return plan.line;
   const borrowed = Math.max(0, spawned - plan.own);
   const total = Math.max(0, running + spawned - share);
-  if (!borrowed) return `borrowing: ${plan.borrow} may be borrowed, none started (${plan.count})`;
-  return `borrowing: ${workers(borrowed)} borrowed this pass, ${total} above the batch's own number of ${share} (${plan.count})`;
+  const gate = lockHeld > 0 ? `: the lock gate held ${lockHeld}` : '';
+  if (!borrowed) return `borrowing: ${plan.borrow} may be borrowed, none started${gate} (${plan.count})`;
+  const unused = borrowed < plan.borrow && gate ? `, ${plan.borrow - borrowed} left unused${gate}` : '';
+  return `borrowing: ${workers(borrowed)} borrowed this pass, ${total} above the batch's own number of ${share}${unused} (${plan.count})`;
 }
 
 // One lock shared by every repo, around counting the free slots and starting workers into them: a
