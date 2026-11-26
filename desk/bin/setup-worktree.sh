@@ -22,6 +22,13 @@
 #   §4 Local database          `postgres container <name>`: a per-ticket database, gated on §3 db-per-ticket
 #   §4 Database URL variable   every variable repointed at that database, or blanked when there is none
 #   §4 Database migrate        run against the per-ticket database only
+#   §4 Seed                    run only with apps (below), after that app's migrate
+#
+# Apps: a §4 Database URL variable item may name its app's directory (`apps/portal: DATABASE_URL`).
+# Then each app (an unscoped item is the root app, `.`) gets its own per-ticket database, named
+# `<repo>_<ticket>` for the root and `<repo>_<ticket>_<dir>` for the others. An env file, migrate
+# item or seed item belongs to the app with the deepest directory holding it, and each app's migrate
+# then seed run against its database only. With no directory on any item there is one database, migrated as ever.
 #
 # DESK_BRANCH_FROM_ORIGIN=1: a branch only origin has is checked out from origin/<branch> rather than cut
 # from the base (a review try on a cloud worker's branch).
@@ -45,8 +52,8 @@
 # passwords masked), its tail is printed, `migrate=failed` is printed, and pass.mjs tells the worker.
 # A kept worktree whose database is empty, or whose last migrate failed, is migrated again.
 #
-# Atomic: a failure after `git worktree add` removes the worktree (and the branch and database, when
-# this run created them), so a half-built worktree is never mistaken for a ready one. A run killed
+# Atomic: a failure after `git worktree add` removes the worktree (and the branch and every database,
+# when this run created them), so a half-built worktree is never mistaken for a ready one. A run killed
 # outright leaves `.desk-setup-incomplete` in the worktree, and the next run finishes the setup rather
 # than reporting the worktree as ready.
 #
@@ -55,8 +62,8 @@
 #
 # The last lines printed are machine-read by pass.mjs: `steps=` (each step this run took, as
 # `<step>:<seconds>` joined by commas, in the order run), `worktree=`, `branch=`, `database=`
-# (`database=<name>` only when that per-ticket database exists; otherwise `database=none`), and
-# `migrate=failed` only when migrations did not complete on this run.
+# (`database=<name>` only when that per-ticket database exists, the first app's with apps; otherwise
+# `database=none`), and `migrate=failed` only when migrations (or, with apps, a seed) did not complete on this run.
 set -euo pipefail
 STEPS=""; STEP_T0=$SECONDS
 step_done() { STEPS="${STEPS:+$STEPS,}$1:$((SECONDS - STEP_T0))"; STEP_T0=$SECONDS; }
@@ -121,6 +128,8 @@ AGENTS_UNSET=""
 if cfg_items cmds agents-sync; then AGENTS_CMDS="$ROW"; else AGENTS_UNSET=1; AGENTS_CMDS=""; fi
 cfg_items cmds db-migrate-cmd || true
 MIGRATE_CMDS="$ROW"
+cfg_items cmds seed-cmd || true
+SEED_CMDS="$ROW"
 
 # Fail before creating anything if the toolchain cannot even be found.
 if [ -n "$INSTALL_CMDS" ]; then
@@ -209,9 +218,14 @@ sync_agents() { # sync_agents strict|lenient
 # ---- per-ticket database plan ------------------------------------------------------------------
 LOCAL_DB="$(cfg_opt local-db '')"
 DB_VARS_UNSET=""
-if cfg_items list db-url-var; then DB_VARS="$ROW"; else DB_VARS=""; DB_VARS_UNSET=1; fi
-is_none "$(printf '%s' "$DB_VARS" | head -1)" && DB_VARS=""
-DB_VARS="$(printf '%s\n' "$DB_VARS" | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' || true)"
+# `DIR<TAB>VAR` per item: a variable may name its app's directory, and each such app gets a database.
+if cfg_items cmds db-url-var; then DB_ITEMS="$ROW"; else DB_ITEMS=""; DB_VARS_UNSET=1; fi
+DB_ITEMS="$(printf '%s\n' "$DB_ITEMS" | grep -E "$(printf '\t')[A-Za-z_][A-Za-z0-9_]*\$" || true)"
+DB_VARS="$(printf '%s\n' "$DB_ITEMS" | cut -f2 | awk 'NF && !seen[$0]++')"
+# The apps, the root (`.`) first: more than the root alone means a database per app (APPS mode).
+APP_DIRS="$(printf '%s\n' "$DB_ITEMS" | cut -f1 | awk 'NF && !seen[$0]++' | awk '$0 == "." { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }')"
+MULTI=""
+[ -z "$(printf '%s\n' "$APP_DIRS" | grep -vxF . || true)" ] || MULTI=1
 if [ -n "$DB_VARS_UNSET" ]; then
   if [ -n "$FOR_WORKER" ]; then
     fail "config §4 Database URL variable is not set — run /desk-setup (write \`none\` if the repo has no database). A worker's worktree must not inherit a database URL nobody has named."
@@ -228,6 +242,30 @@ PG_CONTAINER="$(printf '%s' "$LOCAL_DB" | sed -nE 's/^[Pp]ostgres[[:space:]]+con
 REPO_PART="$(lc "${DESK_GH_REPO#*/}" | tr -c 'a-z0-9\n' '_' | tr -d '\n')"
 TICKET_PART="$(lc "$TICKET" | tr -c 'a-z0-9\n' '_' | tr -d '\n')"
 DB="$(printf '%s_%s' "$REPO_PART" "$TICKET_PART" | cut -c1-63)"   # Postgres identifiers cap at 63
+# APPS: `DIR<TAB>DB` per app. The root app keeps the one-database name; another app's adds its directory.
+APPS=""
+while IFS= read -r d; do
+  [ -n "$d" ] || continue
+  if [ "$d" = . ]; then n="$DB"; else n="$(printf '%s_%s_%s' "$REPO_PART" "$TICKET_PART" "$(lc "$d" | tr -c 'a-z0-9\n' '_' | tr -d '\n')" | cut -c1-63)"; fi
+  printf '%s\n' "$APPS" | cut -f2 | grep -qxF "$n" \
+    && fail "config §4 Database URL variable: apps $(printf '%s\n' "$APPS" | awk -F '\t' -v n="$n" '$2 == n { print $1 }') and $d would share database $n (Postgres names cap at 63 characters) — give one a shorter directory"
+  APPS="${APPS:+$APPS
+}$d	$n"
+done <<EOF_APPS
+$APP_DIRS
+EOF_APPS
+app_of() { # app_of <dir relative to the worktree>: the deepest app directory holding it, or nothing
+  local best="" bl=-1 d n l
+  while IFS="$(printf '\t')" read -r d n; do
+    [ -n "$d" ] || continue
+    if [ "$d" = . ]; then l=0; else case "$1" in "$d"|"$d"/*) l=${#d} ;; *) continue ;; esac; fi
+    [ "$l" -gt "$bl" ] && { best="$d"; bl=$l; }
+  done <<EOF_OF
+$APPS
+EOF_OF
+  printf '%s' "$best"
+}
+app_db() { printf '%s\n' "$APPS" | awk -F '\t' -v d="$1" '$1 == d { print $2; exit }'; }
 DB_MODE=none
 if [ -z "$LOCAL_DB" ]; then
   say "note: config §4 Local database is unset — no per-ticket database (run /desk-setup to set it, or \`none\`)"
@@ -252,8 +290,12 @@ is_none "$(printf '%s' "$ENV_FILES" | head -1)" && ENV_FILES=""
 # Repoint (ticket) or blank (none) every listed variable in every copied env file, then verify.
 # A non-local URL is blanked, never rewritten. Prints one line per change; exits 1 if the result is
 # not what the rule says.
-rewrite_env() { # rewrite_env ticket|blank
-  node "$DESK_ENV_DIR/env-rewrite.mjs" "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" "${PG_PORT:-}"
+rewrite_env() { # rewrite_env ticket|blank — with apps, each file's variables follow the app that holds it
+  if [ -n "$MULTI" ]; then
+    node "$DESK_ENV_DIR/env-rewrite.mjs" "$1" "$WT" "$APPS" "$PG_CONTAINER" "$DB_ITEMS" "$ENV_FILES" "${PG_PORT:-}"
+  else
+    node "$DESK_ENV_DIR/env-rewrite.mjs" "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" "${PG_PORT:-}"
+  fi
 }
 
 pg_user() { # the user in the first local database URL the primary checkout's env files name, else postgres
@@ -299,8 +341,9 @@ pg_missing() { # docker says the container does not exist: waiting cannot make i
   case "$err" in *"No such"*|*"no such"*) return 0 ;; esac
   return 1
 }
-CREATED_DB=""
-ensure_db() { # the per-ticket database exists, or setup fails
+CREATED_DBS=""   # `USER<TAB>DB` per database this run created, for the failure cleanup
+ensure_db() { # ensure_db [<db>]: that per-ticket database exists, or setup fails
+  local DB="${1:-$DB}"
   command -v docker >/dev/null 2>&1 || fail "docker is not on PATH — cannot create $DB in $PG_CONTAINER"
   local user; user="$(pg_user)"
   local have rc t0=$SECONDS tries=0 delay=5 left
@@ -321,18 +364,29 @@ ensure_db() { # the per-ticket database exists, or setup fails
   [ "$tries" = 1 ] || say "  Postgres in $PG_CONTAINER answered after a retry (try $tries, $((SECONDS - t0))s after the first)"
   if [ "$have" = 1 ]; then say "  database $DB already exists"; return 0; fi
   pg "$user" -c "CREATE DATABASE \"$DB\"" >/dev/null || { rc=$?; fail "could not create database $DB: $(pg_why "$rc")"; }
-  CREATED_DB="$user"
+  CREATED_DBS="${CREATED_DBS:+$CREATED_DBS
+}$user	$DB"
   say "  created database $DB in $PG_CONTAINER"
 }
 
 databases() { # provision (or confirm) the database and make every env file follow the rule
-  if [ "$DB_MODE" = ticket ]; then
+  if [ "$DB_MODE" = ticket ] && [ -n "$MULTI" ]; then
+    local d n
+    while IFS="$(printf '\t')" read -r d n; do
+      say "per-ticket database $n for app $d"
+      ensure_db "$n" </dev/null
+    done <<EOF_DBS
+$APPS
+EOF_DBS
+  elif [ "$DB_MODE" = ticket ]; then
     say "per-ticket database $DB"
     ensure_db
+  fi
+  if [ "$DB_MODE" = ticket ]; then
     PG_PORT="$(pg_host_port)"
     if [ -n "$PG_PORT" ]; then say "  $PG_CONTAINER publishes Postgres on host port $PG_PORT"
     else say "  WARNING: $PG_CONTAINER publishes no port for 5432 — database URLs keep the port the copied env files name"; fi
-    rewrite_env ticket || fail "database variables could not be repointed at $DB"
+    rewrite_env ticket || fail "database variables could not be repointed at $([ -n "$MULTI" ] && echo "each app's database" || echo "$DB")"
   elif [ -n "$DB_VARS" ]; then
     say "blanking database variables (no per-ticket database)"
     rewrite_env blank || fail "database variables could not be blanked"
@@ -354,6 +408,7 @@ exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without t
 }
 mask_urls() { sed -E 's#(://[^:@/[:space:]]*):[^@/[:space:]]*@#\1:***@#g'; }
 migrate_db() { # a failure is kept, printed and reported on the machine-read lines, and setup carries on
+  if [ -n "$MULTI" ]; then migrate_apps "$APPS"; return 0; fi
   if [ -z "$MIGRATE_CMDS" ]; then
     say "note: no database migrate command configured — $DB is empty; a data-dependent ticket will need to migrate it"
     return 0
@@ -368,15 +423,83 @@ migrate_db() { # a failure is kept, printed and reported on the machine-read lin
     tail -n 15 "$MIGRATE_LOG" | sed 's/^/[setup-worktree]   | /'
   fi
 }
-db_table_count() { # the tables in the ticket's database, or nothing when psql cannot say
-  desk_timeout "$PSQL_LIMIT" docker exec "$PG_CONTAINER" psql -U "$(pg_user)" -d "$DB" -Atc \
+cmds_of() { # cmds_of <DIR<TAB>CMD lines> <app dir>: the items the app holds (the deepest app holding each)
+  local d c
+  while IFS="$(printf '\t')" read -r d c; do
+    [ -n "$c" ] && [ "$(app_of "$d")" = "$2" ] && printf '%s\t%s\n' "$d" "$c"
+  done <<EOF_CMDS
+$1
+EOF_CMDS
+  return 0
+}
+# With apps, each app's migrate then seed run against its own database, their output appended to the
+# one log under a heading naming the app and database; an app whose migrate failed is not seeded.
+migrate_app() { # migrate_app <app dir> <db>
+  local m s
+  m="$(cmds_of "$MIGRATE_CMDS" "$1")"; s="$(cmds_of "$SEED_CMDS" "$1")"
+  if [ -n "$m" ]; then
+    say "applying migrations to $2 (app $1)"
+    printf '== app %s: migrate against %s\n' "$1" "$2" >> "$MIGRATE_LOG"
+    if run_cmds "$m" 2>&1 | mask_urls >> "$MIGRATE_LOG"; then say "  migrated $2"
+    else
+      MIGRATE_FAILED=1
+      say "  WARNING: app $1: migrations did not complete against $2 — a data-dependent ticket will need to fix this. Full output: $MIGRATE_LOG"
+      return 0
+    fi
+  else
+    say "note: app $1 has no §4 Database migrate command in its directory — $2 is not migrated"
+  fi
+  [ -n "$s" ] || return 0
+  say "seeding $2 (app $1)"
+  printf '== app %s: seed against %s\n' "$1" "$2" >> "$MIGRATE_LOG"
+  if run_cmds "$s" 2>&1 | mask_urls >> "$MIGRATE_LOG"; then say "  seeded $2"
+  else
+    MIGRATE_FAILED=1
+    say "  WARNING: app $1: the seed did not complete against $2 — a data-dependent ticket will need to fix this. Full output: $MIGRATE_LOG"
+  fi
+}
+migrate_apps() { # migrate_apps <DIR<TAB>DB lines>: those apps; a command no app holds is a failure, said
+  local d n stray
+  exclude_from_git '/.desk-migrate.log'
+  : > "$MIGRATE_LOG"
+  stray="$(printf '%s\n%s\n' "$MIGRATE_CMDS" "$SEED_CMDS" | while IFS="$(printf '\t')" read -r d n; do
+    [ -n "$n" ] && [ -z "$(app_of "$d")" ] && printf '%s: %s\n' "$d" "$n"; done; true)"
+  if [ -n "$stray" ]; then
+    MIGRATE_FAILED=1
+    say "  WARNING: these §4 Database migrate or Seed items sit in no app's directory (§4 Database URL variable), so they ran against no database:"
+    printf '%s\n' "$stray" | sed 's/^/[setup-worktree]   | /'
+    printf '== in no app'"'"'s directory, not run:\n%s\n' "$stray" >> "$MIGRATE_LOG"
+  fi
+  while IFS="$(printf '\t')" read -r d n; do
+    [ -n "$d" ] && migrate_app "$d" "$n" </dev/null
+  done <<EOF_APPS
+$1
+EOF_APPS
+  if [ -z "$MIGRATE_FAILED" ]; then rm -f "$MIGRATE_LOG"
+  else tail -n 15 "$MIGRATE_LOG" | sed 's/^/[setup-worktree]   | /'; fi
+}
+db_table_count() { # db_table_count [<db>]: the tables in that database, or nothing when psql cannot say
+  desk_timeout "$PSQL_LIMIT" docker exec "$PG_CONTAINER" psql -U "$(pg_user)" -d "${1:-$DB}" -Atc \
     "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'" 2>/dev/null || true
 }
 # A kept worktree: only where the last migrate failed, or never ran. Worktrees made while the URLs
 # named the wrong server have an empty database and no log, so the empty database is what counts.
+# With apps, a failed last run migrates every app again, and otherwise only the apps whose database is empty.
 remigrate_if_needed() {
   [ "$DB_MODE" = ticket ] || return 0
-  if [ -f "$MIGRATE_LOG" ] || [ "$(db_table_count)" = 0 ]; then migrate_db; fi
+  if [ -z "$MULTI" ]; then
+    if [ -f "$MIGRATE_LOG" ] || [ "$(db_table_count)" = 0 ]; then migrate_db; fi
+    return 0
+  fi
+  if [ -f "$MIGRATE_LOG" ]; then migrate_apps "$APPS"; return 0; fi
+  local d n empty=""
+  while IFS="$(printf '\t')" read -r d n; do
+    [ "$(db_table_count "$n" </dev/null)" = 0 ] && empty="${empty:+$empty
+}$d	$n"
+  done <<EOF_APPS
+$APPS
+EOF_APPS
+  [ -z "$empty" ] || migrate_apps "$empty"
 }
 
 # ---- failure cleanup -----------------------------------------------------------------------------
@@ -388,7 +511,14 @@ cleanup() {
   git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"
   git -C "$MAIN" worktree prune >/dev/null 2>&1 || true
   if [ -n "$CREATED_BRANCH" ]; then git -C "$MAIN" branch -D "$BRANCH" >/dev/null 2>&1 && say "  removed branch $BRANCH (this run created it)"; fi
-  if [ -n "$CREATED_DB" ]; then pg "$CREATED_DB" -c "DROP DATABASE IF EXISTS \"$DB\"" >/dev/null 2>&1 && say "  dropped database $DB (this run created it)"; fi
+  local u n
+  while IFS="$(printf '\t')" read -r u n; do
+    [ -n "$n" ] || continue
+    if pg "$u" -c "DROP DATABASE IF EXISTS \"$n\"" >/dev/null 2>&1 </dev/null; then say "  dropped database $n (this run created it)"
+    else say "  WARNING: could not drop database $n (this run created it) — drop it by hand"; fi
+  done <<EOF_DROP
+$CREATED_DBS
+EOF_DROP
   return 0
 }
 trap cleanup EXIT
@@ -403,7 +533,7 @@ finish() {
   say "steps=$STEPS"
   say "worktree=$WT"
   say "branch=$BRANCH"
-  case "$DB_MODE" in ticket) say "database=$DB" ;; *) say "database=none" ;; esac
+  case "$DB_MODE" in ticket) say "database=$([ -n "$MULTI" ] && printf '%s\n' "$APPS" | head -1 | cut -f2 || echo "$DB")" ;; *) say "database=none" ;; esac
   if [ -n "$MIGRATE_FAILED" ]; then say "migrate=failed"; fi
 }
 

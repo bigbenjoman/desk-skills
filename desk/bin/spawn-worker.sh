@@ -157,8 +157,10 @@ fi
 AGENT_NAMES="$(printf '%s\n' "$AGENTS_OUT" | sed -n 's/^AGENTS: //p')"
 
 # A database URL in the orchestrator's own environment would reach the worker however carefully its
-# env files were repointed. Every §4 Database URL variable is removed from what the worker inherits.
+# env files were repointed. Every §4 Database URL variable is removed from what the worker inherits,
+# an item naming its app's directory (`apps/portal: DATABASE_URL`) included.
 while IFS= read -r v; do
+  v="${v#*: }"; v="${v#"${v%%[! ]*}"}"
   case "$v" in ''|none|*[!A-Za-z0-9_]*) ;; *) unset "$v" ;; esac
 done < <(desk_list db-url-var 2>/dev/null || true)
 # With no tracker (config §4 Tracker `none`) there is no Jira step to prove reachable.
