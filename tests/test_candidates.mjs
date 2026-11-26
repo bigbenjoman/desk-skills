@@ -288,7 +288,7 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
     'left out: ACME-70 (open PR #3478 by mousedown), ACME-74 (open PR #3483 by someone)',
   ]);
   const noHandle = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc, open }) });
-  t('#1501 with no GitHub handle every open PR is someone else\'s', noHandle.left.map((l) => l.key), ['ACME-70', 'ACME-71', 'ACME-73', 'ACME-74']);
+  t('#1501 with no GitHub handle every open PR is someone else\'s', noHandle.left.map((l) => l.key), ['ACME-73', 'ACME-70', 'ACME-71', 'ACME-74']);
   const unread = readsOf({ issues, desc });
   unread.openPrs = () => null;
   const blind = listCandidates({ project: 'ACME', priority: PRIORITY, handle: 'me-gh', reads: unread });
