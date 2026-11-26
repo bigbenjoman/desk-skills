@@ -70,7 +70,7 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, wo
 import { holdOn } from './call-login.mjs';
 import { codexReading } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
+import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, fallbackOf, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
   multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
@@ -2369,14 +2369,14 @@ const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).
 
 // What each login is used for: each tool's default, as `logins list` shows it, and every configured
 // repo's subscription (desk-env repoSubscriptions), a repo whose row names an email being pinned to the
-// login signed in to it. -> { defaults: { claude, codex }: login, pinned: [{ slug, login }],
+// login signed in to it. -> { defaults: { claude, codex }: login, fallback: Claude's fallback login or null, pinned: [{ slug, login }],
 // following: [slug], bySlug: Map(slug -> its repoSubscription) }, `following` the repos on the Claude
 // default; no pins and an empty `bySlug` when the rows cannot be read.
 function loginUses(subs = readSubscriptions(subscriptionsPath())) {
   const moved = migrateLogins(subs.logins);
   let subsOf = [];
   try { subsOf = repoSubscriptions({ repoSubscription }, subs); } catch { /* no repo rows: nothing pinned */ }
-  return { defaults: { claude: defaultOf(moved, 'claude'), codex: defaultOf(moved, 'codex') },
+  return { defaults: { claude: defaultOf(moved, 'claude'), codex: defaultOf(moved, 'codex') }, fallback: fallbackOf(moved),
     pinned: subsOf.filter((s) => s.source === 'row' && s.login), following: subsOf.filter((s) => s.source === 'default').map((s) => s.slug),
     bySlug: new Map(subsOf.map((s) => [s.slug, s])) };
 }
@@ -2399,9 +2399,9 @@ function usageTable(repos, now, checked = null) {
   const multi = pinnedFile();
   const missing = (l) => (l.source !== 'found' ? null : multi && l.tool === 'claude' ? { state: 'not set up', why: 'signed out' } : { state: 'signed out' });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? missing(l));
-  let uses = { defaults: {}, pinned: [], following: [], bySlug: new Map() };
+  let uses = { defaults: {}, fallback: null, pinned: [], following: [], bySlug: new Map() };
   try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
-  const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
+  const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir, isFallback: l.tool === 'claude' && uses.fallback?.dir === l.dir,
     pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
   // With accounts pinned every account has a row, its folder there or not: a pinned account whose folder
   // is gone shows as not signed in, with the command that signs it in (and makes the folder).
@@ -2433,7 +2433,9 @@ function limitOf(x, now) {
 //   -> [{ x, limit, repos }], `repos` the repo-table rows whose subscription is that login, the most
 //   tickets ready first.
 function waitingFor(t, repos) {
-  const on = (x) => repos.filter((r) => r.sub?.login?.dir === x.login.dir).sort((a, b) => b.ready - a.ready || a.name.localeCompare(b.name));
+  // A repo following the default runs on the fallback while the default is full, unless that is full too.
+  const fb = fallbackFree(t);
+  const on = (x) => repos.filter((r) => r.sub?.login?.dir === x.login.dir && !(fb && r.sub.source === 'default')).sort((a, b) => b.ready - a.ready || a.name.localeCompare(b.name));
   return t.claude.filter((x) => x.limit).map((x) => ({ x, limit: x.limit, repos: on(x) }))
     .filter((w) => w.repos.length)
     .sort((a, b) => (a.limit.at ?? Infinity) - (b.limit.at ?? Infinity) || (b.x.use?.isDefault ? 1 : 0) - (a.x.use?.isDefault ? 1 : 0));
@@ -2477,10 +2479,11 @@ function windowCell(x, k, now, solid) {
   if (r?.at == null) return [['no reading yet', GREY]];
   return barCell(r[k] ?? { utilization: 0, resetsAt: 0 }, now, solid, x.login.rule === 'off');
 }
-// What a login is used for: the tool's default (at its limit too: the limit shows in its bars), else how
-// many repos are pinned to it, else unused.
+// What a login is used for: the tool's default (at its limit too: the limit shows in its bars), else
+// Claude's fallback, else how many repos are pinned to it, else unused.
 function useCell(x) {
   if (x.use?.isDefault) return ['◉ default', GOOD];
+  if (x.use?.isFallback) return ['◎ fallback', HUE.blue];
   const n = x.use?.pinned.length ?? 0;
   return n ? [`● ${n} repo${n === 1 ? '' : 's'}`, HUE.blue] : UNUSED_CELL;
 }
@@ -2578,16 +2581,22 @@ const repoHint = () => segLine([['  Select a repo and press ', GREY], ['enter', 
 // account whose sign-in was switched to another, or a login that is signed out, which desk can't use;
 // else with one login per tool, that every worker runs on it; else the Claude default, which every repo
 // not pinned runs on.
+// Claude's fallback login's row while it has room, else null.
+const fallbackFree = (t) => t.claude.find((x) => x.use?.isFallback && !x.limit) ?? null;
 function usageHeadline(t, now) {
   const def = t.claude.find((x) => x.use?.isDefault);
   const l = def?.limit;
+  const fb = fallbackFree(t);
+  if (l && fb) return segLine([...defaultLimitSegs(loginLabel(def.login), l, now).slice(0, 2), ['. New work of the repos following it starts on ', GREY], [loginLabel(fb.login), BOLD], [', the fallback, until it has room.', GREY]]);
   if (l) return segLine(defaultLimitSegs(loginLabel(def.login), l, now));
   const wrong = t.claude.find((x) => x.check?.state === 'wrong account');
   if (wrong) return segLine([[loginLabel(wrong.login), BOLD], ["'s sign-in was switched to another account, so desk has stopped using it.", GREY]]);
   const out = [...t.claude, ...t.codex].find((x) => x.check?.state === 'signed out');
   if (out) return segLine([[loginLabel(out.login), BOLD], [" isn't signed in yet, so desk can't use it.", GREY]]);
   if (!def || (t.claude.length <= 1 && t.codex.length <= 1)) return segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
-  return segLine([['Workers run on ', GREY], [loginLabel(def.login), BOLD], [", this computer's default, unless their repo is pinned.", GREY]]);
+  const tail = fb ? [[", this computer's default, unless their repo is pinned; new work starts on ", GREY], [loginLabel(fb.login), BOLD], [' while the default is full.', GREY]]
+    : [[", this computer's default, unless their repo is pinned.", GREY]];
+  return segLine([['Workers run on ', GREY], [loginLabel(def.login), BOLD], ...tail]);
 }
 
 // A login being added: { tool, login, label, first, taken }, its folder not signed in yet. It is one row,
@@ -3242,13 +3251,15 @@ const readyWhy = (r, t) => startWait(r, t) ?? (r.live ? 'starts at the next pass
 const FINISHING_TEXT = 'worker finished, next pass records it';
 
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
-// there, the last pass's reading, which the worker may be further on from.
+// there, the last pass's reading, which the worker may be further on from. A worker started on the
+// fallback login (fallback-login.mjs) says which.
 function runningStage(r, x) {
   const { st } = x;
   const p = x.t?.usage_paused;
-  if (p) return `paused on ${limitName(p.type)}${p.resets_at != null ? ` until ${resetsWhen(p.resets_at)}` : ''}, then resumes by itself`;
-  if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}`;
-  return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}`;
+  const on = x.t?.login?.fallback ? ` · on fallback ${x.t.login.email ?? x.t.login.name}` : '';
+  if (p) return `paused on ${limitName(p.type)}${p.resets_at != null ? ` until ${resetsWhen(p.resets_at)}` : ''}, then resumes by itself${on}`;
+  if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}${on}`;
+  return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}${on}`;
 }
 
 // An open PR's checks, as the last pass read them (pr_status). A check queued this long with

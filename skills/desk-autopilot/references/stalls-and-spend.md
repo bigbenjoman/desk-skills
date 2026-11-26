@@ -139,8 +139,8 @@ suite under the test lock, or waiting for it (a `with-lock.sh test|tsc` working 
 it as quiet, "running its suite" or "waiting on the test lock", until it has been held that way for
 30 minutes, and then stops and parks it as wedged, naming the ceiling. A worker at a usage limit (5-hour, weekly
 or any other) is not stalled: the pass reports it as paused, holds the repo's spawns and resumes
-until its subscription's reset (no work moves to another subscription; other subscriptions' work
-carries on), and resumes it in its own session on the login it started on once the limit lifts, at
+until its subscription's reset (no running work moves to another subscription; other subscriptions' work
+carries on, and a repo following the default starts new work on a `fallback` login meanwhile), and resumes it in its own session on the login it started on once the limit lifts, at
 its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log until the harness moves it to the
 background at 600s), so on a batch that has gone

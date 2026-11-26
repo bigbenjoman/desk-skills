@@ -44,6 +44,7 @@ import { probeShared, probeDue, noReadingProbeDue, loginProbeLog, usageDir } fro
 import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
+import { defaultFull, fallbackCall } from './fallback-login.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
@@ -467,10 +468,7 @@ const loginDirOf = (t) => (t.login ? t.login.config_dir : workerLoginDir(STATE, 
 const SUBS = readSubscriptions(E.subscriptionsPath());
 const REPO_SUB = E.thisRepoSubscription({ repoSubscription }, SUBS);
 const INHERITS = !SUBS.exists && REPO_SUB.source === 'default';
-// Only a limit on the repo's own login holds the batch. One on another login, where a worker started
-// before the subscription changed, holds that worker alone.
-const REPO_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
-const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
+const DEFAULT_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
 // A repo's row pinned to a subscription set off is one item for the person (needs-you subscription-off)
 // while it stands: the queue's subscription_off (pass/shared.mjs subscriptionOffWrite).
 {
@@ -491,6 +489,44 @@ const lifted = (l, login) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
 // the limit refused (the queue's usage_hold).
 const usageHolds = [];
+const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
+
+// A repo following the default whose computer names a Claude fallback login starts new sessions there
+// while the default is full (fallback-login.mjs), and on the default once it has room. The switch is
+// kept in the queue's login_fallback, with the limit it was for, so it holds until that limit lifts.
+const FALLBACK_LOGIN = !INHERITS && DEFAULT_LOGIN ? REPO_SUB.fallback ?? null : null;
+let FALLBACK_CHECK = null;
+const FALLBACK = (() => {
+  const record = queue().login_fallback ?? null;
+  if (!FALLBACK_LOGIN) return fallbackCall({ fallback: null, record });
+  const stored = queue().usage_hold ?? null;
+  const storedLogin = stored ? (stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir)) : null;
+  const limits = [
+    ...(stored && sameLogin(DEFAULT_LOGIN, storedLogin) ? [{ type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null }] : []),
+    ...(record?.type && record.type !== 'pace' ? [{ type: record.type, resetsAt: record.resets_at ?? null }] : []),
+  ];
+  const hold = limits.find((l) => !lifted(l, DEFAULT_LOGIN)) ?? null;
+  let reading = loginReading(DEFAULT_LOGIN);
+  // While new work runs on the fallback no worker starts on the default, so only a probe reads it again.
+  if (record && !hold && probeDue({ running: 0, reading, now: Date.now() }) && probeOnce(DEFAULT_LOGIN).ok) reading = loginReading(DEFAULT_LOGIN);
+  const full = defaultFull({ hold, reading, pace: usagePace({ usage: reading.seven_day }) });
+  let usable = null;
+  if (full.full) {
+    FALLBACK_CHECK = checkLogin(FALLBACK_LOGIN);
+    const live = FALLBACK_CHECK.email?.toLowerCase() ?? null;
+    usable = FALLBACK_CHECK.state === 'signed out' ? `is signed out (sign it in, in another terminal: ${signInCommand(FALLBACK_LOGIN)})`
+      : FALLBACK_LOGIN.account && FALLBACK_CHECK.state === 'signed in' && live !== FALLBACK_LOGIN.account ? `is signed in to ${live} instead of ${FALLBACK_LOGIN.account}` : null;
+  }
+  return fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable, record });
+})();
+if (FALLBACK.line) (FALLBACK.held ? report.stalled : report.advanced).push(FALLBACK.line);
+if (!DRY && FALLBACK.record !== undefined) q('set-batch', `login_fallback=${JSON.stringify(FALLBACK.record)}`);
+const ON_FALLBACK = FALLBACK.on === 'fallback';
+// Only a limit on the login new sessions start on holds the batch. One on another login, where a worker
+// started before the subscription changed or on the default before the fallback took over, holds that
+// worker alone.
+const REPO_LOGIN = ON_FALLBACK ? FALLBACK_LOGIN : DEFAULT_LOGIN;
+const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -1160,7 +1196,7 @@ runSteps({
   snapshot: () => {
     const { tickets, usage_hold: stored = null } = queue();
     const preLogin = stored?.preflight ? (stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir)) : null;
-    return { tickets, holds: [...usageHolds], stored, preLogin, repoLogin: REPO_LOGIN, now: Date.now() };
+    return { tickets, holds: [...usageHolds], stored, preLogin, repoLogin: REPO_LOGIN, fallback: ON_FALLBACK ? FALLBACK_LOGIN.name : null, now: Date.now() };
   },
   decide: decideUsageLimit,
   handlers: {
@@ -2251,7 +2287,6 @@ if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { 
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
-const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
 // It reads the login this repo's new sessions start on (REPO_LOGIN), which is what the spawns it holds
 // would spend: the pass's own login is often another, whose workers never feed this one's reading.
 // With no reading for that login at all, it probes it once too, rather than letting the guard go
@@ -3127,6 +3162,16 @@ let REPO_CHECK = null;
 let noLoginWhy = null;
 function repoLogin() {
   if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
+  if (ON_FALLBACK) {
+    const login = FALLBACK_LOGIN;
+    const refused = refusedOf(login);
+    if (refused) {
+      noLogin(`this repo's fallback login ${login.name} (${login.folder}) failed its health check, ${refused}, and the default is full, so nothing new starts for this repo`);
+      return null;
+    }
+    const email = login.account ?? FALLBACK_CHECK?.email?.toLowerCase() ?? null;
+    return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email, fallback: true })}`, line: ` login=${login.name} (fallback)` };
+  }
   const login = REPO_SUB.login;
   if (!login && REPO_SUB.off) {
     const slug = E.repoSlug();
