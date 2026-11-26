@@ -72,6 +72,10 @@ here. Where there are none to read:
   in a post that covers the evening before too is wrong; count from the previous post.
 - Don't take when a setting changed from a plan. Read it: one already applied is "now", not
   "from tomorrow".
+- Don't describe a ticket as the user last left it. Read its status and every PR naming its key
+  as you write it: a teammate's fix since then makes an ask in it moot.
+- Don't write "from the next deploy" without reading the latest production deploy. A merge it
+  already contains is live.
 - Don't list every ticket key raised in bulk triage.
 - Don't use em-dashes as connectors; use a spaced hyphen ` - `, a colon or a full stop.
 - Don't use reflexive hedges like "I think" or "possibly". State real uncertainty once, with what
