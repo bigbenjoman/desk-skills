@@ -20,7 +20,7 @@ const held = (key, by, fields = {}) => ({ key, state: 'parked', park: { question
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from READS. A plain decision runs through runPhase, a generator through runSteps.
 const READS = {
-  'merge-park': null, check: { holds: false }, 'own-merged': { pr: null }, 'other-merged': null, 'drop-worktree': null, 'tail-after-merge': false, write: true, requeue: { ok: true, out: '' },
+  'merge-park': null, check: { holds: false }, 'own-merged': { pr: null }, 'other-merged': null, 'drop-worktree': null, 'tail-after-merge': false, write: true, requeue: { ok: true, out: '' }, 'pr-verdict': null,
   'lift-put-off': { ok: true }, 'read-blockers': { unread: [], why: '' }, triage: {}, 'epic-merged': false, 'other-repo': false, landed: false, 'landed-here': false, unpromoted: null,
 };
 const WRITES = ['set', 'report', 'front', 'park', 'date-line', 'epic-line'];
@@ -153,8 +153,21 @@ const BASE_CONTAINS = 'base-contains';
   const links = clears(clearsSnap(byKey(parked('A', { kind: 'links-made', links: [], pr: 9 }))), { check: { holds: true } });
   t('links made: done again on its PR', j(sets(links)), j(['state=done', 'park=null', 'result.pr=9']));
   const merges = clears(clearsSnap(byKey(parked('A', PR_MERGED))), { 'merge-park': { call: 'done', pr: 12, head: 'abcdef1234567', grant: '§3 pr-merge is yes' } });
-  t('a merge question desk may now merge is done on its PR, with no check', j(types(merges)), j(['merge-park', 'set', 'report']));
+  t('a merge question desk may now merge is done on its PR, with no check', j(types(merges)), j(['merge-park', 'set', 'pr-verdict', 'report']));
   t('and keeps its words as the follow-on', sets(merges).some((f) => f.startsWith('follow_on=') && f.includes('which colour?')), true);
+}
+// issue-1477: a park settled into done leads its done line with the review read from its PR.
+{
+  const read = 'review read from the PR: round 1 at abcdef123, p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
+  const asked = [];
+  const verdict = (a) => { asked.push(a.pr); return read; };
+  const merges = clears(clearsSnap(byKey(parked('A', PR_MERGED))), { 'merge-park': { call: 'done', pr: 12, head: 'abcdef1234567', grant: '§3 pr-merge is yes' }, 'pr-verdict': verdict });
+  t('issue-1477 AC1 a merge question done on its PR leads with the PR\'s verdict', lines(merges)[0].startsWith(`A: ${read}; PR #12 recorded done`), true);
+  const links = clears(clearsSnap(byKey(parked('A', { kind: 'links-made', links: [], pr: 9 }))), { check: { holds: true }, 'pr-verdict': verdict });
+  t('issue-1477 AC1 links made: done again leads with the PR\'s verdict', lines(links)[0].startsWith(`A: ${read}; `), true);
+  t('issue-1477 each verdict is read for the PR the ticket is done on', j(asked), '["12","9"]');
+  const noPr = clears(clearsSnap(byKey(parked('A', { kind: 'links-made', links: [] }))), { check: { holds: true }, 'pr-verdict': () => { throw new Error('read with no PR'); } });
+  t('issue-1477 links made with no PR reads no verdict', types(noPr).includes('pr-verdict'), false);
 }
 {
   const base = parked('B', { kind: BASE_CONTAINS, branch: 'main' });

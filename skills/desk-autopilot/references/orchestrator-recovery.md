@@ -15,7 +15,9 @@ it has already actioned. So:
 
 - A queue `done` and a worker's `AUTOPILOT_DONE: pr=<n>` mean **a PR exists**: not that the review
   posted, not that it merged. Re-derive with
-  `gh pr view <n> --json state,mergedAt,isDraft,headRefOid` every time.
+  `gh pr view <n> --json state,mergedAt,isDraft,headRefOid` every time. The pass's `done:` line
+  leads with the review verdict it read from the PR at its head (round, SHA and counts), or says
+  the head has none, before what the worker said.
 - A spent `AUTOPILOT_PARK` in the log can re-park a ticket you just un-parked, and a spent
   `AUTOPILOT_DONE` makes `pass.mjs` refuse to respawn it (it says so under `STALLED`). Un-park
   with `queue.mjs requeue`, which moves the log aside, never with a bare `queue.mjs set`.
