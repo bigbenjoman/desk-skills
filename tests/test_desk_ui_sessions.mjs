@@ -239,6 +239,7 @@ t('AC10 and that turn completes', (await item(a1.json.id))?.turns, 2);
 writeFileSync(join(T, 'silent'), '');
 const busy = await message(a4.json.id, 'a long question');
 t('a turn that is running is accepted', busy.status, 202);
+await until(() => starts().length === 6);
 t('a second message while it runs is refused', (await message(a4.json.id, 'and another')).status, 409);
 NOW += 31 * 60 * 1000;
 const ended = server.sessions.check();
