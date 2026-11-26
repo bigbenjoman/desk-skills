@@ -122,7 +122,7 @@ export function* decidePutOffRefresh(s) {
 }
 
 // The snapshot adds:
-//   report, drift           the report lists, and the drift lines
+//   report, drift           the report lists (`waiting` the person's, `waits` nobody's), and the drift lines
 //   answerBin               answer.mjs, as the person runs it
 //   base, source, promotion the batch base, the default branch, and the queue's `promotion`
 //   overrides, overridesSeen  the digest's overridden calls (digest.mjs readDecisions), and the ids
@@ -161,6 +161,8 @@ export function decideReportLines(s) {
   // A red base is the batch's, not one of the person's own steps, so it is listed apart from them.
   if (s.baseRed) acts.push(out(`RED BASE:\n  ${s.baseRed}`));
   if (waiting.length) acts.push(out(`WAITING ON YOU:\n  ${waiting.join('\n  ')}`));
+  // What waits on a slot or the next pass moves without the person, so it is listed apart and never in the verdict.
+  if (s.report.waits?.length) acts.push(out(`waiting, nothing for you to do:\n  ${s.report.waits.join('\n  ')}`));
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
   const budgetText = (h) => {

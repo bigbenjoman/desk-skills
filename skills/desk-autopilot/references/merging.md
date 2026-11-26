@@ -360,7 +360,11 @@ forever) and **no preview build starts without its team's preview-build lease** 
   the person's (a draft's `DRAFT` line, or a ready PR's `merge ref:` note, said under WAITING ON YOU as
   `NO MERGE ANSWER`), or with neither acting on it, twice that limit after the pass first saw it; a handoff
   whose next session has not started 15 minutes after it is under WAITING ON YOU as `HANDOFF NOT STARTED`,
-  with the requeue to run. Each line stays listed while its wait is open, as one item to the decider, and
+  with the requeue to run. While the batch's slots are all held and none is free to borrow, a pending
+  handoff is instead listed under `waiting, nothing for you to do` as `waiting for a slot (held by <keys>)`,
+  as desk-q shows it, and its 15 minutes start at the first pass that finds a slot free. That list also
+  carries what waits only for the next pass (the test-lock queue's `held for the next pass`, a memory
+  share that no longer fits), and nothing on it notifies. Each line stays listed while its wait is open, as one item to the decider, and
   a new escalation is recorded only once that wait ends and a new one starts. Any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back

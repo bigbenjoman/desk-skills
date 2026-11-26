@@ -20,7 +20,10 @@
 //                 neither owner on it (no undraft record keeps the spell, or no merge driver runs), it
 //                 is said here. It ends once GitHub answers or the PR closes.
 //   handoff       a ticket handed off between sessions whose next session has not started: it starts
-//                 at the pass that first sees the handoff pending, and ends once the session starts
+//                 at the pass that first sees the handoff pending, and ends once the session starts.
+//                 While every slot it could use is held (`held_by`, the tickets holding them) it has no
+//                 deadline and is said as waiting for a slot, not to the person; its clock starts at the
+//                 first pass that finds a slot free
 //   progress      a running worker's time since its last progress: a stage change, a new commit on its
 //                 worktree's HEAD or a push to its branch (progress_at, which the advance step keeps).
 //                 Log growth is not progress: a hung call's heartbeat grows the log. Progress closes the
@@ -29,7 +32,8 @@
 //                 progress_at on by the wait once it ends), and past it the ceiling's own report is made.
 //
 // The snapshot: { tickets (the queue's, as the pass read them for this step), at (the pass's time, ISO),
-// dry }. The actions are the shared `set` and `report` (pass/shared.mjs).
+// dry, slotHeld ({ <key>: [the tickets holding the slots] } for each pending handoff the spawn loop
+// left for want of a slot) }. The actions are the shared `set` and `report` (pass/shared.mjs).
 import { set, say } from './shared.mjs';
 import { toHandoff } from './eligibility.mjs';
 import { prStatusOf } from '../batch-state.mjs';
@@ -52,8 +56,9 @@ const MERGE_REF = /^merge ref: (.+)$/;
 
 // What ticket `t` waits on at `at`: { <on>: { id (what identifies that wait), since (where another step
 // first saw it), ms (its deadline, where not WAITS'), owner (whether another step decides when it is the person's), said (that step's
-// words once it has: '' where that step says them itself) } }.
-export function waitsOf(t, at) {
+// words once it has: '' where that step says them itself), held (the tickets holding every slot it
+// could use, or null) } }. `heldBy` is that list for t, or null.
+export function waitsOf(t, at, heldBy = null) {
   const now = {};
   const s = prStatusOf(t);
   if (s?.state === 'OPEN' && s.mergeable === 'UNKNOWN') {
@@ -66,7 +71,7 @@ export function waitsOf(t, at) {
       said: spell?.call === 'person' ? '' : note ? note[1] : null,
     };
   }
-  if (t.state === 'triaged' && toHandoff(t)) now.handoff = { id: { stage: String(t.handoff_stage ?? '?') }, owner: false, said: null };
+  if (t.state === 'triaged' && toHandoff(t)) now.handoff = { id: { stage: String(t.handoff_stage ?? '?') }, owner: false, said: null, held: heldBy?.length ? heldBy : null };
   if (t.state === 'running' && !t.usage_paused && Date.parse(t.progress_at) < Date.parse(at)) {
     // Progress made this pass (after the pass started) closes the wait, and the next pass with none opens
     // one from it. Progress a pass recorded and then ended before this sweep is a new stage or head, so a
@@ -99,17 +104,30 @@ function escalation(t, on, w, said, at) {
     `If nothing in this report holds it back (a slot, memory, a usage limit), requeue it: queue.mjs requeue ${t.key}`;
 }
 
-// Ticket `t`'s waits after this pass, and the lines for those escalated at `at`. A wait still open keeps
-// its start, deadline and escalation; a wait on another PR or stage is a new one. One past its deadline,
-// or made the person's by its owner, is escalated once, and its line said while it stays open.
-export function nextWaits(t, at) {
+// The line for ticket `t`'s handoff wait `w` while full slots hold it: nothing for the person to do.
+const slotLine = (t, w) => `${t.key}: waiting for a slot (held by ${w.held_by.join(', ')}) — its Stage ${w.stage} session starts once one frees, ` +
+  `and its ${WAITS.handoff.ms / MIN}-minute deadline runs from then`;
+
+// Ticket `t`'s waits after this pass, the lines for those escalated at `at`, and `held`, the lines for
+// those full slots hold. A wait still open keeps its start, deadline and escalation; a wait on another PR
+// or stage is a new one. One past its deadline, or made the person's by its owner, is escalated once, and
+// its line said while it stays open. A wait held by full slots has no deadline while held, and starts
+// afresh, unescalated, at the first pass that finds a slot free. `heldBy` is pass.mjs's slotHeld for t.
+export function nextWaits(t, at, heldBy = null) {
   const was = t.waits && typeof t.waits === 'object' ? t.waits : {};
   const next = {};
   const lines = [];
-  for (const [on, { id, since: first, follows = false, ms = WAITS[on].ms, owner, said }] of Object.entries(waitsOf(t, at))) {
+  const held = [];
+  for (const [on, { id, since: first, follows = false, ms = WAITS[on].ms, owner, said, held: by = null }] of Object.entries(waitsOf(t, at, heldBy))) {
     const matched = was[on] && Object.entries(id).every(([k, v]) => was[on][k] === v) ? was[on] : null;
     // A wait that follows its start keeps it only once escalated: until then its start and deadline move with it.
-    const open = matched && !(follows && !matched.escalated) ? matched : null;
+    // One held by full slots stays open only while still held, and one held no longer starts again.
+    const open = matched && !(follows && !matched.escalated) && !matched.held_by === !by ? matched : null;
+    if (by) {
+      next[on] = { since: open?.since ?? at, escalate_to: WAITS[on].escalate_to, ...id, held_by: by };
+      held.push(slotLine(t, next[on]));
+      continue;
+    }
     const since = open?.since ?? (Number.isFinite(Date.parse(first)) ? first : at);
     let w = open ?? { since, deadline: new Date(Date.parse(since) + ms).toISOString(), escalate_to: WAITS[on].escalate_to, ...id };
     const due = said != null || (!owner && Date.parse(at) >= Date.parse(w.deadline));
@@ -118,7 +136,7 @@ export function nextWaits(t, at) {
     if (line) lines.push(line);
     next[on] = w;
   }
-  return { waits: next, lines };
+  return { waits: next, lines, held };
 }
 
 // The red base under a batch (pass/base-gate.mjs decideBaseRed) is a wait of the batch's, kept as the
@@ -153,8 +171,9 @@ export const outageWait = (rec, at, base, { runnable = true } = {}) => batchWait
 export function decideDeadlines(snap) {
   const actions = [];
   for (const t of Object.values(snap.tickets)) {
-    const { waits, lines } = nextWaits(t, snap.at);
+    const { waits, lines, held } = nextWaits(t, snap.at, snap.slotHeld?.[t.key] ?? null);
     for (const line of lines) actions.push(say(t.key, 'waiting', line));
+    for (const line of held) actions.push(say(t.key, 'waits', line));
     const open = Object.keys(waits).length ? waits : null;
     if (!snap.dry && JSON.stringify(open) !== JSON.stringify(t.waits ?? null)) actions.push(set(t.key, `waits=${JSON.stringify(open)}`));
   }
