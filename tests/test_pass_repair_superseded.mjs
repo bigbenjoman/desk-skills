@@ -2,7 +2,7 @@
 // layer: L1
 // covers: desk/bin/pass/repair-superseded.mjs
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { decideSupersededRepairs, repairCandidate } from '../desk/bin/pass/repair-superseded.mjs';
+import { decideSupersededRepairs, repairCandidate, greenRead } from '../desk/bin/pass/repair-superseded.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -68,20 +68,39 @@ t('a dry run says what it would do and changes nothing',
 }
 {
   const as = drive(snap([{ key: 'base-red-main', state: 'triaged', added_at: 'x' }]), { superseded: { why: 'green', by: null, mark: 'b9276a8' } });
-  t('#1532 AC3 a repair closed on a green read keeps that read as closed_green', (of(as, 'write')[0]?.fields ?? []).includes('closed_green=b9276a8'), true);
+  const fields = of(as, 'write')[0]?.fields ?? [];
+  t('#1532 AC3 a repair closed on a green read writes that read as closed_green, and closed_superseded',
+    j(['closed_green=b9276a8', 'closed_superseded=yes'].map((f) => fields.includes(f))), '[true,true]');
   const onBase = drive(snap([draft]), { superseded: FIXED });
-  t('#1532 a repair closed on its changes being on the base keeps no closed_green', (of(onBase, 'write')[0]?.fields ?? []).some((f) => f.startsWith('closed_green')), false);
+  t('#1532 a repair closed on its changes being on the base writes no closed_green', (of(onBase, 'write')[0]?.fields ?? []).some((f) => f.startsWith('closed_green')), false);
 }
 {
-  const left = { key: 'base-red-main-20261126175511', state: 'done', branch: 'fix/base-red-main-20261126175511', worktree: '/w/x', result: { pr: null, summary: 'closed unmerged' } };
-  const as = drive(snap([left], { baseRed: true }), { 'push-fix': { pr: '3813' } });
-  t('#1532 AC4 a repair left with no PR while main is red has its fix pushed and its draft opened, no close',
+  // The decider alone: what the push-fix step answers is stubbed; pushRepairFix (pass.mjs) runs in test_pass_spawns.sh.
+  const left = { key: 'base-red-main-20261126175511', state: 'done', branch: 'fix/base-red-main-20261126175511', worktree: '/w/x', result: { pr: null, summary: 'its worker finished' } };
+  const live = { repairKey: left.key };
+  const as = drive(snap([left], live), { 'push-fix': { pr: '3813' } });
+  t('#1532 AC4 a push-fix that reports a draft PR is said as done, and the repair is not read for a close',
     `${of(as, 'superseded').length} ${lines(as)[0]}`, '0 base-red-main-20261126175511: its worker left an unpushed fix while main is still red: pushed fix/base-red-main-20261126175511 and opened draft PR #3813');
-  const refused = drive(snap([left], { baseRed: true }), { 'push-fix': { why: 'config §3 git-push is "ask"' } });
-  t('#1532 AC4 a push the pass may not make is said, and nothing else is done', `${refused.length} ${/but the pass did not push it: config §3 git-push is "ask"/.test(lines(refused)[0])}`, '2 true');
-  t('#1532 AC4 nothing of its own to push goes on to the read as before', j(drive(snap([{ ...left, state: 'failed' }], { baseRed: true })).map((a) => a.type)), '["push-fix","superseded"]');
-  t('#1532 AC4 with main not red, or a handoff pending, or in a dry run, nothing is pushed',
-    [snap([left]), snap([{ ...left, handoff: 'pending' }], { baseRed: true }), snap([left], { baseRed: true, dry: true })].map((s) => of(drive(s), 'push-fix').length).join(), '0,0,0');
+  const refused = drive(snap([left], live), { 'push-fix': { why: 'config §3 git-push is "ask"' } });
+  t('#1532 AC4 a push-fix that reports why it did not push is said, and nothing else is done', `${refused.length} ${/but the pass did not push it: config §3 git-push is "ask"/.test(lines(refused)[0])}`, '2 true');
+  t('#1532 AC4 a push-fix with nothing of its own to push goes on to the read as before', j(drive(snap([{ ...left, state: 'failed' }], live)).map((a) => a.type)), '["push-fix","superseded"]');
+  t('#1532 AC4 with main not red, a handoff pending, or a dry run, no push-fix is asked',
+    [snap([left]), snap([{ ...left, handoff: 'pending' }], live), snap([left], { ...live, dry: true })].map((s) => of(drive(s), 'push-fix').length).join(), '0,0,0');
+  t('#1532 AC4 a repair of an earlier red spell, or one this step closed as needless, is never pushed',
+    [snap([left], { repairKey: 'base-red-main-20261127090000' }), snap([{ ...left, closed_superseded: 'yes' }], live)].map((s) => of(drive(s), 'push-fix').length).join(), '0,0');
+}
+{
+  const began = Date.parse('2026-11-26T17:55:11Z');
+  const greenRec = { at: '2026-11-26T18:30:00Z', sha: 'b9276a8' };
+  const red = { branch: 'main', checks: [{ name: 'tests' }], no_work: [{ name: 'tests', sha: 'b9276a8', url: null }] };
+  t('#1532 AC2 greenRead: main red only on passes that tested nothing keeps it open, naming the check',
+    greenRead({ red, greenRec, base: 'main', began }).untested, 'main\'s last green run tested nothing for "tests"');
+  t('#1532 greenRead: a green read since the repair began is green, its mark the tip SHA it read',
+    j(greenRead({ red: null, greenRec, base: 'main', began })), j({ green: true, at: Date.parse(greenRec.at), mark: 'b9276a8' }));
+  t('#1532 AC3 greenRead: the read a requeued repair was closed on is not green again; a newer one is',
+    [greenRead({ red: null, greenRec, base: 'main', began, closedGreen: 'b9276a8' }).green, greenRead({ red: null, greenRec: { ...greenRec, sha: 'c0ffee1' }, base: 'main', began, closedGreen: 'b9276a8' }).green].join(), 'false,true');
+  t('#1532 greenRead: red on a failure, or green before it began, is not green; a record with no sha marks by its time',
+    [greenRead({ red: { branch: 'main', checks: [{ name: 'tests' }] }, greenRec, base: 'main', began }).green, greenRead({ red: null, greenRec: { ...greenRec, at: '2026-11-26T17:00:00Z' }, base: 'main', began }).green, greenRead({ red: null, greenRec: { at: greenRec.at, sha: null }, base: 'main', began }).mark].join(), `false,false,${greenRec.at}`);
 }
 
 // Which repairs are read at all.

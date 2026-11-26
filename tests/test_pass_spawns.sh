@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (122 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -730,6 +730,19 @@ check "DS-496 AC2 a 5xx on the pass's own push records the push as what clears t
   '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"fix/P-3\"}" ] && echo "$first" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it" && echo "$out" | grep -qF "P-3: waiting on \"git push origin fix/P-3 succeeds\" (GitHub still answers 5xx): left parked"'
 rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 AC2 and the next pass pushes it and requeues it for the steps its park named" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" != "\"parked\"" ] && [ "$(field P-3 state)" != "\"done\"" ] && echo "$out" | grep -qF "P-3: \"git push origin fix/P-3 succeeds\" holds: requeued"'
+# #1532 AC4: the live red spell's repair, its worker failed with the fix committed and not pushed while main
+# is still red, has its branch pushed and its draft opened by the pass (pushRepairFix), not asked about.
+RK=base-red-main-20261126175511; MS=$(git -C "$T/repo" rev-parse main)
+git -C "$T/repo" worktree add -q -b "fix/$RK" "$T/wt/$RK" main
+echo g > "$T/wt/$RK/guard.txt"; git -C "$T/wt/$RK" add guard.txt; git -C "$T/wt/$RK" commit -q -m "fix(guards): $RK add the missing guard"
+printf '{"branch":"main","sha":"%s","checks":[{"name":"tests","sha":"%s","url":null}],"merges":[],"repair_key":"%s","since":"2026-11-26T17:55:11Z","at":"%s"}\n' "$MS" "$MS" "$RK" "$(node -e 'console.log(new Date().toISOString())')" > "$T/state-rc/base-red.json"
+q add "$RK"; q set "$RK" state=failed lane=A "branch=fix/$RK" "worktree=$T/wt/$RK"
+: > "$T/rc-gh.log"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1532 AC4 a red spell's repair left with an unpushed fix is pushed and opened as its draft, titled by its commit" \
+  '[ "$(git -C "$T/rc-origin.git" rev-parse "refs/heads/fix/$RK")" = "$(git -C "$T/wt/$RK" rev-parse HEAD)" ] && grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/$RK --title fix\(guards\): $RK add the missing guard --body-file .*/state-rc/pr-bodies/$RK.md$" "$T/rc-gh.log" && grep -qF "Repairs the red main: \"tests\" failed on its latest run there." "$T/state-rc/pr-bodies/$RK.md"'
+check "#1532 AC4 and it is recorded done on that draft, and the pass says so" \
+  '[ "$(field "$RK" state)" = "\"done\"" ] && [ "$(field "$RK" result.pr)" = 91 ] && [ "$(field "$RK" draft_pr)" = 91 ] && echo "$out" | grep -qF "$RK: its worker left an unpushed fix while main is still red: pushed fix/$RK and opened draft PR #91"'
+rm -f "$T/state-rc/base-red.json"
 
 # ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
 # acme/web's default branch is not main, and this repo's origin says where its neighbours are. Each
