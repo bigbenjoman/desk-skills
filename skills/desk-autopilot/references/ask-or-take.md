@@ -86,7 +86,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   the file as one absolute or `$DESK_STATE` path, the condition looks where the question says (a
   question giving it another relative path, or more than one place, is refused, saying so), and
   where the question asks the person to make or save it, the park is still put to them while each
-  pass checks for the file.
+  pass checks for the file. So is one whose question asks the person for any step, in any sentence
+  (`Please run npm install in …` for a lockfile): no pass or worker makes a file for a parked ticket.
+  That is read whenever the park is shown, so a park recorded before still reaches the person.
   The forms, each beside a line written in it. `<path> exists` with no `file` reads as a file only
   for an absolute or `$DESK_STATE` path, or a file name with an extension; write `file <path> exists`
   otherwise.

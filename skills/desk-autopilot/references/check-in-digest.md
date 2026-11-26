@@ -125,6 +125,11 @@ moves; a cancelled one pushes nothing. Each move goes in `maintenance.log` as a 
 - **Merging PRs that stopped moving.** Per repo, under `Merging, no change for 2h or more`: each PR
   the last pass found in Merging whose head and check results have not changed for two hours, with
   how long and the check holding it. Listed, never pushed.
+- **Waits that hold work up.** Per repo, under `Waiting since before the last check-in, with tickets
+  held behind`: each park waiting on a clears-when a pass settles, parked since before the check-in
+  slot ahead of this one, with tickets held behind it (counted through the whole chain), most held
+  first, with the condition, when it parked and how many wait behind it. Counted in the push, since
+  nothing else asks the person about a wait.
 - **Collision warnings.** Each pass appends one JSON line to `<state>/passes.jsonl` (running,
   eligible, held by reason, spawned, duration, queue-write failures). After 10 passes in a row each
   holding a ticket on a collision while fewer than 25% of the batch's concurrency run, that pass's

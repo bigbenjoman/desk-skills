@@ -202,8 +202,13 @@ export function queuedIn(ticket, repo, queues, live) {
 }
 
 // Whether only a step of the person's makes condition `c` hold, so a park waiting on it still asks them:
-// issue links, or a file its park's question asks them to make (withQuestion marks it person).
-export const personClears = (c) => c?.kind === 'links-made' || (c?.kind === 'file-exists' && c.person === true);
+// issue links, or a file its park's question asks them to make (withQuestion marks it person). A file is
+// also the person's where `question`, the park's, asks them for a step in any sentence (asksStep): no pass
+// or worker makes a file for a parked ticket, so a host-side step the person is asked for (`npm install`
+// writing a lockfile) is what makes it. Read here rather than only as recorded, so a park stored before
+// the question was read this way is put to the person too.
+export const personClears = (c, question) => c?.kind === 'links-made'
+  || (c?.kind === 'file-exists' && (c.person === true || asksStep(question)));
 
 // The words of a park's question: one in quotes or backticks runs to the closing one, spaces and all;
 // any other runs to the first unescaped space (`Screen\ Recording.mov`, as a dragged-in path is written).
@@ -251,6 +256,27 @@ function askedAt(question, at) {
   const first = Math.min(...asks.map(([s]) => s));
   const ends = [...asks.map(([, e]) => e), ...[...sentence.matchAll(AND_VERB)].filter((m) => m.index > first).map((m) => m.index + m[0].length)];
   return !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
+}
+
+// A clause after an ask that waits on someone else first (once the worker saves …, after run 991 finishes):
+// the actor is the when-clause's subject: straight after its word (after workers save), or after an
+// article and at most two more words (once a worker, once the recall capture script). So neither "once
+// it is in, the next worker commits" nor "after stopping the worker" is one, and CI only capitalised, so
+// "if npm ci fails" is not either. Only words that wait for the actor first: "since", "before", "while"
+// and "unless" give a reason or an order (since workers cannot install), never a handoff.
+const anyCase = (w) => w.replace(/[a-z]/g, (ch) => `[${ch}${ch.toUpperCase()}]`);
+const words = (list) => list.map(anyCase).join('|');
+const WHEN_WORD = words(['once', 'when', 'after', 'until', 'if']);
+const ARTICLE = words(['the', 'a', 'an', 'this', 'that', 'its', 'our', 'your', 'all', 'both', 'each', 'every']);
+const ACTOR = [words(['workers?', 'pass(?:es)?', 'jobs?', 'scripts?', 'orchestrators?', 'bots?']), 'CI', `${anyCase('run')}\\s+#?\\d+`].join('|');
+const HANDOFF = new RegExp(`\\b(?:${WHEN_WORD})\\s+(?:(?:${ARTICLE})\\s+(?:[A-Za-z][\\w'-]*\\s+){0,2}?)?(?:${ACTOR})\\b`);
+// Whether question `q` asks the person for a step in any of its sentences. Unlike askedAt, a clause after
+// the ask that only says when (… before resuming) leaves it an ask; one waiting on another actor does not.
+export function asksStep(q) {
+  return String(q ?? '').split(/[.?!]\s+/).some((s) => {
+    const ends = ASKS.flatMap((re) => [...s.matchAll(re)].map((m) => m.index + m[0].length));
+    return ends.length > 0 && !HANDOFF.test(s.slice(Math.min(...ends)));
+  });
 }
 
 // A file-exists condition read against the question of the park it clears: {ok: true, cond} or
