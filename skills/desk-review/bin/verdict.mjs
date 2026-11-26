@@ -335,17 +335,20 @@ export function validateResults(r) {
 // head is not a commit here, so a failed git call never reads as every anchor missing.
 export function checkAnchors(findings, head, { cwd = process.cwd() } = {}) {
   if (!Array.isArray(findings)) no('findings must be a list')
-  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+  const run = (dir, args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
   if (!/^[0-9a-f]{40}$/.test(String(head ?? ''))) no('head must be the full 40-character reviewed SHA')
-  if (git('cat-file', '-e', `${head}^{commit}`).status !== 0) no(`${head.slice(0, 9)} is not a commit in ${cwd}`)
-  const top = git('rev-parse', '--show-toplevel').stdout.trim()
+  if (run(cwd, ['cat-file', '-e', `${head}^{commit}`]).status !== 0) no(`${head.slice(0, 9)} is not a commit in ${cwd}`)
+  const top = (run(cwd, ['rev-parse', '--show-toplevel']).stdout || '').trim()
+  if (!top) no(`${cwd} is not inside a checkout`)
+  // A cited path is from the repo's top, and a pathspec is read from the directory git runs in.
+  const git = (...args) => run(top, args)
   const lines = new Map()
   // The cited file's line count at head, 0 when no file is there. git grep counts the lines of each
   // file under the pathspec, a last line with no newline included, and exits 1 when it matched none:
   // an empty file, or no file. Any other exit is git failing, which throws rather than reject.
   const lineCount = (path) => {
     if (!lines.has(path)) {
-      const r = git('--literal-pathspecs', 'grep', '--text', '-z', '-c', '-e', '', head, '--', path)
+      const r = git('--literal-pathspecs', 'grep', '--no-color', '--text', '-z', '-c', '-e', '', head, '--', path)
       if (r.status !== 0 && r.status !== 1) no(`cannot count the lines of ${path} at ${head.slice(0, 9)}: ${(r.stderr || '').trim() || `git exited ${r.status}`}`)
       // -z prints each file as <head>:<path>\0<count>\n; a directory lists its files, never itself.
       const own = (r.stdout || '').split('\n').find((l) => l.startsWith(`${head}:${path}\0`))
@@ -360,8 +363,8 @@ export function checkAnchors(findings, head, { cwd = process.cwd() } = {}) {
     if (!m) return f
     let path = m[1]
     if (path.startsWith('/')) {
-      if (!top || !path.startsWith(`${top}/`)) return f
-      path = path.slice(top.length + 1)
+      if (!path.startsWith(`${top}/`)) return f
+      path = path.slice(top.length + 1).replace(/^\/+/, '')
     }
     // One file has many spellings (./a, a//b, a/./b, a/x/../b): the tree knows only the plain one.
     path = posix.normalize(path)

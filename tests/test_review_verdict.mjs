@@ -522,12 +522,18 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-1022 ./ and the repo\'s absolute path name the same file', [left('./src/a.ts:1'), left(`${git('rev-parse', '--show-toplevel').stdout.trim()}/src/a.ts:1`)].join(), '0,0')
   t('DS-1022 every spelling of a file that is there is there', ['src//a.ts:1', 'src/./a.ts:3', 'src/x/../a.ts:2', './/src/a.ts:1'].map((w) => left(w)).join(), '0,0,0,0')
   t('DS-1022 a file named like another is not it', [left('src/a.t:1'), left('src/a.ts.bak:1'), left('a.ts:1')].join(), '1,1,1')
+  const top = git('rev-parse', '--show-toplevel').stdout.trim()
+  const fromSrc = (where) => checkAnchors([finding('F1', where)], head, { cwd: join(dir, 'src') }).rejected.length
+  t('DS-1022 a path is read from the repo\'s top, whatever directory the check runs in', [fromSrc('src/a.ts:3'), fromSrc(`${top}/src/a.ts:3`), fromSrc('a.ts:1'), fromSrc('src/a.ts:4')].join(), '0,0,1,1')
+  t('DS-1022 a doubled slash after the repo\'s absolute path is the same file', left(`${top}//src/a.ts:1`), 0)
   writeFileSync(join(dir, 'src/empty.ts'), '')
+  writeFileSync(join(dir, 'src/[a].ts'), 'only\n')
   git('add', '.')
   git('commit', '-q', '-m', 'empty')
   const head2 = git('rev-parse', 'HEAD').stdout.trim()
-  t('DS-1022 an empty file has no line 1', checkAnchors([finding('F1', 'src/empty.ts:1')], head2, { cwd: dir }).rejected.length, 1)
-  t('DS-1022 a file with a glob character in its name is read literally', checkAnchors([finding('F1', 'src/*.ts:1')], head2, { cwd: dir }).rejected.length, 1)
+  const at2 = (where) => checkAnchors([finding('F1', where)], head2, { cwd: dir }).rejected.length
+  t('DS-1022 an empty file has no line 1', at2('src/empty.ts:1'), 1)
+  t('DS-1022 a name with glob characters is read literally', [at2('src/[a].ts:1'), at2('src/[a].ts:2'), at2('src/*.ts:1')].join(), '0,1,1')
   t('DS-1022 a finding with no file:line, a path outside the repo, a PREMISE or a refuted one is the refuter\'s',
     [left('src/gone.ts'), left(undefined), left('/elsewhere/x.ts:1'), left('../x.ts:1'), left('src/gone.ts:1', { severity: 'PREMISE' }), left('src/gone.ts:1', { result: 'CONFIRMED', refuted_by: 'codex' })].join(), '0,0,0,0,0,0')
   const thrown = (fn) => { try { fn(); return 'returned' } catch (e) { return e instanceof VerdictError ? 'refused' : `threw ${e}` } }
