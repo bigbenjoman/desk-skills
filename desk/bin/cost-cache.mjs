@@ -936,10 +936,12 @@ export const usePath = (dir = costDir()) => join(dir, 'use.json');
 export function readUseFile(dir = costDir()) {
   try { return JSON.parse(readFileSync(usePath(dir), 'utf8')); } catch { return null; }
 }
-export const useDue = ({ use = readUseFile(), now }) => {
+// Whether a use reading is for the month `now` (UTC) falls in.
+export const useIsThisMonth = (use, now) => {
   const d = new Date(now);
-  return !(use && use.period?.year === d.getUTCFullYear() && use.period?.month === d.getUTCMonth() + 1 && now - (use.at ?? 0) < READ_EVERY_MS);
+  return !!use && use.period?.year === d.getUTCFullYear() && use.period?.month === d.getUTCMonth() + 1;
 };
+export const useDue = ({ use = readUseFile(), now }) => !(useIsThisMonth(use, now) && now - (use.at ?? 0) < READ_EVERY_MS);
 // -> 'read' | why not
 export async function refreshUse({ dir = costDir(), lockDir = E.lockDir(), now = Date.now(), force = false, read = null } = {}) {
   const lock = await takeBorrowLock({ dir: lockDir, name: 'desk-cost-use.lock.d', waitMs: 0 });

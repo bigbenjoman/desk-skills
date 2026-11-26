@@ -40,10 +40,11 @@ export const CODEX_PRICES = {
   'gpt-6-sol': GPT6(2, 0.2, 10),
   'gpt-6-luna': GPT6(0.1, 0.01, 0.5),
 };
-// The prices of a Codex model id, by its longest listed prefix (`gpt-6.1-sol-high` is gpt-6.1-sol), or null.
+// The prices of a Codex model id: a listed id, or one with a suffix after it (`gpt-6.1-sol-high` is
+// gpt-6.1-sol), or null.
 export const codexPrices = (model) => {
   const m = String(model ?? '').toLowerCase();
-  const k = Object.keys(CODEX_PRICES).filter((p) => m === p || m.startsWith(`${p}-`)).sort((a, b) => b.length - a.length)[0];
+  const k = Object.keys(CODEX_PRICES).find((p) => m === p || m.startsWith(`${p}-`));
   return k ? CODEX_PRICES[k] : null;
 };
 

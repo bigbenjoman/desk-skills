@@ -27,7 +27,7 @@ import { parkKind } from './batch-state.mjs';
 import { parseLevers, repoConfigValues } from './desk-env.mjs';
 import { markersIn, readLogFile, saidIn } from './harvest.mjs';
 import { logRound, resultTokens, workerLogs } from './worker-cost.mjs';
-import { requestOf, requestUsd } from './cache-report.mjs';
+import { requestOf, requestUsd, transcripts } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { DECIDER_TIMEOUT_MS } from './decider.mjs';
 
@@ -243,9 +243,8 @@ function deciderShare(stateDir, id, now) {
 // Every transcript file of session `session` under login projects folders `dirs`: <project>/<id>.jsonl,
 // and its subagents' under <project>/<id>/.
 function sessionFiles(dirs, session) {
-  const deep = (d) => { try { return readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? deep(join(d, e.name)) : e.name.endsWith('.jsonl') ? [join(d, e.name)] : [])); } catch { return []; } };
   const projects = dirs.flatMap((dir) => { try { return readdirSync(dir).map((p) => join(dir, p)); } catch { return []; } });
-  return projects.flatMap((p) => [join(p, `${session}.jsonl`), ...deep(join(p, session))]).filter((f) => existsSync(f));
+  return projects.flatMap((p) => [join(p, `${session}.jsonl`), ...transcripts(join(p, session))]).filter((f) => existsSync(f));
 }
 
 function sessionTokens(dirs, session, from, to) {

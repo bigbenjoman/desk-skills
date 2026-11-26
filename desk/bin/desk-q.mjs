@@ -74,7 +74,7 @@ import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
   multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
@@ -1839,10 +1839,7 @@ export const FEE_NOT_SET = 'fee not set: /desk-setup costs';
 const LIST_HEAD = 'LIST PRICE';
 const TOOL_LABEL = { claude: 'Claude', codex: 'Codex' };
 // The use reading (cost-cache.mjs use.json) when it is for the month `now` is in, else null.
-const useThisMonth = (use, now) => {
-  const d = new Date(now);
-  return use?.repos && use.period?.year === d.getUTCFullYear() && use.period?.month === d.getUTCMonth() + 1 ? use : null;
-};
+const useThisMonth = (use, now) => (use?.repos && useIsThisMonth(use, now) ? use : null);
 // What the list-price figures are, then what they leave out.
 function useNotes(use) {
   if (!use) return [];

@@ -50,7 +50,9 @@ const cli = spawnSync('node', [join(BIN, 'desk-env.mjs'), 'logins', 'fee', 'code
 t('AC1 desk-env logins fee writes the Fees table', `${cli.status} ${cli.stdout.trim().split('\n').at(-1)} ${readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8').includes('| `codex` | `default` | `Plus` | `20` |')}`, '0 codex default: Plus, $20.00 a month true');
 
 // ---- the Codex price table, from OpenAI's published API prices
-t('a Codex model is priced by its longest listed prefix', W.codexPrices('gpt-6.1-sol')?.input, 2);
+t('a listed Codex model is priced', W.codexPrices('gpt-6.1-terra')?.input, 1);
+t('a Codex model with a suffix is priced as the model it extends', W.codexPrices('gpt-6.1-sol-high')?.input, 2);
+t('a Codex model that only starts with a listed id is not priced', W.codexPrices('gpt-6.1-solar'), null);
 t('a model the table lacks has no price', W.codexPrices('gpt-4o'), null);
 t('long context doubles input and halves again output', JSON.stringify(W.CODEX_PRICES['gpt-6.1-sol'].long), '{"above":272000,"input":4,"read":0.2,"output":15}');
 
@@ -88,7 +90,11 @@ t('AC2 Claude use in the repo and its worktrees, at list prices, each request on
 t('AC2 Codex use at list prices, the long-context rate past its threshold', r2(use.repos.o__acme.codex), 3.25);
 // r4: 1M Haiku input is past Haiku's 100k threshold, so at its higher rate, $0.50.
 t('use outside any configured repo is kept apart', r2(use.other.claude), 0.5);
-t('each login names the repos it ran', JSON.stringify(use.logins.map((l) => [l.tool, l.repos.join()])), '[["claude","o__acme"],["codex","o__acme"]]');
+const goneDir = join(H, '.codex-logins', 'gone'), missingDir = join(H, '.codex-logins', 'missing');
+mkdirSync(goneDir, { recursive: true });
+const dirsWith = U.codexUseDirs({ removed: [{ tool: 'codex', name: 'gone', dir: goneDir }, { tool: 'codex', name: 'missing', dir: missingDir }, { tool: 'claude', name: 'x', dir: claudeDir }] });
+t('AC2 a removed Codex login whose folder is still there is read, one with no folder is not', `${dirsWith.includes(goneDir)} ${dirsWith.includes(missingDir)} ${dirsWith.includes(claudeDir)}`, 'true false false');
+t('each login names the repos it ran',JSON.stringify(use.logins.map((l) => [l.tool, l.repos.join()])), '[["claude","o__acme"],["codex","o__acme"]]');
 
 // ---- AC1, AC2, AC3: desk-q's Costs
 const Q = await import(join(BIN, 'desk-q.mjs'));

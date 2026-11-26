@@ -11,7 +11,8 @@ import { dirname } from 'node:path';
 import { transcripts, requestOf, requestUsd } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { codexLogins, logText, rolloutLogs } from './codex-usage.mjs';
-import { configuredRepos, repoDirs } from './desk-env.mjs';
+import { configuredRepos, repoDirs, subscriptionsPath } from './desk-env.mjs';
+import { isDir, readSubscriptions } from './logins.mjs';
 import { codexPrices } from './worker-cost.mjs';
 
 // Every configured repo's folders: its primary checkout and its worktrees folder.  -> [{ slug, dirs }]
@@ -82,11 +83,19 @@ export function codexLogUse(text, { from, to }) {
   return { cwd, usd, unpriced };
 }
 
+// Every Codex login folder this month's sessions may be in: each login, then each removed one whose
+// folder is still there, as Claude's projectsDirs counts removed logins too.  -> [dir]
+export function codexUseDirs(subs = readSubscriptions(subscriptionsPath())) {
+  const dirs = codexLogins().map((l) => l.dir);
+  for (const r of subs.removed) if (r.tool === 'codex' && isDir(r.dir) && !dirs.includes(r.dir)) dirs.push(r.dir);
+  return dirs;
+}
+
 // This month's use.  -> { v, at, period: { year, month }, repos: { <slug>: { claude, codex } },
 //   logins: [{ tool, dir, usd, repos: [slug] }], other: { claude, codex }, unpriced: { claude, codex } }
 // `other` is use in no configured repo; `unpriced` counts requests or turns on a model with no price.
 export function readUse({ now = Date.now(), places = repoPlaces(), claudeDirs = projectsDirs().map((projects) => ({ dir: dirname(projects), projects })),
-  codexDirs = codexLogins().map((l) => l.dir) } = {}) {
+  codexDirs = codexUseDirs() } = {}) {
   const w = monthWindow(now);
   const out = { v: 1, at: now, period: { year: w.year, month: w.month }, repos: {}, logins: [], other: { claude: 0, codex: 0 }, unpriced: { claude: 0, codex: 0 } };
   const logins = new Map();

@@ -737,5 +737,4 @@ export function listLines(subs, path) {
 // The JSON a script reads: nothing from a status call but the fields above.
 export const loginJson = (l) => ({ tool: l.tool, name: l.name, folder: l.folder, configDir: l.configDir, rule: l.rule, source: l.source,
   ...(l.account ? { account: l.account } : {}),
-  ...(l.fee ? { fee: l.fee } : {}),
   ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, account: l.account ?? null, liveEmail: l.liveEmail ?? null, pinnable: !!l.pinnable, sameAs: l.sameAs ?? null, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });
