@@ -2394,16 +2394,19 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // offers, and a not-now puts off beside its own row's item.
   const dup = r.q ? duplicateRow(r, ticket) : null;
   const x = !row || verb === 'drop' ? dup ?? row : row;
-  // A drop the ticket's own row does not take may name a put-off item by the ticket key desk-q shows.
-  const offDrop = () => (verb === 'drop' ? dropPutOff(collect({ word, now, repos, reads: null }), ticket, now) : null);
+  // A drop or done the ticket's own row does not take may name a put-off item by the ticket key desk-q shows.
+  const offDrop = () => (verb === 'drop' ? dropPutOff(collect({ word, now, repos, reads: null }), ticket, now)
+    : verb === 'done' ? donePutOff(collect({ word, now, repos, reads: null }), ticket, { word, now, repos, reads }) : null);
   if (!x) return offDrop() ?? movedOn(r, ticket, verb, text, now);
   const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
   // A put-off ticket row can always be dropped (queue.mjs drop says if it cannot), so one whose premise
   // was decided otherwise leaves Put off.
-  const putOffRow = verb === 'drop' && !!r.q.tickets?.[x.t.key] && judged(r, x, readRegister(r.stateDir), reads).l.status === 'put_off';
+  const putOffRow = ['drop', 'done'].includes(verb) && !!r.q.tickets?.[x.t.key] && judged(r, x, readRegister(r.stateDir), reads).l.status === 'put_off';
   const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : []), ...(putOffRow ? ['drop'] : [])];
+  // A put-off ticket row takes no done: done means a step was taken, and drop dismisses the rest.
+  if (verb === 'done' && putOffRow) return { ok: false, line: `${r.name} ${ticket}: ${putOffDoneRefusal(item.kind, allowed)}` };
   if (!allowed.includes(verb)) return offDrop() ?? { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
@@ -2670,35 +2673,70 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
-      if (item.elsewhere) return elsewhereDone(item.elsewhere);
-      if (x.t.park?.session_step) {
-        const d = queueCmd(r, ['step-done', ticket]);
-        return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
-      }
-      if (x.pr || heldDraft(x.t)) return prDone();
-      if (item.kind === 'session') return sessionDone();
-      if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
-      if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
-      if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
-      if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
-      return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
+      // Done on a batch-wide hold put off with not-now (no ticket of the queue: a put-off ticket row
+      // was refused done above) is answered as the listed hold's is, and then it is dismissed as a
+      // drop dismisses one, so it leaves Put off.
+      const j = judged(r, x, readRegister(r.stateDir)), key = putOffKey(r, x.t, j.item);
+      const out = rowDone();
+      if (!out.ok || j.l.status !== 'put_off') return out;
+      return { ...out, line: `${out.line} It leaves Put off (${dismissPutOff({ r, t: x.t, putOffKey: key, putOffDir: r.stateDir }, now)}).` };
     }
     default: return say(false, `unknown action ${verb}.`);
   }
+  // Done on the row as it is listed: { ok, line, message }.
+  function rowDone() {
+    if (item.elsewhere) return elsewhereDone(item.elsewhere);
+    if (x.t.park?.session_step) {
+      const d = queueCmd(r, ['step-done', ticket]);
+      return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
+    }
+    if (x.pr || heldDraft(x.t)) return prDone();
+    if (item.kind === 'session') return sessionDone();
+    if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
+    if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
+    if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
+    if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
+    return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
+  }
 }
 
-// A put-off item that is no ticket row has no batch to drop it from, so a drop records it dismissed:
-// it leaves Put off and is not listed again until what it keys to changes. Found in collect's `off`
-// by its own key, else by the ticket key desk-q shows for it (itemKey); refused naming each own key
-// where more than one shows so. null where none is put off under the key.
-function dropPutOff(c, ticket, now) {
+// The put-off items in collect's `off` that `ticket` names: by their own key, else by the ticket key
+// desk-q shows for them (itemKey). An answer is refused naming each own key where more than one shows so.
+function putOffHits(c, ticket) {
   const own = c.off.filter((y) => y.t.key === ticket);
-  const hits = own.length ? own : c.off.filter((y) => itemKey(y.t, y) === ticket);
-  if (!hits.length) return null;
-  if (hits.length > 1) return { ok: false, line: `${c.named?.name ?? hits[0].r.repo} ${ticket}: ${hits.length} put-off items show as ${ticket}, so nothing was dropped. Drop one by its own key: ${hits.map((y) => y.t.key).join(', ')}.`, message: null };
-  const [off] = hits, dir = off.putOffDir ?? off.r.stateDir;
+  return own.length ? own : c.off.filter((y) => itemKey(y.t, y) === ticket);
+}
+const manyPutOff = (c, ticket, hits, what, how) => ({ ok: false, line: `${c.named?.name ?? hits[0].r.repo} ${ticket}: ${hits.length} put-off items show as ${ticket}, so nothing was ${what}. ${how} one by its own key: ${hits.map((y) => y.t.key).join(', ')}.`, message: null });
+// Why done is refused on a put-off item with no done action (a duplicate, a finished ticket with no
+// PR, plan-first, unpromoted, a proposal, a base-sync approve, a ticket row): the actions it takes,
+// and that drop closes it.
+function putOffDoneRefusal(kind, verbs) {
+  const take = [...new Set(verbs)].filter((v) => !['done', 'not-now', 'drop'].includes(v));
+  return `done is not an action for a put-off ${kind} item, so nothing was recorded. ${take.length ? `It takes ${andList(take)}, and drop closes it` : 'Drop closes it'}.`;
+}
+// Records put-off item `off` dismissed in its register: it leaves Put off until what it keys to changes. -> the register's path
+function dismissPutOff(off, now) {
+  const dir = off.putOffDir ?? off.r.stateDir;
   addPutOff({ ...putOffEntry({ question: off.putOffKey.question, ticket: off.t.key, inputs: off.putOffKey.inputs, at: new Date(now).toISOString() }), dismissed: true }, dir);
-  return { ok: true, line: `${off.r.repo} ${off.t.key}: dropped (${notNowPath(dir)}), so it leaves Put off and is not listed again until it changes.`, message: null };
+  return notNowPath(dir);
+}
+// A put-off item that is no ticket row has no batch to drop it from, so a drop records it dismissed:
+// it leaves Put off and is not listed again until what it keys to changes. null where none is put
+// off under the key.
+function dropPutOff(c, ticket, now) {
+  const hits = putOffHits(c, ticket);
+  if (!hits.length) return null;
+  if (hits.length > 1) return manyPutOff(c, ticket, hits, 'dropped', 'Drop');
+  const [off] = hits;
+  return { ok: true, line: `${off.r.repo} ${off.t.key}: dropped (${dismissPutOff(off, now)}), so it leaves Put off and is not listed again until it changes.`, message: null };
+}
+// Done on a put-off item named by the ticket key desk-q shows for it: answered by its own key, as
+// recordRepoItem answers it. null where none is put off under the key.
+function donePutOff(c, ticket, { word, now, repos, reads }) {
+  const hits = putOffHits(c, ticket);
+  if (!hits.length) return null;
+  if (hits.length > 1) return manyPutOff(c, ticket, hits, 'recorded', 'Say done on');
+  return recordRepoItem({ word, ticket: hits[0].t.key, action: 'done', now, repos, reads });
 }
 
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
@@ -2722,7 +2760,20 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   const [verb] = action.split(/\s+/);
   const dropped = !i && verb === 'drop' ? dropPutOff(c, ticket, now) : null;
   if (dropped) return dropped;
+  // Done on a put-off item is answered as the listed item's done is, and then it leaves Put off: a
+  // done that records nothing (a noted item) would otherwise leave it there.
+  const off = !i && verb === 'done' ? c.off.find((y) => y.t.key === ticket) : null;
+  if (off) {
+    if (!off.actions.some(([a]) => a === 'done')) return { ok: false, line: `${off.r.repo} ${ticket}: ${putOffDoneRefusal(off.kind, off.actions.map(([a]) => a.split(' ')[0]))}` };
+    const out = answerRepoItem(off, { ticket, verb, text, now, reads });
+    return out.ok ? { ...out, line: `${out.line} It leaves Put off (${dismissPutOff(off, now)}).` } : out;
+  }
   if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
+  return answerRepoItem(i, { ticket, verb, text, now, reads });
+}
+
+// Answers repo-level or step item `i` with `verb`, as recordRepoItem found it: { ok, line, message }.
+function answerRepoItem(i, { ticket, verb, text, now, reads }) {
   const say = (ok, line, message = null) => ({ ok, line: `${i.r.repo} ${ticket}: ${line}`, message });
   if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
   if (verb === 'not-now') {
