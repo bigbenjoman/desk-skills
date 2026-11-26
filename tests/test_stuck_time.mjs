@@ -205,6 +205,43 @@ t('the spawn holds the pass counts name their cause', j([
   t('with nothing stuck the report has no such section', /Time parked by cause/.test(bare) || /^threw/.test(bare), false);
 }
 
+// ---- stalls apart from deliberate holds: each its own group and total, the repo's total their sum ------------------
+{
+  const write = (S, rows) => writeFileSync(join(S, 'stuck-intervals.jsonl'), rows.map((x) => JSON.stringify({ batch: null, ...x })).join('\n'));
+  const both = scratch('stuck-time-groups-');
+  // A held 10h with a question inside it for 3h; B held on a dependency 4h; C on usage 1h; D on the lock 0.5h.
+  write(both, [
+    { key: 'A', cause: 'park: hold', start: D(23, 0), end: D(23, 10) },
+    { key: 'A', cause: 'park: question', start: D(23, 5), end: D(23, 8) },
+    { key: 'B', cause: 'park: hold (dependency wait)', start: D(24, 0), end: D(24, 4) },
+    { key: 'C', cause: 'usage', start: D(24, 0), end: D(24, 1) },
+    { key: 'D', cause: 'lock', start: D(24, 0), end: D(24, 0, 30) },
+  ]);
+  const onlyHold = scratch('stuck-time-groups-hold-');
+  write(onlyHold, [{ key: 'E', cause: 'park: hold', start: D(24, 0), end: D(24, 2) }]);
+  const noHold = scratch('stuck-time-groups-nohold-');
+  write(noHold, [{ key: 'F', cause: 'usage', start: D(24, 0), end: D(24, 1) }]);
+  const now = Date.parse(D(25, 12));
+  const s = ST.weekSummary(both, { now });
+  const side = (g) => [g.hours, g.tickets, g.causes.map((c) => c.cause)];
+  t('the holds, with their classes, are one group and every other cause the other, each most hours first',
+    j([side(s.groups.stalled), side(s.groups.held)]), j([[4.5, 3, ['park: question', 'usage', 'lock']], [14, 2, ['park: hold', 'park: hold (dependency wait)']]]));
+  t('the repo\'s hours are the two groups\' summed', j([s.hours, s.tickets]), j([18.5, 4]));
+  t('a cause like a hold that is not one stays a stall', j([ST.isHold('park: hold'), ST.isHold('park: hold (dependency wait)'), ST.isHold('park: holding'), ST.isHold('usage')]), j([true, true, false, false]));
+
+  const view = (repos) => ({ v: 1, generated_at: D(25, 12), tz: 'UTC', repos: [], baseline: null, line: { state: 'today' },
+    panels: { status: {}, waiting: { items: [] }, cost: {}, guardrails: {}, board: { levers: [] }, changes: {}, overhead: {}, data_quality: {}, trends: { metrics: {} }, stuck_time: { repos } } });
+  let page = '';
+  try { page = renderPage(view([['both', both], ['only-hold', onlyHold], ['no-hold', noHold]].map(([name, S]) => ({ name, weeks: [ST.weekSummary(S, { now })] })))); } catch (err) { page = `threw: ${err.message}`; }
+  const repo = (name) => { const at = page.indexOf(`${name} · week`); const next = page.indexOf('<tr class="grp"', at); return page.slice(at, next < 0 ? page.indexOf('</tbody>', at) : next); };
+  const order = (h) => [...h.matchAll(/class="td sgrp">([^<]+)<|<th scope="row" class="td">([^<]+)<|class="td muted small">([^<]+)</g)].map((m) => m[1] ?? m[2] ?? m[3]);
+  t('a repo with holds and stalls: its total, then Stalled with its total and causes, then Waiting on purpose with its own',
+    j([/both · week 2026-W48 · 19h over 4 tickets/.test(page), order(repo('both'))]),
+    j([true, ['Stalled · 4.5h over 3 tickets', 'park: question', 'usage', 'lock', 'Waiting on purpose · 14h over 2 tickets', 'park: hold', 'park: hold (dependency wait)']]));
+  t('a repo with only holds says it had no stalls', j(order(repo('only-hold'))), j(['Stalled · 0.0h over 0 tickets', 'No stalls this week', 'Waiting on purpose · 2.0h over 1 ticket', 'park: hold']));
+  t('a repo with no holds has no Waiting on purpose group', j(order(repo('no-hold'))), j(['Stalled · 1.0h over 1 ticket', 'usage']));
+}
+
 // ---- the guardrail: parked hours per ticket is one, on every lever ------------------------------------------------
 t('the registry lists parked hours per ticket as a guardrail of every lever, with a rate-ratio margin',
   j([GUARDRAILS['parked-hours'], Object.values(REGISTRY).every((l) => l.guardrails['parked-hours'] === GUARDRAILS['parked-hours'])]),
