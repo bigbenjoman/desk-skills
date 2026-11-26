@@ -61,6 +61,11 @@ describe('the state line', () => {
     const l = stateLine({ ...base, state: 'ready', wait: 'waits for DS-606 (collides)', passes: { live: false }, stopped: true });
     expect(`${l.lead}${l.rest ? ` ${l.rest}` : ''}`).toBe('Will not move until passes resume.');
   });
+
+  it('a ticket waiting to start with the worker count at 0 says to raise it, not that a worker frees up', () => {
+    const l = stateLine({ ...base, state: 'ready', wait: 'workers set to 0', passes: { live: true, workers: 0 }, stopped: false });
+    expect(`${l.lead}${l.rest ? ` ${l.rest}` : ''}`).toBe('Will not start until the worker count is raised: workers are set to 0.');
+  });
 });
 
 describe('the Overview tab', () => {

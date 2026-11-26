@@ -4514,10 +4514,11 @@ export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {
     fix: f ? { try: f.try ?? null, of: f.of ?? null } : null,
     stuck: stuck ? { why: stuck.why } : null,
     failed_why: k === 'failed' ? failedWhy(t) : null,
-    merged_at: isoOrNull(t.merged_at ?? (ps?.state === 'MERGED' ? ps.merged_at : null)), merged_by: t.merge?.by ?? null,
+    // As mergeOf reads it: merged_at keeps a first PR's merge once a ticket is requeued, so the PR's own status decides.
+    merged_at: isoOrNull(ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? null : null) : t.pr_status == null ? t.merged_at ?? null : null), merged_by: t.merge?.by ?? null,
     pr: prN != null ? { number: prN, url: ps ? prUrl(r, t) : `https://github.com/${gh}/pull/${prN}`, state: ps?.state ?? null, draft: ps?.isDraft === true,
       head: ps?.head ?? null, at: isoOrNull(ps?.at), need: ps && prRow(t) ? segText(prNeed(r.q, t, r.ctx, now).segs) : null, hold: parseHoldNote(t.merge_blocked)?.why ?? null } : null,
-    passes: { live: !!r.live, last: isoOrNull(r.last), next: isoOrNull(r.next), merges: !!r.ctx?.merges },
+    passes: { live: !!r.live, last: isoOrNull(r.last), next: isoOrNull(r.next), merges: !!r.ctx?.merges, workers: r.workers ?? null },
     schedule: x && !x.pr ? timingFields(r, forecastOf(r, { now, checkin }), x, h, now).map(field) : [],
     lane_reason: tr.lane_reason ?? null, files: tr.files_in_scope ?? [],
     blocks: r.rows.filter((y) => y.t.key !== key && blockersOf(y.t).includes(key)).map((y) => y.t.key),

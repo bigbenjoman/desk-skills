@@ -42,7 +42,10 @@ export function stateLine(t) {
     case 'running': return { tone, lead: 'Moves without you:', rest: `a worker is on it, ${stageText(t.stage)}.` };
     case 'finishing': return { tone, lead: 'Moves without you:', rest: 'its worker finished, and the next pass records it.' };
     case 'queued': return { tone, lead: 'Moves without you:', rest: 'it is being triaged.' };
-    case 'ready': return { tone, lead: 'Starts when a worker is free.', rest: t.wait ? sentence(capital(t.wait)) : '' };
+    // With the worker count at 0 no worker frees up, so only raising it starts the ticket (startWait).
+    case 'ready': return t.passes?.workers === 0
+      ? { tone, lead: 'Will not start until the worker count is raised:', rest: 'workers are set to 0.' }
+      : { tone, lead: 'Starts when a worker is free.', rest: t.wait ? sentence(capital(t.wait)) : '' };
     case 'waiting': {
       const b = t.behind ?? [];
       const rest = b.length ? `behind ${listed(b.map((x) => `${x.key}${x.state ? ` (${[x.state, x.stage && `stage ${x.stage}`].filter(Boolean).join(', ')})` : ''}`))}.`

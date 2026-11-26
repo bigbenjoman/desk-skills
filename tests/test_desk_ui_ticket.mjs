@@ -49,9 +49,31 @@ const QUEUE = { version: 1, batch: 'w', concurrency: 2, tickets: {
   'base-red-1': { key: 'base-red-1', state: 'queued' },
   // Stuck: held outside the batch with a question of its own, which resuming passes does not move.
   'DS-568': { key: 'DS-568', state: 'parked', outside_blockers: [{ key: 'EXT-9' }], open_questions: 1, park: { question: 'start without EXT-9?', clears_when: { kind: 'pr-merged', pr: 7 } } },
+  // Requeued after its first PR merged at 08:00: its replacement PR #655 merged at 09:30.
+  'DS-569': { key: 'DS-569', state: 'done', merged_at: at(8, 0), result: { pr: 655 }, pr_status: recorded(655, REQUIRED.map(passed), { state: 'MERGED', merged_at: at(9, 30) }) },
+  // Its first PR merged, and the status recorded is that PR's, not its open replacement #656's.
+  'DS-570': { key: 'DS-570', state: 'done', merged_at: at(8, 0), result: { pr: 656 }, pr_status: recorded(600, REQUIRED.map(passed), { state: 'MERGED', merged_at: at(8, 0) }) },
 } };
 const QUEUE_FILE = join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json');
 writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
+
+// A second repo whose merges are granted, run by a supervisor whose passes are live: the merge driver merges its PRs.
+const MSLUG = 'acme__merger', MGH = 'acme/merger';
+mkdirSync(join(process.env.DESK_CONFIG_ROOT, 'repos', MSLUG), { recursive: true });
+writeFileSync(join(process.env.DESK_CONFIG_ROOT, 'repos', MSLUG, 'config.md'),
+  `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${join(T, 'merger')}\` |\n\n`
+  + '## 3. Permissions\n\n| Key | Your setting |\n|---|---|\n| `autopilot-merge` | `yes` |\n| `pr-merge-green` | `yes` |\n\n'
+  + '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3910` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n\n'
+  + `## 4. Tools\n\n| Field | Value |\n|---|---|\n| GitHub repo | \`${MGH}\` |\n| Required checks | ${REQUIRED.map(tick).join(' ')} |\n`);
+const MQUEUE = join(process.env.DESK_HOME, 'repos', MSLUG, 'queue.json');
+mkdirSync(join(process.env.DESK_HOME, 'repos', MSLUG), { recursive: true });
+writeFileSync(MQUEUE, JSON.stringify({ version: 1, batch: 'm', concurrency: 2, supervised: true, tickets: {
+  'MG-1': { key: 'MG-1', state: 'done', result: { pr: 700 }, pr_status: { ...recorded(700, REQUIRED.map(passed)), url: `https://github.com/${MGH}/pull/700` } },
+} }));
+const NEXT = new Date(Date.now() + 10 * 60e3).toISOString();
+mkdirSync(join(HOME, '.desk-autopilot', MSLUG, 'orchestrators'), { recursive: true });
+writeFileSync(join(HOME, '.desk-autopilot', MSLUG, 'orchestrators', 'q.json'),
+  JSON.stringify({ queue: MQUEUE, batch: 'm', pid: 1, at: new Date().toISOString(), pass: new Date().toISOString(), next: NEXT }));
 const STATE = join(HOME, '.desk-autopilot', SLUG);
 mkdirSync(join(STATE, 'triage'), { recursive: true });
 writeFileSync(join(STATE, 'triage', 'DS-565.json'), JSON.stringify({ summary: 'desk-ui: a ticket page', lane: 'A', size: 'M', lane_reason: 'Mechanical.', files_in_scope: [] }));
@@ -92,9 +114,19 @@ t('the ticket carries its PR as the last pass recorded it', [tk.key, tk.pr.numbe
 // ---- AC5: all 14 required checks green and approved
 answer = () => ({ exit: 0, stdout: JSON.stringify(prView(651, REQUIRED.map((n) => node(n)))), stderr: '' });
 const ready = (await get(api('DS-563', '/pr'))).body;
-t('AC5 the verdict reads ready to merge, then when the merge driver merges it', ready.verdict.text, 'Ready to merge: all 14 required checks green and approved. It waits for you to merge it.');
+t('AC5 with no merge grant the verdict reads ready to merge, then that it waits for you', ready.verdict.text, 'Ready to merge: all 14 required checks green and approved. It waits for you to merge it.');
 t('AC5 it is read from GitHub now', [ready.source, ready.as_of, ready.checks.length], ['github', new Date(now).toISOString(), 14]);
 t('AC5 gh ran once, read only, for that PR in its repo', calls.map((a) => a.slice(0, 5)), [['pr', 'view', '651', '--repo', GH]]);
+// Merges granted and passes live: the merge driver merges it at the next pass.
+answer = () => ({ exit: 0, stdout: JSON.stringify(prView(700, REQUIRED.map((n) => node(n)), { url: `https://github.com/${MGH}/pull/700` })), stderr: '' });
+const driven = (await get(`/api/repos/${MSLUG}/tickets/MG-1/pr`)).body;
+t('AC5 the verdict reads ready to merge, then when the merge driver merges it', driven?.verdict?.text,
+  `Ready to merge: all 14 required checks green and approved. The merge driver merges it at the next pass (${new Date(NEXT).toTimeString().slice(0, 5)}).`);
+
+// ---- a replacement PR's merge time is its own, not the first PR's
+t('a replacement PR that merged reads its own merge time', (await get(api('DS-569'))).body.merged_at, at(9, 30));
+t('a ticket whose recorded status is an earlier PR\'s reads no merge time for its own', (await get(api('DS-570'))).body.merged_at, null);
+t('the ticket page carries the worker count', typeof tk.passes.workers, 'number');
 
 // ---- AC6: one failed, 13 passed: the failed row first, each with its job link
 answer = () => ({ exit: 0, stdout: JSON.stringify(prView(652, REQUIRED.map((n, i) => node(n, i === 9 ? 'FAILURE' : 'SUCCESS')))), stderr: '' });
