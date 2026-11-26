@@ -33,16 +33,24 @@
 //   POST /api/repos/<slug>/tickets/<KEY>/answer {text, approve?}  answer.mjs <KEY> [--approve] <text>
 // <slug> is the snapshot's repos[].slug; <repo> is that repo's name, as needs-you names it.
 // DESK_UI_TEST_BIN names the folder those commands run from, read only under a test HOME.
+//
+// First run: GET /api/setup is { installed, checkout, repos, found }: whether desk's commands are
+// installed, the checkout install.sh last ran from (~-relative), how many repos are configured, and,
+// while installed with none configured, the git repos directly under ~/studia ([{ name, path }]).
+//   POST /api/terminal {folder}   opens Terminal running /desk-setup in ~/studia/<folder>, through
+//                                 osascript with the folder as its one argument. Only a folder setup
+//                                 lists as found, and no other field: anything else is 400 and runs nothing.
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
-import { AGENTS, runningVersion } from './installed.mjs';
+import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
+import { tilde } from './logins.mjs';
 import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -144,8 +152,44 @@ function appFile(path) {
   } catch { return null; }
 }
 
+// ---- first run -------------------------------------------------------------------------------
+
+// desk's commands as install.sh installs them: the desk-env command on PATH and the scripts it runs.
+const deskInstalled = () => existsSync(join(E.HOME, '.local', 'bin', 'desk-env')) && existsSync(join(E.binDir(), 'desk-env.mjs'));
+const FOLDER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+// The git repos directly under ~/studia: each folder (not a link) holding a .git, by name.
+function gitRepos(root = join(E.HOME, 'studia')) {
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return []; }
+  return entries.filter((d) => d.isDirectory() && FOLDER.test(d.name) && existsSync(join(root, d.name, '.git')))
+    .map((d) => ({ name: d.name, path: join(root, d.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+// The repos the first run offers, and the only folders /api/terminal opens: none once desk is missing
+// or any repo is configured.
+const firstRun = (installed = deskInstalled(), repos = E.configuredRepos().length) => (installed && !repos ? gitRepos() : []);
+function setup() {
+  const installed = deskInstalled();
+  const from = readInstalled()?.from;
+  const repos = E.configuredRepos().length;
+  const found = firstRun(installed, repos).map((r) => ({ name: r.name, path: tilde(r.path) }));
+  return { installed, checkout: typeof from === 'string' && from ? tilde(from) : null, repos, found };
+}
+
+// osascript's arguments for a Terminal window running /desk-setup in `dir`: the folder is the script's
+// one argument, quoted for the shell by AppleScript itself, never spliced into the script's text.
+export const terminalArgs = (dir) => [
+  ...['on run argv', 'tell application "Terminal"', 'activate',
+    'do script "cd " & quoted form of (item 1 of argv) & " && claude /desk-setup"', 'end tell', 'end run'].flatMap((l) => ['-e', l]),
+  dir];
+// -> its exit code, null when it did not exit with one.
+const openTerminal = (dir) => new Promise((resolve) => {
+  execFile('osascript', terminalArgs(dir), { shell: false, timeout: 30_000 }, (err) => resolve(err ? (Number.isInteger(err.code) ? err.code : null) : 0));
+});
+
 // `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {} } = {}) {
+// `terminal(dir)` opens Terminal for /api/terminal (openTerminal); the tests pass a stub.
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -295,6 +339,23 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return send(res, STATUS[done.ran.exit] ?? 500, done.ran);
   }
 
+  // Terminal for one folder setup lists as found, sent as {folder: <its name>} and nothing else.
+  async function openFolder(req, res, query) {
+    const no = (message) => refuse(res, 400, 'folder', message);
+    if (query) return no('Send only the folder, in the body.');
+    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return refuse(res, 415, 'content_type', 'JSON only.');
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { return refuse(res, 400, 'body', 'Send {"folder": "<name>"} as JSON.'); }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).join() !== 'folder') return no('Send only {"folder": "<name>"}.');
+    const repo = typeof body.folder === 'string' && FOLDER.test(body.folder) ? firstRun().find((r) => r.name === body.folder) : null;
+    if (!repo) return no('That is not one of the git repos under ~/studia.');
+    const exit = await terminal(repo.path);
+    audit('/api/terminal', ['osascript', '<desk-setup>', tilde(repo.path)], exit);
+    if (exit === 0) return send(res, 200, { opened: repo.name });
+    console.error(`desk-ui: terminal: osascript exited ${exit} for ${tilde(repo.path)}`);
+    return refuse(res, 500, 'terminal', "Terminal didn't open. See the server log.");
+  }
+
   async function handle(req, res) {
     const [path, query = ''] = String(req.url ?? '/').split('?');
     const method = req.method ?? 'GET';
@@ -332,7 +393,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       if (!s || !same(String(req.headers[LOAD_HEADER] ?? ''), s.load)) return refuse(res, 401, 'unauthorized', 'Not signed in.');
       const w = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)\/(record|answer)$/);
       if (w) return method === 'POST' ? write(req, res, path, w[3], w[1], w[2]) : refuse(res, 405, 'method', 'POST only.');
+      if (path === '/api/terminal') return method === 'POST' ? openFolder(req, res, query) : refuse(res, 405, 'method', 'POST only.');
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
+      if (path === '/api/setup') {
+        try { return send(res, 200, setup()); } catch (e) { console.error(`desk-ui: setup: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+      }
       if (path === '/api/snapshot') {
         try { return send(res, 200, await snapshot()); } catch (e) { console.error(`desk-ui: snapshot: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }
