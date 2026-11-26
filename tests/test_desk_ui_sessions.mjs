@@ -273,10 +273,10 @@ NOW += 11 * 60 * 1000;
 t('AC7 once they leave the window, one starts again', (await start({ purpose: 'blank', repo: 'acme__studia-web' })).status, 201);
 
 // ---- AC10: a restart while the first turn runs: the next message resumes that session, never claims its id again
-const n10 = starts().length;
 const b10 = await start({ purpose: 'blank', repo: 'acme__studia-web' });
-await until(() => starts().length === n10 + 1);
-const f10 = starts()[n10];
+const startsOf10 = () => starts().filter((s) => s.argv.includes(b10.json?.sessionId));
+await until(() => startsOf10().length === 1);
+const f10 = startsOf10()[0];
 t('AC10 a first turn is running', (await message(b10.json.id, 'a first question')).status, 202);
 await until(() => inputs(f10.pid).length === 1);
 server.sessions.stop();
@@ -287,8 +287,8 @@ await listen();
 await signIn();
 t('AC10 that turn reads interrupted after the restart, with none completed', [(await item(b10.json.id))?.state, (await item(b10.json.id))?.turns], ['interrupted', 0]);
 t('AC10 the next message is accepted', (await message(b10.json.id, 'again?')).status, 202);
-await until(() => starts().length === n10 + 2);
-const r10 = starts()[n10 + 1];
+await until(() => startsOf10().length === 2);
+const r10 = startsOf10()[1];
 t('AC10 Claude resumes the session the first message began', [r10?.argv.includes('--resume'), r10?.argv[r10.argv.indexOf('--resume') + 1], r10?.argv.includes('--session-id')], [true, b10.json.sessionId, false]);
 
 // ---- AC3: a subscription whose newest usage reading has a window full is at its limit, with no pass's hold
