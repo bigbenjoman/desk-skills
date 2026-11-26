@@ -110,7 +110,9 @@
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run or, with worker-local-services yes, a Local services
 //                                             item with no service name (UNLISTED), an app directory other command rows
-//                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
+//                                             name with no Dev server item (NODEV), a §4 Unit tests or Typecheck
+//                                             item starting Jest with no worker cap or turbo run with no
+//                                             --concurrency, with its bounded form (UNBOUND), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
@@ -190,6 +192,7 @@ import * as M from './machine.mjs';
 import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
+import { unbounded as unboundedRun } from './run-bounds.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
@@ -1978,7 +1981,28 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight, dontAsk: mode === 'dontAsk' ? file : null };
+}
+
+// §4 Unit tests and Typecheck items that start Jest with no worker cap or `turbo run` with no
+// --concurrency (locked-run.mjs unbounded), each with its bounded form at the test cap and the
+// profile's turbo-concurrency: -> [{ row, item, why, bounded }].
+export function unboundRuns(parsed, root) {
+  const n = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : null);
+  let jest = null;
+  try { jest = n(configValueIn(parsed, 'test-cap')); } catch { /* unset */ }
+  const limits = { jest: jest ?? undefined, turbo: n(machineValue('turbo-concurrency')) ?? undefined };
+  const out = [];
+  for (const id of ['test-cmd', 'typecheck-cmd']) {
+    const values = driftValues(parsed, id);
+    if (!values || isNone(values)) continue;
+    for (const item of values) {
+      const { dir, cmd } = parseCommandItem(item);
+      const u = unboundedRun(cmd, { root, dir, limits });
+      if (u) out.push({ row: CONFIG_ROWS[id].row, item, why: u.why, bounded: `${dir === '.' ? '' : `${dir}: `}${u.bounded}` });
+    }
+  }
+  return out;
 }
 
 // The rows another row settles (the schema's forced rules), as the config file has the settling rows:
@@ -2115,13 +2139,14 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...invalid.map(invalidLine),
     ...conflicts.map(conflictLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
+    ...unbound.map((u) => `UNBOUND  §4 ${u.row} item "${u.item}" ${u.why}, so one locked run can take the whole machine: set it to \`${u.bounded}\``),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),

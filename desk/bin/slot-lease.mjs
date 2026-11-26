@@ -54,7 +54,7 @@ function lintItems() {
 // Whether `words` is a lint: a linter binary, or a §4 Lint item with or without arguments added (the
 // pre-push hook's rule for which items take the lock), run as it is or as the one argument of
 // `bash -c` / `sh -c`, which is how the pre-push hook and the baseline runner run each item.
-function isLint(words) {
+export function isLint(words) {
   const shell = words.length === 3 && words[1] === '-c' && /^(?:ba)?sh$/.test(basename(words[0]));
   const line = shell ? words[2].trim() : words.join(' ');
   if (LINTERS.has(basename(shell ? line.split(/\s+/)[0] : words[0] ?? ''))) return true;

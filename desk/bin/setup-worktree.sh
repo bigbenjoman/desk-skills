@@ -129,15 +129,16 @@ if [ -n "$INSTALL_CMDS" ]; then
     || fail "'$first' not found on PATH (config §4 Command prefix / Install). A detached shell has no interactive PATH setup."
 fi
 
-run_tool() { # run_tool <dir relative to the worktree> <configured command>
-  ( cd "$WT/$1" && sh -c "${PREFIX:+$PREFIX }$2" )
+run_tool() { # run_tool <dir relative to the worktree> <configured command> [<with-lock.sh lock>]
+  if [ -n "${3:-}" ]; then ( cd "$WT/$1" && bash "$DESK_ENV_DIR/with-lock.sh" "$3" -- sh -c "${PREFIX:+$PREFIX }$2" )
+  else ( cd "$WT/$1" && sh -c "${PREFIX:+$PREFIX }$2" ); fi
 }
-run_cmds() { # run_cmds <DIR<TAB>CMD lines> — every item, each in its directory; stops at the first failure
+run_cmds() { # run_cmds <DIR<TAB>CMD lines> [<lock>] — every item, each in its directory; stops at the first failure
   local d c
   while IFS="$(printf '\t')" read -r d c; do
     [ -n "$c" ] || continue
     say "  $d: $c"
-    run_tool "$d" "$c" || return 1
+    run_tool "$d" "$c" "${2:-}" || return 1
   done <<EOF_CMDS
 $1
 EOF_CMDS
@@ -151,11 +152,11 @@ install_last() { grep -v '^[[:space:]]*$' "$1" | tail -n 1 | cut -c1-200; }
 install_twice() {
   local log1 log2 why1 why2
   log1="$(mktemp "${TMPDIR:-/tmp}/desk-install.XXXXXX")"; log2="$(mktemp "${TMPDIR:-/tmp}/desk-install.XXXXXX")"
-  if run_cmds "$INSTALL_CMDS" 2>&1 | tee "$log1"; then rm -f "$log1" "$log2"; return 0; fi
+  if run_cmds "$INSTALL_CMDS" install 2>&1 | tee "$log1"; then rm -f "$log1" "$log2"; return 0; fi
   why1="$(install_last "$log1")"
   say "  §4 Install failed on its first run ($why1); running it again in ${INSTALL_RETRY_DELAY}s"
   sleep "$INSTALL_RETRY_DELAY"
-  if run_cmds "$INSTALL_CMDS" 2>&1 | tee "$log2"; then
+  if run_cmds "$INSTALL_CMDS" install 2>&1 | tee "$log2"; then
     rm -f "$log1" "$log2"; say "  §4 Install passed on its second run"; return 0
   fi
   why2="$(install_last "$log2")"

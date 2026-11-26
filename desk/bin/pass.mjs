@@ -3003,7 +3003,7 @@ function recordBaseline(path) {
       'base-line': (a) => { baseLines.push(a.line); },
       'drop-baseline': () => { try { unlinkSync(BL.baselineFile(STATE)); } catch { /* none recorded */ } },
       dirty: () => !!sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true }),
-      install: (a) => run('nolock', a.item).code,
+      install: (a) => run('install', a.item).code,
       restore: () => restore(path),
       record: (a) => BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: a.sha, items: a.checks, run: ({ name, ...it }) => run(E.lockFor(BL.CHECKS[name]), it) }),
     },
