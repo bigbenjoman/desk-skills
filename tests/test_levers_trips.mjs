@@ -16,7 +16,7 @@ for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) del
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });
 
-const { runTrips, recordWait, stepPattern, runsStep } =await import('../desk/bin/levers-trips.mjs');
+const { runTrips, recordWait, stepPattern, runsStep } = await import('../desk/bin/levers-trips.mjs');
 const { append, read } = await import('../desk/bin/lever-log.mjs');
 const { assignPin, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
 const { leverOnFor } = await import('../desk/bin/lever-pin.mjs');
@@ -273,7 +273,7 @@ t('AC4 a step error the spawn recorded in the run record trips too', [cli.status
     'desk-env lines a.ts 1,2 | head', '(desk-env lines a.ts 1,2)', 'desk-env lines a.ts 1,2 &', 'echo desk-env lines a.ts', 'desk-env lines a.ts 1,2\ntrue',
   ].map((c) => runsStep(re, c)), [true, true, true, true, false, false, false, false, false]);
 }
-t('the codex step is matched as a worker calls it',[stepPattern('desk-codex').test('node ~/.claude/desk/bin/desk-codex.mjs probe'), stepPattern('desk-codex').test('desk-codex finder x'), stepPattern('the preflight')], [true, true, null]);
+t('the codex step is matched as a worker calls it', [stepPattern('desk-codex').test('node ~/.claude/desk/bin/desk-codex.mjs probe'), stepPattern('desk-codex').test('desk-codex finder x'), stepPattern('the preflight')], [true, true, null]);
 
 // ---- AC5: a second revert freezes the lever and raises one needs-you item -------------------------------------
 const A5 = 'acme__second';
