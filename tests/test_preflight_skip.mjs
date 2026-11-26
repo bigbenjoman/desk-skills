@@ -85,7 +85,7 @@ echo >> "${T}/calls"
 # While $T/write-w-in exists, the session really writes the W_IN file the prompt names.
 if [ -e "${T}/write-w-in" ]; then f=$(printf '%s' "$*" | grep -oE '[^ ]*/\\.preflight\\.tmp' | head -1); [ -n "$f" ] && echo x > "$f"; fi
 # While $T/write-reread exists, the worker reread hook fires as it does under DESK_AUTOPILOT_WORKER=1.
-if [ -e "${T}/write-reread" ] && [ "\${DESK_AUTOPILOT_WORKER-}" = 1 ]; then mkdir -p "$DESK_HOME/worker-reread/sess-1"; echo '{}' > "$DESK_HOME/worker-reread/sess-1/r.json"; fi
+if [ -e "${T}/write-reread" ] && [ "\${DESK_AUTOPILOT_WORKER-}" = 1 ] && [ "\${DESK_ALLOW_REREAD-}" != 1 ]; then mkdir -p "$DESK_HOME/worker-reread/sess-1"; echo '{}' > "$DESK_HOME/worker-reread/sess-1/r.json"; fi
 # The model list (model-list.mjs): the initialize response, naming each model in $T/models, and no turn.
 case "$*" in *--input-format*) printf '{"type":"control_response","response":{"subtype":"success","request_id":"desk-model-list","response":{"models":[%s]}}}\\n' "$(cat "${T}/models")"; exit 0 ;; esac
 # $T/reply.first, while it exists, answers one call in place of $T/reply.
@@ -302,6 +302,8 @@ say('reply', READ_GOOD);
 say('write-reread', '');
 r = preflight(off);
 t('DS-1021 AC3 a session the reread hook recorded spawns as now', [r.status, r.passed, /HOOKS +OK +ok/.test(r.out)], [0, true, true]);
+r = preflight({ ...off, DESK_ALLOW_REREAD: '1' });
+t('DS-1021 the reread opt-out in the environment does not read as hooks that did not load', [r.status, r.passed, /HOOKS +OK +ok/.test(r.out)], [0, true, true]);
 t('DS-1021 the preflight session\'s records and its read file are tidied', [existsSync(rereadDir), existsSync(join(T, 'state', 'workers', `${KEY}.preflight-read.txt`))], [false, false]);
 rmSync(join(T, 'write-reread'));
 rmSync(join(hooksDir, 'desk-worker-reread.py'));

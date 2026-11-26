@@ -268,6 +268,8 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
   trap 'rm -f "$READ_FILE"' EXIT
   # The worker's hooks act only under this flag, so the preflight call runs under it as the worker does.
   export DESK_AUTOPILOT_WORKER=1
+  # The reread opt-out stops the hook recording, which would read as hooks that did not load.
+  unset DESK_ALLOW_REREAD
   # Where the reread hook is registered, its record for the call's session proves the hooks loaded.
   REREAD_DIR=""
   grep -q 'desk-worker-reread\.py' "$SETTINGS" 2>/dev/null && REREAD_DIR="${DESK_HOME:-$HOME/.claude/desk}/worker-reread"
