@@ -100,7 +100,10 @@ The autopilot pass reads the tag (`desk/bin/fix-tries.mjs` `reviewFix`): a tagge
 and it still counts in `gaps`. Under §3 `autopilot-judgement` `yes`, tagged gaps that are all the
 review leaves open and all end `Recommended: <option>`, none reading as an ask category, go to one fix
 try that carries out each
-recommendation, so name the pick last, after `Recommended:`, and nothing after it.
+recommendation, so name the pick last, after `Recommended:`, and nothing after it. A pick that
+accepts the gap (`Recommended: accept AC2 as built`) is never carried out for the person: only their
+own comment accepts it (next), so no fix try, default or decider takes it, and desk-needs-you gives
+them the comment to post.
 
 `code_claim` answers one question: *would this still read as a defect with the ticket deleted?* A
 gap marked `yes` is a claim about code that nothing has refuted, so it is **never posted**: it goes
@@ -181,6 +184,17 @@ is accepted reads `gaps=0` to every gate copy and is clean. `node verdict.mjs --
 prints the `### Accepted gaps` section, naming who accepted each gap, when, and its link: it goes in
 the review body under the report. An accepted gap stays in `accepted` on every later round until its
 criterion is met. Only a requirement gap is accepted: a P0 or P1 is fixed, and a P2 carried.
+
+In an autopilot batch the pass reads the PR for one each pass while it waits on such a gap: once a
+comment or review from §1 GitHub handle, posted after that verdict, names the criterion and accepts
+it (a line opening "I accept", "Accepted" or "Accepting", as desk's ready comment does, and no words
+refusing or limiting it, which leave it to the person), the ticket goes back to a worker on the PR with the comment as the person's call (`desk/bin/fix-tries.mjs`
+`acceptedFix`), with no message to the batch's session. Where config §3 `accept-review-gaps` is `yes`,
+the pass posts that comment itself as the handle, once per gap and never for one the handle's own
+comment already names, before it reads (`grantedPost`): the
+ready comment, with what the review found and the PR body's lines naming the criterion quoted under
+each gap, and a last line saying desk posted it under that row. So keep a recommendation to accept
+accurate, because at `yes` nobody reads it before it is acted on.
 
 An acceptance recorded after the head's verdict posted is the one case for a second verdict at that
 SHA (Phase 7, `phase-7-post.md`): the same round's results, with only the accepted gaps moved from

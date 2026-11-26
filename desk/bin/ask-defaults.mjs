@@ -3,9 +3,11 @@
 // default. One that must never default stays open until the person chooses: its recommendation spends
 // money, reaches outside (a customer, a vendor, anyone not on the team), widens a §3 permission, or
 // cannot be undone. The session recording the ask says so (--never-default "<why>"); a recommendation
-// decisions.mjs reads as an ask category (money, legal, production, customer copy) is one too.
+// decisions.mjs reads as an ask category (money, legal, production, customer copy) is one too, and so is
+// accepting a review gap, which only the person's own comment does (accept-gaps.mjs acceptCall).
 import { CHECKIN_TIME } from './config-schema.mjs';
 import { askCategoryIn } from './decisions.mjs';
+import { acceptCall } from './accept-gaps.mjs';
 
 // An option is one word, as a needs-you action is: the ask's text says what each one does.
 export const OPTION = /^[A-Za-z][A-Za-z0-9-]{0,39}$/;
@@ -36,6 +38,7 @@ export function applyByOf(word, now = new Date()) {
 // own --never-default reason, which always wins.
 export function neverDefault(text, recommended, flag = null) {
   if (flag && String(flag).trim()) return String(flag).trim();
+  if (acceptCall(text, recommended)) return 'only your own comment on the PR can accept a review gap, so desk never applies it for you';
   const c = askCategoryIn(`${text ?? ''} ${recommended ?? ''}`);
   return c && NEVER_CATEGORIES.has(c) ? `it is a ${c.replace('-', ' ')} call, which desk never takes for you` : null;
 }
