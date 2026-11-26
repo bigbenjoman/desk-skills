@@ -35,7 +35,7 @@ import { jiraSearch } from './jira-search.mjs';
 import { blockersFact } from './desk-q-eta.mjs';
 import { keyPattern } from './batch-state.mjs';
 import { lintTicket } from './ticket-lint.mjs';
-import { mergedNaming } from './recoveries.mjs';
+import { mergedNaming, prNames } from './recoveries.mjs';
 import { listBatches, liveBatch, repoTickets } from './batches.mjs';
 
 // Jira's largest page for a search returning fields.
@@ -44,6 +44,8 @@ export const SEARCH_MAX = 100;
 // GitHub reads.
 export const CHECK_MAX = 15;
 export const OVERLAP_DAYS = 7;
+// Open PRs read a listing, to leave out the person's own tickets one names.
+const OPEN_MAX = 200;
 export const CANDIDATES_EVERY_MS = 30 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GH_TIMEOUT_MS = 30 * 1000;
@@ -83,9 +85,10 @@ const jqlValue = (v) => `"${String(v).replace(/["\\]/g, '\\$&')}"`;
 // The searches, highest priority first, each read one page, newest first: one per value §4 Priority
 // lists, then one for a value unset or unlisted, which Jira orders by the field (a select field by its
 // options' order), so a backlog past a page still reads its top tickets first. With none listed, one
-// search, ordered the same way.
-export function candidatesJqls(project, { field, names }) {
-  const base = `project = "${project}" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"`;
+// search, ordered the same way. `assignee` is the search's assignee clause: unassigned unless given
+// (ownAssignee).
+export function candidatesJqls(project, { field, names }, assignee = 'assignee is EMPTY') {
+  const base = `project = "${project}" AND issuetype in (Bug, Task) AND ${assignee} AND statusCategory = "To Do"`;
   const f = field === 'priority' ? 'priority' : `cf[${field.slice('customfield_'.length)}]`;
   const byField = `ORDER BY ${f} ${field === 'priority' ? 'DESC' : 'ASC'}, created DESC`;
   if (!names.length) return [`${base} ${byField}`];
@@ -98,11 +101,8 @@ export function personOf(raw = E.configValue('jira-account-id')) {
   const v = String(raw ?? '').trim().replace(/^`|`$/g, '');
   return v && !E.isNone(v) && !/^todo\b/i.test(v) ? v : null;
 }
-// The search for the unstarted Bugs and Tasks assigned to `person` (§1 Jira account id), else to the
-// signed-in Jira user: one page, ranked once read.
-export function ownJql(project, person) {
-  return `project = "${project}" AND issuetype in (Bug, Task) AND assignee = ${person ? jqlValue(person) : 'currentUser()'} AND statusCategory = "To Do" ORDER BY created DESC`;
-}
+// The assignee clause for the tickets of `person` (§1 Jira account id), else of the signed-in Jira user.
+export const ownAssignee = (person) => `assignee = ${person ? jqlValue(person) : 'currentUser()'}`;
 
 // Words in a summary or label marking a decision, or access, key or infrastructure work outside the repo.
 const OUTSIDE = /\b(decide|decision|whether|policy|should we|adopt(?:ion)?|licen[cs]e|keys?|rotat(?:e|ion)|credentials?|access|IAM|WAF|DNS|infra(?:structure)?)\b/i;
@@ -181,7 +181,7 @@ export function onMain(key, { prs = [], commits = [] } = {}) {
 //   openPrs()                 -> [{number, title, headRefName}] open, or null when unread
 //   queued()                  -> Set of keys in a live batch;  liveEpics() -> Set of epic keys with a live feature batch
 // `person` is §1 Jira account id (null: the signed-in Jira user). `ownOnly` lists only the person's own.
-// -> {ok, offered, onMain, left, unchecked, more, ownOnly} | {ok: false, why}. Each offered or on-main
+// -> {ok, offered, onMain, left, unchecked, more, ownOnly} | {ok: false, why, ownOnly}. Each offered or on-main
 // entry is {key, type, priority, summary, rank, own, flags, overlap[, pr | commit]}.
 export function listCandidates({ project, priority, person = null, ownOnly = false, reads, now = Date.now(), checkMax = CHECK_MAX }) {
   const pr = priorityOf(priority);
@@ -191,29 +191,26 @@ export function listCandidates({ project, priority, person = null, ownOnly = fal
   const pool = [];
   // `more`: a match was not read, on a page past the first or in a lower tier no search was needed for.
   let more = false;
-  // The person's own: an open PR naming the key means it is started, so it is left out.
+  // The person's own tiers first, then the unassigned ones. One of the person's own an open PR names is
+  // started, so it is left out.
   const own = new Set();
   let open;
-  const mine = reads.search(ownJql(project, person), SEARCH_MAX, fields);
-  if (!mine?.ok) return { ok: false, why: mine?.why ?? 'the Jira search failed' };
-  if (mine.more) more = true;
-  for (const i of mine.issues) {
-    let why = leftOut(i, ctx);
-    if (!why) {
-      if (open === undefined) open = reads.openPrs?.() ?? null;
-      const p = open && mergedNaming(i.key, open);
-      if (p) why = `started: open PR #${p.number} names it`;
-    }
-    if (why) left.push({ key: i.key, why }); else { own.add(i.key); pool.push(i); }
-  }
-  for (const jql of ownOnly ? [] : candidatesJqls(project, pr)) {
+  const searches = [...candidatesJqls(project, pr, ownAssignee(person)).map((jql) => ({ jql, mine: true })),
+    ...(ownOnly ? [] : candidatesJqls(project, pr).map((jql) => ({ jql, mine: false })))];
+  for (const { jql, mine } of searches) {
     if (pool.length >= checkMax) { more = true; break; }
     const res = reads.search(jql, SEARCH_MAX, fields);
-    if (!res?.ok) return { ok: false, why: res?.why ?? 'the Jira search failed' };
+    if (!res?.ok) return { ok: false, why: res?.why ?? 'the Jira search failed', ownOnly };
     if (res.more) more = true;
     for (const i of res.issues) {
-      const why = leftOut(i, ctx);
-      if (why) left.push({ key: i.key, why }); else pool.push(i);
+      let why = leftOut(i, ctx);
+      if (!why && mine) {
+        if (open === undefined) open = reads.openPrs();
+        const p = open?.find(prNames(i.key));
+        if (p) why = `started: open PR #${p.number} names it`;
+      }
+      if (why) left.push({ key: i.key, why });
+      else { if (mine) own.add(i.key); pool.push(i); }
     }
   }
   const notOwn = (i) => (own.has(i.key) ? 0 : 1);
@@ -252,9 +249,9 @@ export function listCandidates({ project, priority, person = null, ownOnly = fal
 // What a candidate's line says after its key: priority, type, summary, then each flag and overlap.
 const notes = (c) => [...c.flags, ...c.overlap.map((o) => `possible overlap with #${o.number}, merged in the last ${OVERLAP_DAYS} days (${o.files.join(', ')})`)];
 // The listing as lines, for a person or a pass report. With `ownOnly` and none of the person's own to
-// offer, nothing.
+// offer, a failed read included, nothing.
 export function renderLines(r, { project }) {
-  if (!r.ok) return [`no candidates: ${r.why}`];
+  if (!r.ok) return r.ownOnly ? [] : [`no candidates: ${r.why}`];
   const mine = r.offered.filter((c) => c.own);
   const rest = r.offered.filter((c) => !c.own);
   if (r.ownOnly && !mine.length) return [];
@@ -300,7 +297,8 @@ export function defaultReads({ repo, root, base }) {
       if (r.status !== 0) return null;
       return r.stdout.split('\n').filter(Boolean).map((l) => { const [sha, ...s] = l.split('\t'); return { sha, subject: s.join('\t') }; });
     },
-    openPrs: () => ghJson(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,headRefName', '--limit', '200']),
+    // A list OPEN_MAX long may be cut short, so it reads as unread.
+    openPrs: () => { const l = ghJson(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,headRefName', '--limit', String(OPEN_MAX)]); return l && l.length < OPEN_MAX ? l : null; },
     recent: (since) => ghJson(['pr', 'list', '--repo', repo, '--state', 'merged', '--base', base, '--search', `merged:>=${since.toISOString().slice(0, 10)}`, '--json', 'number,files', '--limit', '100']),
     queued: () => { try { return new Set(repoTickets(E.repoSlug(), listBatches()).map((t) => t.key)); } catch { return new Set(); } },
     liveEpics: () => { try { return new Set(listBatches().filter((b) => b.name && liveBatch(b.name)).map((b) => b.name)); } catch { return new Set(); } },
@@ -316,10 +314,11 @@ export function trackerOf() {
 }
 
 // The listing for this repo: { ok, lines, result, noTracker }, `noTracker` true where it has no Jira
-// tracker to list from. `ownOnly` lists only the person's own unstarted assigned tickets.
+// tracker to list from. `ownOnly` lists only the person's own unstarted assigned tickets, and says
+// nothing when there are none to offer.
 export function runList({ reads, ownOnly = false } = {}) {
   const t = trackerOf();
-  if (t.why) return { ok: false, noTracker: true, lines: [`no candidates: ${t.why}`], result: { ok: false, why: t.why } };
+  if (t.why) return { ok: false, noTracker: true, lines: ownOnly ? [] : [`no candidates: ${t.why}`], result: { ok: false, why: t.why } };
   const base = String(E.configValue('default-branch') ?? '').trim() || 'main';
   const result = listCandidates({ project: t.project, priority: t.priority, person: t.person, ownOnly,
     reads: reads ?? defaultReads({ repo: E.ghRepo(), root: E.repoRoot(), base }) });

@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, ownJql, personOf, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
+import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, ownAssignee, personOf, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -20,7 +20,8 @@ const CLEAN = 'h2. Acceptance criteria\n* Given x, when y, then z\nh2. Design\nN
 
 // reads: every ticket's description, merged PRs and commits keyed by ticket, and the recent PRs. The
 // search answers each priority tier's JQL with that tier's issues, one page of `max`.
-// An issue's `assignee` is an account id; the search answers `assignee = currentUser()` as ME.
+// An issue's `assignee` is an account id; the search answers `assignee = currentUser()` as ME, and a
+// search with no assignee clause, as Jira does, with every assignee.
 const ME = 'acct-me';
 function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queued = [], liveEpics = [], open = [] }) {
   const calls = { search: [], recent: 0, openPrs: 0 };
@@ -31,7 +32,7 @@ function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queue
       const tier = /cf\[10300\] = "([^"]+)"/.exec(jql)?.[1];
       const rest = /is EMPTY OR/.test(jql);
       const who = /assignee is EMPTY/.test(jql) ? null : /assignee = currentUser\(\)/.test(jql) ? ME : /assignee = "([^"]+)"/.exec(jql)?.[1];
-      const hits = issues.filter((i) => (i.fields.assignee?.accountId ?? null) === who)
+      const hits = issues.filter((i) => who === undefined || (i.fields.assignee?.accountId ?? null) === who)
         .filter((i) => { const v = i.fields.customfield_10300?.value ?? null; return tier ? v === tier : rest ? !['P0', 'P1', 'P2'].includes(v) : true; });
       return { ok: true, issues: hits.slice(0, max), more: hits.length > max };
     },
@@ -44,6 +45,8 @@ function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queue
     liveEpics: () => new Set(liveEpics),
   };
 }
+// The searches a listing made for unassigned tickets, after the person's own.
+const unassigned = (r) => r.calls.search.filter((c) => /assignee is EMPTY/.test(c.jql));
 const list = (reads) => listCandidates({ project: 'ACME', priority: PRIORITY, reads, now: Date.parse('2026-11-25T12:00:00Z') });
 
 // AC1: unassigned, unstarted Bugs and self-contained Tasks, ranked by the repo's priority field.
@@ -79,7 +82,7 @@ t('AC1 a value written with its option id is searched and ranked by its name', p
   t('AC1 the P2s are checked before any P4', got.offered.map((c) => c.key), ['ACME-36', 'ACME-35', 'ACME-34', 'ACME-32']);
   t('AC3 Bugs before Tasks at one priority, each newest first', got.offered.map((c) => c.type), ['Bug', 'Bug', 'Task', 'Task']);
   t('AC1 a priority at option-id form ranks by its name', got.offered.map((c) => c.rank), [2, 2, 2, 2]);
-  t('AC1 the P2 tier filled the list, so no P4 search ran', r.calls.search.slice(1).map((c) => /cf\[10300\] = "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
+  t('AC1 the P2 tier filled the list, so no P4 search ran', unassigned(r).map((c) => /cf\[10300\] = "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
 }
 {
   // Values the row does not list rank by their own text: P3 before P4, then Bugs, then newest, unset last.
@@ -184,7 +187,7 @@ t('AC4 a bare name matches it in any directory', overlapOf(new Set(['intake.mjs'
   const issues = Array.from({ length: 20 }, (_, i) => issue(`ACME-${100 + i}`, 'Bug', 'P1'));
   const r = readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) });
   const got = listCandidates({ project: 'ACME', priority: PRIORITY, reads: r, checkMax: 3 });
-  t('only the first checkMax are checked, the rest counted, and no lower tier searched', [got.offered.length, got.unchecked, got.more, r.calls.search.length], [3, 17, true, 3]);
+  t('only the first checkMax are checked, the rest counted, and no lower tier searched', [got.offered.length, got.unchecked, got.more, unassigned(r).length], [3, 17, true, 2]);
   t('the listing says so', renderLines(got, { project: 'ACME' }).at(-2), '17+ more not checked: only the first 15 by priority are');
 }
 {
@@ -211,8 +214,21 @@ t('a failed search is said', renderLines(listCandidates({ project: 'ACME', prior
 
 // #1484: the person's own unstarted assigned tickets come first, then the unassigned ones.
 const mine = (key, type, p, who = ME) => issue(key, type, p, { assignee: { accountId: who } });
-t('#1484 AC1 the own search asks for the §1 account id', ownJql('ACME', 'acct-1'), 'project = "ACME" AND issuetype in (Bug, Task) AND assignee = "acct-1" AND statusCategory = "To Do" ORDER BY created DESC');
-t('#1484 AC1 with no account id, the signed-in Jira user', ownJql('ACME', null), 'project = "ACME" AND issuetype in (Bug, Task) AND assignee = currentUser() AND statusCategory = "To Do" ORDER BY created DESC');
+const OWN = 'project = "ACME" AND issuetype in (Bug, Task) AND assignee = "acct-1" AND statusCategory = "To Do"';
+t('#1484 AC1 the own searches ask for the §1 account id, a priority tier each', candidatesJqls('ACME', priorityOf(PRIORITY), ownAssignee('acct-1')), [
+  `${OWN} AND cf[10300] = "P0" ORDER BY created DESC`,
+  `${OWN} AND cf[10300] = "P1" ORDER BY created DESC`,
+  `${OWN} AND cf[10300] = "P2" ORDER BY created DESC`,
+  `${OWN} AND (cf[10300] is EMPTY OR cf[10300] not in ("P0", "P1", "P2")) ORDER BY created DESC`,
+]);
+t('#1484 AC1 with no account id, the signed-in Jira user', ownAssignee(null), 'assignee = currentUser()');
+{
+  // More of the person's own than a page: the top tier is read first, so an older P0 is not lost behind newer P2s.
+  const at = (d) => ({ created: `2026-11-${String(d).padStart(2, '0')}T09:00:00.000+0000`, assignee: { accountId: ME } });
+  const issues = [issue('ACME-80', 'Bug', 'P0', at(1)), ...Array.from({ length: 120 }, (_, i) => issue(`ACME-${300 + i}`, 'Task', 'P2', at(20)))];
+  const got = list(readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) }));
+  t('#1484 AC1 an older P0 of the person\'s own comes first past a page of P2s', [got.offered[0].key, got.more], ['ACME-80', true]);
+}
 t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0d2c', 'none', 'TODO', '', null].map((v) => personOf(v)), ['712020:0d2c', null, null, null, null]);
 {
   const issues = [issue('ACME-60', 'Bug', 'P0'), mine('ACME-61', 'Task', 'P2'), mine('ACME-62', 'Bug', 'P1'), mine('ACME-63', 'Task', 'P0'),
@@ -238,6 +254,8 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
   const only = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) }), ownOnly: true });
   t('#1484 AC3 own only lists the person\'s own and searches nothing else', [only.offered.map((c) => c.key), renderLines(only, { project: 'ACME' })[0]], [['ACME-63', 'ACME-62', 'ACME-61'], 'your unstarted assigned tickets in ACME, ready to admit:']);
   t('#1484 AC3 own only with none of the person\'s own says nothing', renderLines(listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues: [issue('ACME-66', 'Bug', 'P0')] }), ownOnly: true }), { project: 'ACME' }), []);
+  const failed = (ownOnly) => renderLines(listCandidates({ project: 'ACME', priority: PRIORITY, reads: { ...readsOf({ issues: [] }), search: () => ({ ok: false, why: 'HTTP 401' }) }, ownOnly }), { project: 'ACME' });
+  t('#1484 AC3 own only says nothing of a failed search either; the whole list says it', [failed(true), failed(false)], [[], ['no candidates: HTTP 401']]);
   const unread = readsOf({ issues: [mine('ACME-67', 'Bug', 'P0')], desc: { 'ACME-67': CLEAN } });
   unread.openPrs = () => null;
   t('#1484 AC1 unread open PRs are said, not taken as none', list(unread).offered[0].flags, ['not checked for an open PR: the open PRs could not be read']);
