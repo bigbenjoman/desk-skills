@@ -615,6 +615,11 @@ t('DS-1002 a function a guard\'s condition calls runs on load, so an edit to it 
   decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(entryQ, entryQ.replace('return fileURLToPath(u);', 'return fileURLToPath(u) + "";')) }], hubWith({ 'desk/bin/desk-q.mjs': entryQ }), { byName: true }).reason.includes('runs one at load: if (process.argv[1] === entryPath(import.meta.url)) { (entryPath)'),
   drawEdit(entryQ),
 ], [true, true, 'some: test_cli.sh test_lint.sh']);
+t('DS-1002 an unbraced guard\'s body is one statement on its line: a second one after it, or after a line break, runs on load', [
+  drawEdit(chainQ('if (isMain) console.log(1); draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) console.log(1)\n  draw()')) === everyClaimer,
+  drawEdit(chainQ("if (isMain) console.log(draw(), ';');")),
+], [true, true, 'some: test_cli.sh test_lint.sh']);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
@@ -644,6 +649,13 @@ t('DS-1002 a destructured import() or import helper with a rest element takes th
   hscope(Q(keysEdit), hubWith({ 'tests/test_q.mjs': `// suite: q\nconst { rows, ...rest } = await ${'imp'}ort('../desk/bin/desk-q.mjs');\nrest.keys(1);` })),
   fmtOn(restImp) === everyOn(restImp), fmtOn(restHelper) === everyOn(restHelper),
 ], [everyClaimer, 'some: test_lint.sh test_pass.mjs test_q.mjs', true, true]);
+// `import (`, with a space, is the same call.
+const restSpaced = triWith(`const { keys, ...rest } = await ${'imp'}ort (join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rest.rows(1));`);
+t('DS-1002 an import() written with a space before its parenthesis is read as one', [
+  ns(`const { rows, ...rest } = await ${'imp'}ort ('./desk-q.mjs');\nexport const nsUse = () => rest.keys(2);`),
+  ns(`const { keys } = await ${'imp'}ort ('./desk-q.mjs');\nexport const nsUse = () => keys(2);`),
+  fmtOn(restSpaced) === everyOn(restSpaced),
+], [everyClaimer, 'some: test_lint.sh test_ns.mjs test_pass.mjs', true]);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through

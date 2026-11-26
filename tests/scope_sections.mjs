@@ -409,7 +409,13 @@ function mainOnly(c, guards) {
     conds.push(cond);
     at += close;
     at += read.slice(at).match(/^\s*/)[0].length;
-    if (read[at] !== '{') return /\belse\b/.test(read.slice(at)) ? null : conds.join('\n');
+    // An unbraced body is one statement on the `if`'s line, ended by its `;` with nothing after it: a
+    // second statement there, or one on a later line after a line break ends the first, runs on load.
+    if (read[at] !== '{') {
+      const tail = read.slice(at);
+      const end = groupEnd(tail, ';', (p) => `(async function () {\n${p}\n})`);
+      return end > 0 && !tail.slice(0, end).includes('\n') && !tail.slice(end).trim() ? conds.join('\n') : null;
+    }
     const end = groupEnd(read.slice(at), '}', (p) => `(async function () {\n${p}\n})`);
     if (end < 0) return null;
     at += end;
@@ -787,10 +793,11 @@ export function buildMap(files, read) {
 
 // A static import that binds something: [, its clause, the quote, its specifier].
 const STATIC_IMPORT = /\bimport\s+([^'"`;()]*?)\s*\bfrom\s*(['"])([^'"]+)\2/g;
-// Each `import(` call in `code`: where it starts, just past its closing `)`, and its argument's text.
+// Each `import(` call in `code` (`import (` too): where it starts, just past its closing `)`, and its
+// argument's text.
 function importCalls(code) {
   const out = [];
-  for (const m of code.matchAll(/\bimport\(/g)) {
+  for (const m of code.matchAll(/\bimport\s*\(/g)) {
     let i = m.index + m[0].length;
     for (let depth = 1; i < code.length && depth; i++) depth += code[i] === '(' ? 1 : code[i] === ')' ? -1 : 0;
     out.push({ start: m.index, end: i, arg: code.slice(m.index + m[0].length, i - 1) });
@@ -918,7 +925,7 @@ export function loads(path, text, { importsOnly = false } = {}) {
       // `import x from './a.mjs'`, `} from './a.mjs'`, `import './a.mjs'`: no quote before the keyword on
       // its line, so a fixture string that holds an import is not one.
       for (const m of code.matchAll(/^[^'"`\n]*\b(?:from|import)\s+(['"])([^'"]+)\1/gm)) out.push(m[2]);
-      for (const m of code.matchAll(/\bimport\(\s*(['"`])([^'"`$]+)\1\s*\)/g)) out.push(m[2]);
+      for (const m of code.matchAll(/\bimport\s*\(\s*(['"`])([^'"`$]+)\1\s*\)/g)) out.push(m[2]);
     }
     if (importsOnly) return out.join('\n');
     for (const m of code.matchAll(/\b(?:join|resolve)\(([^()]*)\)/g)) { const q = quoted(m[1]); if (q.length) out.push(q.join('/')); }
