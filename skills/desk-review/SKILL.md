@@ -206,8 +206,8 @@ unless split to the filed ticket its `follow_up` names. A carried finding needs 
 
 **The body's opening lines are computed, never written by hand**: the review and verdict
 markers, the heading, from round 2 the carried line, then the method line. A hand count is how a
-review reads clean when it is not. Once every finder and refuter has answered, Write the run's
-results to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
+review reads clean when it is not. Once every finder and refuter has answered, finish the
+results file Phase 4 began, `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
 worker: at its worktree root, left in place, `phase-7-post.md`):
 
 <!-- contract: results -->
