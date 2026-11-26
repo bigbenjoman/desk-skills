@@ -22,7 +22,10 @@ the model it always has (its agent file's `model:`, else yours). The simplicity 
 refuters and codex keep their own models either way. Outside a worker the row does not apply.
 
 Each Claude prompt carries what the core's *Every seat's prompt* lists, in that order, and answers
-in its `FINDING` format. Every seat, codex included, ends its answer, after its blocks or
+in its `FINDING` format. Its `file:` is a line at `<TIP>`, never a base-side line or a file the
+diff deletes: a finding about removed code cites the head line where it was, or the code still
+using it, since Phase 4 rejects unrefuted any anchor not at `<TIP>`. Every seat, codex's brief too,
+carries that rule. Every seat, codex included, ends its answer, after its blocks or
 `NO FINDINGS`, with one line `FILES READ: <path>, <path>, …`: every repo-relative file it opened,
 the diff's included. They make the results file's `rests_on` (the core's *The verdict*).
 Every Claude finder's prompt, the simplicity finder's included, then carries the paragraph under
