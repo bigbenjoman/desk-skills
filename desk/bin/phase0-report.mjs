@@ -99,12 +99,12 @@ export function commandKey(tool, input) {
   return sub ? `${prog} ${sub.replace(/^.*\//, '')}` : prog;
 }
 
-// What one worker log shows: parks it printed, handoffs to a fresh session, Stage 4b entries, permission denials by command, its
+// What one worker log shows: parks it printed, Stage 4b entries, permission denials by command, its
 // usage readings and the rate_limit_event lines that could not be read as one, the session of each
 // start it holds (one init event per `claude -p` start, a resume's under the same session), and
 // whether anything but preflights ran in it at all.
 export function logFacts(text) {
-  const out = { parks: 0, parkClasses: {}, handoffs: 0, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false, codexCalls: 0, codexDead: 0, waitCalls: {} };
+  const out = { parks: 0, parkClasses: {}, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false, codexCalls: 0, codexDead: 0, waitCalls: {} };
   // The calls spent waiting on its own runs, by kind (desk-wait, ps, tail, TaskStop).
   for (const c of waitCalls(text)) out.waitCalls[c.kind] = (out.waitCalls[c.kind] ?? 0) + 1;
   // The review's desk-codex calls, and those whose seat died (the codex lever's dead-seat trip's exits).
@@ -136,7 +136,6 @@ export function logFacts(text) {
             const cls = parkClass(v).class;
             out.parkClasses[cls] = (out.parkClasses[cls] ?? 0) + 1;
           }
-          if (k === 'AUTOPILOT_HANDOFF') out.handoffs += 1;
           if (k === 'AUTOPILOT_STAGE' && /^4b\b/i.test(v.trim())) out.reviewRounds += 1;
         }
       }
@@ -172,7 +171,7 @@ const emptyFigures = () => ({
 function ticketFacts(state, t, from, records) {
   const logs = workerLogs(state, t.key, from);
   const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
-  const x = { logs, c, input: 0, output: 0, cost: c?.preflight.cost ?? 0, parks: 0, parkClasses: {}, handoffs: 0, reviewRounds: 0, denials: {},
+  const x = { logs, c, input: 0, output: 0, cost: c?.preflight.cost ?? 0, parks: 0, parkClasses: {}, reviewRounds: 0, denials: {},
     readings: [], badReadings: 0, starts: [], codexCalls: 0, codexDead: 0, waitCalls: {} };
   const starts = {};
   for (const file of logs) {
@@ -182,7 +181,6 @@ function ticketFacts(state, t, from, records) {
     if (u) for (const k of ['input', 'output', 'cost']) x[k] += u[k];
     const l = logFacts(text);
     x.parks += l.parks;
-    x.handoffs += l.handoffs;
     add(x.parkClasses, l.parkClasses);
     x.reviewRounds += l.reviewRounds;
     x.codexCalls += l.codexCalls;
@@ -351,7 +349,9 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       reworked: Object.hasOwn(q.tickets ?? {}, t.key) && reworked(t),
       cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
       preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
-      starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses, handoffs: x.handoffs,
+      starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
+      // The handoffs that started a fresh session, as the pass counted them (pass.mjs handedOff).
+      handoffs: Number(t.handoffs) || 0,
       review_rounds: x.reviewRounds, codex_calls: x.codexCalls, codex_dead: x.codexDead, wait_calls: x.waitCalls, denials: Object.values(x.denials).reduce((n, v) => n + v, 0), denials_by_command: x.denials,
       ci_reds: ciRuns ? reds.length : null, ci_reds_by_job: ciRuns ? ciCounts(reds) : null,
       desk_commits: [...new Set(starts.map((s) => s.desk_commit).filter(Boolean))],

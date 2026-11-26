@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
-import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
+import { RESUME_STAGES, SAFE_ID, stateDir, leverValue } from './desk-env.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { execGit, REMOTE_GIT_MS } from './remote-git.mjs';
 
@@ -21,20 +21,7 @@ const STAGE_ORDER = ['0', '1', '2', '3', '4', '4b', '5', '6', '7', '8', '9'];
 export const HANDOFF_STAGES = Object.freeze(Object.fromEntries(RESUME_STAGES.map((s) => [s, STAGE_ORDER[STAGE_ORDER.indexOf(s) - 1]])));
 
 // The stage a marker names ("4b", "4b/9", "7"), or null for one no session starts at.
-export function handoffStage(v) {
-  const s = /^\s*(?:stage\s+)?(4b|\d)(?:\/9)?\b/i.exec(String(v ?? ''))?.[1]?.toLowerCase();
-  return s && Object.hasOwn(HANDOFF_STAGES, s) ? s : null;
-}
-
-// The value of the handoff-threshold lever this worker runs on, from its pin (DESK_LEVER_VALUES), or
-// `config` with none: the value a mid-stage briefing records.
-export function thresholdValue(env = process.env) {
-  for (const w of String(env.DESK_LEVER_VALUES ?? '').split(/\s+/)) {
-    const [k, v] = w.split('=');
-    if (k === 'handoff-threshold' && v) return v;
-  }
-  return 'config';
-}
+export const handoffStage = (v) => roundStage(String(v ?? '').replace(/^\s*stage\s+/i, ''));
 
 export const handoffPath = (stateDir, key) => join(stateDir, 'handoffs', `${key}.json`);
 
@@ -156,7 +143,7 @@ export function handoffFromArgs(args, env = process.env) {
     const pct = Number(String(d.context ?? '').trim().replace(/%$/, ''));
     if (!(pct > 0 && pct <= 100)) return { error: `--context takes the context share the handoff fired at, a percentage, not ${d.context == null ? 'nothing' : `'${d.context}'`}` };
     d.context = pct;
-    d.threshold = thresholdValue(env);
+    d.threshold = leverValue('handoff-threshold', env) ?? 'config';
   } else delete d.left;
   return { data: d };
 }

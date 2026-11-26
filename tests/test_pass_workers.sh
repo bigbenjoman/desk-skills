@@ -1059,7 +1059,7 @@ check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(f
 
 # DS-1037 AC3: a worker that handed off partway through Stage 5 on context is followed by a fresh one
 # starting at Stage 5 from the briefing; a third such handoff in a row at that stage parks.
-midfile(){ node -e 'const [k] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: "5", criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$1"; }
+midfile(){ node -e 'const [k, s = "5"] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: s, criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$@"; }
 handing H-10; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 AC3 a mid-stage handoff at Stage 5 is followed by a fresh session at Stage 5" 'echo "$out" | grep -qF "H-10 handed off partway through Stage 5 on context (31% used; handoff-threshold 30): queued for a fresh session from Stage 5" && [ "$(spawned_for H-10 | tail -1 | grep -o "stage=[^ ]*")" = stage=5 ] && [ "$(field H-10 state)" = "\"running\"" ]'
@@ -1067,10 +1067,23 @@ check "DS-1037 AC3 its briefing says so and lists what is left of the stage" 'b=
 midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 a second mid-stage handoff at the same stage still spawns" '[ "$(spawned_for H-10 | wc -l | tr -d " ")" = 2 ] && [ "$(field H-10 handoff_repeats)" = 1 ]'
+check "DS-1037 each handoff that queues a fresh session is counted on the ticket" '[ "$(field H-10 handoffs)" = 2 ]'
 midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 the third in a row at one stage parks, spawning nothing" '[ "$(field H-10 state)" = "\"parked\"" ] && field H-10 park.question | grep -qF "handed off partway through Stage 5 3 times in a row on context" && [ "$(spawned_for H-10 | wc -l | tr -d " ")" = 2 ]'
+check "DS-1037 and the parked one is not counted as a handoff" '[ "$(field H-10 handoffs)" = 2 ]'
 q set H-10 state=done
+# The streak counts one stage only: a mid-stage handoff at the next stage starts it again, and a
+# stage-boundary handoff ends it.
+handing H-11; midfile H-11 5; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+midfile H-11 6; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 6')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 a mid-stage handoff at another stage starts the streak again, and spawns" '[ "$(spawned_for H-11 | tail -1 | grep -o "stage=[^ ]*")" = stage=6 ] && [ "$(field H-11 handoff_repeats)" = 0 ] && [ "$(field H-11 handoff_mid)" = 6 ]'
+hfile H-11 7 "typecheck: pass"; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 a stage-boundary handoff ends the streak" '[ "$(spawned_for H-11 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-11 handoff_mid)" = null ] && [ "$(field H-11 handoff_repeats)" = null ]'
+q set H-11 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"

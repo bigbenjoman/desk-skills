@@ -609,7 +609,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest), handoffs: handoffsPanel(repos, latest) },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
     line,
   };
 }
@@ -626,23 +626,14 @@ function mergeStagesPanel(configured, root) {
   return { repos };
 }
 
-// Each repo's latest per-arm ask report (levers-evaluate.mjs: tokens and dollars per ticket by step,
-// pushes and digests per ticket, the share defaulted, the median answer latency), for each lever whose
-// evaluation carries one: { repos: [{ name, lever, at, state, arms: { <arm>: report } }] }.
-function asksPanel(repos, latest) {
+// Each repo's latest per-arm report under `key` (levers-evaluate.mjs: `ask_report`, the asks' tokens and
+// dollars per ticket by step, pushes, digests, the share defaulted and the median answer latency;
+// `handoff_report`, tickets, dollars and handoffs per ticket), for each lever whose evaluation carries
+// one, with that lever's baseline arm: { repos: [{ name, lever, at, state, baseline, arms: { <arm>: report } }] }.
+function armPanel(repos, latest, key) {
   return {
-    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.ask_report && Object.keys(e.ask_report).length)
-      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, arms: e.ask_report }))),
-  };
-}
-
-// Each repo's latest per-arm handoff report (levers-evaluate.mjs: tickets, dollars and handoffs per
-// ticket), for each lever whose evaluation carries one, with that lever's baseline arm:
-// { repos: [{ name, lever, at, state, baseline, arms: { <arm>: report } }] }.
-function handoffsPanel(repos, latest) {
-  return {
-    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.handoff_report && Object.keys(e.handoff_report).length)
-      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, baseline: REGISTRY[e.lever]?.baseline ?? null, arms: e.handoff_report }))),
+    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e[key] && Object.keys(e[key]).length)
+      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, baseline: REGISTRY[e.lever]?.baseline ?? null, arms: e[key] }))),
   };
 }
 

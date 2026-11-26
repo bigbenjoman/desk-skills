@@ -15,7 +15,7 @@ for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) del
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });
 
-const { evaluate, evaluateDue, decide } = await import('../desk/bin/levers-evaluate.mjs');
+const { evaluate, evaluateDue, decide, handoffReport } = await import('../desk/bin/levers-evaluate.mjs');
 const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
 const { assignPin } = await import('../desk/bin/levers-auto.mjs');
 const { reasonWording, DECISION_RULE } = await import('../desk/bin/lever-registry.mjs');
@@ -787,6 +787,23 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('question handling: a step read incomplete leaves the ticket out of that step and the dollars, never as 0', [r3.tickets, r3.steps.raise.tickets, r3.steps.act.tickets, r3.steps.raise.usd_per_ticket], [30, 25, 30, 0.4104]);
   t('question handling: and the mechanism weighs only the tickets whose asks cost is whole', Math.round(qhRow(QA3).values['one-at-a-time'].mechanism.est * 100), -50);
   t('question handling: only those count toward the sample, so 25 priced of 30 asking tickets is below the minimum', [qhRow(QA3).values['one-at-a-time'].n.off, qhRow(QA3).values['one-at-a-time'].decision, qhRow(QA3).values['one-at-a-time'].reason_code], [25, 'hold', 'below_min_sample']);
+}
+
+// ---- DS-1037 AC5: the handoff threshold's per-value report on its evaluation line ----------------------
+{
+  const HT = 'handoff-threshold';
+  const hrow = (slug, v, cost, handoffs) => row(slug, v, null, { cost, handoffs, pin: { set: v === 'config' ? [] : [HT], arms: { [HT]: v }, trial_ids: { [HT]: `${slug}/${HT}/initial` }, fp: null } });
+  const HS = 'acme__ht-report';
+  const rows = ['config', '20', '30', '45'].flatMap((v, k) => Array.from({ length: 4 }, (_, i) => hrow(HS, v, 10 - k + (i % 2) * 0.5, k + (i % 2))));
+  run([repo(HS, rows)]);
+  const line = evalsOf(HS).filter((e) => e.lever === HT).at(-1);
+  const rep = line?.handoff_report ?? {};
+  t('AC5 the handoff threshold\'s evaluation line carries a report keyed by value', Object.keys(rep), ['20', '30', '45', 'config']);
+  t('AC5 each value: its tickets, dollars per ticket and handoffs per ticket', [rep.config?.tickets, rep.config?.usd_per_ticket, rep.config?.handoffs_per_ticket, rep['45']?.usd_per_ticket, rep['45']?.handoffs_per_ticket], [4, 10.25, 0.5, 7.25, 3.5]);
+  t('no other lever\'s line carries one', evalsOf(HS).filter((e) => e.lever !== HT && e.handoff_report).length, 0);
+  // In a holdback the arms are adopted and holdback: read as the adopted value and the baseline.
+  const held = handoffReport([{ lever: HT, cost: 6, handoffs: 2, pin: { arms: { [HT]: 'adopted' } } }, { lever: HT, cost: 8, handoffs: 1, pin: { arms: { [HT]: 'holdback' } } }], '30', 'config');
+  t('in a holdback, the report is keyed by the adopted value and the baseline, not on and off', JSON.stringify(held), JSON.stringify({ 30: { tickets: 1, usd_per_ticket: 6, handoffs_per_ticket: 2 }, config: { tickets: 1, usd_per_ticket: 8, handoffs_per_ticket: 1 } }));
 }
 
 rmSync(T, { recursive: true, force: true });

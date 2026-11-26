@@ -545,6 +545,19 @@ check "DS-1037 AC4 drawn config: at 21% it hands off at the 1M row"         '[[ 
 whook SessionStart wk5 "$T/w21m.jsonl" ',"source":"compact"'
 whook PostToolUse wk5 "$T/w21m.jsonl"
 check "DS-1037 a compaction makes the next crossing a new one"             '[[ "$(ctx)" == *"partway through Stage 5"* ]]'
+LV=''
+wtranscript "$T/wecho.jsonl" 92000 "5/9 evidence"
+printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo \\"AUTOPILOT_STAGE: 6/9 hygiene\\"; git status"}}]}}\n' >> "$T/wecho.jsonl"
+whook PostToolUse wk8 "$T/wecho.jsonl"
+check "DS-1037 a stage echoed at the start of a Bash command is the stage, as harvest.mjs reads it" '[[ "$(ctx)" == *"partway through Stage 6"* ]]'
+printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"- `AUTOPILOT_STAGE: 7/9 pr`"}]}}\n' >> "$T/wecho.jsonl"
+whook PostToolUse wk9 "$T/wecho.jsonl"
+check "DS-1037 and a decorated stage line is read too"         '[[ "$(ctx)" == *"partway through Stage 7"* ]]'
+before="$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d ' ')"
+AUTOPILOT_TASK="fix the review" whook PostToolUse wk10 "$T/w46.jsonl"
+check "DS-1037 a task worker past the threshold gets nothing"   '[ -z "$out" ]'
+DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="" hook PostToolUse wk11 "$T/w46.jsonl"
+check "DS-1037 nor does a worker with no briefing file, and no .handoffs/ file is named" '[ -z "$out" ] && [ "$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d " ")" = "$before" ]'
 config '`0`'
 wtranscript "$T/w90.jsonl" 180000 "5/9 evidence"
 whook PostToolUse wk6 "$T/w90.jsonl"

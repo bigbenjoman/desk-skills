@@ -71,6 +71,9 @@ a fresh worker at that stage from the briefing. Stop blocks once while DESK_HAND
 since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
 on a compaction, makes the next crossing a new one.
 
+Any other worker (a fix or base try: AUTOPILOT_TASK, or no DESK_HANDOFF_FILE) never hands off, and
+the hook is silent in it.
+
 Run as `desk-handoff.py offer-1m [--asked] [<dir>]` (not a hook event), it is /desk-update's one-time
 offer to lower a 1M threshold of 45 to 20: see offer_1m.
 """
@@ -547,12 +550,15 @@ def on_context(event, data, session, root):
 # ---- worker mode ---------------------------------------------------------------------------------
 # The stages a fresh worker can start at (config-schema.mjs RESUME_STAGES), and a worker's stage line.
 RESUME_STAGES = ("3", "4", "4b", "5", "6", "7", "8", "9")
-STAGE_LINE = re.compile(r"^AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b", re.I | re.M)
+# Read as desk/bin/harvest.mjs reads them: a text line, its decoration allowed, or a Bash command that
+# starts by echoing the stage.
+STAGE_LINE = re.compile(r"^[\s`>*#-]*AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b", re.I | re.M)
+ECHO_STAGE = re.compile(r"""^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b""", re.I)
 
 
 def worker_file():
     """An autopilot worker's handoff briefing path (DESK_HANDOFF_FILE), or None in any other session."""
-    if os.environ.get("DESK_AUTOPILOT_WORKER") != "1":
+    if os.environ.get("DESK_AUTOPILOT_WORKER") != "1" or os.environ.get("AUTOPILOT_TASK"):
         return None
     return os.environ.get("DESK_HANDOFF_FILE") or None
 
@@ -591,10 +597,16 @@ def current_stage(transcript):
         if e.get("type") != "assistant" or e.get("isSidechain"):
             continue
         for c in reversed((e.get("message") or {}).get("content") or []):
-            text = c.get("text") if isinstance(c, dict) and c.get("type") == "text" else None
-            found = STAGE_LINE.findall(text or "")
-            if found:
-                return found[-1].lower()
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text":
+                found = STAGE_LINE.findall(c.get("text") or "")
+                if found:
+                    return found[-1].lower()
+            elif c.get("type") == "tool_use" and c.get("name") == "Bash":
+                m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
+                if m:
+                    return m.group(2).lower()
     return None
 
 
@@ -971,6 +983,8 @@ def main():
     if not root or not session:
         return
     worker = worker_file()
+    if os.environ.get("DESK_AUTOPILOT_WORKER") == "1" and not worker:
+        return  # a task worker, which never hands off: no interactive handoff either
     if worker:
         if event in ("UserPromptSubmit", "PostToolUse"):
             on_worker_context(event, data, session, root, worker)

@@ -403,6 +403,13 @@ writeFileSync(join(PR_ROOT, 'archived-queue.archive.json'), JSON.stringify({ tic
   'A-1': { key: 'A-1', added_at: iso(2 * DAY_MS), state: 'done', merged_at: iso(DAY_MS), result: { pr: 1 } },
   'L-1': { key: 'L-1', added_at: iso(2 * DAY_MS), state: 'done', merged_at: iso(DAY_MS), result: { pr: 2 } },
 } }));
+// DS-1037: a ticket's row carries the handoffs that started a fresh session, as the pass counted them
+// on the ticket (a marker the pass parked is not one), 0 with none.
+const handQ = join(PR_ROOT, 'hand-queue.json');
+writeFileSync(handQ, JSON.stringify({ tickets: { 'HO-1': { key: 'HO-1', added_at: iso(DAY_MS), handoffs: 2 }, 'HO-2': { key: 'HO-2', added_at: iso(DAY_MS) } } }));
+writeFileSync(join(liveS, 'logs', 'HO-1.log'), `${say('AUTOPILOT_HANDOFF: 5')}\n${say('AUTOPILOT_HANDOFF: 5')}\n${say('AUTOPILOT_HANDOFF: 5')}\n${result(1, 10, 10)}\n`);
+const handRows = ticketRows({ queue: handQ, state: liveS, slug: 'o__r', since: SINCE }).rows;
+t('DS-1037 a ticket row carries the handoffs the pass counted, not the markers', handRows.map((r) => `${r.key} ${r.handoffs}`).sort().join(', '), 'HO-1 2, HO-2 0');
 const archRows = ticketRows({ queue: archivedQ, state: liveS, slug: 'o__r', since: SINCE }).rows;
 t('levers: an archived ticket has a per-ticket row, and a ticket in both is the live copy once',
   archRows.map((r) => `${r.key} ${r.state}`).sort().join(', '), 'A-1 done, L-1 parked');
