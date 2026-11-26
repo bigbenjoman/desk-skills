@@ -717,7 +717,7 @@ t('DS-516 AC5: an epic\'s own place says it has no Epics view', (await placeView
 const namedEpics = await placeView({ kind: 'repo', slug: 'acme__split:rotation' }, '4');
 t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics', [rowOf(namedEpics, 'EP-22').length, rowOf(namedEpics, 'EP-21').length], [1, 0]);
 
-// ---- issue-1485: long keys and short, in every view at 60, 80 and 120 columns. Each ticket row keeps a
+// ---- Long keys and short, in every view at 60, 80 and 120 columns. Each ticket row keeps a
 // space between its key and its state, every row's state starts in one column (the STATE heading's, where
 // the view has one), and a row's title is whole or cut with an ellipsis. A repo name longer than its
 // column is cut with an ellipsis too.

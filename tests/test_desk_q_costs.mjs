@@ -204,7 +204,7 @@ t('DS-291 AC10 o opens the largest supplier\'s billing page: GitHub for voicepa,
   'https://github.com/settings/billing/usage https://console.aws.amazon.com/costmanagement/home#/cost-explorer https://vercel.com/ben-lavenders-projects/~/usage');
 D.ui.finish(0);
 
-// ---- issue-1485 AC2: at 60, 80 and 120 columns each line of the table fits, whole or cut at a whole
+// ---- At 60, 80 and 120 columns each line of the table fits, whole or cut at a whole
 // field with " …": what it keeps is its 104-column line up to a blank, so no tag or figure shows in part.
 for (const width of [60, 80, 120]) {
   const S = await costsAt(null, width);

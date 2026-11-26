@@ -2768,7 +2768,7 @@ t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Buil
 // A page just past the 10-minute rebuild, waiting for the next supervisor tick, is no fault.
 L654 = await leversLine654({ line: WORKING654, age: 15 });
 t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
-// issue-1485 AC2: home at 60, 80 and 120 columns keeps the Levers line whole where it fits, and cuts a
+// Home at 60, 80 and 120 columns keeps the Levers line whole where it fits, and cuts a
 // longer one after a whole field with " …", never inside one or after a separator.
 {
   const NEEDS1485 = '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you │ Open Levers ↗';
