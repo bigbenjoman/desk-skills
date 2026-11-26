@@ -724,13 +724,14 @@ t('DS-179 AC1 at 120 and 80 columns, the stuck row is no wider than the terminal
 t('DS-179 AC1 it says what it waits on, cut with …, and keeps its title', Object.entries(stk(120)).filter(([, l]) => !/After BLK-101, BLK-102, .*… +STK-1 title$/.test(l)).map(([v, l]) => `${v}: ${l}`).join(), '');
 t('DS-179 a reason that fits is written whole', rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: 120 }), 'BLK-101').includes('Needs your answer · ~'), true);
 
-const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 100, () => FIXED);
+// 110 columns: wide enough for every column at its minimum (DS-1046), so TITLE is still shown.
+const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 110, () => FIXED);
 await sleep(20);
 const w1 = () => Rz.frame().find((l) => /^[ ›] +\d+ {2}W-1 /.test(l)) ?? '';
 const w1Before = w1().length;
 Rz.output.columns = 160;
 Rz.output.resize();
-t('DS-167 AC6 resized from 100 to 160 columns, the redraw fits titles to the new width', `${w1Before} ${w1().length} ${w1().endsWith('…')}`, '100 160 true');
+t('DS-167 AC6 resized from 110 to 160 columns, the redraw fits titles to the new width', `${w1Before} ${w1().length} ${w1().endsWith('…')}`, '110 160 true');
 Rz.ui.finish(0);
 
 // ---- DS-164: a place (every repo, a repo, a ticket) and a view of it. The ACs' voicepa is tidy here,
@@ -3326,6 +3327,56 @@ try {
   const youOf = (out) => Number(/^◆ (\d+) tickets? needs? you/m.exec(out)?.[1] ?? 0);
   t('DS-959 AC9 the end of the trial adds one to the needs-you count', youOf(run(due)) - youOf(run(none)), 1);
   for (const c of sleepers) c.kill();
+}
+
+// ---- DS-1046: a long base-repair key is cut rather than widening TICKET, and narrower than every
+// column the Queue drops TITLE, then WAITING, then STARTS; an over-wide status line ends in … at the width.
+{
+  const KEY = 'base-red-main-20261126175442';
+  put(I.T, I.env, 'q1046', { port: 5660, conc: '3 / 5', beat: 1, queue: { batch: 'q1046', concurrency: 3, tickets: {
+    [KEY]: { state: 'running', stage: '3/9' },
+    'Q-1': { state: 'triaged', open_questions: 0 },
+    'Q-2': { state: 'parked', park: { question: 'which copy?' }, group: { g: 'needs', at: minsAgo(135) } },
+  } } });
+  const state = join(I.env.HOME, '.desk-autopilot', 'acme__q1046');
+  mkdirSync(join(state, 'merge-driver.lock.d'), { recursive: true });
+  writeFileSync(join(state, 'merge-driver.lock.d', 'pid'), `${process.pid}\n`);
+  writeFileSync(join(state, 'merge-driver.log'), `17:54:42Z HOLDING on red main: required check tests failed on its latest run there, so no PR merges into it but its repair ${KEY}'s\n`);
+  writeFileSync(join(state, 'merge-stages.jsonl'), `${JSON.stringify({ key: 'Q-0', pr: 9, desk: { minutes: 12 }, undraft: 3, merge: 4, external: { wait: 30, rereviews: 2 }, recorded: minsAgo(60) })}\n`);
+  const r1046 = Q.loadRepos(NOW).find((r) => r.name === 'q1046');
+  const at = (width) => lines(Q.repoScreen(r1046, { now: NOW, width }));
+  const headOf = (ls) => ls.find((l) => /TICKET +STATE /.test(l)) ?? '';
+  const colsAt = (width) => QUEUE_COLS.filter((c) => new RegExp(`(^| )${c}( |$)`).test(headOf(at(width))));
+  const keyRow = (ls) => ls.find((l) => /^ +(-|\d+) {2}base-red/.test(l)) ?? '';
+  // One cell of the row whose TICKET cell starts with `lead`, trimmed, where the header puts its column.
+  const cell1046 = (ls, lead, name) => {
+    const h = headOf(ls), cols = QUEUE_COLS.map((c) => [c, h.indexOf(c)]).filter(([, i]) => i >= 0), i = cols.findIndex(([c]) => c === name);
+    const row = ls.find((l) => new RegExp(`^ +(-|\\d+) {2}${esc(lead)}`).test(l)) ?? '';
+    return i < 0 ? '' : row.slice(cols[i][1], cols[i + 1]?.[1]).trim();
+  };
+  const q88 = at(88), h88 = headOf(q88), leads = ['base-red', 'Q-1 ', 'Q-2 '];
+  const cut88 = cell1046(q88, 'base-red', 'TICKET');
+  t('DS-1046 AC1 at 88 columns every row keeps STATE, WHAT IT NEEDS (at least 36), STARTS and SHIPS, and the long key is cut with …',
+    `${colsAt(88).join(',')} ${h88.indexOf('STARTS') - h88.indexOf('WHAT IT NEEDS') >= 36} ${cut88.endsWith('…') && KEY.startsWith(cut88.slice(0, -1)) && cut88.length < KEY.length} ${['STATE', 'WHAT IT NEEDS', 'STARTS', 'SHIPS'].every((c) => leads.every((k) => cell1046(q88, k, c)))}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS true true true');
+  t('DS-1046 AC1 at 88 columns no line of the Queue is wider than the terminal', q88.filter((l) => [...l].length > 88).join(' | '), '');
+  const q140 = at(140);
+  t('DS-1046 AC2 at 140 columns the base-repair key shows in full and no column is dropped',
+    `${colsAt(140).join(',')} ${keyRow(q140).includes(`${KEY} `)}`, `${QUEUE_COLS.join(',')} true`);
+  // Narrowing a column at a time, each width's columns as a set; each change drops one column, in order.
+  const seen = [];
+  for (let w = 140; w >= 40; w--) { const c = colsAt(w).join(','); if (seen.at(-1) !== c) seen.push(c); }
+  const dropped = seen.slice(1).map((c, i) => seen[i].split(',').filter((x) => !c.split(',').includes(x)).join('+'));
+  t('DS-1046 AC3 narrower than every column at its minimum, TITLE goes first, then WAITING, then STARTS, and WHAT IT NEEDS and SHIPS last',
+    dropped.join(' > '), 'TITLE > WAITING > STARTS > SHIPS > WHAT IT NEEDS');
+  const countsAt = (ls) => ls.filter((l) => l.includes('merge driver up'));
+  const stagesAt = (ls) => ls.filter((l) => l.startsWith('merge time by stage'));
+  t('DS-1046 AC4 at 88 columns the merge driver\'s HOLDING line and the merge time by stage each end in … at the width, on one line',
+    [...countsAt(q88), ...stagesAt(q88)].map((l) => `${[...l].length}${l.endsWith('…') ? '…' : ''}`).join(' '), '88… 88…');
+  // Wide enough, the stages line is whole and the driver's last line keeps DS-935's 100-character cut.
+  const q400 = at(400);
+  t('DS-1046 AC4 wide enough, the merge time by stage is whole and the driver line is not cut at the width',
+    `${stagesAt(q400).map((l) => l.endsWith('…')).join()} ${countsAt(q400).map((l) => l.endsWith(`last: ${readFileSync(join(state, 'merge-driver.log'), 'utf8').trim().slice(0, 99)}…`)).join()}`, 'false true');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
