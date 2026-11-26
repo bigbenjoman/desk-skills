@@ -88,6 +88,10 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName,baseRefName') {
   // GitHub's merge time, a PR's "mergedAt" or gh's unset time, its branch and its base, tab-separated.
   out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? '') + '\t' + (prs[a[2]]?.base ?? ''));
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedBy') {
+  // The merger GitHub names: a PR's "mergedBy" login, null for none, tester where unset.
+  const m = prs[a[2]]?.mergedBy;
+  out({ mergedBy: m === null ? null : { login: m ?? 'tester' } });
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,

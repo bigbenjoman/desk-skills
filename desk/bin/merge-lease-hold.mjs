@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A session's stacked merge in the clearance merge lane, under one merge lease hold: the lease for the
-// repo and base with the ticket ledger read inside it (merge-lease.mjs take), the merge log's claim,
+// repo and base with the ticket ledger read inside it (merge-lease.mjs take), the merge log's claim, a
+// read of the PR (already merged, it was someone else's merge: recorded as theirs, not enqueued),
 // GitHub's enqueue-only merge call, then a poll of the PR's .merged until GitHub reports it merged or
 // the settle time passes, the merge log's record and the ticket ledger's, and the release. The next PR
 // in the stack is never checked against a ledger that cannot yet show this one.
@@ -26,7 +27,7 @@ import { parseArgs } from 'node:util';
 import { sleepSync } from './dir-lock.mjs';
 import { EXIT_OK, EXIT_USAGE, LeaseUsageError, leaseDir, release } from './leases.mjs';
 import { mergeKey, repoLedger, take } from './merge-lease.mjs';
-import { claim, record } from './merge-log.mjs';
+import { claim, outsideMerger, record } from './merge-log.mjs';
 import { MISSED_PREFIX, ledgerOn } from './queue-ledger.mjs';
 
 const SETTLE_S = 120;
@@ -37,6 +38,7 @@ const METHODS = ['merge', 'squash', 'rebase'];
 const BIN = dirname(fileURLToPath(import.meta.url));
 
 const ENQUEUE_MS = 60_000;
+const PRE_READ_MS = 15_000;
 
 // One gh call, ended at `ms`: -> { status, stdout, stderr, timedOut }.
 const ghRun = (args, ms) => {
@@ -71,7 +73,35 @@ export function hold({ pr, sha, repo, base, by, method, ticket = null, head = nu
   try {
     const c = claim({ repo, pr, sha, by, ...log });
     if (!c.ok) { say(`#${pr} ${c.why}`); return EXIT_CLAIMED; }
-    const q = gh(['api', '-X', 'PUT', `repos/${repo}/pulls/${pr}/merge-async`, '-f', `merge_method=${method}`], ENQUEUE_MS);
+    // The PR as GitHub has it: merged, its head and the login it names as the merger (empty for none).
+    const read = (ms) => {
+      const r = gh(['api', `repos/${repo}/pulls/${pr}`, '--jq', '"\\(.merged) \\(.head.sha) \\(.merged_by.login // "")"'], ms);
+      const [merged, got, login] = r.status === 0 ? r.stdout.trim().split(/\s+/) : [];
+      return { merged: merged === 'true', got, login: login || null };
+    };
+    // The merge's record, the ledger's, and whether it merged at the head checked. `who` is the merger
+    // the merge log names (merge-log.mjs record: unknown where GitHub names none).
+    const merged = ({ got, login }, who, how) => {
+      const at = got || sha;
+      const e = record({ repo, pr, sha: at, by: who, event: 'merged', mergedBy: login, ...(ticket ? { ticket } : {}), ...log });
+      if (ticket && t.mode !== 'off') {
+        const l = recordLedger({ ticket, pr, head, sha: at, base, by: e.by });
+        say(l.ok ? `#${pr} ledger: ${l.text}` : `#${pr} ledger: not recorded (${l.text}); the merge log's line is its record`);
+      }
+      if (got && !got.startsWith(sha) && !sha.startsWith(got)) {
+        say(`#${pr} STOP: GitHub merged it at ${got.slice(0, 9)}, not the head checked, ${sha.slice(0, 9)}: something merged unchecked`);
+        return EXIT_NOT_MERGED;
+      }
+      say(`#${pr} ${how} at ${sha.slice(0, 9)} onto ${base}; releasing the merge lease on ${key}`);
+      return EXIT_OK;
+    };
+    // Already merged before this hold enqueued it: someone else merged it, under whatever login, so the
+    // record names them as GitHub does and nothing is enqueued. An unread PR is enqueued as before.
+    // It shares the enqueue's minute, so the hold still ends within the lease's TTL.
+    const start = now();
+    const pre = read(PRE_READ_MS);
+    if (pre.merged) return merged(pre, outsideMerger(pre.login), `already merged by ${outsideMerger(pre.login)}, not enqueued:`);
+    const q = gh(['api', '-X', 'PUT', `repos/${repo}/pulls/${pr}/merge-async`, '-f', `merge_method=${method}`], Math.max(1000, ENQUEUE_MS - (now() - start)));
     // An enqueue gh did not answer may still have reached GitHub, so its outcome is read from the PR.
     if (q.timedOut) say(`#${pr} ${q.stderr} for the enqueue: reading whether GitHub merged it`);
     else if (q.status !== 0) {
@@ -82,22 +112,8 @@ export function hold({ pr, sha, repo, base, by, method, ticket = null, head = nu
     const until = now() + settle * 1000;
     for (;;) {
       // Each read is ended at the settle time's end (a second at least), so a stalled read never holds the lease past it.
-      const r = gh(['api', `repos/${repo}/pulls/${pr}`, '--jq', '"\\(.merged) \\(.head.sha)"'], Math.max(1000, until - now()));
-      const [merged, got] = r.status === 0 ? r.stdout.trim().split(/\s+/) : [];
-      if (merged === 'true') {
-        const at = got || sha;
-        record({ repo, pr, sha: at, by, event: 'merged', ...(ticket ? { ticket } : {}), ...log });
-        if (ticket && t.mode !== 'off') {
-          const l = recordLedger({ ticket, pr, head, sha: at, base, by });
-          say(l.ok ? `#${pr} ledger: ${l.text}` : `#${pr} ledger: not recorded (${l.text}); the merge log's line is its record`);
-        }
-        if (got && !got.startsWith(sha) && !sha.startsWith(got)) {
-          say(`#${pr} STOP: GitHub merged it at ${got.slice(0, 9)}, not the head checked, ${sha.slice(0, 9)}: something merged unchecked`);
-          return EXIT_NOT_MERGED;
-        }
-        say(`#${pr} merged at ${sha.slice(0, 9)} onto ${base}; releasing the merge lease on ${key}`);
-        return EXIT_OK;
-      }
+      const r = read(Math.max(1000, until - now()));
+      if (r.merged) return merged(r, by, 'merged');
       if (now() >= until) {
         say(`#${pr} not reported merged within ${settle}s: releasing the merge lease on ${key}. Read gh pr view ${pr} --json state before the next PR in the stack`);
         return EXIT_NOT_MERGED;

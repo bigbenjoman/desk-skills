@@ -1402,6 +1402,7 @@ EOF_RESOLVE
     back_off "$n"; return 1
   fi
   if [ "$mrc" -eq 0 ]; then
+    # merge-log.mjs reads the login GitHub names as the merger onto the line (`unknown` where it names none).
     node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged ${key:+--ticket "$key"} --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
     # A hold it merged past goes with the ticket to the base's own PR into the default branch (pass.mjs).
