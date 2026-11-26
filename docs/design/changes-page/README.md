@@ -20,3 +20,23 @@ Do not edit these files by hand. When the artifact has a newer version, re-save 
 | 4 · Phone width | 390px | project/Phone.dc.html |
 | 5 · Page structure (recommended): one page, side menu | 1280px | project/Shell.dc.html |
 | 6 · Page structure (runner-up): tabs | 680px | project/Tabs.dc.html |
+
+## Screens
+
+Rendered by `desk-design render` from version 1795708226-ff65 on 2026-11-26T16:09:03.008Z, at the
+Breakpoints (none) and each board's own width.
+
+| Width | Label | Boards drawn at it |
+|---|---|---|
+| 390px | drawn (not a breakpoint) | 4 · Phone width |
+| 680px | drawn (not a breakpoint) | 2 · Change markers on the trend charts, 6 · Page structure (runner-up): tabs |
+| 1280px | drawn (not a breakpoint) | 1 · A lever waiting on you, 3 · Every change, with before and after, 5 · Page structure (recommended): one page, side menu |
+
+| Board | 390px | 680px | 1280px |
+|---|---|---|---|
+| 1 · A lever waiting on you | - | - | [drawn](screens/1-a-lever-waiting-on-you@1280.png) |
+| 2 · Change markers on the trend charts | - | [drawn](screens/2-change-markers-on-the-trend-charts@680.png) | - |
+| 3 · Every change, with before and after | - | - | [drawn](screens/3-every-change-with-before-and-after@1280.png) |
+| 4 · Phone width | [drawn](screens/4-phone-width@390.png) | - | - |
+| 5 · Page structure (recommended): one page, side menu | - | - | [drawn](screens/5-page-structure-recommended-one-page-side-menu@1280.png) |
+| 6 · Page structure (runner-up): tabs | - | [drawn](screens/6-page-structure-runner-up-tabs@680.png) | - |

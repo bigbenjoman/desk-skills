@@ -61,5 +61,83 @@
     "https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js",
     "https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js",
     "https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js"
-  ]
+  ],
+  "screens": {
+    "version": "1795708226-ff65",
+    "rendered_at": "2026-11-26T16:09:03.008Z",
+    "breakpoints": [],
+    "widths": [
+      {
+        "width": 390,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "4 · Phone width"
+        ]
+      },
+      {
+        "width": 680,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "2 · Change markers on the trend charts",
+          "6 · Page structure (runner-up): tabs"
+        ]
+      },
+      {
+        "width": 1280,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "1 · A lever waiting on you",
+          "3 · Every change, with before and after",
+          "5 · Page structure (recommended): one page, side menu"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "board": "1 · A lever waiting on you",
+        "screen": "1-a-lever-waiting-on-you",
+        "width": 1280,
+        "file": "screens/1-a-lever-waiting-on-you@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "2 · Change markers on the trend charts",
+        "screen": "2-change-markers-on-the-trend-charts",
+        "width": 680,
+        "file": "screens/2-change-markers-on-the-trend-charts@680.png",
+        "drawn": true
+      },
+      {
+        "board": "3 · Every change, with before and after",
+        "screen": "3-every-change-with-before-and-after",
+        "width": 1280,
+        "file": "screens/3-every-change-with-before-and-after@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "4 · Phone width",
+        "screen": "4-phone-width",
+        "width": 390,
+        "file": "screens/4-phone-width@390.png",
+        "drawn": true
+      },
+      {
+        "board": "5 · Page structure (recommended): one page, side menu",
+        "screen": "5-page-structure-recommended-one-page-side-menu",
+        "width": 1280,
+        "file": "screens/5-page-structure-recommended-one-page-side-menu@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "6 · Page structure (runner-up): tabs",
+        "screen": "6-page-structure-runner-up-tabs",
+        "width": 680,
+        "file": "screens/6-page-structure-runner-up-tabs@680.png",
+        "drawn": true
+      }
+    ]
+  }
 }
