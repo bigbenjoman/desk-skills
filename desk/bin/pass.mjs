@@ -510,27 +510,45 @@ const FALLBACK = (() => {
   // While new work runs on the fallback no worker starts on the default, so only a probe reads it again.
   if (record && !hold && probeDue({ running: 0, reading, now: Date.now() }) && probeOnce(DEFAULT_LOGIN).ok) reading = loginReading(DEFAULT_LOGIN);
   const full = defaultFull({ hold, reading, pace: usagePace({ usage: reading.seven_day }) });
-  let usable = null;
-  if (full.full) {
-    FALLBACK_CHECK = checkLogin(FALLBACK_LOGIN);
-    const no = loginUnusable(FALLBACK_LOGIN, FALLBACK_CHECK);
-    // A fallback signed in to the default's own account shares its limits, so it has no room to give.
-    const live = liveEmail(FALLBACK_CHECK);
-    const sameAccount = !no && live && live === (DEFAULT_LOGIN.account ?? liveEmail(checkLogin(DEFAULT_LOGIN)));
-    usable = no?.kind === 'signed out' ? `is signed out (sign it in, in another terminal: ${signInCommand(FALLBACK_LOGIN)})`
-      : no ? `is signed in to ${no.live} instead of ${FALLBACK_LOGIN.account}`
-        : sameAccount ? `is signed in to ${live}, the default's own account, so it shares the default's limits` : null;
-  }
-  return fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable, record });
+  return fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable: full.full ? fallbackUsable() : null, record });
 })();
-if (FALLBACK.line) (FALLBACK.held ? report.stalled : report.advanced).push(FALLBACK.line);
-if (!DRY && FALLBACK.record !== undefined) q('set-batch', `login_fallback=${JSON.stringify(FALLBACK.record)}`);
-const ON_FALLBACK = FALLBACK.on === 'fallback';
+// Why the fallback login cannot take new work, or null (fallbackCall's `usable`). A fallback signed in to
+// the default's own account shares its limits, so it has no room to give.
+function fallbackUsable() {
+  FALLBACK_CHECK = checkLogin(FALLBACK_LOGIN);
+  const no = loginUnusable(FALLBACK_LOGIN, FALLBACK_CHECK);
+  const live = liveEmail(FALLBACK_CHECK);
+  const sameAccount = !no && live && live === (DEFAULT_LOGIN.account ?? liveEmail(checkLogin(DEFAULT_LOGIN)));
+  return no?.kind === 'signed out' ? `is signed out (sign it in, in another terminal: ${signInCommand(FALLBACK_LOGIN)})`
+    : no ? `is signed in to ${no.live} instead of ${FALLBACK_LOGIN.account}`
+      : sameAccount ? `is signed in to ${live}, the default's own account, so it shares the default's limits` : null;
+}
+// What fallbackCall decided, said and kept in the queue's login_fallback.
+function recordFallback(call) {
+  if (call.line) (call.held ? report.stalled : report.advanced).push(call.line);
+  if (!DRY && call.record !== undefined) q('set-batch', `login_fallback=${JSON.stringify(call.record)}`);
+}
+recordFallback(FALLBACK);
+let ON_FALLBACK = FALLBACK.on === 'fallback';
 // Only a limit on the login new sessions start on holds the batch. One on another login, where a worker
 // started before the subscription changed or on the default before the fallback took over, holds that
 // worker alone.
-const REPO_LOGIN = ON_FALLBACK ? FALLBACK_LOGIN : DEFAULT_LOGIN;
+let REPO_LOGIN = ON_FALLBACK ? FALLBACK_LOGIN : DEFAULT_LOGIN;
 const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
+// A limit this pass meets on the default after choosing it, at a refused preflight or a worker found
+// paused there, moves new work to the fallback for the rest of the pass, as the next pass would; tried
+// once a pass. -> true when new work moved there.
+let midPassTried = false;
+function fallBackMidPass(limit) {
+  if (!FALLBACK_LOGIN || ON_FALLBACK || FALLBACK.held || midPassTried) return false;
+  midPassTried = true;
+  const call = fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full: defaultFull({ hold: limit }), usable: fallbackUsable(), record: queue().login_fallback ?? null });
+  recordFallback(call);
+  if (call.on !== 'fallback') return false;
+  ON_FALLBACK = true;
+  REPO_LOGIN = FALLBACK_LOGIN;
+  return true;
+}
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -1211,6 +1229,8 @@ runSteps({
   },
   report,
 });
+// A worker found paused at the default's limit moves new work to the fallback rather than holding it.
+if (USAGE_HOLD && fallBackMidPass(USAGE_HOLD)) USAGE_HOLD = null;
 
 // ---- batch notes ---------------------------------------------------------
 if (notes.length) appendNotes(notes, STATE);
@@ -3250,19 +3270,23 @@ function preflight(key, wt, workerEnv) {
 }
 // A preflight the usage limit refused on the repo's login holds the batch: the ticket keeps its place
 // and state, and nothing else spawns or preflights this pass. The probe names the limit where it can.
-// A resume refused on another login, the one its session started on, waits for that login alone.
+// A resume refused on another login, the one its session started on, waits for that login alone. One
+// refused on the default, with a fallback that can take new work, moves new work there (fallBackMidPass)
+// and holds nothing: -> true, and a new session's caller starts it again on repoLogin().
 function preflightHitLimit(t, cost, login) {
   logPreflight(t.key, cost);
   if (!onRepoLogin(login)) {
     report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login; this repo's subscription is another, and the batch goes on`);
-    return;
+    return false;
   }
   const l = probeOnce(login).limit ?? { type: 'unknown', resetsAt: null };
+  if (fallBackMidPass(l)) return true;
   USAGE_HOLD ??= { type: l.type, resetsAt: l.resetsAt, preflight: t.key };
   USAGE_HOLD.preflight ??= t.key;
   USAGE_HOLD.login ??= login;
   usageStop = true;
   report.stalled.push(`${t.key}: its preflight was refused at ${limitName(USAGE_HOLD.type)} — not failed, and nothing else spawns until the limit lifts`);
+  return false;
 }
 const preflightNote = ({ usd, turns, skipped }) => (skipped ? 'preflight skipped on a matching fingerprint'
   : `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`);
@@ -3330,7 +3354,10 @@ async function resumeKilled(t) {
   const model = t.model && t.model !== 'default' ? t.model : '';
   const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.limit) return preflightHitLimit(t, pre.cost, login);
+  if (pre.limit) {
+    if (preflightHitLimit(t, pre.cost, login)) report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
+    return undefined;
+  }
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
   if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
@@ -3539,7 +3566,11 @@ async function spawnHandoff(t, pick) {
     markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
+  if (pre.limit) {
+    // Refused on the default, with new work moved to the fallback: the handoff starts there instead.
+    const again = preflightHitLimit(t, pre.cost, pick.login) ? repoLogin() : null;
+    return again ? spawnHandoff(t, again) : undefined;
+  }
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
   if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
@@ -3683,7 +3714,10 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
-  if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
+  if (pre.limit) {
+    if (preflightHitLimit({ key }, pre.cost, login)) report.paused.push(`${key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
+    return undefined;
+  }
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(key);
   if (memWhy) { logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
@@ -4090,7 +4124,8 @@ for (const t of spawnable) {
     spawnCloud(t);
     continue;
   }
-  const { pick, setup: { wt, kept, renamed, out: setup } } = verdict;
+  const { setup: { wt, kept, renamed, out: setup } } = verdict;
+  let { pick } = verdict;
   // The branch this ticket's PR must come from: recorded so the merge driver matches the PR by
   // branch, never by a fuzzy key search.
   const branch = [...setup.matchAll(/\[setup-worktree\] branch=(\S+)/g)].pop()?.[1] ?? t.branch;
@@ -4100,13 +4135,21 @@ for (const t of spawnable) {
   // The preflight runs on the worker's own model, so a model the CLI rejects fails it here.
   const tier = tierFor(t);
   const model = models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model, ...pick.vars };
+  const baseEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
+  let workerEnv = { ...baseEnv, ...pick.vars };
 
   const resumed = resumeRound(t, { wt, kept, branch });
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
-  const pre = preflight(t.key, wt, workerEnv);
+  let pre = preflight(t.key, wt, workerEnv);
+  // Refused on the default, with new work moved to the fallback: this ticket starts there instead.
+  if (pre.limit && preflightHitLimit(t, pre.cost, pick.login)) {
+    pick = repoLogin();
+    if (!pick) continue;
+    workerEnv = { ...baseEnv, ...pick.vars };
+    pre = preflight(t.key, wt, workerEnv);
+  }
   if (pre.limit) {
     preflightHitLimit(t, pre.cost, pick.login);
     break;

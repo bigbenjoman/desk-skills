@@ -211,14 +211,13 @@ t('AC7 a pass later it starts and preflights nothing', `${calls('Y-1').length} $
 t('AC7 and the hold reads with its reset', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
 t('AC7 nothing is benched or moved', `${batchOf().benched ?? null} ${row('Y-1').login_move ?? null}`, 'null null');
 
-// A fallback login: the pass that learns the default is full holds as before, the next starts new work
-// on the fallback, and once the default has room the next new worker starts on it again.
+// A fallback login: the pass whose preflight on the default is refused at the limit starts that ticket,
+// and the next, on the fallback; once the default has room the next new worker starts on it again.
 env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO);
 atLimit(dirOf('b'));
-pass(env);
-t('fallback the pass that learns the default is full holds as before', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
 out = pass(env);
-t('fallback AC1 the next pass starts new work on the fallback', `${row('Y-1').state} ${on('Y-1')} ${row('Y-1').login.fallback} ${loginArg(calls('Y-1').at(-1))} ${row('Y-2').state}`, `running c true ${dirOf('c')} running`);
+t('fallback AC1 the refused ticket was preflighted on the default first', calls('Y-1').map(loginArg).slice(0, 2).join(' '), `${dirOf('b')} ${dirOf('c')}`);
+t('fallback AC1 the same pass starts new work on the fallback', `${row('Y-1').state} ${on('Y-1')} ${row('Y-1').login.fallback} ${loginArg(calls('Y-1').at(-1))} ${row('Y-2').state} ${on('Y-2')}`, `running c true ${dirOf('c')} running c`);
 t('fallback AC3 the switch is logged with its reason', out.includes('login: new workers start on fallback login c, as default login b is at the 5-hour usage limit'), true);
 t('fallback AC3 the spawn line names the login', /Y-1 port=.* login=c \(fallback\);/.test(out), true);
 t('fallback the switch is recorded and the default\'s hold no longer holds the batch', `${batchOf().login_fallback?.login} ${batchOf().usage_hold ?? null}`, 'c null');
