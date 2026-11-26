@@ -20,7 +20,8 @@ git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"
 printf 'one\n' > "$T/repo/a.txt"
 # DS-1027: two Next.js apps, one found by its next.config, one by its package.json.
-mkdir -p "$T/repo/apps/portal/apps/web" "$T/repo/apps/site" "$T/repo/apps/api"
+mkdir -p "$T/repo/apps/portal/apps/web" "$T/repo/apps/site" "$T/repo/apps/api" "$T/repo/apps/café"
+printf 'export default {}\n' > "$T/repo/apps/café/next.config.js" # a name git would quote
 printf 'export default {}\n' > "$T/repo/apps/portal/apps/web/next.config.mjs"
 printf '{"dependencies": {"next": "16.0.0"}}\n' > "$T/repo/apps/site/package.json"
 printf '{"dependencies": {}}\n' > "$T/repo/apps/api/package.json"
@@ -79,7 +80,7 @@ check "DS-833 a desk-review results file left at the worktree root keeps git sta
 
 # DS-1027: AGENTS.md and CLAUDE.md a dev server writes untracked into an app directory stay out of a commit.
 W="$T/wt/T-1"; WEB=apps/portal/apps/web
-for f in "$WEB/AGENTS.md" "$WEB/CLAUDE.md" apps/site/AGENTS.md apps/site/CLAUDE.md; do printf 'generated\n' > "$W/$f"; done
+for f in "$WEB/AGENTS.md" "$WEB/CLAUDE.md" apps/site/AGENTS.md apps/site/CLAUDE.md "apps/café/AGENTS.md"; do printf 'generated\n' > "$W/$f"; done
 printf 'change\n' > "$W/b.txt"; git -C "$W" add -A; git -C "$W" commit -q -m change
 check "DS-1027 AC1 untracked AGENTS.md and CLAUDE.md in a Next.js app directory are not in the commit" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = b.txt ] && [ -z "$(git -C "$W" status --porcelain)" ]'
 printf 'ours\n' > "$W/$WEB/CLAUDE.md"; git -C "$W" add -f "$WEB/CLAUDE.md"; git -C "$W" commit -q -m 'tracked app CLAUDE.md'

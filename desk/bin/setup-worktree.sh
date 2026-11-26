@@ -396,9 +396,10 @@ exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without t
   echo "$1" >> "$excl"
 }
 next_app_dirs() { # each tracked Next.js app directory below the root (a next.config.*, or a package.json naming next), escaped for an exclude pattern
-  { git -C "$WT" ls-files -- ':(glob)**/next.config.*' || true
-    git -C "$WT" grep -lE '"next"[[:space:]]*:' -- ':(glob)**/package.json' || true
-  } 2>/dev/null | while IFS= read -r f; do
+  # NUL-separated, so a path git would quote (a non-ASCII directory name) arrives as it is on disk.
+  { git -C "$WT" ls-files -z -- ':(glob)**/next.config.*' || true
+    git -C "$WT" grep -lzE '"next"[[:space:]]*:' -- ':(glob)**/package.json' || true
+  } 2>/dev/null | while IFS= read -r -d '' f; do
     case "$f" in */*) printf '%s\n' "${f%/*}" ;; esac
   done | sort -u | sed 's/[][*?\\]/\\&/g'
 }
@@ -538,7 +539,8 @@ finish() {
   # next dev writes untracked AGENTS.md and CLAUDE.md into its app's directory, which a worker's commit
   # would sweep up. Excluded only in the Next.js app directories below the root: the exclude is shared by
   # every checkout of the repo, where a ticket may add a root or nested CLAUDE.md, or a vendored skill its
-  # AGENTS.md. A tracked one is never excluded, so edits to it still commit.
+  # AGENTS.md. A tracked one is never excluded, so edits to it still commit. The apps are read from what
+  # is tracked each time a worker is spawned here, so an app a ticket adds is covered from its next session.
   next_app_dirs | while IFS= read -r d; do
     { exclude_from_git "/$d/AGENTS.md" && exclude_from_git "/$d/CLAUDE.md"; } || exit 1
   done || say "WARNING: could not add generated AGENTS.md and CLAUDE.md files to the git exclude"
