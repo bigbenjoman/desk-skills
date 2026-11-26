@@ -19,6 +19,10 @@
 //   node verdict.mjs --check <body.md> <head>  exit 0 when the repo's review gate (its own
 //                                              scripts/desk/review-gate.mjs, else desk's) reads the
 //                                              body's verdict at that full head SHA; 1 naming why not
+//   node verdict.mjs --anchors <results.json> <head>
+//                                              before Phase 4's refuter calls: marks each finding whose
+//                                              file:line does not exist at head REJECTED, "anchor":
+//                                              "missing", rewrites the file and prints one line for each
 //
 // results.json, written by the reviewer once every finder and refuter has answered:
 //
@@ -60,6 +64,10 @@
 // as JSON, for the autopilot pass to keep as follow-on steps once the PR merges (pass.mjs). Like the
 // accepted line it never decides clean.
 //
+// A finding whose cited file, or line, does not exist at the reviewed head cannot be right, so it is
+// rejected before any refuter call (checkAnchors): "result": "REJECTED", "anchor": "missing" and no
+// refuted_by, the one REJECTED finding without one. The heading counts them, and nothing else does.
+//
 // A finding the reviewer fixed once the round was read is "fixed": true, set after the fix commits and
 // before --findings runs. It never changes the counts: they attest the reviewed SHA, fixed or not. Only
 // a counted finding can be fixed, never a carried, deferred, rejected or premise one.
@@ -92,7 +100,8 @@
 //     records it, once each: one without all four is refused, never counted out of gaps;
 //   - a post-merge criterion names its criterion, a live-only need and its step, once, and is not also
 //     accepted: one a test could check before the merge is refused, never counted out of gaps.
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -118,7 +127,9 @@ const POST_MERGE = ['gap', 'needs', 'step']
 const POST_MERGE_NEEDS =['production', 'staging', 'deployed', 'device', 'third-party']
 const POST_MERGE_STEP_MAX = 300
 const SEAT = ['role', 'agent', 'vendor', 'status', 'reason', 'note', 'fallback']
-const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried', 'fixed', 'follow_up']
+const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried', 'fixed', 'follow_up', 'anchor']
+// The anchor check's one mark: the cited file or line is not there at head.
+const ANCHOR_MISSING = 'missing'
 // A follow-up ticket's key, as a tracker key is written: ABC-123.
 const FOLLOW_UP = /^[A-Z][A-Z0-9_]*-\d+$/
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
@@ -222,6 +233,12 @@ export function tally(r) {
       if (f.carried || f.deferred) no(`${name}: a ${f.carried ? 'carried' : 'deferred'} finding is left unfixed, so it is not fixed`)
       if (f.severity === 'PREMISE' || f.result === 'REJECTED') no(`${name}: only an outstanding finding can be fixed`)
     }
+    const anchorless = f.anchor != null
+    if (anchorless) {
+      if (f.anchor !== ANCHOR_MISSING) no(`${name}: anchor is "${ANCHOR_MISSING}", set by the anchor check, or left out (${JSON.stringify(f.anchor)})`)
+      if (f.severity === 'PREMISE' || f.result !== 'REJECTED') no(`${name}: a finding whose anchor is missing is REJECTED before any refuter call`)
+      if (f.refuted_by != null) no(`${name}: a finding rejected for a missing anchor reached no refuter, so it has no refuted_by`)
+    }
     if (f.follow_up != null && !FOLLOW_UP.test(String(f.follow_up))) no(`${name}: follow_up must be the follow-up ticket's key, e.g. ABC-123 (${JSON.stringify(f.follow_up)})`)
     if (f.carried) {
       const at = f.where ? ` at ${f.where}` : ''
@@ -237,7 +254,7 @@ export function tally(r) {
     if (f.result === 'UNREFUTED') {
       if (f.refuted_by != null) no(`${name}: an UNREFUTED finding has no refuted_by`)
       cross = false
-    } else {
+    } else if (!anchorless) {
       if (!VENDORS.includes(f.refuted_by)) no(`${name}: refuted_by must be the refuter's vendor, claude or codex, not its agent (${JSON.stringify(f.refuted_by ?? null)})`)
       if (f.refuted_by === seat.vendor) cross = false
     }
@@ -295,7 +312,8 @@ export function tally(r) {
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
   const refuters = [...new Set(r.findings.filter((f) => f.severity !== 'PREMISE' && f.refuted_by != null).map((f) => f.refuted_by))]
-  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted,
+  const anchorMissing = r.findings.filter((f) => f.anchor === ANCHOR_MISSING).length
+  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted, anchorMissing,
     postMerge: postMerge.map((p) => ({ gap: p.gap.trim(), needs: p.needs, step: p.step.trim() })), restsOn, targeted, fixed,
     refuterVendor: refuters.length > 1 ? 'mixed' : refuters[0] ?? null,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
@@ -308,6 +326,55 @@ export function validateResults(r) {
   try { tally(r) } catch (e) { if (e instanceof VerdictError) return e.message; throw e }
   return null
 }
+
+// The anchor check, run before Phase 4's refuter calls: each finding citing a file that does not exist
+// at `head`, or a line past that file's end, comes back REJECTED with "anchor": "missing" and no
+// refuted_by, so no refuter is called for it. Everything else comes back as it was: a finding with no
+// file:line, a PREMISE, one already refuted, or a path outside the repo is the refuter's to judge.
+// Returns { findings, rejected }, rejected listing the findings it marked. Throws VerdictError when
+// head is not a commit here, so a failed git call never reads as every anchor missing.
+export function checkAnchors(findings, head, { cwd = process.cwd() } = {}) {
+  if (!Array.isArray(findings)) no('findings must be a list')
+  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+  if (!/^[0-9a-f]{40}$/.test(String(head ?? ''))) no('head must be the full 40-character reviewed SHA')
+  if (git('cat-file', '-e', `${head}^{commit}`).status !== 0) no(`${head.slice(0, 9)} is not a commit in ${cwd}`)
+  const top = git('rev-parse', '--show-toplevel').stdout.trim()
+  const lines = new Map()
+  // The cited file's line count at head, or -1 when no file is there.
+  const lineCount = (path) => {
+    if (!lines.has(path)) {
+      const type = git('cat-file', '-t', `${head}:${path}`)
+      const blob = type.status === 0 && type.stdout.trim() === 'blob' ? git('cat-file', 'blob', `${head}:${path}`) : null
+      if (blob && blob.status !== 0) no(`cannot read ${path} at ${head.slice(0, 9)}: ${blob.stderr.trim()}`)
+      const text = blob ? blob.stdout : null
+      lines.set(path, text == null ? -1 : text.split('\n').length - (text === '' || text.endsWith('\n') ? 1 : 0))
+    }
+    return lines.get(path)
+  }
+  const rejected = []
+  const out = findings.map((f) => {
+    if (!f || typeof f !== 'object' || f.severity === 'PREMISE' || f.result != null) return f
+    const m = /^([^\s:]+):(\d+)/.exec(String(f.where ?? ''))
+    if (!m) return f
+    let path = m[1].replace(/^(?:\.\/)+/, '')
+    if (path.startsWith('/')) {
+      if (!top || !path.startsWith(`${top}/`)) return f
+      path = path.slice(top.length + 1)
+    }
+    if (path.split('/').includes('..')) return f
+    const line = Number(m[2])
+    const count = lineCount(path)
+    if (count >= 0 && line >= 1 && line <= count) return f
+    const marked = { ...f, result: 'REJECTED', anchor: ANCHOR_MISSING }
+    delete marked.refuted_by
+    rejected.push(marked)
+    return marked
+  })
+  return { findings: out, rejected }
+}
+
+// How the anchor check reports a finding it rejected.
+export const anchorLine = (f, head) => `${f.id ?? 'finding'} REJECTED: anchor not found, ${f.where} does not exist at ${head.slice(0, 7)}`
 
 export const isClean = (n) => Object.values(n).every((v) => v === 0)
 
@@ -330,7 +397,8 @@ export function render(r) {
   const carried = t.carried.length ? `P2 findings carried: ${t.carried.length}` : ''
   const accepted = t.accepted.length ? `requirement gaps accepted: ${t.accepted.length}` : ''
   const later = t.postMerge.length ? `criteria left for after the merge: ${t.postMerge.length}` : ''
-  const kept = [carried, accepted, later].filter(Boolean)
+  const anchors = t.anchorMissing ? `findings rejected for a missing anchor: ${t.anchorMissing}` : ''
+  const kept = [carried, accepted, later, anchors].filter(Boolean)
   const verdict = isClean(n)
     ? `${carried ? 'No P0 or P1 findings' : 'No P0, P1 or P2 findings'}${kept.map((k) => `; ${k}`).join('')}`
     : `not clean: ${[...parts, ...kept].join(', ')}`
@@ -480,6 +548,22 @@ if (isMain && process.argv[2] === '--check') {
   const why = gateRejects(body, head, gate, gateVendor())
   process.stdout.write(why ? `REJECTED by ${path}: ${why}\n` : `ok: ${path} reads its verdict at ${head.slice(0, 9)}\n`)
   process.exit(why ? 1 : 0)
+} else if (isMain && process.argv[2] === '--anchors') {
+  // node verdict.mjs --anchors <results.json> <head sha>: run from a checkout holding head.
+  try {
+    const [file, head, ...rest] = process.argv.slice(3)
+    if (!file || !head || rest.length) no('usage: verdict.mjs --anchors <results.json> <full head sha>')
+    let r
+    try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
+    if (!r || typeof r !== 'object' || !Array.isArray(r.findings)) no(`${file} has no findings list`)
+    const { findings, rejected } = checkAnchors(r.findings, head)
+    if (rejected.length) writeFileSync(file, `${JSON.stringify({ ...r, findings }, null, 2)}\n`)
+    for (const f of rejected) process.stdout.write(`${anchorLine(f, head)}\n`)
+    process.stdout.write(`anchors: ${plural(rejected.length, 'finding')} rejected for a missing anchor, ${findings.length - rejected.length} left as they were\n`)
+  } catch (e) {
+    process.stderr.write(`verdict.mjs: ${e.message}\n`)
+    process.exit(2)
+  }
 } else if (isMain) {
   try {
     const args = process.argv.slice(2)
