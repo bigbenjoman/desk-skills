@@ -325,6 +325,14 @@ t('DS-477 AC6 a run records its quota points', results(join(dir, 'q-default'))['
 t('DS-477 the report prints the points', /quota: Claude login default: the bench has used 0\.1 of 10 points this week, weekly use 10\.1%/.test(r.stdout), true);
 t('DS-477 run.json keeps the quota', JSON.parse(readFileSync(join(dir, 'q-default', 'run.json'), 'utf8')).quota.cap, 10);
 
+// Use of the account while the hidden tests are scored (as other sessions spend during a long wait
+// for the test lock) is not the run's: the session's 1 point is, the scoring's 5 are not.
+writeFileSync(join(hidden, 'tests', 'spend.sh'), `node -e "const f=process.env.STUB_USAGE,fs=require('fs'),u=JSON.parse(fs.readFileSync(f));u.used+=0.05;fs.writeFileSync(f,JSON.stringify(u))"\n${FIXED}`);
+setUsage(0.1);
+r = qrun('q-scoring', [task('one', 'FIX', ['tests/spend.sh'])], { STUB_STEP: '0.01' });
+t('DS-1023 scoring is not in the run\'s points', results(join(dir, 'q-scoring'))['one.a'].quota?.points, 1);
+t('DS-1023 the run is still scored', results(join(dir, 'q-scoring'))['one.a'].status, 'accepted');
+
 // AC2, AC6, AC7: a 2-point cap, each run 1 point: two run, the third stops; after the reset it runs.
 const capSet = [task('one', 'FIX'), task('two', 'FIX'), task('three', 'FIX')];
 const capEnv = { DESK_MACHINE: profile('cap', { 'bench-cap-points': '2' }), STUB_STEP: '0.01' };
