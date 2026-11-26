@@ -67,30 +67,35 @@ const runsOnProduction = (p) => p.split(/(?<=[.!?;])\s+/).some((s) => PRODUCTION
 // A question, an open-decision word or a person step inside a quoted phrase is quoted copy, not the
 // ticket's own. A parenthetical that is all one quote goes first, so a quote nested in another
 // ("leaves a decision open ("decide")") does not pair its marks with the outer one's.
-// Single quotes pair only at word edges, so an apostrophe ("it's", "users'") never opens one.
-const QUOTED = /"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)'[^'\n]*'(?!\w)/g;
+// Single quotes pair only at word edges, so an apostrophe ("it's", "users'", "'90s") never opens one.
+const QUOTED = /"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)'(?!\d)[^'\n]*'(?!\w)/g;
 const QUOTED_ASIDE = new RegExp(String.raw`\(\s*(?:${QUOTED.source})\s*\)`, 'g');
 const unquoted = (s) => s.replace(QUOTED_ASIDE, ' ').replace(QUOTED, ' ');
 const asides = (s, drop) => s.replace(/\(([^()\n]*)\)/g, (m, inner) => (drop(inner) ? ' ' : m));
 // A parenthetical listing examples leaves nothing open: one opened by "e.g.", "for example" or
-// "such as", or three or more short comma-separated items. An item opening with a joining word
-// ("and ask Finance", "then notify X", "by Friday") makes it a run of steps, not a list.
+// "such as" with no second clause after a semicolon, or three or more short comma-separated items.
+// An item opening with a joining word ("then notify X", "by Friday", "and ask Finance to approve")
+// makes it a run of steps, not a list; a last item of "and" or "or" and two words at most still
+// ends a list ("draft, TBD, and archived").
 const EXAMPLE_LEAD = /^\s*(?:e\.g\.|(?:for (?:example|instance)|such as)\b)/i;
 const JOINER = /^(?:and|or|then|with|at|by|before|after|until|once|if|when|while|unless|so|but|to)\b/i;
 const exampleList = (inner) => {
-  if (EXAMPLE_LEAD.test(inner)) return true;
+  if (EXAMPLE_LEAD.test(inner)) return !inner.includes(';');
   const items = inner.split(',').map((x) => x.trim());
-  return items.length >= 3 && items.every((x) => x && x.split(/\s+/).length <= 5 && !JOINER.test(x));
+  const last = items.length - 1;
+  const item = (x, i) => (i === last ? x.replace(/^(?:and|or)\s+(?=\S+(?:\s+\S+)?$)/i, '') : x);
+  return items.length >= 3 && items.map(item).every((x) => x && x.split(/\s+/).length <= 5 && !JOINER.test(x));
 };
 // A parenthetical naming where a value comes from ("entered by hand in /desk-setup costs",
-// "from subscriptions.md") asks nobody to act, unless it names who does ("entered by the operator").
+// "from subscriptions.md", "in the operator console") asks nobody to act, unless it names who does
+// ("entered by the operator", "after the reviewer signs off").
 const SOURCE = /^\s*(?:(?:entered|recorded|set|read|taken|kept|stored|written|typed|filled in|supplied|configured|defined|chosen|pasted)\s+(?:(?:by hand|manually)\s+)?(?:in|by|from|at|on|via|under|through)\b|(?:comes? |read |taken )?from\b)/i;
-const ACTOR = /\boperator\b|\bsigns? off\b|\bsign-off\b/i;
+const ACTOR = /\bby (?:the |an? )?(?:operator|reviewer|person|user|someone)\b|\boperator (?:enters|runs|sets|types|checks|confirms|approves)\b|\bsigns? off\b|\bsign-off\b/i;
 const valueSource = (inner) => SOURCE.test(inner) && !ACTOR.test(inner);
 // "Neither leaves anything for anyone to decide" says nothing is left open. The words between are
 // held to a few that keep it a denial, and the span never crosses another "decide".
 const SETTLED = /\b(?:nothing|(?:neither|not|never|no)\b(?:(?!\bdecide\b)[^.;:!?])*?\banything)(?:\s+(?:is|was|are|left|else|more|open|remaining|here|for|anyone|anybody|someone|somebody|us|you|them))*\s+to decide\b/gi;
-const OPERATOR = new RegExp(String.raw`${ACTOR.source}|\bby hand\b|\bmanually\b`, 'i');
+const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-off\b/i;
 // The Size fallback, a first line `Size: M`, for a project with no Size field.
 export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
 

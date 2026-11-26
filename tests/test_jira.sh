@@ -695,18 +695,20 @@ for n in 1436 1423 1447; do
 done
 openline(){ clean | awk -v o="$1" '{ print } /^Reviewers see/ { print o }' > "$LD/open2.md"; lint "$LD/open2.md" customfield_10208=M; }
 for o in 'A "Decide whether…" Task is left out.' 'A “TBD” label is left out.' 'A `decide` task is left out.' 'It skips work (rotate a key, promote rules, decide a policy).' 'It skips work (for example tickets marked TBD).' 'It reports one ("decide") per line.' 'Neither leaves anything for anyone to decide.' \
-  'It reports "leaves a decision open ("decide")" per line.' "The label is 'TBD'." 'The label is ‘TBD’.' 'Skip unfinished labels (e.g. the TBD label).' 'Nothing is left to decide.'; do
+  'It reports "leaves a decision open ("decide")" per line.' "The label is 'TBD'." 'The label is ‘TBD’.' 'Skip unfinished labels (e.g. the TBD label).' 'Nothing is left to decide.' 'The filter omits placeholder statuses (draft, TBD, and archived).'; do
   openline "$o"
   check "DS-1014 AC1 lint: an open-decision word only in quotes, backticks or an example list is not an open decision ($o)" '[ $rc -eq 0 ]'
 done
 for o in 'Decide whether to ship it.' 'The fee is TBD (rotate a key, promote rules, set a policy).' 'Ship it (decide by Friday).' 'The fee (to confirm) is 5.' \
   'The currency is unresolved (decide the currency, confirm the tax treatment, and ask Finance to approve).' 'Ship it (decide by Friday, then notify X, and publish).' \
   'Ship it (decide the price, with the PO, at the review).' 'Do not ship until we decide whether there is anything left to decide.' \
-  'Do not ship anything until the owner gets to decide.' 'Nothing else remains but to decide the fee.' "Don't skip it: it's TBD."; do
+  'Do not ship anything until the owner gets to decide.' 'Nothing else remains but to decide the fee.' "Don't skip it: it's TBD." \
+  "For '90s invoices, decide how long to retain customers' records." 'Use a supported tier (e.g. Standard; decide which tier to use before shipping).'; do
   openline "$o"
   check "DS-1014 AC3 lint: an open-decision word in plain prose still blocks ($o)" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* leaves a decision open"'
 done
-for a in 'Given a fee (entered by hand in /desk-setup costs, never guessed), when Costs renders, then it shows the fee.' 'Given a fee (set by hand in subscriptions.md), when Costs renders, then it shows the fee.' 'Given a fee, when Costs renders, then it says "set it by hand".'; do
+for a in 'Given a fee (entered by hand in /desk-setup costs, never guessed), when Costs renders, then it shows the fee.' 'Given a fee (set by hand in subscriptions.md), when Costs renders, then it shows the fee.' 'Given a fee, when Costs renders, then it says "set it by hand".' \
+  'Given a fee (entered by hand in the operator console), when Costs loads, then it shows the fee.'; do
   acline "$a"
   check "DS-1014 AC2 lint: a person-step word only in a value-source note or a quote is not a person step ($a)" '[ $rc -eq 0 ]'
 done
