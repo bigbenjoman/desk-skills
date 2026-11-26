@@ -1244,15 +1244,25 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-2': { state: 'triaged', lane: 'A', collides_with: 'F-1', fix: { try: 1, of: 2, pr: 131, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
-} });
+  // F-5's admission snapshot names F-1, but its triage record shares no file with it; F-6's names
+  // nothing, but it shares F-1's file.
+  'F-5': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
+  'F-6': { state: 'triaged', lane: 'A' },
+}, triage: { 'F-1': { files_in_scope: ['src/f.ts', 'src/one.ts'] }, 'F-2': { files_in_scope: ['src/f.ts'] }, 'F-3': { files_in_scope: ['./src/f.ts'] },
+  'F-4': { files_in_scope: ['src/g.ts'] }, 'F-5': { files_in_scope: ['src/other.ts'] }, 'F-6': { files_in_scope: ['src/one.ts', 'src/f.ts'] } } });
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
 const phi = strip(repoScreen(phr));
+const phiWait = 'waits for F-1 (collides on src/f.ts, 1 running of 1 place)';
 t('a fix try held back by a collision waits for the running ticket, not the next free worker, in Ready',
-  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (collides), then a worker repairs it, try 1 of 2 true');
-t('a ticket held back by a collision says it collides', /F-3 +○ ready +waits for F-1 \(collides\)/.test(phi), true);
+  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, `#131 · 1 check failed · ${phiWait}, then a worker repairs it, try 1 of 2 true`);
+t('a ticket held back by a collision names the running holder, the file and its places', `${phiText('F-3')} ${/F-3 +○ ready +waits for F-1 \(collides/.test(phi)}`, `${phiWait} true`);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
-t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).includes('waits for F-1 (collides), then a worker repairs it'), true);
+t('its ticket page says the same', strip(ticketScreen(phr, 'F-2', { width: 200 })).includes(`${phiWait}, then a worker repairs it`), true);
+t('DS-1033 AC2 a ready ticket whose collides_with names a running one, but which the file budget would spawn, starts at the next pass',
+  `${phiText('F-5')} ${/F-5 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
+t('DS-1033 AC1 a ready ticket the file budget holds says so with every file at its budget, whatever its collides_with',
+  phiText('F-6'), 'waits for F-1 (collides on src/one.ts, 1 running of 1 place; src/f.ts, 1 running of 1 place)');
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.

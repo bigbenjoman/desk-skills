@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
+import { tryLockFile, filePid, withDirLock } from './dir-lock.mjs';
 import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
@@ -31,7 +31,8 @@ import { openCache } from './read-cache.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
-import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
+import { conflictsPath, readConflicts, recordConflicts, conflictTimes, recentCount } from './conflict-record.mjs';
+import * as FB from './file-budget.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
@@ -2455,10 +2456,7 @@ const runningKeys = new Set(running.map((r) => r.key));
 const FILE_BUDGET = E.fileBudget();
 const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
 const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
-const scopeFiles = (rec) => {
-  const files = rec?.files_in_scope;
-  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f)));
-};
+const scopeFiles = (rec) => FB.scopeFiles(rec, budgetAppendOnly);
 const scopeOf = new Map();
 const budgetFiles = (key) => {
   if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
@@ -2488,61 +2486,17 @@ const countElsewhere = (queues) => {
   }
 };
 countElsewhere(otherQueues({ self: QUEUE_FILE }));
-// A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
-// tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
-// passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
-const lineCounts = new Map();
-const GIT_BIG = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 };
-const trees = new Map();
-// ref -> Map(path -> blob id), or null when the ref cannot be listed.
-const treeOf = (ref) => {
-  if (!trees.has(ref)) {
-    let t = null;
-    try {
-      t = new Map();
-      for (const e of execFileSync('git', ['-C', MAIN, 'ls-tree', '-r', '-z', ref], GIT_BIG).split('\0')) {
-        const m = /^\d+ blob ([0-9a-f]+)\t(.*)$/s.exec(e);
-        if (m) t.set(m[2], m[1]);
-      }
-    } catch { t = null; }
-    trees.set(ref, t);
-  }
-  return trees.get(ref);
-};
-const LINE_COUNTS_FILE = join(STATE, 'line-counts.json');
-let blobLines = null;
-const linesOfBlob = (sha) => {
-  if (!blobLines) { try { blobLines = JSON.parse(readFileSync(LINE_COUNTS_FILE, 'utf8')); } catch { /* none yet */ } if (!blobLines || typeof blobLines !== 'object') blobLines = {}; }
-  if (Number.isInteger(blobLines[sha])) return blobLines[sha];
-  const n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', sha], GIT_BIG).split('\n').length - 1;
-  blobLines[sha] = n;
-  if (!DRY) {
-    // Only blobs still on a listed ref are kept, so the file holds about one entry per counted file.
-    const live = new Set([...trees.values()].flatMap((t) => (t ? [...t.values()] : [])));
-    const keep = Object.fromEntries(Object.entries(blobLines).filter(([s]) => live.has(s)));
-    try { writeJsonAtomic(LINE_COUNTS_FILE, keep); } catch { /* counted again next pass */ }
-  }
-  return n;
-};
+// A file's length on the batch base (file-budget.mjs lineCounter, its counts kept in line-counts.json).
+const baseLines = FB.lineCounter({ main: MAIN, cacheFile: join(STATE, 'line-counts.json'), write: !DRY });
 // A fetch, push or sync since the trees were listed may have moved the base: they are listed again.
 let treesAt = 0;
 const linesOnBase = (f) => {
-  if (treesAt !== refsMoved) { treesAt = refsMoved; trees.clear(); lineCounts.clear(); }
-  if (!lineCounts.has(f)) {
-    const base = E.batchBase() ?? DEFAULT_BRANCH;
-    let n = 0;
-    for (const ref of [`origin/${base}`, base]) {
-      const sha = treeOf(ref)?.get(f);
-      if (!sha) continue;
-      try { n = linesOfBlob(sha); break; } catch { /* unreadable on that ref */ }
-    }
-    lineCounts.set(f, n);
-  }
-  return lineCounts.get(f);
+  if (treesAt !== refsMoved) { treesAt = refsMoved; baseLines.clear(); }
+  const base = E.batchBase() ?? DEFAULT_BRANCH;
+  return baseLines.lines(f, [`origin/${base}`, base]);
 };
-const configuredPlaces = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
-  : FILE_BUDGET.big === FILE_BUDGET.small ? FILE_BUDGET.small
-  : linesOnBase(f) > FILE_BUDGET.lines ? FILE_BUDGET.big : FILE_BUDGET.small);
+const placeOpts = { budget: FILE_BUDGET, serial: budgetSerial, lines: linesOnBase };
+const configuredPlaces = (f) => FB.configuredPlaces(f, placeOpts);
 // A file whose merge-time conflicts rise runs fewer places than configured (conflict-record.mjs),
 // from the record every batch of this repo shares. A record that does not read lowers nothing.
 const CONFLICTS_FILE = conflictsPath(STATE);
@@ -2557,26 +2511,15 @@ function noteConflict(what, { files, ...entry }) {
   const r = recordConflicts(CONFLICTS_FILE, { files, ...entry, at: PASS_AT });
   return r.error ? `conflicts: ${what}'s conflicting files did not go on the conflict record: ${r.error}` : null;
 }
-const placesFor = (f) => {
-  const k = configuredPlaces(f);
-  return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
-};
+const placesFor = (f) => FB.placesFor(f, { ...placeOpts, conflictsBy, now: PASS_MS });
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
 // Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
 // them (`by`) and those of the repo's other batches (`elsewhere`, { key, batch }).
-const budgetHolds = (r) => {
-  const holds = [];
-  if (reviewOnlyTry(r)) return holds;
-  for (const f of budgetFiles(r.key)) {
-    const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && o.files.includes(f)).map(({ key, batch }) => ({ key, batch }));
-    if (!by.length && !elsewhere.length) continue;
-    const k = placesFor(f);
-    if (by.length + elsewhere.length >= k) holds.push({ file: f, k, by, elsewhere });
-  }
-  return holds;
-};
+const budgetHolds = (r) => (reviewOnlyTry(r) ? [] : FB.budgetHolds({
+  key: r.key, files: budgetFiles(r.key), places: placesFor, elsewhere: elsewhereRunning,
+  running: [...runningKeys].map((k) => ({ key: k, files: reviewKeys.has(k) ? [] : budgetFiles(k) })),
+}));
 const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The

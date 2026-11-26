@@ -46,7 +46,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, fileBudget } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -54,13 +54,17 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, idlePass, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
+import { LIVE_MS, batchLabel, idlePass, lastBeat, liveBeat, loopFrom, machineCap, otherQueues, stoppedAt } from './borrow.mjs';
+import * as FB from './file-budget.mjs';
+import { conflictTimes, conflictsPath, readConflicts } from './conflict-record.mjs';
+import { appendOnlyFrom } from './scope-report.mjs';
+import { reviewOnlyTry } from './pass/shared.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks, globToRegExp } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, wquantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
@@ -3292,15 +3296,57 @@ function countsLine(r, now = Date.now()) {
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY], ...drivers]);
 }
 
-// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a
-// running ticket it collides with, which the pass never starts it beside ("held back by a collision"),
-// or the machine cap, which every repo's workers share.
+// The pass's per-file budget for batch `r` (file-budget.mjs), from the inputs the pass reads: the
+// triage records of the tickets running in this batch and the repo's other batches, the repo's §3b
+// budget and §4 Append-only paths, its files' lengths on the base, and the conflict record. Read once
+// a listing, and a file's length only when a running ticket shares it.
+const budgetRead = new WeakMap();
+function budgetOf(r) {
+  if (budgetRead.has(r)) return budgetRead.get(r);
+  const appendOnly = appendOnlyFrom(() => repoConfigValues(r.slug, 'append-only-paths')).globs.map(globToRegExp);
+  // A row that cannot be read is one that does not read, which is 1 place for every file, as in the pass.
+  let spans;
+  try { spans = repoConfigValues(r.slug, 'file-budget'); } catch { spans = [null, null]; }
+  const budget = fileBudget(spans ?? null);
+  const running = Object.values(r.q.tickets ?? {}).filter((t) => t?.state === 'running' && t.key)
+    .map((t) => ({ key: t.key, files: reviewOnlyTry(t) ? [] : FB.scopeFiles(triageOf(r, t.key), appendOnly) }));
+  const elsewhere = otherQueues({ self: r.queuePath }).filter((o) => o.slug === r.slug && !o.error).flatMap((o) =>
+    Object.values(o.q.tickets ?? {}).filter((t) => t?.state === 'running' && t.key && !reviewOnlyTry(t))
+      .map((t) => ({ key: t.key, batch: o.batch, files: FB.scopeFiles(readTriageRecord(batchPaths(r.slug, o.batch).state, t.key), appendOnly) })));
+  let base = typeof r.q.base === 'string' ? r.q.base.trim() : '';
+  if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* unreadable reads as main */ } }
+  base ||= 'main';
+  const root = repoDirs(r.slug).root;
+  const counter = root ? FB.lineCounter({ main: root, cacheFile: join(r.stateDir, 'line-counts.json') }) : null;
+  const record = readConflicts(conflictsPath(r.stateDir));
+  const opts = { budget, serial: budget.serial.map(globToRegExp), lines: (f) => counter?.lines(f, [`origin/${base}`, base]) ?? 0,
+    conflictsBy: record.bad ? new Map() : conflictTimes(record.entries) };
+  const b = { appendOnly, running, elsewhere, places: (f) => FB.placesFor(f, { ...opts, now: Date.now() }) };
+  budgetRead.set(r, b);
+  return b;
+}
+// The files of ready ticket `t` the pass holds it on, as FB.budgetHolds gives them.
+function budgetWait(r, t) {
+  if (reviewOnlyTry(t)) return [];
+  const b = budgetOf(r);
+  return FB.budgetHolds({ key: t.key, files: FB.scopeFiles(triageOf(r, t.key), b.appendOnly), running: b.running, elsewhere: b.elsewhere, places: b.places });
+}
+// "waits for A-1, A-7 in batch x (collides on src/a.ts, 2 running of 3 places; …)": the running
+// holders, then each file at its budget with its places.
+const budgetWords = (holds) => {
+  const who = [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)]))];
+  return `waits for ${who.join(', ')} (collides on ${holds.map((h) => `${h.file}, ${h.by.length + h.elsewhere.length} running of ${h.k} place${h.k === 1 ? '' : 's'}`).join('; ')})`;
+};
+
+// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a file
+// it names already at its per-file budget, which the pass never starts it beside ("held back by a
+// collision"), or the machine cap, which every repo's workers share.
 function startWait(r, t) {
   if (r.workers === 0) return 'workers set to 0';
   const busy = workersRunning(r);
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
-  const clash = String(t.collides_with ?? '').split('|').filter((c) => r.q.tickets?.[c]?.state === 'running');
-  if (clash.length) return `waits for ${clash.join(', ')} (collides)`;
+  const holds = budgetWait(r, t);
+  if (holds.length) return budgetWords(holds);
   // Every repo's workers count against the machine cap, so a batch with free slots can still wait. A
   // batch with no passes waits for those first, which readyWhy says.
   const m = r.machine;
