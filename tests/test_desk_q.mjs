@@ -1740,6 +1740,13 @@ t('#1416 AC1 a repo set to session whose batch is marked handed over: ● sessio
 const stop1416 = ov1416(['x1416']);
 t('#1416 AC2 its passes stopped with a ticket to move: the band says the session\'s loop stopped, names the session and not the supervisor',
   `${lines(stop1416).includes(' ✕ x1416: the loop in session sess-1416 has stopped, so no passes run. Run /desk-autopilot in x1416')} ${/supervisor/.test(stop1416)}`, 'true false');
+// #1486: a loop its session stopped because the last pass found the batch idle reads as idle in grey,
+// a ticket admitted since included, never the red band, and needs-you lists no stall for it.
+put(I.T, I.env, 'i1486', { port: 5299, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'i1486', concurrency: 2, supervised: true, pass: { by: 'session', at: minsAgo(50), idle_at: minsAgo(50) }, tickets: { 'SI-1': ready } } });
+const idle1486 = ov1416(['i1486']);
+t('#1486 AC2 a loop stopped on an idle batch: a grey "idle, loop stopped" line and an idle cell, not the red band',
+  `${/✕/.test(idle1486)} ${lines(idle1486).includes(' · i1486: idle, loop stopped. Tickets admitted since wait for its next pass: run /desk-autopilot in i1486.')} ${/^ {2}i1486 +■ idle · 50m /.test(rowOf(idle1486, 'i1486') ?? '')} ${Q.sessionStalled(Q.loadRepos(NOW).find((r) => r.name === 'i1486'))}`,
+  'false true true false');
 process.env.DESK_PLATFORM = 'linux';
 writeFileSync(join(I.T, 'bin', 'systemctl'), '#!/bin/sh\necho "Failed to connect to bus: No medium found" >&2\nexit 1\n', { mode: 0o755 });
 const wsl1416 = `${ov1416(['off', 'halt'])}\n${Q.repoScreen(at215('off'), { now: NOW })}`;

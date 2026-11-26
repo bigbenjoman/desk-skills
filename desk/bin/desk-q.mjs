@@ -53,7 +53,7 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
+import { LIVE_MS, idlePass, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -924,9 +924,12 @@ export function usageHoldOf(r) {
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
 const handsOver = (r) => r.run?.by === 'session' && r.run.set === 'supervisor';
 const supervisorOff = (r) => r.run?.agent === 'off';
+// A batch a session runs whose loop stopped after its last pass found it idle (pass.mjs `idle_at`): the
+// session ended the loop on purpose, so a ticket admitted since waits for it to restart, not on a fault.
+export const idleStopped = (r) => !r.live && r.last != null && r.run?.by === 'session' && idlePass(r.q);
 // A batch a session runs whose passes stopped with a ticket they could move: that session's /loop
 // ended. needs-you lists the same batches as stalled ones.
-export const sessionStalled = (r) => r.last != null && r.run?.by === 'session' && passesPaused(r);
+export const sessionStalled = (r) => r.last != null && r.run?.by === 'session' && passesPaused(r) && !idleStopped(r);
 
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
@@ -1011,13 +1014,13 @@ const attention = (r) => (r.error || (!r.q && !r.asks?.length) ? 0 : needsCount(
 const hasBatch = (r) => r.q != null || r.error != null || r.asks?.length > 0;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
-// supervisor to turn back on or that cannot start, a session's loop that stopped, failing passes, or
-// an unfinished batch to hand over), most first.
+// supervisor to turn back on or that cannot start, a session's loop that stopped, an idle one with a
+// ticket admitted since, failing passes, or an unfinished batch to hand over), most first.
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
   const you = new Map(b.map((r) => [r, r.live ? 0 : attention(r)]));
-  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || sessionStalled(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
+  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || sessionStalled(r) || (idleStopped(r) && movable(r)) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
     .sort((a, c) => you.get(c) - you.get(a));
   return [...live, ...quiet];
 }
@@ -2072,6 +2075,7 @@ function lastPass(r, now) {
   if (r.live && r.stall?.noProgress != null) return [`▲ no progress ${since(r.stall.noProgress)}`, WARN];
   if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
+  if (idleStopped(r)) return [`■ idle · ${since(age)}`, GREY];
   return [`■ stopped · ${since(age)}`, age >= DAY ? FAIL : WARN];
 }
 
@@ -2696,12 +2700,14 @@ function fixNote(x) {
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
 // loaded, a session's loop that stopped, a loaded supervisor that cannot start, or passes that keep failing.
+// A session's loop stopped on an idle batch is a grey line instead: nothing is wrong.
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
 const bandsOf = (r) => [
   ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.repo} supervisor on`)] : []),
   ...(sessionStalled(r) ? [band(`${r.name}: ${r.session ? `the loop in session ${r.session}` : "the session's loop"} has stopped, so no passes run. ${resumeLine(r)}`)] : []),
   ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start (exit ${r.stall.cannotStart.code}): ${r.stall.cannotStart.why ?? 'it logged nothing'}`)] : []),
   ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes errored: ${r.stall.errors.error}`)] : []),
+  ...(idleStopped(r) ? [segLine([[` · ${r.name}: idle, loop stopped.${movable(r) ? ` Tickets admitted since wait for its next pass: ${resumeOf(r)}.` : ''}`, GREY]])] : []),
 ];
 
 // A pass's hold reason with the order of its listed batches and its "(this pass)" mark left out, so

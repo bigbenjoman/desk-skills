@@ -706,6 +706,14 @@ check "#1359 the ask waits on H-31 being admitted" '[ "$(jq -c ".asks[] | select
 out=$(admit H-31 --session); rc=$?
 check "#1331 the session that runs the batch (--session) joins the finished one, not a standing one" '[ $rc -eq 0 ] && [ "$(qget batch)" = s9 ] && [ "$(qget supervised)" = false ] && [ "$(qget tickets.H-31.state)" = triaged ] && grep -q "^this session.s next pass picks up H-31$" <<< "$out" && ! grep -q "supervisor" <<< "$out"'
 check "#1359 admitting it drops the ask to start a session for it, saying so" '! jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31\"))" "$T/state/asks.json" >/dev/null && grep -q "^needs-you: ask [0-9]* dropped, as H-31 is admitted, so no session needs starting for it$" <<< "$out"'
+# #1486: a pass that finds the batch idle ends its session's loop, though its beat still reads live, so a
+# --session admit then says to restart the loop rather than promising a next pass.
+NOWZ="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"version":1,"batch":"s9","supervised":false,"pass":{"by":"session","at":"%s","idle_at":"%s"},"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":null}}}}\n' "$NOWZ" "$NOWZ" > "$DESK_QUEUE"
+beat "$NOWZ"; rec H-35 A
+out=$(admit H-35 --session); rc=$?
+check "#1486 AC1 a --session admit into a batch its last pass found idle says to restart the loop, naming the pass and next-pass commands" '[ $rc -eq 0 ] && [ "$(qget tickets.H-35.state)" = triaged ] && grep -q "^restart this session.s loop now: no pass runs this batch since .*, so nothing picks up H-35 until it does\. Run a pass (node .*pass\.mjs --json), then keep the loop going as /desk-autopilot Stage 4 does, recording each next pass (node .*queue\.mjs next-pass +<seconds>)$" <<< "$out" && ! grep -q "next pass picks up" <<< "$out"'
+check "#1486 AC1 desk-admit restarts the loop on that line before the turn ends" 'grep -q "^\*\*A \`restart this session.s loop now\` line\*\*" "$SK"'
 # #1359: the beat names the Claude Code session whose pass wrote it; an admit refused in that session
 # says to run it again with --session and puts nothing on needs-you.
 done_q; rm -rf "$T/state/asks.json"; beat "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; f=$(ls "$T/state/orchestrators/"*.json); jq -c '. + {session: "sess-9"}' "$f" > "$f.t" && mv "$f.t" "$f"; rec H-34 A
@@ -713,6 +721,7 @@ out=$(CLAUDE_CODE_SESSION_ID=sess-9 admit H-34); rc=$?
 check "#1359 refused in the session that runs the batch: it says to admit it again with --session, and records no ask" '[ $rc -eq 11 ] && [ "$(qget tickets.H-34)" = undefined ] && grep -q "^this session runs this repo.s batches: admit H-34 again with --session (node .*intake.mjs admit H-34 --session); nothing is put on needs-you$" <<< "$out" && [ "$(jq ".asks | length" "$T/state/asks.json" 2>/dev/null || echo 0)" = 0 ]'
 out=$(CLAUDE_CODE_SESSION_ID=sess-other admit H-34)
 check "#1359 refused in any other session, the ask is recorded" 'jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-34 in a session\"))" "$T/state/asks.json" >/dev/null'
+check "#1486 AC1 and it names the session whose loop ran the batch, to ask by message to admit it with --session" 'grep -q "^ask session sess-9, whose loop ran this batch.s last pass, by message (ListAgents, then SendMessage) to admit H-34 with node .*intake.mjs admit H-34 --session, which tells it to restart its loop$" <<< "$out"'
 rm -f "$DESK_QUEUE"; rm -rf "$T/state/orchestrators"; rec H-33 A
 out=$(admit H-33 --session); rc=$?
 check "#1331 session-run with no batch at all: nothing admitted, even with --session, and it names /desk-autopilot" '[ $rc -eq 11 ] && [ ! -f "$DESK_QUEUE" ] && grep -qF "not admitted H-33: no supervisor runs this repo'"'"'s batches (config §3b \"Batches run by\" is session) and no batch is set up, so no batch is started for it" <<< "$out"'
