@@ -786,6 +786,12 @@ t('#1487 AC1: with too few merge stages read, spawn to merge is drawn whole as b
   E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted.slice(0, 4) }).T['K-2'].start - FIXED, 10 * HOUR);
 const down = E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted, outageFrom: FIXED - 5 * HOUR });
 t('#1487 AC1: an open outage 5 h old holds every outside review back 5 h more, from its start', [down.T['K-1'].likely - FIXED, down.T['K-2'].start - FIXED], [13 * HOUR, 2 * HOUR]);
+const clash = [two[0], { ...two[1], collides: ['K-1'] }];
+t('#1487 AC1: a colliding ticket waits for the other\'s worker to finish at its undraft, not for its merge',
+  E.forecast({ rows: clash, workers: 2, history: hist10, now: FIXED, stages: undrafted }).T['K-2'].start - FIXED, 2 * HOUR);
+const outageWaits = undrafted.map((e, i) => (i < 8 ? { ...e, ready: e.merged - 30 * HOUR, outage: true } : e));
+t('#1487 AC1: a wait recorded inside a reviewer outage is not drawn as an outside review',
+  E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: outageWaits }).T['K-2'].start - FIXED, 10 * HOUR);
 
 // ---- AC5: recent merges count most
 t('#1487 AC5: a merge a week old weighs half as much', [E.weightOf(FIXED - 7 * 86_400_000, FIXED), E.weightOf(iso(FIXED), FIXED), E.weightOf(undefined, FIXED)], [0.5, 1, 1]);
@@ -798,6 +804,8 @@ t('#1487 AC7: each size up takes twice as long here', E.sizeStep(slots), 2);
 t('#1487 AC7: size L, with none, borrows M doubled', [E.poolFor(slots, 'L').v.map((l) => l.h), E.poolFor(slots, 'L').from, E.poolFor(slots, 'L').own], [range(6, () => 8), ['M'], false]);
 t('#1487 AC7: size XS borrows S halved', [...new Set(E.poolFor(slots, 'XS').v.map((l) => l.h))], [1]);
 t('#1487 AC7: a size with its own five uses them alone, and no size uses all unscaled', [E.poolFor(slots, 'S').own, E.poolFor(slots, 'unknown').v.length], [true, 12]);
+const fewM = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(2, () => ({ size: 'M', h: 4, w: 1 }))];
+t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))]], [2, [4]]);
 
 // ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
 // Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.
