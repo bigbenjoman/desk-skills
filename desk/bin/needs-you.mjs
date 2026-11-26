@@ -11,7 +11,8 @@
 //       review left requirement gaps quotes each gap from that review on GitHub, and a PR under a
 //       person's merge hold reads its files and checks there, to say once the hold's step is done.
 //       --no-settle skips that settling, so it writes nothing; --json prints the list as data
-//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it
+//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it,
+//       its PR, and the exact text its park waits for approval of
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
@@ -138,7 +139,7 @@ import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q-model.mjs';
-import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
+import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, repoCheckinTimes } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
@@ -2313,13 +2314,31 @@ export function causeOf(i) {
 }
 
 // One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
-// behind it. `id` is stable while the item is the same item: its batch, key and kind.
+// behind it. `id` is stable while the item is the same item: its batch, key and kind. `pr` is the
+// ticket's PR, and `approve` the write its park waits for the person to approve, its body verbatim.
+// A key record answers through recordRepoItem: an item of the repo's own, not a queue ticket's.
+function repoItem(ticket) {
+  return ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL);
+}
+// Actions a queue ticket's record refuses without text to pass on. A repo item's record reads text only
+// for a proposal's promote, and then only when the proposal names no value.
+const NEEDS_TEXT = ['answer', 'resume', 'reject', 'override', 'move'];
+const needsText = (i, action) => {
+  const verb = action.split(' ')[0];
+  return repoItem(i.t.key) ? !!i.proposal && verb === 'promote' && !i.to : NEEDS_TEXT.includes(verb);
+};
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
+  const a = i.t.state === 'parked' ? i.t.park?.approve : null;
+  // A ticketless PR's item carries its PR as `pr`, and a promotion PR's as `promotion`: their tickets
+  // are a key alone, with no result for ownPr to read.
+  const pr = Number(i.pr ?? i.promotion ?? ownPr(i.t));
   return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
     ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
-    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
+    pr: Number.isInteger(pr) && pr > 0 ? pr : null,
+    approve: a?.body ? { kind: String(a.kind ?? ''), target: String(a.target ?? ''), body: String(a.body) } : null,
+    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null, needs_text: needsText(i, action) })) };
 }
 
 // The list as data, what `list --json` prints. With `settle` it first settles what has shipped, as list
@@ -2380,7 +2399,7 @@ const ASK_ANSWERS = ['answer', 'resume', 'approve', 'reject', 'done', 'requeue']
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (repoItem(ticket)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2417,10 +2436,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     ? askAnswered(r.queuePath, { key: ticket, since: x.t.park.since, by: 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: now }, { on: ledgerOnIn(r.slug), by: 'needs-you' }).map((l) => ` ${l}`).join('')
     : '');
   const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}${asked(ok)}`, message });
-  if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
+  if (NEEDS_TEXT.includes(verb) && !text.trim()) return say(false, verb === 'move' ? 'move needs the batch to move it to.' : `${verb} needs the text to record.`);
   // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
   if (['answer', 'resume'].includes(verb)) copiedNote = namedFixturesText(r, ticket, text);
-  if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
@@ -2859,10 +2877,7 @@ export function ask({ word, text, until = [], options = [], recommend = null, ap
     const by = applyBy == null ? null : applyByOf(applyBy, new Date(now));
     if (applyBy != null && !by) return { ok: false, line: `--apply-by wants a local HH:MM or an ISO time, not "${applyBy}"` };
     const nd = recommend ? neverDefault(what, recommend, never) : null;
-    let times = null;
-    try { times = [].concat(repoConfigValues(r.slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
-    const c = checkinTimes(times);
-    const at = !recommend || nd ? null : by ?? nextCheckin(c.ok ? c.times : DEFAULT_TIMES, new Date(now));
+    const at = !recommend || nd ? null : by ?? nextCheckin(repoCheckinTimes(r.slug), new Date(now));
     choice = { options, recommended: recommend, apply_by: at ? at.toISOString() : null, never_default: nd };
   }
   const { id, added, until: kept, ask: a } = addAsk(r.stateDir, what, now, { until, choice });

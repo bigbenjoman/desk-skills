@@ -52,16 +52,21 @@ const fullName = (slug) => slug.replace('__', '/');
 // `jira_browse` from the server; with none the key is plain text. A plain click does nothing until
 // the ticket page exists.
 export function TicketLink({ ticket, browse }) {
-  const url = browse ? `${browse}${ticket}` : null;
-  if (!url) return <span className="font-mono text-[.93em] font-medium">{ticket}</span>;
+  return <ExternalLink text={ticket} url={browse ? `${browse}${ticket}` : null} where="Jira" />;
+}
+
+// The same rule for any key, PR number or SHA: `url` is where it opens, `where` names the site in its
+// tooltip. With no url it is plain text.
+export function ExternalLink({ text, url, where }) {
+  if (!url) return <span className="font-mono text-[.93em] font-medium">{text}</span>;
   const click = (e) => {
     e.preventDefault();
     if (e.metaKey || e.target.closest?.('[data-ext]')) window.desk?.openExternal?.(url);
   };
   return (
-    <a href={url} onClick={click} title={`⌘-click to open ${ticket} in Jira`} style={noDrag}
+    <a href={url} onClick={click} title={`⌘-click to open ${text} in ${where}`} style={noDrag}
       className="group inline-flex items-center gap-0.5 rounded-sm font-mono text-[.93em] font-medium text-foreground no-underline hover:underline hover:decoration-ring hover:underline-offset-3">
-      {ticket}
+      {text}
       <span data-ext="" className="hidden group-hover:inline-block group-focus-visible:inline-block"><Icon name="arrow-up-right" size={12} /></span>
     </a>
   );

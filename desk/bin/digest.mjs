@@ -63,6 +63,13 @@ export function checkinTimes(raw) {
   }
   return { ok: true, times: [...new Set(parts)].sort() };
 }
+// One repo's §3b Check-in times, or the default where its row is unset, unread or malformed.
+export function repoCheckinTimes(slug) {
+  let raw = null;
+  try { raw = [].concat(E.repoConfigValues(slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
+  const c = checkinTimes(raw);
+  return c.ok ? c.times : DEFAULT_TIMES;
+}
 
 // The latest check-in slot at or before `now`, as {id: 'YYYY-MM-DDTHH:MM', at: Date}, local time.
 export function latestSlot(times, now = new Date()) {

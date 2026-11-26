@@ -28,7 +28,7 @@ function Body({ c, get, routes }) {
   const Screen = screen ? routes[screen.id] : null;
   return (
     <Frame snapshot={c.snapshot} live={c.view === 'app'} path={screen ? path : '/'} go={go} routes={routes} title={screen?.label ?? null}>
-      {Screen ? <Screen path={path} go={go} snapshot={c.snapshot} /> : (
+      {Screen ? <Screen path={path} go={go} snapshot={c.snapshot} get={get} /> : (
         <main className="flex h-full flex-col items-center justify-center gap-1">
           <h1 className="text-base font-semibold">Desk</h1>
           {c.snapshot?.at && <p className="text-xs text-muted-fg">As of {clock(c.snapshot.at)}</p>}
