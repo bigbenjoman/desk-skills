@@ -41,7 +41,10 @@ you to type `/clear`, then `/desk-resume`, which carries on from the handoff's n
 session that runs a batch through `/loop`, it also blocks a turn that ends with no next pass
 recorded, once per pass, and once no pass has run for twice the loop's interval (or sooner, where
 needs-you would show the batch stalled) it tells the session's next turn to re-arm the loop, which
-`queue.mjs next-pass` logs for needs-you (`desk/bin/loop-tick.mjs`).
+`queue.mjs next-pass` logs for needs-you (`desk/bin/loop-tick.mjs`). In an autopilot worker it writes no `.handoffs/` file: past
+the threshold (the ticket's `handoff-threshold` lever value where its pin has one, on both windows),
+from Stage 3 on, it has the worker write its handoff briefing and end its session, and the next pass
+starts a fresh worker at the same stage.
 
 With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100
 under `env` in `~/.claude/settings.json`; `install.sh` offers to set it at 55 and keeps a value
