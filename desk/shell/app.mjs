@@ -263,6 +263,8 @@ export function createShell(electron, {
     if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); return win; }
     win = new BrowserWindow({
       width: 1280, height: 820, minWidth: 900, minHeight: 600, title: 'Desk', backgroundColor: '#09090b',
+      // The page draws the 40 px title bar; the traffic lights sit in its left end.
+      titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 14 },
       webPreferences: { partition: PARTITION, preload, contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false },
     });
     // The page never leaves the server and opens no window; GitHub and Jira go through openExternal.
