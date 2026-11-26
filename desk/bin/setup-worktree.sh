@@ -528,6 +528,11 @@ finish() {
   # keepReviewResults), so it must not dirty the tree a worker proves clean before it pushes.
   # Not worth failing setup over: a worker would then git clean it, as before.
   exclude_from_git '/desk-review-results-*.json' || say "WARNING: could not add desk-review results files to the git exclude"
+  # A dev server (next dev) writes untracked AGENTS.md and CLAUDE.md into an app directory, which a
+  # worker's commit would sweep up. Only below the root: the exclude is shared by every checkout of the
+  # repo, and a ticket may ask for a new root CLAUDE.md. A tracked one is never excluded, so edits commit.
+  { exclude_from_git '/*/**/AGENTS.md' && exclude_from_git '/*/**/CLAUDE.md'; } ||
+    say "WARNING: could not add generated AGENTS.md and CLAUDE.md files to the git exclude"
   rm -f "$MARKER"
   say "done"
   say "steps=$STEPS"

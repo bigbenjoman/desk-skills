@@ -72,6 +72,18 @@ excl="$(git -C "$T/wt/T-1" rev-parse --git-common-dir)/info/exclude"
 check "DS-833 the exclude file ends each pattern on a line of its own" '[ -z "$(tail -c 1 "$excl")" ] && grep -qxF "/desk-review-results-*.json" "$excl" && grep -qxF /scratch-no-newline "$excl"'
 check "DS-833 a desk-review results file left at the worktree root keeps git status clean" '[ -z "$(git -C "$T/wt/T-1" status --porcelain)" ]'
 
+# DS-1027: AGENTS.md and CLAUDE.md a dev server writes untracked into an app directory stay out of a commit.
+W="$T/wt/T-1"; mkdir -p "$W/apps/portal/apps/web" "$W/apps/api"
+printf 'generated\n' > "$W/apps/portal/apps/web/AGENTS.md"; printf 'generated\n' > "$W/apps/portal/apps/web/CLAUDE.md"
+printf 'ours\n' > "$W/apps/api/CLAUDE.md"; git -C "$W" add -f apps/api/CLAUDE.md; git -C "$W" commit -q -m 'tracked app CLAUDE.md'
+printf 'change\n' > "$W/b.txt"; git -C "$W" add -A; git -C "$W" commit -q -m change
+check "DS-1027 AC1 untracked AGENTS.md and CLAUDE.md in an app directory are not in the commit" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = b.txt ] && [ -z "$(git -C "$W" status --porcelain)" ]'
+printf 'edited\n' > "$W/apps/api/CLAUDE.md"; git -C "$W" add -A; git -C "$W" commit -q -m edit
+check "DS-1027 AC2 an edit to a tracked CLAUDE.md in an app directory is committed" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = apps/api/CLAUDE.md ] && [ "$(git -C "$W" show HEAD:apps/api/CLAUDE.md)" = edited ]'
+printf 'root\n' > "$W/CLAUDE.md"; printf 'root\n' > "$W/AGENTS.md"
+check "DS-1027 a new AGENTS.md or CLAUDE.md at the repo root still shows as untracked" '[ "$(git -C "$W" status --porcelain)" = "$(printf "?? AGENTS.md\n?? CLAUDE.md")" ]'
+git -C "$W" clean -qf AGENTS.md CLAUDE.md
+
 # AC2: uncommitted changes there.
 held 2; H="$T/other-2"; printf 'two\n' > "$H/a.txt"
 out=$(bash "$B/setup-worktree.sh" --for-worker T-2 fix/T-2 2>&1); rc=$?
