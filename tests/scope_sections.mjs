@@ -341,7 +341,7 @@ function scrubCode(t) {
       continue;
     }
     // A line comment ends at any line terminator, as JavaScript's does.
-    if (c === '/' && t[i + 1] === '/') { const e = t.slice(i).search(/[\n\r  ]/); i = e < 0 ? t.length : i + e; continue; }
+    if (c === '/' && t[i + 1] === '/') { const e = t.slice(i).search(/[\n\r\p{Zl}\p{Zp}]/u); i = e < 0 ? t.length : i + e; continue; }
     if (c === '/' && t[i + 1] === '*') { const e = t.indexOf('*/', i + 2); i = e < 0 ? t.length : e + 2; out += ' '; continue; }
     if (c === '/' && regexNext()) {
       let j = i + 1;
@@ -462,9 +462,9 @@ function reach(text, seeds, { mainGuard = false } = {}) {
   const commands = new Set();
   let code = null;
   const re = names.size ? refs([...names]) : null;
-  // A line starting `//` is a comment only to its first line terminator (`m` makes `^` and `$` match at
-  // each, and `.` match none).
-  const named = (t) => re?.exec(scrub(t.replace(/^[^\S\n\r  ]*\/\/.*$/gm, '')))?.[0];
+  // With mainGuard, scrubCode() reads comments as JavaScript does (to any line terminator, and never
+  // inside a string or template), so no line is dropped before it.
+  const named = (t) => re?.exec(mainGuard ? scrubCode(t) : t.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n'))?.[0];
   for (const { c, decl } of stmts) {
     if (decl) { if (decl.exported && names.has(decl.name)) exported.add(decl.name); continue; }
     if (isImport(c)) continue;

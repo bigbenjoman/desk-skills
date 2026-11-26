@@ -631,7 +631,10 @@ t('DS-1002 an unbraced guard\'s body is one expression on its line: a second sta
   drawEdit(chainQ('if (isMain) { } // c draw();')) === everyClaimer,
   drawEdit(chainQ('console.log(1); // note draw();')) === everyClaimer,
   drawEdit(chainQ('// x\rdraw();')) === everyClaimer,
-], [true, true, 'some: test_cli.sh test_lint.sh', true, true, true, true, true, true, true, true, true, true]);
+  // A `//` after a terminator inside a string or template is no comment: the call after it runs on load.
+  drawEdit(chainQ("console.log('a // ', draw());")) === everyClaimer,
+  drawEdit(chainQ('console.log(`a\r// ${draw()}`);')) === everyClaimer,
+], [true, true, 'some: test_cli.sh test_lint.sh', true, true, true, true, true, true, true, true, true, true, true, true]);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
