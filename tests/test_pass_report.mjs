@@ -286,7 +286,7 @@ const vsnap = (tickets, fields = {}) => {
   t('#1480 AC2 with live waiters the stall names the lock queue and its live count', j(lockHeldLine({ gate: gate(q('light', 1), q('test', 0)), held: ['A', 'B'], running: 2, concurrency: 3 })),
     j({ stall: true, line: 'light lock queue: 1 run(s) waiting on its 1 slot(s): holding new workers and resumes into Stage 4 (A, B), past the 1 this pass had room for' }));
   t('#1480 with no run waiting on any lock, the hold is no stall: it names this pass\'s own starts and the workers against the cap', j(lockHeldLine({ gate: gate(q('light', 0), q('test', 0)), held: ['A'], running: 2, concurrency: 5 })),
-    j({ stall: false, line: 'held for the next pass, not a stall (A): no run is waiting on the lock, and this pass already started the 1 suite-bound session(s) it may start at once; 2 worker(s) running against the batch\'s cap of 5' }));
+    j({ stall: false, line: 'held for the next pass, not a stall (A): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; 2 worker(s) running against the batch\'s cap of 5' }));
 }
 
 // AC4: each decision returns its actions without starting a process, calling git, gh or Jira, or

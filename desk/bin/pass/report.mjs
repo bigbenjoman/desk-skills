@@ -364,7 +364,7 @@ export function lockHeldLine({ gate, held, running, concurrency }) {
   if (gate.queues?.some((q) => q.waiting > 0) ?? true) {
     return { stall: true, line: `${gate.line}: holding new workers and resumes into Stage 4 (${held.join(', ')}), past the ${gate.room} this pass had room for` };
   }
-  return { stall: false, line: `held for the next pass, not a stall (${held.join(', ')}): no run is waiting on the lock, and this pass already started the ${gate.room} suite-bound session(s) it may start at once; ${running} worker(s) running against the batch's cap of ${concurrency}` };
+  return { stall: false, line: `held for the next pass, not a stall (${held.join(', ')}): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; ${running} worker(s) running against the batch's cap of ${concurrency}` };
 }
 
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.
