@@ -1404,8 +1404,7 @@ t('DS-701 the "waiting behind" count is in the item', ['W-1', 'W-3', 'W-2'].map(
 t('DS-701 its question is the listed need, word for word', ji701['W-1']?.question, need657('W-1'));
 t('DS-701 a PRODUCTION BROKEN park is marked so', `${ji701['W-3']?.production_broken} ${ji701['W-1']?.production_broken}`, 'true false');
 t('DS-701 the item names its batch, key, kind and ticket, and its actions with the recommendation', JSON.stringify((({ id, batch, key, kind, ticket, actions }) => ({ id, batch, key, kind, ticket, first: actions[0] }))(ji701['W-1'])),
-  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null } }));
-t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
+  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null, needs_text: true } }));t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
 t('DS-701 without settling, it says so and settles nothing', `${j701.settled} ${j701.settled_lines.length} ${j701.v}`, 'false 0 1');
 t('DS-701 its queue carries its age', j701.inputs.queues.map((x) => `${x.batch} ${typeof x.age_s}`).join(), 'wait657 number');
 // A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its

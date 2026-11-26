@@ -2316,16 +2316,19 @@ export function causeOf(i) {
 // One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
 // behind it. `id` is stable while the item is the same item: its batch, key and kind. `pr` is the
 // ticket's PR, and `approve` the write its park waits for the person to approve, its body verbatim.
+// Actions record refuses without text to pass on; a proposal's promote needs it only when it names no value.
+const NEEDS_TEXT = ['answer', 'resume', 'reject', 'override', 'move'];
+const needsText = (i, action) => { const verb = action.split(' ')[0]; return i.proposal ? verb === 'promote' && !i.to : NEEDS_TEXT.includes(verb); };
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
   const a = i.t.state === 'parked' ? i.t.park?.approve : null;
-  const pr = Number(i.t.result?.pr);
+  const pr = Number(ownPr(i.t));
   return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
     ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
     pr: Number.isInteger(pr) && pr > 0 ? pr : null,
     approve: a?.body ? { kind: String(a.kind ?? ''), target: String(a.target ?? ''), body: String(a.body) } : null,
-    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
+    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null, needs_text: needsText(i, action) })) };
 }
 
 // The list as data, what `list --json` prints. With `settle` it first settles what has shipped, as list
@@ -2420,10 +2423,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     ? askAnswered(r.queuePath, { key: ticket, since: x.t.park.since, by: 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: now }, { on: ledgerOnIn(r.slug), by: 'needs-you' }).map((l) => ` ${l}`).join('')
     : '');
   const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}${asked(ok)}`, message });
-  if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
+  if (NEEDS_TEXT.includes(verb) && !text.trim()) return say(false, verb === 'move' ? 'move needs the batch to move it to.' : `${verb} needs the text to record.`);
   // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
   if (['answer', 'resume'].includes(verb)) copiedNote = namedFixturesText(r, ticket, text);
-  if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn

@@ -3,7 +3,7 @@
 // command to copy, shown under the options as "Runs: …".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { COMPACT_BELOW, ExternalLink, TicketLink, useWidth, waited } from './frame.jsx';
-import { Button, clock, Command } from './system.jsx';
+import { Button, clock, Command, useCopy } from './system.jsx';
 
 export const KIND_TIPS = {
   parked: 'A worker stopped to ask you something.',
@@ -24,21 +24,26 @@ export const KIND_TIPS = {
   step: 'A step in "your steps" is waiting on you.',
   lever: 'A lever desk is testing needs your decision.',
 };
-// needs-you record refuses these without the text to pass on.
-const TAKES_TEXT = new Set(['answer', 'resume', 'reject', 'override']);
+// needs-you says which of an item's actions record refuses without text (needs_text).
+const needsText = (item, action) => !!item.actions.find((a) => a.action === action)?.needs_text;
+const TEXT_ASKS = { move: 'Which batch should it move to?', promote: 'Which priority should it get?' };
+const textAsk = (action) => TEXT_ASKS[action.split(' ')[0]] ?? 'What should the worker do?';
+// needs-you as desk-needs-you runs it: installed under ~/.claude/desk/bin, with no command on PATH.
+const NEEDS_YOU = ['node', '~/.claude/desk/bin/needs-you.mjs'];
 const MAX_TEXT = 2000;
 const SETTLE_EVERY_MS = 60 * 1000;
 const SORTS = { oldest: 'Oldest first', held: 'Most held behind', repo: 'Repo' };
 const WRITE_WORDS = { 'jira-comment': 'Jira comment', 'jira-transition': 'Jira transition', 'jira-edit': 'Jira edit', 'jira-ticket': 'New Jira ticket',
   'pr-body': 'PR description', 'pr-review': 'PR review' };
 
-// An argument as the shell reads it back: bare when it is plain, else in double quotes.
-const shellArg = (s) => (/^[\w.,:/@%+=-]+$/.test(s) ? s : `"${s.replace(/(["\\$`])/g, '\\$1')}"`);
+// An argument as the shell reads it back: bare when it is plain, else in single quotes, inside which
+// neither sh nor zsh expands anything (zsh's history expansion of ! included).
+const shellArg = (s) => (/^[\w.,:/@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
 // The record command for one answer, or null while the text it needs is missing.
 export function recordCommand(item, action, text = '') {
   const typed = text.trim();
-  if (TAKES_TEXT.has(action.split(' ')[0]) && !typed) return null;
-  return ['needs-you.mjs', 'record', item.batch, item.key, ...action.split(' '), ...(typed ? [text] : [])].map(shellArg).join(' ');
+  if (needsText(item, action) && !typed) return null;
+  return [...NEEDS_YOU, ...['record', item.batch, item.key, ...action.split(' '), ...(typed ? [text] : [])].map(shellArg)].join(' ');
 }
 
 // How long an item has waited, and whether that is past 3 days (amber) or 7 (red).
@@ -122,11 +127,12 @@ function Select({ label, value, onChange, options }) {
   );
 }
 
-// The detail's tabs: in Compact every tab after the second sits under More (the canvas's Inbox · compact).
-function Tabs({ tabs, compact }) {
+// The detail's tabs: in Compact every tab after the third sits under More.
+const COMPACT_TABS = 3;
+export function Tabs({ tabs, compact }) {
   const [on, setOn] = useState(tabs[0]?.id);
   const [more, setMore] = useState(false);
-  const shown = compact && tabs.length > 2 ? tabs.slice(0, 2) : tabs;
+  const shown = compact && tabs.length > COMPACT_TABS ? tabs.slice(0, COMPACT_TABS) : tabs;
   const rest = tabs.filter((t) => !shown.includes(t));
   const cur = tabs.find((t) => t.id === on) ?? tabs[0];
   const tab = (t) => (
@@ -155,15 +161,10 @@ function Tabs({ tabs, compact }) {
 }
 
 function CopyCommand({ command, why }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef(null);
-  useEffect(() => () => clearTimeout(timer.current), []);
-  const copy = () => navigator.clipboard?.writeText(command).then(() => {
-    setCopied(true); clearTimeout(timer.current); timer.current = setTimeout(() => setCopied(false), 1500);
-  }, () => {});
+  const [copied, copy] = useCopy();
   return (
     <span className="inline-flex" title={command ? undefined : why}>
-      <button type="button" disabled={!command} onClick={copy}
+      <button type="button" disabled={!command} onClick={() => copy(command)}
         className="text-[12.5px] font-medium text-foreground underline decoration-ring underline-offset-2 disabled:text-muted-fg disabled:no-underline">
         {copied ? 'Copied' : 'Copy needs-you command'}
       </button>
@@ -172,7 +173,7 @@ function CopyCommand({ command, why }) {
 }
 
 function GateBlock({ approve }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopy();
   const what = WRITE_WORDS[approve.kind] ?? approve.kind.replace(/-/g, ' ');
   return (
     <div className="flex flex-col gap-1.5" data-gate="">
@@ -180,7 +181,7 @@ function GateBlock({ approve }) {
         <span className="text-xs font-medium text-foreground">{what}{approve.target ? ` on ${approve.target}` : ''}</span>
         <span className="flex-1" />
         <Button variant="outline" aria-label="Copy the exact text"
-          onClick={() => navigator.clipboard?.writeText(approve.body).then(() => setCopied(true), () => {})}>{copied ? 'Copied' : 'Copy'}</Button>
+          onClick={() => copy(approve.body)}>{copied ? 'Copied' : 'Copy'}</Button>
       </div>
       <pre className="m-0 rounded-md border border-border bg-subtle px-3 py-2.5 font-mono text-[12.5px] leading-5 break-words whitespace-pre-wrap">{approve.body}</pre>
       <span className="text-xs text-muted-fg">This is the exact text that will be posted.</span>
@@ -280,12 +281,12 @@ function Detail({ item, snapshot, compact, step }) {
                       <span className="ml-auto">{o.n != null && <Kbd>{o.n}</Kbd>}</span>
                     </span>
                     {(o.why ?? o.note) && <span className="mt-0.5 text-[13px] leading-[18px] text-muted-fg">{o.why ?? o.note}</span>}
-                    {on && TAKES_TEXT.has(o.action.split(' ')[0]) && (
+                    {on && o.needs_text && (
                       <span className="mt-2.5 flex flex-col gap-1.5">
-                        <span className="text-xs font-medium text-foreground" id={`text-${item.id}`}>What should the worker do?</span>
+                        <span className="text-xs font-medium text-foreground" id={`text-${item.id}`}>{textAsk(o.action)}</span>
                         <textarea ref={field} aria-labelledby={`text-${item.id}`} value={text} maxLength={MAX_TEXT} rows={3}
                           onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
-                          placeholder="Say what to do, in the worker's terms. It's passed on word for word."
+                          placeholder={TEXT_ASKS[o.action.split(' ')[0]] ? (o.note ?? '') : "Say what to do, in the worker's terms. It's passed on word for word."}
                           className="rounded-md border border-input bg-background px-2.5 py-2 text-[13px]" />
                         <span className="flex text-xs text-muted-fg">
                           Don't paste tokens or passwords. This text is saved and passed on as written.
@@ -355,13 +356,17 @@ export function Inbox({ get, snapshot }) {
 
   const load = useCallback(async (settle) => {
     // A press while a check runs is that check; one within a minute of the last reads the list only.
+    // The minute runs from a check GitHub answered, as the server's does: after a failed one, Try again checks again.
     if (settle && busy.current) return;
     const settling = settle && Date.now() - lastSettle.current >= SETTLE_EVERY_MS;
-    if (settling) { busy.current = true; lastSettle.current = Date.now(); setChecking(true); }
+    const started = Date.now();
+    if (settling) { busy.current = true; setChecking(true); }
     try {
       const r = await get(`/api/inbox?settle=${settling ? 1 : 0}`);
       if (r.status !== 200) throw new Error(String(r.status));
-      setData(await r.json());
+      const body = await r.json();
+      if (settling && body.github?.ok) lastSettle.current = started;
+      setData(body);
       setFailed(false);
     } catch { setFailed(true); }
     finally { if (settling) { busy.current = false; setChecking(false); } }

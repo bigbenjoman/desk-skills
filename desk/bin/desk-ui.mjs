@@ -148,6 +148,21 @@ export function githubState(stderr) {
   const line = text.trim().split('\n')[0].slice(0, 120);
   return { ok: false, reason: 'down', detail: http ? `gh: HTTP ${http[1]}` : `gh: ${line || 'no answer'}` };
 }
+// The earliest next check-in across the repos, each at its own §3b Check-in times (the default where unset
+// or unread), as ms, or null.
+async function nextCheckinOf(slugs, now) {
+  const { checkinTimes, DEFAULT_TIMES } = await import('./digest.mjs');
+  const { nextCheckin } = await import('./ask-defaults.mjs');
+  const timesOf = (slug) => {
+    let raw = null;
+    try { raw = [].concat(E.repoConfigValues(slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
+    const c = checkinTimes(raw);
+    return c.ok ? c.times : DEFAULT_TIMES;
+  };
+  const ats = [...new Set(slugs)].map((s) => nextCheckin(timesOf(s), new Date(now))).filter(Boolean).map(Number);
+  if (!slugs.length) ats.push(Number(nextCheckin(DEFAULT_TIMES, new Date(now))));
+  return ats.length ? Math.min(...ats) : null;
+}
 // One cheap GitHub read (rate_limit counts against no limit): { ok: true }, or githubState's answer.
 const probeGitHub = () => new Promise((resolve) => {
   execFile('gh', ['api', 'rate_limit', '--silent'], { shell: false, timeout: PROBE_TIMEOUT_MS, encoding: 'utf8' },
@@ -408,12 +423,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       const list = inboxState.settling ? await inboxState.settling
         : want && clock() - inboxState.lastSettle >= SETTLE_EVERY_MS ? await settleInbox() : await needsYouList(false);
       const { all } = await loadAll();
-      const { nextCheckin } = await import('./desk-q-eta.mjs');
       const now = clock();
       const passes = all.filter((r) => r.live && Number.isFinite(Number(r.next)) && Number(r.next) > now).map((r) => Number(r.next));
       const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
       return send(res, 200, { ...list, settled_at: inboxState.settledAt, github: inboxState.github,
-        next_pass_at: iso(passes.length ? Math.min(...passes) : null), next_checkin_at: iso(nextCheckin(now)) });
+        next_pass_at: iso(passes.length ? Math.min(...passes) : null), next_checkin_at: iso(await nextCheckinOf(all.map((r) => r.slug), now)) });
     } catch (e) { console.error(`desk-ui: inbox: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
   }
 

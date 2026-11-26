@@ -39,18 +39,24 @@ export function WriteButton({ disabled = false, ...props }) {
   );
 }
 
-function Copy({ text }) {
+// [copied, copy]: copy(text) puts it on the clipboard, and copied reads true for 1.5 s after.
+export function useCopy() {
   const [copied, setCopied] = useState(false);
   const timer = useRef(null);
   useEffect(() => () => clearTimeout(timer.current), []);
-  const copy = () => {
+  const copy = (text) => {
     navigator.clipboard?.writeText(text).then(() => {
       setCopied(true);
       clearTimeout(timer.current);
       timer.current = setTimeout(() => setCopied(false), 1500);
     }, () => {});
   };
-  return <Button onClick={copy} aria-label={`Copy ${text}`}>{copied ? 'Copied' : 'Copy'}</Button>;
+  return [copied, copy];
+}
+
+function Copy({ text }) {
+  const [copied, copy] = useCopy();
+  return <Button onClick={() => copy(text)} aria-label={`Copy ${text}`}>{copied ? 'Copied' : 'Copy'}</Button>;
 }
 
 export function Command({ text }) {

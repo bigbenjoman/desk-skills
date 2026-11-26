@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Inbox, recordCommand } from './inbox.jsx';
+import { Inbox, recordCommand, Tabs } from './inbox.jsx';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 // Half a minute more, so a waited time read a moment later still rounds down to the same minute.
@@ -13,14 +14,15 @@ const snapshot = (more = {}) => ({ at: new Date().toISOString(), needs_you: { co
 const Q3844 = "SV-3844 PR #2699 is an external-shape change with no live check possible from a worker (curl denied, no Sentry token, Merl previews behind Vercel Authentication, MERL_ROBIN_TOKEN unset): can someone with a Sentry token run the checks in the PR's Testing list and record a real payload for the fixture, or accept merging with them as post-merge checks? It blocks SV-4017; the head is a742f155.";
 const item = (key, repoName, h, more = {}) => ({ id: `${repoName}:${key}:parked`, cause: null, kind: 'parked', repo: repoName, batch: repoName, key, ticket: key,
   since: hoursAgo(h), waited_s: Math.round(h * 3600), question: `${key} needs an answer`, note: null, behind: 0, production_broken: false, repo_level: false, pr: null, approve: null,
-  actions: [{ action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null }, { action: 'not-now', recommended: false, why: null, note: null }], ...more });
+  actions: [{ action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null, needs_text: true }, { action: 'not-now', recommended: false, why: null, note: null, needs_text: false }], ...more });
 
 // 25 items across four repos, in needs-you's order (oldest first after the held).
 const ITEMS = [
   item('SV-3844', 'studia-web', 8 * 24 + 19, { kind: 'session', question: Q3844, pr: 2699, behind: 1,
-    actions: [{ action: 'resume', recommended: true, why: "Run the PR's Testing checks with a Sentry token, then record the real payload.", note: null },
-      { action: 'not-now', recommended: false, why: null, note: null }, { action: 'drop', recommended: false, why: null, note: 'removes it from the batch' },
-      { action: 'override d-12', recommended: false, why: null, note: 'took "fixture" on "Which payload?"' }] }),
+    actions: [{ action: 'resume', recommended: true, why: "Run the PR's Testing checks with a Sentry token, then record the real payload.", note: null, needs_text: true },
+      { action: 'not-now', recommended: false, why: null, note: null, needs_text: false }, { action: 'drop', recommended: false, why: null, note: 'removes it from the batch', needs_text: false },
+      { action: 'override d-12', recommended: false, why: null, note: 'took "fixture" on "Which payload?"', needs_text: true },
+      { action: 'move', recommended: false, why: null, note: 'into another running batch: studia-web:w2', needs_text: true }] }),
   item('DS-651', 'desk-skills', 4 * 24, { approve: { kind: 'jira-comment', target: 'DS-651', body: 'Plan approved.\nBuilding starts once DS-606 merges.' } }),
   ...Array.from({ length: 13 }, (_, n) => item(`SV-${4000 + n}`, 'studia-web', 30 - n)),
   ...Array.from({ length: 10 }, (_, n) => item(`AIA-${200 + n}`, 'ai-agents', 12 - n, { kind: n % 2 ? 'pr' : 'plan' })),
@@ -99,6 +101,9 @@ describe('the Inbox list', () => {
     expect(screen.getByRole('alert').textContent).toContain("Showing the last list. GitHub isn't answering (gh: HTTP 502), so new PR items may be missing.");
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(s.calls.at(-1)).toBe('/api/inbox?settle=1'));
+    await waitFor(() => expect(screen.queryByText('Checking GitHub and Jira…')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(s.calls.filter((c) => c === '/api/inbox?settle=1').length).toBe(2));
   });
 
   it('AC11 GitHub signed out: it says so, with gh auth login and Check again', async () => {
@@ -133,7 +138,7 @@ describe('the Inbox list', () => {
     key('r');
     expect(screen.getByText('Checking GitHub and Jira…')).toBeTruthy();
     key('r');
-    await act(async () => { done(json(listOf(ITEMS, { settled: true }))); });
+    await act(async () => { done(json(listOf(ITEMS, { settled: true, github: { ok: true } }))); });
     s.hold = null;
     key('r');
     await waitFor(() => expect(screen.queryByText('Checking GitHub and Jira…')).toBeNull());
@@ -151,16 +156,24 @@ describe('the Inbox list', () => {
     await waitFor(() => expect(document.activeElement).toBe(row('DS-651')));
   });
 
-  it('AC16 at 1024 wide the list is 400 px, the filters are one Filter button and the tabs after the second sit under More', async () => {
+  it('AC16 at 1024 wide the list is 400 px, the filters are one Filter button and the first three tabs stay out of More', async () => {
     await open({ width: 1024 });
     expect(document.querySelector('[data-list]').className).toContain('w-100');
     expect(screen.getByRole('button', { name: 'Filter' })).toBeTruthy();
     expect(screen.queryByLabelText('Repo')).toBeNull();
     fireEvent.click(row('SV-3844'));
     const tabs = within(detail()).getByRole('tablist');
-    expect([...tabs.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['PR & CI', 'Jira', 'More ▾']);
+    expect([...tabs.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['PR & CI', 'Jira', 'Decisions (1)']);
+  });
+
+  it('AC16 in Compact the tabs after the third collapse into More', () => {
+    const four = ['One', 'Two', 'Three', 'Four'].map((label) => ({ id: label, label, body: <p>{label} body</p> }));
+    render(<Tabs tabs={four} compact />);
+    const tabs = screen.getByRole('tablist');
+    expect([...tabs.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['One', 'Two', 'Three', 'More ▾']);
     fireEvent.click(within(tabs).getByText('More ▾'));
-    expect(screen.getByRole('menuitem', { name: 'Decisions (1)' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Four' }));
+    expect(screen.getByRole('tabpanel').textContent).toBe('Four body');
   });
 });
 
@@ -196,7 +209,7 @@ describe('the Inbox detail', () => {
     key('1');
     expect(within(detail()).getByRole('radio', { name: /resume/ }).checked).toBe(true);
     fireEvent.change(within(detail()).getByRole('textbox', { name: 'What should the worker do?' }), { target: { value: 'I added the token. Run the Testing checks.' } });
-    const cmd = 'needs-you.mjs record studia-web SV-3844 resume "I added the token. Run the Testing checks."';
+    const cmd = "node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 resume 'I added the token. Run the Testing checks.'";
     expect(detail().querySelector('[data-runs]').textContent).toBe(`Runs: ${cmd}`);
     fireEvent.click(copy);
     expect(clip).toHaveBeenCalledWith(cmd);
@@ -205,10 +218,34 @@ describe('the Inbox detail', () => {
 
   it('a command needs its text quoted for the shell, and none for an action without text', () => {
     const i = ITEMS[0];
-    expect(recordCommand(i, 'not-now')).toBe('needs-you.mjs record studia-web SV-3844 not-now');
+    expect(recordCommand(i, 'not-now')).toBe('node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 not-now');
     expect(recordCommand(i, 'resume', '')).toBeNull();
-    expect(recordCommand(i, 'resume', 'say "$HOME" `x`')).toBe('needs-you.mjs record studia-web SV-3844 resume "say \\"\\$HOME\\" \\`x\\`"');
-    expect(recordCommand(i, 'override d-12', 'keep it')).toBe('needs-you.mjs record studia-web SV-3844 override d-12 "keep it"');
+    expect(recordCommand(i, 'override d-12', 'keep it')).toBe("node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 override d-12 'keep it'");
+    expect(recordCommand(i, 'move', '')).toBeNull();
+    expect(recordCommand(i, 'move', 'studia-web:w2')).toBe('node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 move studia-web:w2');
+  });
+
+  it('a proposal\'s reject, which needs no text, copies without any', () => {
+    const p = { ...ITEMS[0], kind: 'proposal', key: 'proposal:SV-3844', actions: [{ action: 'promote', needs_text: true }, { action: 'reject', needs_text: false }] };
+    expect(recordCommand(p, 'reject')).toBe('node ~/.claude/desk/bin/needs-you.mjs record studia-web proposal:SV-3844 reject');
+    expect(recordCommand(p, 'promote', '')).toBeNull();
+  });
+
+  it('a shell reads the copied text back byte for byte, quotes, $, backticks and ! included', () => {
+    const text = `it's "done" $HOME \`id\` $(id) !! !x \\ end`;
+    const cmd = recordCommand(ITEMS[0], 'resume', text);
+    const out = execFileSync('/bin/sh', ['-c', `printf '%s\\n' ${cmd}`], { encoding: 'utf8', env: { HOME: '/home/ben', PATH: process.env.PATH } });
+    expect(out.trimEnd().split('\n')).toEqual(['node', '/home/ben/.claude/desk/bin/needs-you.mjs', 'record', 'studia-web', 'SV-3844', 'resume', text]);
+  });
+
+  it('choosing move asks which batch, and copies nothing until one is named', async () => {
+    await open();
+    fireEvent.click(row('SV-3844'));
+    fireEvent.click(within(detail()).getByRole('radio', { name: /move/ }));
+    const copy = within(detail()).getByRole('button', { name: 'Copy needs-you command' });
+    expect(copy.disabled).toBe(true);
+    fireEvent.change(within(detail()).getByRole('textbox', { name: 'Which batch should it move to?' }), { target: { value: 'studia-web:w2' } });
+    expect(copy.disabled).toBe(false);
   });
 
   it('the list reads again when the snapshot\'s needs-you figures change', async () => {

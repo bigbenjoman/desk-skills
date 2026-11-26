@@ -27,7 +27,7 @@ const repo = (slug, port, tickets) => {
   mkdirSync(join(process.env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(process.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
-    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n`);
+    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n| Check-in times | \`08:00, 17:00\` | \`03:07, 21:43\` |\n`);
   mkdirSync(join(process.env.DESK_HOME, 'repos', slug), { recursive: true });
   writeFileSync(join(process.env.DESK_HOME, 'repos', slug, 'queue.json'), JSON.stringify({ version: 1, batch: 'w', concurrency: 2, tickets }));
 };
@@ -36,6 +36,7 @@ const parked = (key, question, h, more = {}) => ({ key, state: 'parked', park: {
 repo('acme__studia-web', 3700, {
   'SV-3844': { ...parked('SV-3844', Q3844, 8 * 24 + 19), result: { pr: 2699 } },
   'SV-3845': parked('SV-3845', 'awaiting approval: post this comment?', 4 * 24, { approve: { kind: 'jira-comment', target: 'SV-3845', body: 'Root cause: the cache key.\nThe fix is in PR #12.' } }),
+  'SV-3846': { ...parked('SV-3846', 'Keep the old route or redirect it?', 2), draft_pr: 2701 },
   'SV-4021': parked('SV-4021', 'PRODUCTION BROKEN: course player 500s for every SCORM 1.2 package', 0.25),
 });
 repo('acme__desk-skills', 3800, { 'DS-1': parked('DS-1', 'Use the cached embeddings or rebuild them?', 7) });
@@ -84,6 +85,9 @@ t('AC4 a park awaiting approval carries the exact text, line for line', item('SV
   { kind: 'jira-comment', target: 'SV-3845', body: 'Root cause: the cache key.\nThe fix is in PR #12.' });
 t('AC4 a park with nothing to approve carries none', item('DS-1').approve, null);
 t('AC9 the next check-in is given', typeof first.next_checkin_at === 'string' && Date.parse(first.next_checkin_at) > Date.now(), true);
+const hhmm = (iso) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+t('AC9 the next check-in is one of the repos\' own Check-in times', ['03:07', '21:43'].includes(hhmm(first.next_checkin_at)), true);
+t('AC3 a park with only a draft PR carries the draft', item('SV-3846').pr, 2701);
 
 // ---- AC14: settling runs at most once a minute, and a request while one runs shares it
 const s1 = await inbox('?settle=1');
