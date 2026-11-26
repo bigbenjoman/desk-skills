@@ -73,7 +73,7 @@ t('AC1 a value written with its option id is searched and ranked by its name', p
   t('AC1 the P2s are checked before any P4', got.offered.map((c) => c.key), ['ACME-36', 'ACME-35', 'ACME-34', 'ACME-32']);
   t('AC3 Bugs before Tasks at one priority, each newest first', got.offered.map((c) => c.type), ['Bug', 'Bug', 'Task', 'Task']);
   t('AC1 a priority at option-id form ranks by its name', got.offered.map((c) => c.rank), [2, 2, 2, 2]);
-  t('AC1 the P2 tier filled the list, so no P4 search ran', r.calls.search.map((c) => /= "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
+  t('AC1 the P2 tier filled the list, so no P4 search ran', r.calls.search.map((c) => /cf\[10300\] = "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
 }
 
 // AC2: a decision, or access, key or infrastructure work outside the repo, is left out naming the word.
