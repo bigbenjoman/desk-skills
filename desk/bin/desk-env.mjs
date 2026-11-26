@@ -3157,7 +3157,7 @@ if (isMain) {
           if (r.hint) console.log(`add ${r.hint} with a in view 6`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | fee <claude|codex> <name> <plan> <usd|none> | migrate`);
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | fee <claude|codex> <name> <plan> <usd|none> | pin claude <name> | migrate`);
         process.exit(2);
         break;
       }
