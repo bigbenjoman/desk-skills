@@ -58,7 +58,7 @@ describe('the state line', () => {
   });
 
   it('a ticket waiting to start does not say it moves while passes are stopped', () => {
-    const l = stateLine({ ...base, state: 'ready', wait: 'waits for DS-606 (collides)', passes: { live: false } });
+    const l = stateLine({ ...base, state: 'ready', wait: 'waits for DS-606 (collides)', passes: { live: false }, stopped: true });
     expect(`${l.lead}${l.rest ? ` ${l.rest}` : ''}`).toBe('Will not move until passes resume.');
   });
 });

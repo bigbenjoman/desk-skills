@@ -6,12 +6,12 @@
 // `ticket` is desk-q-model.mjs ticketPageJson's; `kinds` the repo's §4 Required, Advisory and Known
 // flaky checks, which label the rows; `recorded` its pr_status, the last pass's copy; `verdict(ps)` the
 // sentence for a read shaped as that copy (desk-q-model.mjs prVerdictJson). A PR read less than 60 s ago
-// is answered from the cache without running gh, unless the last pass has since recorded another head.
+// is answered from the cache without running gh, unless the last pass has recorded another head since.
 // gh not answering gives the last pass's copy, said as such. A job log is read only for one of the PR's
 // own checks.
 import { execFile } from 'node:child_process';
 import { otherRepoEnv } from './desk-env.mjs';
-import { FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
+import { FAILED, latestPerCheck, normaliseRollup, statusChecks } from './gate.mjs';
 
 const PR_TTL_MS = 60 * 1000;
 export const LOG_LINES = 40;
@@ -48,7 +48,7 @@ function fromGh(d) {
   const approvals = (Array.isArray(d.latestReviews) ? d.latestReviews : []).filter((r) => r?.state === 'APPROVED').length;
   return { pr: { number: d.number, title: String(d.title ?? ''), url: String(d.url ?? ''), state: d.state ?? null, draft: d.isDraft === true,
     mergeable: d.mergeable ?? null, merge_state: d.mergeStateStatus ?? null, review: d.reviewDecision || null, approvals,
-    head: d.headRefOid ?? null, branch: d.headRefName ?? null, base: d.baseRefName ?? null, merged_at: d.mergedAt ?? null }, checks };
+    head: d.headRefOid ?? null, branch: d.headRefName ?? null, base: d.baseRefName ?? null, merged_at: d.mergedAt ?? null }, checks, rollup: nodes };
 }
 // The last pass's copy (pass.mjs readPrStatus's pr_status), in the same shape.
 function fromPass(t, ps) {
@@ -61,13 +61,14 @@ function fromPass(t, ps) {
 }
 // A read from GitHub as a pr_status: the last pass's copy where it was at this head (its reruns, reopen
 // and behind readings are of that head), with what GitHub says now over it.
-const statusOf = ({ pr, checks }, recorded) => ({ ...(recorded?.head && recorded.head === pr.head ? recorded : {}),
+const statusOf = ({ pr, rollup }, recorded) => ({ ...(recorded?.head && recorded.head === pr.head ? recorded : {}),
   state: pr.state, isDraft: pr.draft, mergeable: pr.mergeable, mergeState: pr.merge_state, reviewDecision: pr.review, head: pr.head, base: pr.base, merged_at: pr.merged_at, url: pr.url,
-  checks: checks.map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion ?? null, started: c.startedAt ?? null, completed: c.completedAt ?? null,
-    runner: c.status !== 'queued', runId: c.runId ?? null, jobId: c.jobId ?? null })) });
+  checks: statusChecks(rollup) });
 
 export function makePrReader({ gh = runGh, now = Date.now } = {}) {
-  const cache = new Map(); // `<owner/name>#<n>` -> { at, head, body }
+  // `<owner/name>#<n>` -> { at, recorded, read }: the GitHub read, and the head the last pass had recorded
+  // then. The verdict is worked out on each request, so a hold recorded since reads at once.
+  const cache = new Map();
   const idOf = (t) => `${t.gh_repo}#${t.pr.number}`;
 
   // { status, body }.
@@ -75,25 +76,29 @@ export function makePrReader({ gh = runGh, now = Date.now } = {}) {
     if (!t.pr) return { status: 200, body: { pr: null, text: NO_PR } };
     const id = idOf(t);
     const hit = cache.get(id);
-    if (hit && now() - hit.at < PR_TTL_MS && (!t.pr.head || hit.head === t.pr.head)) return { status: 200, body: hit.body };
+    if (hit && now() - hit.at < PR_TTL_MS && hit.recorded === (t.pr.head ?? null)) return { status: 200, body: fromRead(hit) };
     const ran = await gh(['pr', 'view', String(t.pr.number), '--repo', t.gh_repo, '--json', FIELDS]);
     let read = null;
     if (ran.exit === 0) { try { read = fromGh(JSON.parse(ran.stdout)); } catch { read = null; } }
     if (!read) {
       console.error(`desk-ui: gh pr view ${id} exited ${ran.exit}`);
-      const at = t.pr.at;
-      return { status: 200, body: { ...shape(fromPass(t, recorded ?? {}), kinds, verdict(recorded ?? {})), source: 'pass', as_of: at,
+      const at = recorded?.at ?? t.pr.at;
+      return { status: 200, body: { ...shape(fromPass(t, recorded ?? {}), kinds, verdict(recorded ?? {})), source: 'pass', as_of: at ?? null,
         note: at ? `Showing the copy from the last pass (${clock(at)}). GitHub isn't answering.` : "GitHub isn't answering, and no pass has recorded this PR yet." } };
     }
-    const body = { ...shape(read, kinds, verdict(statusOf(read, recorded))), source: 'github', as_of: new Date(now()).toISOString(), note: null };
-    cache.set(id, { at: now(), head: read.pr.head, body });
-    return { status: 200, body };
+    const entry = { at: now(), recorded: t.pr.head ?? null, read };
+    cache.set(id, entry);
+    return { status: 200, body: fromRead(entry) };
+
+    function fromRead({ at, read: r }) {
+      return { ...shape(r, kinds, verdict(statusOf(r, recorded))), source: 'github', as_of: new Date(at).toISOString(), note: null };
+    }
   }
 
   // The last LOG_LINES lines of one of the PR's jobs, one its last read or the last pass names: { status, body }.
   async function log(t, job, recorded) {
     if (!t.pr) return { status: 404, body: { error: { code: 'pr', message: 'This ticket has no PR yet.' } } };
-    const own = (cache.get(idOf(t))?.body.checks ?? []).some((c) => String(c.job_id) === job) || (recorded?.checks ?? []).some((c) => String(c.jobId) === job);
+    const own = (cache.get(idOf(t))?.read.checks ?? []).some((c) => String(c.jobId) === job) || (recorded?.checks ?? []).some((c) => String(c.jobId) === job);
     if (!own) return { status: 404, body: { error: { code: 'job', message: 'That job is not one of this PR\'s checks.' } } };
     const ran = await gh(['run', 'view', '--job', job, '--log', '--repo', t.gh_repo]);
     if (ran.exit !== 0) {

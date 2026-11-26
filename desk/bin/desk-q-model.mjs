@@ -3649,6 +3649,9 @@ const RAIL = '▌ ';
 export const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
 const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 
+// With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
+const stoppedBy = (r, k, t, h) => !r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t));
+
 // What a ticket page leads with: whether it moves without the user and, if not, what would. `lead`
 // introduces `cmds`, the commands that move it, each drawn alone on its own line so it copies whole.
 function moveOf(r, row, k, t, h, now) {
@@ -3680,8 +3683,7 @@ function moveOf(r, row, k, t, h, now) {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
-  // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t))) {
+  if (stoppedBy(r, k, t, h)) {
     const why = h ? h.text : clearsPark(t) ? clearsText(t) : slotWait(t) ? slotWaitText(t) : '';
     const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
@@ -4506,7 +4508,7 @@ export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {
     pos: x?.pos ?? null, places: r.places ?? null, title: tr.summary ?? null,
     stage: k === 'running' ? stageOf(x) : null,
     question: t.state === 'parked' ? t.park?.question ?? null : null, open_questions: t.open_questions ?? 0,
-    hold: h ? { text: h.text } : null, behind, wait: ['ready', 'queued'].includes(k) ? startWait(r, t) : null,
+    hold: h ? { text: h.text } : null, stopped: stoppedBy(r, k, t, heldAsks(t) ? null : h), behind, wait: ['ready', 'queued'].includes(k) ? startWait(r, t) : null,
     collides: keysOf(t.collides_with),
     fix: f ? { try: f.try ?? null, of: f.of ?? null } : null,
     stuck: stuck ? { why: stuck.why } : null,

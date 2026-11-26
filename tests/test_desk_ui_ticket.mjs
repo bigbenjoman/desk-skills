@@ -40,13 +40,16 @@ const HEAD = '73ee8aca9b1d2c3e4f5a6b7c8d9e0f1a2b3c4d5e';
 const recorded = (pr, checks, more = {}) => ({ pr, state: 'OPEN', isDraft: false, head: HEAD, at: at(10, 5), url: `https://github.com/${GH}/pull/${pr}`, checks, ...more });
 const passed = (name) => ({ name, status: 'completed', conclusion: 'success', started: at(9, 50), completed: at(9, 54) });
 mkdirSync(join(process.env.DESK_HOME, 'repos', SLUG), { recursive: true });
-writeFileSync(join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json'), JSON.stringify({ version: 1, batch: 'w', concurrency: 2, tickets: {
+const QUEUE = { version: 1, batch: 'w', concurrency: 2, tickets: {
   'DS-563': { key: 'DS-563', state: 'done', result: { pr: 651 }, branch: 'fix/DS-563-clears-when', pr_status: recorded(651, REQUIRED.map(passed)) },
-  'DS-564': { key: 'DS-564', state: 'running', result: { pr: 652 }, fix: { pr: 652, try: 1, of: 2, what: 'install failed' } },
+  'DS-564': { key: 'DS-564', state: 'running', result: { pr: 652 }, fix: { pr: 652, try: 1, of: 2, what: 'install failed' }, pr_status: recorded(652, REQUIRED.map(passed)) },
+  'DS-567': { key: 'DS-567', state: 'done', result: { pr: 654 }, pr_status: recorded(654, REQUIRED.map(passed), { head: 'b'.repeat(40) }) },
   'DS-565': { key: 'DS-565', state: 'queued' },
   'DS-566': { key: 'DS-566', state: 'done', result: { pr: 653 }, pr_status: recorded(653, [passed('unit (node 24)'), { name: 'lint', status: 'completed', conclusion: 'failure', started: at(10, 1), completed: at(10, 2), runner: true, runId: 300, jobId: 301 }]) },
   'base-red-1': { key: 'base-red-1', state: 'queued' },
-} }));
+} };
+const QUEUE_FILE = join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json');
+writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
 const STATE = join(HOME, '.desk-autopilot', SLUG);
 mkdirSync(join(STATE, 'triage'), { recursive: true });
 writeFileSync(join(STATE, 'triage', 'DS-565.json'), JSON.stringify({ summary: 'desk-ui: a ticket page', lane: 'A', size: 'M', lane_reason: 'Mechanical.', files_in_scope: [] }));
@@ -145,6 +148,26 @@ const fixRead = calls.length;
 now += 10_000;
 await get(api('DS-564', '/pr'));
 t('AC11 a ticket on a fix try is answered from the cache too', calls.length - fixRead, 0);
+// GitHub's head ahead of the one the last pass recorded: the same head as the last fetch, so the cache.
+answer = () => ({ exit: 0, stdout: JSON.stringify(prView(654, REQUIRED.map((n) => node(n)))), stderr: '' });
+await get(api('DS-567', '/pr'));
+const lag = calls.length;
+now += 10_000;
+await get(api('DS-567', '/pr'));
+t('AC11 a head the pass has not recorded yet is answered from the cache too', calls.length - lag, 0);
+// A hold the pass records after the read shows at once, from the cached read, with no gh.
+QUEUE.tickets['DS-563'].merge_blocked = 'approval: it needs an approving review from a code owner';
+writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
+await get(api('DS-563', '/pr'));
+const held = calls.length;
+const heldRead = (await get(api('DS-563', '/pr'))).body;
+t('a hold recorded since the read reads at once, from the cache', [calls.length - held, heldRead.verdict.tone, heldRead.verdict.text.startsWith('Ready')], [0, 'person', false]);
+
+// ---- AC8 on a fix try: the copy the pass recorded while it was done, and when
+answer = () => ({ exit: 1, stdout: '', stderr: 'HTTP 502' });
+now += 61_000;
+const fixDown = (await get(api('DS-564', '/pr'))).body;
+t('AC8 a ticket on a fix try shows the pass\'s copy and its time', [fixDown.source, fixDown.note], ['pass', `Showing the copy from the last pass (${hhmm(at(10, 5))}). GitHub isn't answering.`]);
 
 // ---- AC10: no GitHub credential in any response
 t('AC10 no response carries gh\'s token, or a credential gh printed', [texts.length > 10, texts.filter((s) => s.includes(GH_TOKEN) || s.includes(SECRET)).length], [true, 0]);
