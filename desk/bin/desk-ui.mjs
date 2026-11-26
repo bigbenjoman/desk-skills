@@ -36,8 +36,8 @@
 //
 // The ticket page: GET /api/repos/<slug>/tickets/<KEY> is desk-q-model.mjs ticketPageJson, from the batch
 // of <slug> holding the ticket. GET …/<KEY>/pr is its PR as GitHub has it now (desk-ui-ticket.mjs), read
-// with this computer's gh and cached for 60 s at the head the last pass recorded, or the last pass's copy
-// when gh does not answer; GET …/<KEY>/pr/jobs/<id>/log is the last 40 lines of one of its jobs' logs.
+// with this computer's gh and cached for 60 s, or the last pass's copy when gh does not answer, its verdict
+// desk-q-model.mjs prVerdictJson's; GET …/<KEY>/pr/jobs/<id>/log is the last 40 lines of one of its checks' job logs.
 //
 // First run: GET /api/setup is { installed, checkout, repos, found }: whether desk's commands are
 // installed, the checkout install.sh last ran from (~-relative), how many repos are configured, and,
@@ -358,22 +358,27 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   async function ticketRead(res, slugPart, keyPart, sub, job) {
     let slug, key;
     try { slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); } catch { return refuse(res, 400, 'ticket', 'That is not a ticket key.'); }
-    if (!KEY.test(key)) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
-    let t, recorded;
+    // Any id a queue admits (desk-env.mjs SAFE_ID), a lowercase base-red- one included.
+    if (!E.SAFE_ID.test(key) || key.includes('..')) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
+    let t, recorded, verdict;
     try {
       const { Q, all } = await loadAll();
       const batches = all.filter((r) => r.slug === slug);
       if (!batches.length) return refuse(res, 404, 'repo', 'That is not a configured repo.');
-      // A live copy before an archived one, as the writes read it.
-      const r = batches.find((b) => b.q?.tickets && Object.hasOwn(b.q.tickets, key)) ?? batches.find((b) => b.q?.tickets?.[key]);
-      if (!r) return refuse(res, 404, 'ticket', `${key} is in no batch of ${batches[0].repo}.`);
-      t = Q.ticketPageJson(r, key, { now: Date.now() });
+      const { holdersOf } = await import('./batches.mjs');
+      const held = holdersOf(batches.map((b) => ({ b, q: b.q ?? {} })), key);
+      if (held.length > 1) return refuse(res, 409, 'ticket', `${key} is in more than one batch of ${batches[0].repo}.`);
+      const r = held[0];
+      t = r ? Q.ticketPageJson(r, key, { now: Date.now() }) : null;
       if (!t) return refuse(res, 404, 'ticket', `${key} is in no batch of ${batches[0].repo}.`);
       const { prStatusOf } = await import('./batch-state.mjs');
-      recorded = t.pr ? prStatusOf(r.q.tickets[key]) : null;
+      const q = r.q.tickets[key];
+      // A ticket on a fix try keeps the copy the pass recorded while it was done.
+      recorded = t.pr && q.pr_status?.pr === t.pr.number ? (prStatusOf(q) ?? q.pr_status) : null;
+      verdict = (ps) => Q.prVerdictJson(r, key, ps, { now: Date.now() });
     } catch (e) { console.error(`desk-ui: ticket: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
     if (!sub) return send(res, 200, t);
-    const out = job === undefined ? await prs.pr(t, await checkKinds(slug), recorded) : await prs.log(t, job);
+    const out = job === undefined ? await prs.pr(t, await checkKinds(slug), recorded, verdict) : await prs.log(t, job, recorded);
     return send(res, out.status, out.body);
   }
 

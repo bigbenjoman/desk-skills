@@ -34,6 +34,10 @@ const stageText = (s) => (s ? `stage ${stageName(s.label)}${s.at ? ` since ${clo
 export function stateLine(t) {
   const tone = stateOf(t)[2];
   const pr = t.pr?.number != null ? `#${t.pr.number}` : null;
+  // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
+  if (t.passes && !t.passes.live && ['ready', 'queued', 'waiting'].includes(t.state)) {
+    return { tone, lead: 'Will not move until passes resume.', rest: t.hold?.text ? sentence(capital(t.hold.text)) : '' };
+  }
   switch (t.state) {
     case 'running': return { tone, lead: 'Moves without you:', rest: `a worker is on it, ${stageText(t.stage)}.` };
     case 'finishing': return { tone, lead: 'Moves without you:', rest: 'its worker finished, and the next pass records it.' };

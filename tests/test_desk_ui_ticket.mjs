@@ -44,7 +44,8 @@ writeFileSync(join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json'), JSON.str
   'DS-563': { key: 'DS-563', state: 'done', result: { pr: 651 }, branch: 'fix/DS-563-clears-when', pr_status: recorded(651, REQUIRED.map(passed)) },
   'DS-564': { key: 'DS-564', state: 'running', result: { pr: 652 }, fix: { pr: 652, try: 1, of: 2, what: 'install failed' } },
   'DS-565': { key: 'DS-565', state: 'queued' },
-  'DS-566': { key: 'DS-566', state: 'done', result: { pr: 653 }, pr_status: recorded(653, [passed('unit (node 24)'), { name: 'lint', status: 'completed', conclusion: 'failure', started: at(10, 1), completed: at(10, 2) }]) },
+  'DS-566': { key: 'DS-566', state: 'done', result: { pr: 653 }, pr_status: recorded(653, [passed('unit (node 24)'), { name: 'lint', status: 'completed', conclusion: 'failure', started: at(10, 1), completed: at(10, 2), runner: true, runId: 300, jobId: 301 }]) },
+  'base-red-1': { key: 'base-red-1', state: 'queued' },
 } }));
 const STATE = join(HOME, '.desk-autopilot', SLUG);
 mkdirSync(join(STATE, 'triage'), { recursive: true });
@@ -74,7 +75,8 @@ const api = (key, rest = '') => `/api/repos/${SLUG}/tickets/${key}${rest}`;
 
 // ---- the routes are a signed-in window's only
 t('the ticket read needs the window signed in', (await call('GET', api('DS-563'))).status, 401);
-t('a key that is not one is refused', (await get(api('ds-563'))).status, 400);
+t('a key that is not one is refused', (await get(api('DS..563'))).status, 400);
+t('any id a queue admits is read, a lowercase base-red one included', (await get(api('base-red-1'))).body?.key, 'base-red-1');
 t('a repo that is not configured is a 404', (await get(`/api/repos/acme__nope/tickets/DS-563`)).status, 404);
 t('a ticket in no batch is a 404', (await get(api('DS-999'))).status, 404);
 const tk = (await get(api('DS-563'))).body;
@@ -83,7 +85,7 @@ t('the ticket carries its PR as the last pass recorded it', [tk.key, tk.pr.numbe
 // ---- AC5: all 14 required checks green and approved
 answer = () => ({ exit: 0, stdout: JSON.stringify(prView(651, REQUIRED.map((n) => node(n)))), stderr: '' });
 const ready = (await get(api('DS-563', '/pr'))).body;
-t('AC5 the verdict reads ready to merge, then when the merge driver merges it', ready.verdict.text.split('.')[0], 'Ready to merge: all 14 required checks green and approved');
+t('AC5 the verdict reads ready to merge, then when the merge driver merges it', ready.verdict.text, 'Ready to merge: all 14 required checks green and approved. It waits for you to merge it.');
 t('AC5 it is read from GitHub now', [ready.source, ready.as_of, ready.checks.length], ['github', new Date(now).toISOString(), 14]);
 t('AC5 gh ran once, read only, for that PR in its repo', calls.map((a) => a.slice(0, 5)), [['pr', 'view', '651', '--repo', GH]]);
 
@@ -103,6 +105,8 @@ t('AC7 the job log is its last 40 lines, each its time and text', [log.lines.len
 t('AC7 it says when it was read', log.as_of, new Date(now).toISOString());
 t('AC7 gh read that job of that repo', calls.at(-1), ['run', 'view', '--job', job, '--log', '--repo', GH]);
 t('a job id that is not a number is no route', (await get(api('DS-564', '/pr/jobs/12;rm/log'))).status, 404);
+const before7 = calls.length;
+t('a job that is not one of the PR\'s checks is refused, and runs no gh', [(await get(api('DS-564', '/pr/jobs/99999/log'))).status, calls.length - before7], [404, 0]);
 
 // ---- AC8: GitHub not answering: the last pass's copy, said as such
 answer = () => ({ exit: 1, stdout: '', stderr: `HTTP 502 (token ${SECRET})` });
@@ -110,6 +114,12 @@ const down = (await get(api('DS-566', '/pr'))).body;
 const hhmm = (iso) => new Date(iso).toTimeString().slice(0, 5);
 t('AC8 the note says it is the last pass\'s copy, and when', down.note, `Showing the copy from the last pass (${hhmm(at(10, 5))}). GitHub isn't answering.`);
 t('AC8 and shows that copy, failed first', [down.source, down.checks.map((c) => [c.name, c.status])], ['pass', [['lint', 'failed'], ['unit (node 24)', 'passed']]]);
+t('AC8 the copy keeps the job the pass recorded, with its link', [down.checks[0].job_id, down.checks[0].url, down.checks[0].runner], [301, `https://github.com/${GH}/actions/runs/300/job/301`, null]);
+
+// ---- the verdict reads the PR as prNeed does: green checks on a PR in conflict are not ready
+answer = () => ({ exit: 0, stdout: JSON.stringify(prView(653, REQUIRED.map((n) => node(n)), { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })), stderr: '' });
+const clash = (await get(api('DS-566', '/pr'))).body;
+t('a PR in conflict is not ready to merge', clash.verdict, { tone: 'warn', text: 'Merge conflict with main, the next pass sends it to a worker, try 1 of 2.' });
 
 // ---- AC9: no PR yet
 const ran = calls.length;
@@ -127,6 +137,14 @@ t('AC11 inside 60 s at the same head the server answers from its cache without r
 now += 31_000;
 await get(api('DS-563', '/pr'));
 t('AC11 once 60 s have passed it reads GitHub again', calls.length - before, 1);
+// A ticket on a fix try has no head the pass recorded, and is cached all the same.
+answer = () => ({ exit: 0, stdout: JSON.stringify(prView(652, REQUIRED.map((n) => node(n)))), stderr: '' });
+now += 61_000;
+await get(api('DS-564', '/pr'));
+const fixRead = calls.length;
+now += 10_000;
+await get(api('DS-564', '/pr'));
+t('AC11 a ticket on a fix try is answered from the cache too', calls.length - fixRead, 0);
 
 // ---- AC10: no GitHub credential in any response
 t('AC10 no response carries gh\'s token, or a credential gh printed', [texts.length > 10, texts.filter((s) => s.includes(GH_TOKEN) || s.includes(SECRET)).length], [true, 0]);

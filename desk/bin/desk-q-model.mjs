@@ -24,11 +24,12 @@ import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, idlePass, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+import { spawnStarts } from './worker-cost.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
+import { FAILED, evaluateGate, requiredPasses, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, wquantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
@@ -507,8 +508,8 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
       : passed === checks.length ? (passed === 1 ? '1 check passed' : `all ${passed} checks passed`)
         : `${passed} check${passed === 1 ? '' : 's'} passed`;
     const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
-    if (ctx.merges) return merging(all, [' · merges at the next pass', null]);
-    return ctx.batchMerges ? { ...merging(all, [` · ${batchMergesText(ctx)}`, null]), byBatch: true } : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
+    if (ctx.merges) return { ...merging(all, [' · merges at the next pass', null]), green: true };
+    return ctx.batchMerges ? { ...merging(all, [` · ${batchMergesText(ctx)}`, null]), byBatch: true, green: true } : { ...needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]), green: true };
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
   return ctx.merges || ctx.batchMerges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
@@ -3813,7 +3814,7 @@ function mergeOf(r, t, events) {
   if (pr == null) return null;
   // The PR's own repo where its status names one (a ticket done on a PR in another repo), else this one.
   const ps = prStatusOf(t);
-  const repo = String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? r.slug.replace('__', '/');
+  const repo = prRepoOf(r, ps);
   const e = latestMerge(events, { repo, pr });
   if (e?.event === 'merged') return { text: mergedLine(pr, e.by, e), warn: false };
   if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
@@ -4435,14 +4436,41 @@ export function ticketJson(r, key, { now = Date.now() } = {}) {
   return envelope('ticket', now, { queues: queueAges([r], now) }, { ticket }, ticketParts(r, key, { now }));
 }
 
-// The last spawn line in a worker's log: the model and effort its session started on, or null.
+// The last start in a worker's log (worker-cost.mjs spawnStarts): the model and effort its session started on, or null.
 function spawnOf(file) {
-  let text;
-  try { text = tailText(file, STAGE_TAIL); } catch { return null; }
-  const at = text.lastIndexOf('{"type":"desk_spawn"');
-  if (at < 0) return null;
-  const end = text.indexOf('\n', at);
-  try { const d = JSON.parse(text.slice(at, end < 0 ? undefined : end)); return { model: d.model ?? null, effort: d.effort ?? null }; } catch { return null; }
+  try { return spawnStarts(readFileSync(file, 'utf8')).at(-1) ?? null; } catch { return null; }
+}
+// The repo a ticket's PR is in: the one its status names (a ticket done on a PR in another repo), else
+// the repo's §0 GitHub repo, else its slug's.
+const prRepoOf = (r, ps) => String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1]
+  ?? (() => { try { const v = repoConfigValue(r.slug, 'gh-repo'); return v && !isNone(v) ? v : null; } catch { return null; } })()
+  ?? r.slug.replace('__', '/');
+
+// The PR & CI tab's verdict on ticket `key`'s PR as GitHub has it now, `ps` shaped as the pass records
+// pr_status (pass.mjs readPrStatus), read as prNeed reads the last pass's copy: { tone, text }.
+export function prVerdictJson(r, key, ps, { now = Date.now() } = {}) {
+  const t0 = r.q.tickets[key], ctx = r.ctx ?? NOBODY;
+  if (ps.state === 'MERGED') {
+    const at = Date.parse(ps.merged_at ?? t0.merged_at ?? '');
+    return { tone: 'done', text: `Merged${Number.isFinite(at) ? ` ${clock(at)}` : ''}${t0.merge?.by ? ` by ${t0.merge.by}` : ''}.` };
+  }
+  const red = [...new Set(evaluateGate(ps.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] }).failing.map((c) => c.name))];
+  const f = fixOn(t0);
+  if (red.length && f && t0.state === 'running') return { tone: 'warn', text: `Blocked: ${andList(red)} ${red.length === 1 ? 'is' : 'are'} red. Fix try ${f.try} of ${f.of} is running.` };
+  // prNeed reads the status the last pass recorded on a done ticket, so it is handed this read as that.
+  const pr = t0.result?.pr ?? t0.fix?.pr ?? null;
+  const need = prNeed(r.q, { ...t0, state: 'done', result: { ...t0.result, pr }, pr_status: { ...ps, pr } }, ctx, now);
+  if (!need.green) {
+    const tone = need.k === 'needs' ? 'person' : need.segs.some(([, c]) => c === FAIL || c === WARN) ? 'warn' : 'info';
+    return { tone, text: sentence(segText(need.segs).replaceAll(' · ', ', ')) };
+  }
+  const req = ctx.required ?? [];
+  const n = (ps.checks ?? []).filter((c) => (!req.length || req.includes(c.name)) && requiredPasses(c)).length;
+  const which = `${n === 1 ? 'the 1' : `all ${n}`} ${req.length ? 'required ' : ''}check${n === 1 ? '' : 's'} green`;
+  if (['REVIEW_REQUIRED', 'CHANGES_REQUESTED'].includes(ps.reviewDecision)) return { tone: 'warn', text: `Waiting for review: ${which}, and it needs an approving review.` };
+  const when = need.k === 'needs' ? ' It waits for you to merge it.' : need.byBatch ? ` It ${batchMergesText(ctx)}.`
+    : r.live && r.next != null ? ` The merge driver merges it at the next pass (${clock(r.next)}).` : ' The merge driver merges it once passes resume.';
+  return { tone: 'ok', text: `Ready to merge: ${which}${ps.reviewDecision === 'APPROVED' ? ' and approved' : ''}.${when}` };
 }
 // The email a repo's new workers start on (its §3 Subscription row, `default` the computer's), or null.
 function subscriptionEmail(slug) {
@@ -4463,27 +4491,28 @@ export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {
   // A ticket on a fix try is running again on the PR it opened, which the last pass recorded only while it was done.
   const prN = t.result?.pr ?? t.fix?.pr ?? null;
   const ps = prN != null ? prStatusOf(t) : null;
-  const stageOf = (row) => (row?.st?.label ? { label: row.st.label, at: isoOrNull(row.st.at), log: !!row.st.log } : null);
+  const stageOf = (row) => (row?.st?.label ? { label: row.st.label, at: isoOrNull(row.st.at) } : null);
   const rowOf = (b) => r.rows.find((y) => y.t.key === b) ?? r.prs.find((y) => y.t.key === b) ?? null;
   const behind = unmergedBlockers(r.q, t).map((b) => ({ key: b, state: r.q.tickets[b] ? shownState(r.q, r.q.tickets[b], r.ctx) : null, stage: stageOf(rowOf(b))?.label ?? r.q.tickets[b]?.stage ?? null }));
   const f = fixOn(t);
   const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
   const port = portLeaseOf(r, key, now);
   const spawn = spawnOf(logPath(r, key));
+  const gh = prRepoOf(r, ps);
   const field = ([label, segs]) => ({ label, text: segText(segs.slice(0, 1)), note: segText(segs.slice(1)).trim() || null });
   return {
-    key, repo: r.repo ?? r.name, slug: r.slug, batch: r.batch ?? null, gh_repo: r.slug.replace('__', '/'), jira_browse: jiraBrowseOf(r.slug),
+    key, repo: r.repo ?? r.name, gh_repo: gh, jira_browse: jiraBrowseOf(r.slug),
     state: k, group: groupOf(k), type: t.type ?? tr.type ?? null, size: tr.size ?? null, lane: laneOf(t, tr),
-    pos: x?.pos ?? null, places: r.places ?? null, placed: !!t.placed, title: tr.summary ?? null,
+    pos: x?.pos ?? null, places: r.places ?? null, title: tr.summary ?? null,
     stage: k === 'running' ? stageOf(x) : null,
     question: t.state === 'parked' ? t.park?.question ?? null : null, open_questions: t.open_questions ?? 0,
-    hold: h ? { kind: h.k, text: h.text } : null, behind, wait: ['ready', 'queued'].includes(k) ? startWait(r, t) : null,
+    hold: h ? { text: h.text } : null, behind, wait: ['ready', 'queued'].includes(k) ? startWait(r, t) : null,
     collides: keysOf(t.collides_with),
-    fix: f ? { try: f.try ?? null, of: f.of ?? null, what: f.what ?? null } : null,
+    fix: f ? { try: f.try ?? null, of: f.of ?? null } : null,
     stuck: stuck ? { why: stuck.why } : null,
     failed_why: k === 'failed' ? failedWhy(t) : null,
     merged_at: isoOrNull(t.merged_at ?? (ps?.state === 'MERGED' ? ps.merged_at : null)), merged_by: t.merge?.by ?? null,
-    pr: prN != null ? { number: prN, url: ps ? prUrl(r, t) : `https://github.com/${r.slug.replace('__', '/')}/pull/${prN}`, state: ps?.state ?? null, draft: ps?.isDraft === true,
+    pr: prN != null ? { number: prN, url: ps ? prUrl(r, t) : `https://github.com/${gh}/pull/${prN}`, state: ps?.state ?? null, draft: ps?.isDraft === true,
       head: ps?.head ?? null, at: isoOrNull(ps?.at), need: ps && prRow(t) ? segText(prNeed(r.q, t, r.ctx, now).segs) : null, hold: parseHoldNote(t.merge_blocked)?.why ?? null } : null,
     passes: { live: !!r.live, last: isoOrNull(r.last), next: isoOrNull(r.next), merges: !!r.ctx?.merges },
     schedule: x && !x.pr ? timingFields(r, forecastOf(r, { now, checkin }), x, h, now).map(field) : [],

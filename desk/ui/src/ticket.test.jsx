@@ -8,10 +8,10 @@ const SNAP = { at: at(10, 8), repos: [{ id: 'bigbenjoman__desk-skills', slug: 'b
 
 // DS-676 as the server's ticket read gives it, running at stage 4/9 Verify since 09:53.
 const DS676 = {
-  key: 'DS-676', repo: 'desk-skills', slug: 'bigbenjoman__desk-skills', gh_repo: 'bigbenjoman/desk-skills', jira_browse: 'https://jira.example.net/browse/',
+  key: 'DS-676', repo: 'desk-skills', gh_repo: 'bigbenjoman/desk-skills', jira_browse: 'https://jira.example.net/browse/',
   state: 'running', group: 'running', type: 'Story', size: 'M', lane: 'A', pos: 1, places: 24,
   title: 'desk-pr: a saved-canvas PR shows one stitched image per board and theme, with every breakpoint and its PASS/FAIL table',
-  stage: { label: '4/9 verify', at: at(9, 53), log: true }, question: null, open_questions: 0, hold: null, behind: [], wait: null,
+  stage: { label: '4/9 verify', at: at(9, 53) }, passes: { live: true, last: at(10, 5), next: at(10, 15), merges: true }, question: null, open_questions: 0, hold: null, behind: [], wait: null,
   collides: ['SV-4017'], fix: null, stuck: null, failed_why: null, merged_at: null, pr: null,
   schedule: [{ label: 'Starts', text: 'running now', note: null }, { label: 'Ships', text: 'today 13:03', note: 'could run to today 17:10 (1 run in 5 is later)' },
     { label: 'Based on', text: '29 merged size M tickets in desk-skills · typical 5.3 h spawn to merge, 4 in 5 within 12.7 h', note: null }],
@@ -23,7 +23,7 @@ const DS676 = {
 
 function open(ticket, { path = `/t/desk-skills/${ticket.key}`, pr = null } = {}) {
   const get = vi.fn(async (url) => {
-    if (url === `/api/repos/${ticket.slug}/tickets/${ticket.key}`) return json(ticket);
+    if (url === `/api/repos/${SNAP.repos[0].slug}/tickets/${ticket.key}`) return json(ticket);
     if (url.endsWith('/pr') && pr) return json(pr);
     return json({ error: { code: 'not_found', message: 'No such route.' } }, 404);
   });
@@ -55,6 +55,11 @@ describe('the state line', () => {
   ])('AC2: %s', (_, more, want) => {
     const l = stateLine({ ...base, ...more });
     expect(`${l.lead}${l.rest ? ` ${l.rest}` : ''}`).toBe(want);
+  });
+
+  it('a ticket waiting to start does not say it moves while passes are stopped', () => {
+    const l = stateLine({ ...base, state: 'ready', wait: 'waits for DS-606 (collides)', passes: { live: false } });
+    expect(`${l.lead}${l.rest ? ` ${l.rest}` : ''}`).toBe('Will not move until passes resume.');
   });
 });
 

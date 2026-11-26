@@ -89,7 +89,7 @@ export function heartbeatOnly(log, from) {
 }
 
 // The starts in one log: a fresh session's, and each resume of it.
-function spawnStarts(logText) {
+export function spawnStarts(logText) {
   const starts = [];
   for (const line of logText.split('\n')) {
     if (!line.includes(SPAWN_EVENT)) continue;
