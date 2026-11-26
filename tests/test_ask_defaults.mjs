@@ -19,6 +19,13 @@ t('#1366 the session\'s own --never-default reason wins', D.neverDefault('Rename
 t('#1366 a recommendation that spends money never applies by itself', D.neverDefault('Upgrade the plan to the paid tier?', 'upgrade'), 'it is a money call, which desk never takes for you');
 t('#1366 nor one about production credentials', D.neverDefault('Rotate the production API key now?', 'rotate'), 'it is a production call, which desk never takes for you');
 t('#1366 an ordinary call may', D.neverDefault('Merge PR #12 now, or hold it for the release?', 'merge'), null);
+t('#1434 AC1 accepting a review gap never applies by itself: only the person\'s own comment accepts', D.neverDefault('PR #12\'s review left a requirement gap on AC3: accept it as built, or amend AC3?', 'accept'), 'only your own comment on the PR can accept a review gap, so desk never applies it for you');
+t('#1434 AC1 nor where the gap is quoted with its tag', D.neverDefault('PERSON\'S CALL · AC3: "x" — only a live run checks it. Recommended: accept AC3 as built', 'accept'), 'only your own comment on the PR can accept a review gap, so desk never applies it for you');
+const NEVER_ACCEPT = 'only your own comment on the PR can accept a review gap, so desk never applies it for you';
+t('#1434 AC1 nor a yes to posting the acceptance for the person', `${D.neverDefault('Post the acceptance of requirement gap AC2 on PR #12 for the person?', 'post')} | ${D.neverDefault('Post the acceptance of requirement gap AC2 on PR #12 for the person?', 'yes')}`, `${NEVER_ACCEPT} | ${NEVER_ACCEPT}`);
+t('#1434 AC1 nor accepting a criterion on a PR that never says "gap"', D.neverDefault('Accept AC2 on PR #12 as the person?', 'accept'), NEVER_ACCEPT);
+t('#1434 a yes to an acceptance test on a gap may', D.neverDefault('Add an acceptance test for requirement gap AC2 on PR #12?', 'yes'), null);
+t('#1434 the other option on the same gap may',D.neverDefault('PR #12\'s review left a requirement gap on AC3: accept it as built, or amend AC3?', 'amend'), null);
 
 const now = local(24, 10, 0);
 t('#1366 the deadline as the person reads it: today', D.deadlineText({ recommended: 'merge', apply_by: local(24, 17, 0).toISOString() }, now), 'applies merge at 17:00 unless you choose');

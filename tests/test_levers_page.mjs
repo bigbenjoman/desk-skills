@@ -436,7 +436,10 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   const full = structuredClone(six);
   full.panels.merge_stages = { repos: [{ name: 'desk-skills', prs: 4, stages: { desk: { n: 4, median: 96, p75: 108 }, merge: { n: 3, median: 5, p75: 9 } }, outage: 1,
     learned: { since: '2026-11-24T00:00:00.000Z', before: { prs: 2, rereviews: 1.5, approval: 120 }, after: { prs: 2, rereviews: 0.5, approval: 40 } } }] };
-  full.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [{ cause: 'usage', hours: 15, tickets: 2, link: null }, { cause: 'lock', hours: 0.5, tickets: 1, link: null }] }, { week: '2026-W51', hours: 0, tickets: 0, causes: [] }] }] };
+  const usage = { cause: 'usage', hours: 15, tickets: 2, link: null }, lock = { cause: 'lock', hours: 0.5, tickets: 1, link: null }, hold = { cause: 'park: hold', hours: 4.5, tickets: 2, link: null };
+  full.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [usage, hold, lock],
+    groups: { stalled: { hours: 15.5, tickets: 3, causes: [usage, lock] }, held: { hours: 4.5, tickets: 2, causes: [hold] } } },
+  { week: '2026-W51', hours: 0, tickets: 0, causes: [], groups: { stalled: { hours: 0, tickets: 0, causes: [] }, held: { hours: 0, tickets: 0, causes: [] } } }] }] };
   full.panels.asks = { repos: [{ name: 'desk-skills', lever: 'question-handling', at: '2026-12-28T06:00:00.000Z', state: 'trial', arms: { batched: arm, 'one-at-a-time': arm } }] };
   const h = P.renderPage(full);
   const css = h.split('<style>')[1].split('</style>')[0];

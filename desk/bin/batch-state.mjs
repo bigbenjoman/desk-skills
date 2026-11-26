@@ -567,7 +567,7 @@ export const planFirstPutOff = (keys) => ({ question: 'plan-first waiting', inpu
 // RESTATE_MS). The digest and needs-you leave it out, and desk-q shows it as waiting.
 export const settlesByScript = (t) => {
   const c = t?.park?.clears_when;
-  return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
+  return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c, t.park.question) && !needsSession(t);
 };
 
 // A park a pass settles that waits on an Actions run or a PR's checks: those finish within minutes, so

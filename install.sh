@@ -461,7 +461,9 @@ install_release() {
   prune_removed "$SRC/desk/templates" "$DESKDIR/templates" "" "$rel_dir/templates"
   go_live "$name"
   if out="$(DESK_HOME="$DESKDIR" node "$rel_dir/bin/installed.mjs" record "$SRC" "$rel_dir" 2>&1)"; then
-    ok "installed version $out (~/.claude/desk/installed.json)"
+    ok "installed version ${out%%$'\n'*} (~/.claude/desk/installed.json)"
+    # Any further line is installed.mjs saying a move was not recorded for the release watch, or why: a note of its own.
+    case "$out" in *$'\n'*) printf '%s\n' "${out#*$'\n'}" | while IFS= read -r l; do note "$l"; done ;; esac
     wrote "version  ~/.claude/desk/installed.json"
   else
     warn "could not record the installed version"; show_err "$out"

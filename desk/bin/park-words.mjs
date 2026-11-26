@@ -132,6 +132,7 @@ export const GRANT_WORDS = {
   'machine-reboot': 'reboot the machine',
   'batch-base-push': 'push the batch base',
   'autopilot-judgement': 'make product, design and wording calls',
+  'accept-review-gaps': 'accept review gaps for you',
 };
 
 // Edges a grant id or a desk word must not touch, so one inside a path, a branch or a package name

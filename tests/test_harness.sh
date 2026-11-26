@@ -318,6 +318,17 @@ SF="$T/am-same.json"; printf '{"permissions":{"deny":["Bash(rm -rf *)"]}}\n' > "
 run --ledger "$T/am-same-ledger.json" --settings "$SF" --user-settings "$SF" automode "$T/am-vp.json"
 run --ledger "$T/am-same-ledger.json" --settings "$SF" --user-settings "$SF" remove pr-merge-green
 check "remove with --settings and --user-settings on one file keeps the revoke" '[ $rc -eq 0 ] && [[ "$out" == *"REMOVED  autoMode.allow"* ]] && ! grep -q "gh pr merge" "$SF" && grep -qF "rm -rf" "$SF"'
+# #1434: accept-review-gaps yes writes the gap-acceptance entry for its repo, and revoking it drops it
+AG="$T/am-ag.json"
+printf '{"repo":"bigbenjoman/accepts","granted":["accept-review-gaps"],"merge":null,"migrate":null}\n' > "$T/am-ag-plan.json"
+run --ledger "$T/am-ag-ledger.json" --user-settings "$AG" automode "$T/am-ag-plan.json"
+AG_E=$(jq -r '.autoMode.allow[] | select(startswith("In bigbenjoman/accepts only: "))' "$AG")
+check "#1434 accept-review-gaps yes writes a comment entry naming the repo, the row and what is not covered" '[ $rc -eq 0 ] && [[ "$AG_E" == *"gh pr comment <n> --repo bigbenjoman/accepts"* ]] && [[ "$AG_E" == *"accept-review-gaps"* ]] && [[ "$AG_E" == *"Approving a pull request"*"not covered"* ]] && jq -e ".automode[] | select(.kind == \"accept-gaps\" and .rows == [\"accept-review-gaps\"])" "$T/am-ag-ledger.json" >/dev/null'
+printf '{"repo":"bigbenjoman/accepts","granted":["pr-ready"],"merge":null,"migrate":null}\n' > "$T/am-ag-plan2.json"
+run --ledger "$T/am-ag-ledger2.json" --user-settings "$T/am-ag2.json" automode "$T/am-ag-plan2.json"
+check "  … and without the row, no entry" '[ $rc -eq 0 ] && ! grep -qs "gh pr comment" "$T/am-ag2.json"'
+run --ledger "$T/am-ag-ledger.json" --user-settings "$AG" --settings "$T/am-none.json" remove accept-review-gaps
+check "  … and revoking the row removes it" '[ $rc -eq 0 ] && [[ "$out" == *"REMOVED  autoMode.allow [bigbenjoman/accepts] accept-gaps"* ]] && ! grep -q "gh pr comment" "$AG"'
 mkrepo amr; printf '.claude/settings.local.json\n' > "$T/amr/.gitignore"
 run --ledger "$T/amr-ledger.json" --settings "$T/amr/.claude/settings.local.json" add "$T/allow.json"
 BADU="$T/am-badu.json"; printf '{}\n' > "$BADU"
