@@ -3388,6 +3388,21 @@ try {
   t('DS-1046 AC2 a dated repo at 140 columns keeps every column and its "today"',
     `${QUEUE_COLS.filter((c) => queueHeadOf(d140).includes(c)).join(',')} ${[...dCells(d140, 'STARTS'), ...dCells(d140, 'SHIPS')].some((s) => /^▲?today \d\d:\d\d$/.test(s))}`,
     'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS,TITLE true');
+  // A slow repo late in December, whose dates fall in the next year ("6 Jan 2026"): at 88 columns a
+  // date drops its year so STARTS stays, and wide enough it keeps it. Before the real clock, as FIXED
+  // is, so its passes are live.
+  const DEC = new Date(2025, 11, 28, 18, 0).getTime();
+  dated('q1046y', 5665, { workers: 1, at: DEC, hours: [30, 40, 50, 60, 30, 40, 50, 60, 30, 40, 50, 60], tickets: { [KEY]: { state: 'running', stage: '3/9' }, 'Y-1': ready, 'Y-2': ready, 'Y-3': ready, 'Y-4': ready } });
+  const ry = Q.loadRepos(DEC).find((r) => r.name === 'q1046y');
+  const yAt = (width) => lines(Q.repoScreen(ry, { now: DEC, width }));
+  const y88 = yAt(88), y140 = yAt(140), yLeads = ['base-red', 'Y-1 ', 'Y-2 ', 'Y-3 ', 'Y-4 '];
+  const yCells = (ls, c) => yLeads.map((k) => cellOf(ls, k, c, leadRow) ?? '');
+  t('DS-1046 AC1 a repo dated into next year at 88 columns: every row keeps STATE, WHAT IT NEEDS, STARTS and SHIPS, a date without its year',
+    `${QUEUE_COLS.filter((c) => queueHeadOf(y88).includes(c)).join(',')} ${['STATE', 'WHAT IT NEEDS', 'STARTS', 'SHIPS'].every((c) => yCells(y88, c).every(Boolean))} ${[...yCells(y88, 'STARTS'), ...yCells(y88, 'SHIPS')].every((s) => !/ \d{4}$/.test(s)) && yLeads.every((k) => [...leadRow(y88, k)].length <= 88)}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS true true');
+  t('DS-1046 AC2 a repo dated into next year at 140 columns keeps every column and the year',
+    `${QUEUE_COLS.filter((c) => queueHeadOf(y140).includes(c)).join(',')} ${[...yCells(y140, 'STARTS'), ...yCells(y140, 'SHIPS')].some((s) => / 2026$/.test(s))}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS,TITLE true');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');

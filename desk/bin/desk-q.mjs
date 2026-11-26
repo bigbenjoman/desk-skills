@@ -3498,28 +3498,32 @@ const fitW = (head, cells, max) => Math.min(max, Math.max(head.length, ...cells.
 // off, so STARTS holds only a start. It fits the longest such time shown, and is left out when none is.
 const WAIT_HEAD = 'WAITING';
 const waitW = (spans) => (spans.some(Boolean) ? fitW(WAIT_HEAD, spans, Infinity) : 0);
-// A same-day time without its "today" ("today 21:30" is "21:30", "▲today 21:30" is "▲21:30"): how a
-// tight Queue keeps STARTS rather than dropping it.
-const TODAY_AT = new RegExp(`^(${OVERDUE}?)today `);
-const sameDay = (s) => String(s ?? '').replace(TODAY_AT, '$1');
+// A date in its short form, how a tight Queue keeps STARTS rather than dropping it: a same-day time
+// without its "today" ("today 21:30" is "21:30", "▲today 21:30" is "▲21:30"), and a date without its
+// year ("4 Jan 2027" is "4 Jan").
+const TODAY_AT = new RegExp(`^(${OVERDUE}?)today `), YEAR_ON = /^(\S*\d{1,2} [A-Z][a-z]{2}) \d{4}$/;
+const shortWhen = (s) => String(s ?? '').replace(TODAY_AT, '$1').replace(YEAR_ON, '$1');
 // The repo Queue's widths: TICKET (`kw`), WAITING (`ww`), WHAT IT NEEDS (`nw`), STARTS (`sw`), SHIPS
-// (`hw`) and TITLE (`tw`), 0 for a column left out, and `short` where a same-day time drops its
-// "today". `starts` and `ships` are the cells those columns show. Narrower than every column at its
+// (`hw`) and TITLE (`tw`), 0 for a column left out, and `short` where dates take their short form
+// (shortWhen). `starts` and `ships` are the cells those columns show. Narrower than every column at its
 // widest, it gives way in turn: WHAT IT NEEDS narrows to NEED_MIN, STARTS and SHIPS to their longest
 // cells, then a key too long for the room left is cut with … (never under 10), then TITLE goes, then
-// WAITING, then same-day times drop "today", then STARTS goes, then SHIPS. Narrower still, the row is
-// cut at a whole column (cutRuns), so WHAT IT NEEDS goes last.
+// WAITING, then dates take their short form, then STARTS narrows to its heading, a longer cell cut
+// with …, then STARTS goes, then SHIPS. Narrower still, the row is cut at a whole column (cutRuns),
+// so WHAT IT NEEDS goes last.
 function queueWidths(width, keys, spans, { starts, ships }) {
   const full = keyW(keys), wait = waitW(spans);
   if (width == null) return { kw: full, ww: wait, nw: NEED_W, sw: STARTS_W, hw: SHIPS_W, tw: 60, short: false };
-  const sFit = (short) => fitW('STARTS', short ? starts.map(sameDay) : starts, STARTS_W);
+  const sFit = (short) => fitW('STARTS', short ? starts.map(shortWhen) : starts, STARTS_W);
   // SHIPS ends a row with no TITLE, so it then takes no gap after it.
-  const hFit = (short, title) => fitW('SHIPS', short ? ships.map(sameDay) : ships, SHIPS_W) - (title ? 0 : 2);
+  const hFit = (short, title) => fitW('SHIPS', short ? ships.map(shortWhen) : ships, SHIPS_W) - (title ? 0 : 2);
+  // STARTS in the room a row with short dates and the shortest key leaves it, never under its heading.
+  const sRoom = Math.max('STARTS'.length + 2, Math.min(sFit(true), width - (POS_W + 10 + STATE_W + NEED_MIN + hFit(true))));
   // Each layout: whether the key may be cut, WAITING, STARTS and SHIPS (0 leaves one out), whether TITLE shows, and `short`.
   const L = (cutKey, ww, sw, hw, title, short = false) => ({ cutKey, ww, sw, hw, title, short });
   const steps = [L(false, wait, STARTS_W, SHIPS_W, true), L(false, wait, sFit(), hFit(false, true), true), L(true, wait, sFit(), hFit(false, true), true),
     L(true, wait, sFit(), hFit(), false), L(true, 0, sFit(), hFit(), false), L(true, 0, sFit(true), hFit(true), false, true),
-    L(true, 0, 0, hFit(true), false, true), L(true, 0, 0, 0, false, true)];
+    L(true, 0, sRoom, hFit(true), false, true), L(true, 0, 0, hFit(true), false, true), L(true, 0, 0, 0, false, true)];
   // The row's width less TICKET, with WHAT IT NEEDS at NEED_MIN and TITLE at TITLE_MIN.
   const rest = (s) => POS_W + STATE_W + s.ww + NEED_MIN + s.sw + s.hw + (s.title ? TITLE_MIN : 0);
   const keyOf = (s) => (s.cutKey ? Math.max(10, Math.min(full, width - rest(s))) : full);
@@ -3528,10 +3532,10 @@ function queueWidths(width, keys, spans, { starts, ships }) {
   const nw = Math.max(NEED_MIN, Math.min(NEED_W, width - fixed));
   return { kw, ww: s.ww, nw, sw: s.sw, hw: s.hw, tw: s.title ? Math.max(1, width - fixed + TITLE_MIN - nw) : 0, short: s.short };
 }
-// The cells after WHAT IT NEEDS, each left out where its width is 0.
+// The cells after WHAT IT NEEDS, each left out where its width is 0. A start too long for STARTS is cut with ….
 const tailCells = ({ sw, hw, tw, short }, start, ship, title) => {
-  const at = short ? sameDay : String;
-  return [...(sw ? [[[pad(at(start), sw), null]]] : []), ...(hw ? [[[pad(at(ship), hw), null]]] : []), ...(tw ? [[[cut(title, tw), null]]] : [])];
+  const at = short ? shortWhen : String;
+  return [...(sw ? [[[cutPad(at(start), sw), null]]] : []), ...(hw ? [[[pad(at(ship), hw), null]]] : []), ...(tw ? [[[cut(title, tw), null]]] : [])];
 };
 // Narrower than its narrowest row, a Queue row and its heading are cut at a whole column (cutRuns).
 const queueHead = ({ kw, ww, nw, sw, hw, tw }, width = null) => bold(cutLine([`  ${rpad('#', 4)}  ${pad('TICKET', kw)}`, pad('STATE', STATE_W), ww ? pad(WAIT_HEAD, ww) : '', pad('WHAT IT NEEDS', nw),
