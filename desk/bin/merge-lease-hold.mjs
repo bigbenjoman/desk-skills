@@ -100,7 +100,7 @@ export function hold({ pr, sha, repo, base, by, method, ticket = null, head = nu
     // It shares the enqueue's minute, so the hold still ends within the lease's TTL.
     const start = now();
     const pre = read(PRE_READ_MS);
-    if (pre.merged) return merged(pre, outsideMerger(pre.login), `already merged by ${outsideMerger(pre.login)}, not enqueued:`);
+    if (pre.merged) return merged(pre, outsideMerger(pre.login), `already merged by ${outsideMerger(pre.login)} (not enqueued)`);
     const q = gh(['api', '-X', 'PUT', `repos/${repo}/pulls/${pr}/merge-async`, '-f', `merge_method=${method}`], Math.max(1000, ENQUEUE_MS - (now() - start)));
     // An enqueue gh did not answer may still have reached GitHub, so its outcome is read from the PR.
     if (q.timedOut) say(`#${pr} ${q.stderr} for the enqueue: reading whether GitHub merged it`);

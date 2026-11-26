@@ -68,8 +68,8 @@ const c1 = cli('claim', '20', 'cafe123', '--by', S);
 t('#809 the CLI claims, exit 0', [c1.status, c1.stdout.trim()], [0, `claimed ${R}#20 at cafe123 for ${S}`]);
 const c2 = cli('claim', '20', 'cafe123', '--by', D);
 t('#809 and refuses another merger, exit 11', [c2.status, c2.stderr.trim().startsWith(`merge-log: ${R}#20 is already claimed by ${S}`)], [11, true]);
-const c3 = cli('record', '20', 'cafe123', '--by', S, '--event', 'merged');
-t('#809 record says what it wrote', [c3.status, c3.stdout.trim()], [0, `recorded ${R}#20 merged at cafe123 by ${S}`]);
+const c3 = cli('record', '20', 'cafe123', '--by', S, '--event', 'merged', '--merged-by', 'octocat');
+t('#809 record says what it wrote', [c3.status, c3.stdout.trim()], [0, `recorded ${R}#20 merged at cafe123 by ${S} (GitHub: octocat)`]);
 const c4 = cli('show', '--pr', '20');
 t('#809 show prints the PR\'s events, oldest first', c4.stdout.trim().split('\n').map((l) => l.split(/\s+/).slice(1, 3).join(' ')), [`${R}#20 claim`, `${R}#20 merged`]);
 // Two mergers claiming at once, ten times over: the lock lets exactly one through each time.
@@ -91,6 +91,21 @@ writeFileSync(answer, '{"autoMergeRequest":{"enabledAt":"x"}}');
 const armedCli = cliGh('claim', '40', 'beef123', '--by', D).status;
 writeFileSync(answer, '{"autoMergeRequest":null}');
 t('#809 the CLI checks GitHub: armed there holds, off there releases', [armedCli, cliGh('claim', '40', 'beef123', '--by', D).status], [11, 0]);
+
+// DS-1030: a merged line carries the merger GitHub names, read from GitHub where --merged-by is not given.
+const mergedLine = (pr) => M.readLog(path).findLast((e) => e.pr === pr && e.event === 'merged');
+writeFileSync(answer, '{"mergedBy":{"login":"bigbenjoman"}}');
+cliGh('record', '41', 'beef123', '--by', D, '--event', 'merged');
+t('DS-1030 AC4 a merged record names its merger, with the GitHub user GitHub reports', [mergedLine('41')?.by, mergedLine('41')?.merged_by], [D, 'bigbenjoman']);
+writeFileSync(answer, '{"mergedBy":null}');
+cliGh('record', '42', 'beef123', '--by', D, '--event', 'merged');
+t('DS-1030 AC3 GitHub naming no merger records it unknown, not the merger given', [mergedLine('42')?.by, mergedLine('42')?.merged_by], ['unknown', null]);
+cli('record', '43', 'beef123', '--by', D, '--event', 'merged', '--merged-by', '');
+t('DS-1030 AC3 an empty --merged-by is GitHub naming none', [mergedLine('43')?.by, mergedLine('43')?.merged_by], ['unknown', null]);
+writeFileSync(answer, 'not json');
+cliGh('record', '44', 'beef123', '--by', D, '--event', 'merged');
+t('DS-1030 GitHub unread keeps the merger given, with no merged_by', [mergedLine('44')?.by, 'merged_by' in (mergedLine('44') ?? {})], [D, false]);
+t('DS-1030 an outside merger is github <login>, or unknown', [M.outsideMerger('someone'), M.outsideMerger(null)], ['github someone', 'unknown']);
 
 // DS-835: the ticket on a record, and a PR's latest outcome.
 M.record({ repo: R, pr: 50, sha: 'f0f0f0f', by: D, event: 'merged', ticket: 'DS-1', now: NOW, path });
@@ -126,7 +141,7 @@ t('DS-835 AC3 CLI: show --latest prints the latest outcome as JSON', [l1.status,
 const empty = spawnSync('node', [BIN, 'show', '--pr', '7', '--latest', '--repo', R], { encoding: 'utf8', env: { ...process.env, DESK_MERGE_LOG: join(T, 'none', 'merges.jsonl') } });
 t('DS-835 AC4 CLI: with no log yet, show --latest prints nothing and exits 0', [empty.status, empty.stdout, empty.stderr], [0, '', '']);
 t('DS-835 CLI: show --latest needs --pr', cli('show', '--latest').status, 11);
-const c5 = cli('record', '51', 'cafe123', '--by', S, '--event', 'merged', '--ticket', 'DS-2');
+const c5 = cli('record', '51', 'cafe123', '--by', S, '--event', 'merged', '--ticket', 'DS-2', '--merged-by', 'octocat');
 t('DS-835 CLI: record --ticket writes the ticket', [c5.status, M.readLog(path).find((e) => e.pr === '51')?.ticket], [0, 'DS-2']);
 
 const A = 'session DS-1-story', B = 'session DS-2-bug';

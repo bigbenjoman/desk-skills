@@ -86,7 +86,7 @@ function holdLease(dir, mode, label) {
 {
   const r = run({ before: true, login: 'someone-else' });
   t('DS-1030 AC1 a PR already merged before the enqueue is not enqueued, and its line names the GitHub user', [r.code, r.calls.filter((c) => c.includes('PUT')).length, r.log.map((e) => `${e.event} ${e.by} ${e.merged_by ?? ''}`.trim())], [0, 0, [`claim ${BY}`, 'merged github someone-else someone-else']]);
-  t('DS-1030 AC1 the ledger records that merger too, and the hold says it was already merged', [r.ledger.map((l) => l.by), r.lines.some((l) => l.includes('already merged by github someone-else, not enqueued'))], [['github someone-else'], true]);
+  t('DS-1030 AC1 the ledger records that merger too, and the hold says it was already merged', [r.ledger.map((l) => l.by), r.lines.some((l) => l.includes('#501 already merged by github someone-else (not enqueued) at 111111111 onto main'))], [['github someone-else'], true]);
   const same = run({ before: true, login: 'bigbenjoman' });
   t('DS-1030 AC1 merged under the same login the hold uses, it is still someone else\'s merge', same.log.map((e) => `${e.event} ${e.by}`), [`claim ${BY}`, 'merged github bigbenjoman']);
   const own = run({ merges: 1, login: 'bigbenjoman' });
