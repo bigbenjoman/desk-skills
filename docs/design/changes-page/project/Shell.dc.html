@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Changes page structure: one page with a side menu</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#F9FAFB;color:#111827;font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+a{color:#111827}a:hover{color:#374151}
+*{box-sizing:border-box}
+h1,h2,h3,p{margin:0}
+.mono{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+.nav a{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:0 10px;border-radius:6px;font-size:14px;color:#374151;text-decoration:none}
+.nav a:hover{background:#F3F4F6;color:#111827}
+.nav a[aria-current=true]{background:#111827;color:#F9FAFB}
+.cnt{font-size:12px;font-weight:600;min-width:20px;height:20px;padding:0 6px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center}
+.chipbtn{min-height:32px;padding:0 12px;border:1px solid #D1D5DB;border-radius:999px;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer}
+.chipbtn[aria-pressed=true]{background:#111827;border-color:#111827;color:#F9FAFB}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #111827;outline-offset:2px}
+.tile{background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.fold{background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px}
+.fold summary{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;list-style:none}
+.fold summary::-webkit-details-marker{display:none}
+</style>
+</helmet>
+<div style="background: #F9FAFB; padding: 32px 24px 64px">
+<div style="max-width: 1180px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start">
+
+<nav aria-label="Sections" class="nav" style="flex: 1 1 200px; max-width: 220px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 24px">
+<span style="font-size: 12px; font-weight: 500; color: #6B7280; padding: 0 10px 8px">On this page</span>
+<a href="#needs" aria-current="{{c.needs}}" onClick="{{go.needs}}"><span>Needs you</span><span class="cnt" style="background: #FEF3C7; color: #92400E">1</span></a>
+<a href="#overview" aria-current="{{c.overview}}" onClick="{{go.overview}}"><span>Overview</span></a>
+<a href="#trends" aria-current="{{c.trends}}" onClick="{{go.trends}}"><span>Trends</span></a>
+<a href="#levers" aria-current="{{c.levers}}" onClick="{{go.levers}}"><span>Levers</span><span class="cnt" style="background: #DBEAFE; color: #1E40AF">6</span></a>
+<a href="#changes" aria-current="{{c.changes}}" onClick="{{go.changes}}"><span>Changes</span></a>
+<a href="#flow" aria-current="{{c.flow}}" onClick="{{go.flow}}"><span>Merge time and parking</span></a>
+<a href="#how" aria-current="{{c.how}}" onClick="{{go.how}}"><span>How desk decides</span></a>
+<span style="font-size: 12px; color: #6B7280; padding: 16px 10px 0">Updated 26 Nov, 15:18</span>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 24px">
+<header style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h1 style="font-size: 28px; font-weight: 700; letter-spacing: -0.01em">Changes</h1>
+<p style="font-size: 15px; color: #6B7280">Everything that changed how desk works, and what happened after.</p>
+</div>
+<div role="group" aria-label="Repo" style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" class="chipbtn" aria-pressed="{{r.all}}" onClick="{{pick.all}}">All repos</button>
+<button type="button" class="chipbtn" aria-pressed="{{r.ds}}" onClick="{{pick.ds}}">desk-skills</button>
+<button type="button" class="chipbtn" aria-pressed="{{r.aa}}" onClick="{{pick.aa}}">ai-agents</button>
+<button type="button" class="chipbtn" aria-pressed="{{r.sw}}" onClick="{{pick.sw}}">studia-web</button>
+<button type="button" class="chipbtn" aria-pressed="{{r.sz}}" onClick="{{pick.sz}}">studia-zendesk</button>
+</div>
+</header>
+
+<section id="needs" aria-label="Needs you" style="background: #FFFBEB; border: 1px solid #FCD34D; border-radius: 8px; padding: 16px 18px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 12px; font-weight: 600; color: #92400E">Needs you · 1</span>
+<p style="font-size: 16px; line-height: 1.45; color: #111827">desk turned finder-model off in desk-skills. Keep it off, or test it again?</p>
+</div>
+<a href="#levers" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 6px; background: #111827; color: #F9FAFB; font-size: 14px; font-weight: 500; text-decoration: none">Decide on finder-model</a>
+</section>
+
+<section id="overview" aria-labelledby="ov-h" style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 id="ov-h" style="font-size: 17px; font-weight: 600">Overview</h2>
+<p style="font-size: 13px; color: #6B7280">Last week a ticket cost 19.4% less than before levers, and nothing has got worse.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px">
+<div class="tile"><h3 style="font-size: 14px; font-weight: 500">Cost per ticket</h3><span style="font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1">$14.58</span><span style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #16A34A"></span>Better than before levers</span><span style="font-size: 12px; color: #6B7280">Since 21 Nov · 53 tickets</span></div>
+<div class="tile"><h3 style="font-size: 14px; font-weight: 500">Tokens per ticket</h3><span style="font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1">26.9M</span><span style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #16A34A"></span>Better than before levers</span><span style="font-size: 12px; color: #6B7280">Since 21 Nov · 53 tickets</span></div>
+<div class="tile"><h3 style="font-size: 14px; font-weight: 500">Fix tries per ticket</h3><span style="font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1">0.19</span><span style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #D97706"></span>Over the 0.16 limit</span><span style="font-size: 12px; color: #6B7280">Since 21 Nov · 53 tickets</span></div>
+</div>
+</section>
+
+<section id="trends" aria-labelledby="tr-h" style="display: flex; flex-direction: column; gap: 4px">
+<h2 id="tr-h" style="font-size: 17px; font-weight: 600">Trends</h2>
+<p style="font-size: 13px; color: #6B7280">Four charts, unchanged apart from the numbered change lines (board 2).</p>
+</section>
+
+<section id="flow" aria-labelledby="fl-h" style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 id="fl-h" style="font-size: 17px; font-weight: 600">Merge time and parking</h2>
+<p style="font-size: 13px; color: #6B7280">Closed until you open them. Each shows its headline first.</p>
+</div>
+<details class="fold">
+<summary><span style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600; font-size: 14px">Merge time by stage</span><span style="font-size: 13px; color: #6B7280">desk-skills: review takes 2.3h at the median, over 38 merged PRs</span></span><span style="font-size: 13px; color: #374151; white-space: nowrap">Show table</span></summary>
+</details>
+<details class="fold">
+<summary><span style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 600; font-size: 14px">Time parked by cause</span><span style="font-size: 13px; color: #6B7280">desk-skills this week: 144h stalled over 34 tickets, most of it on questions</span></span><span style="font-size: 13px; color: #374151; white-space: nowrap">Show table</span></summary>
+</details>
+</section>
+
+<section id="how" aria-labelledby="how-h" style="display: flex; flex-direction: column; gap: 6px; padding: 0 4px">
+<h2 id="how-h" style="font-size: 14px; font-weight: 600">How desk decides</h2>
+<p style="font-size: 13px; line-height: 1.55; color: #6B7280; max-width: 820px">A lever being tested is on for half of new tickets and off for the other half. Once 30 tickets on each side have finished, desk keeps the lever if those tickets cost less and nothing got worse: tickets accepted, fix tries, failed checks and reverts. Otherwise it turns the lever off.</p>
+</section>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { at: 'needs', repo: 'all' }; }
+  renderVals() {
+    const ids = ['needs', 'overview', 'trends', 'levers', 'changes', 'flow', 'how'];
+    const repos = ['all', 'ds', 'aa', 'sw', 'sz'];
+    const c = {}, go = {}, r = {}, pick = {};
+    ids.forEach((k) => { c[k] = this.state.at === k ? 'true' : 'false'; go[k] = () => this.setState({ at: k }); });
+    repos.forEach((k) => { r[k] = this.state.repo === k ? 'true' : 'false'; pick[k] = () => this.setState({ repo: k }); });
+    return { c, go, r, pick };
+  }
+}
+</script>
+</body>
+</html>
