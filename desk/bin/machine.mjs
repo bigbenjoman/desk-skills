@@ -55,8 +55,8 @@ const admitMaxLoad = (cores) => String(Math.round(ADMIT_LOAD_PER_CORE * (known(n
 // unset: -> { rows: { key: number | string }, problems: [line] }. A row set but unreadable, or a ceiling
 // under its floor, is a problem naming the row and what it wants; any problem means mode off.
 // `testSlots` is the heavy floor as the test lock reads it (desk-env testLockSlots), `lightSlots` the
-// light floor as the light lock reads it (desk-env lightLockSlots), which with admission on is held to
-// light-lock-max rather than read as a problem.
+// light floor as the light lock reads it (desk-env lightLockSlots), which over light-lock-max is not a
+// problem: with admission on it raises the light ceiling to itself.
 export function admissionRows(get, { testSlots = null, lightSlots = null } = {}) {
   const problems = [];
   const raw = (k) => { const v = get(k); return v == null ? null : String(v).trim(); };
@@ -84,7 +84,10 @@ export function admissionRows(get, { testSlots = null, lightSlots = null } = {})
     else if (rows['lock-admission'] !== 'off') problems.push('`admit-run-load` is unset and so is `test-cap`, its default: want a number, the load one run adds');
   }
   const mode = problems.length ? 'off' : rows['lock-admission'];
-  if (mode === 'on' && rows['light-lock-max'] < rows['light-lock-slots']) rows['light-lock-slots'] = rows['light-lock-max'];
+  // The light floor is the repo's row (lightLockSlots, already held to one under the spawn gate), so
+  // with admission on it raises the light ceiling to itself rather than being cut to light-lock-max:
+  // the ceiling is max(row, light-lock-max), and runs above the floor come only through a grant.
+  if (mode === 'on' && rows['light-lock-max'] < rows['light-lock-slots']) rows['light-lock-max'] = rows['light-lock-slots'];
   return { rows, problems, mode };
 }
 

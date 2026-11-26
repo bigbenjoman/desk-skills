@@ -71,8 +71,8 @@ against the light lock's queue (`with-lock.sh light`) as well, each queue agains
 and the tighter binds; a heavy repo is never held by the light queue. A pool's hold point is its
 current slots (its floor plus the runs headroom admission let in above it) × `test-lock-queue-factor` (1 × 2 with no profile).
 The light floor is §3b "Light lock slots" (else the machine profile's `light-lock-slots`, else 1), 1
-while available memory is under the spawn gate's start, and at most `light-lock-max` with
-`lock-admission` on. A full light queue holds only what would run a suite next; a new worker, which
+while available memory is under the spawn gate's start. With `lock-admission` on, the light ceiling
+is the larger of it and `light-lock-max`, and runs above the floor come only through an admit. A full light queue holds only what would run a suite next; a new worker, which
 starts at triage, is held by the test lock's queue alone. At or over it, each repo with a
 run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass starts
 at most its share less its own runs; below it, at most the hold less the runs waiting. That room covers
