@@ -5,8 +5,10 @@
 // `mise exec … --` prefix or a one-off runner (npx, bunx, pnpm exec), or when it runs a package.json
 // script one level deep (`bun|npm|pnpm|yarn run <script>`, `npm|pnpm|yarn test`) whose own command
 // does. Jest's bound is --maxWorkers, turbo's --concurrency; a command or script that already sets it
-// is left alone. A script is added to only when it is one simple command, as a script runner appends
-// the flag to its end; npm takes it after a `--`.
+// is left alone. A command's own flags end at its first `--`, so the bound goes in before it and a
+// flag after it is not the tool's. A script is added to only when it is one simple command with no
+// `--`, as a script runner appends the flag to its end; npm takes it after a `--`, and keeps the
+// flags before that `--` for itself.
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -18,6 +20,8 @@ const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const FLAG = { jest: /^(?:--maxWorkers(?:=|$)|-w$)/, turbo: /^--concurrency(?:=|$)/ };
 
 const words = (s) => String(s ?? '').trim().split(/\s+/).filter(Boolean);
+// The words before the first `--`: a tool's own flags.
+const flagsOf = (ws) => (ws.includes('--') ? ws.slice(0, ws.indexOf('--')) : ws);
 const readScripts = (cwd) => { try { return JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')).scripts ?? {}; } catch { return {}; } };
 
 // The command past what only sets up its environment or fetches the tool. -> the remaining words.
@@ -31,13 +35,16 @@ function past(ws) {
   return w;
 }
 
-// The tool a command's own words start: { tool: 'jest' | 'turbo', args } or null.
+// The tool a command's own words start: { tool: 'jest' | 'turbo', args, at } or null, `at` the index
+// in `ws` its bound goes in at: its first `--`, else the end.
 function toolOf(ws) {
   const w = past(ws);
   const first = basename(w[0] ?? '');
-  if (first === 'jest') return { tool: 'jest', args: w.slice(1) };
-  if (first === 'turbo' && w[1] === 'run') return { tool: 'turbo', args: w.slice(2) };
-  return null;
+  const n = first === 'jest' ? 1 : first === 'turbo' && w[1] === 'run' ? 2 : 0;
+  if (!n) return null;
+  const args = w.slice(n);
+  const start = ws.length - args.length;
+  return { tool: first, args, at: args.includes('--') ? start + args.indexOf('--') : ws.length };
 }
 
 // The package.json script a command runs: { pm, script, extra } or null.
@@ -51,37 +58,50 @@ function scriptOf(ws) {
 }
 
 // What `ws` starts, with `scripts` (else `cwd`'s package.json) for a script it runs:
-// -> { tool, via: null | script, simple, has, npm, dashed } or null where it starts neither tool.
-// `simple` is false for a script that is not one simple command, `has` whether the bound is set already.
+// -> { tool, via: null | script, simple, has, npm, dashed, at } or null where it starts neither tool.
+// `simple` is false for a script that is not one simple command or holds a `--`, `has` whether the
+// bound is set already, `at` where it goes in (a script's: the end).
 export function analyse(ws, { cwd = process.cwd(), scripts = null } = {}) {
   const own = toolOf(ws);
-  if (own) return { tool: own.tool, via: null, simple: true, has: own.args.some((a) => FLAG[own.tool].test(a)), npm: false, dashed: false };
+  if (own) return { tool: own.tool, via: null, simple: true, has: flagsOf(own.args).some((a) => FLAG[own.tool].test(a)), npm: false, dashed: false, at: own.at };
   const s = scriptOf(ws);
   if (!s) return null;
   const body = (scripts ?? readScripts(cwd))[s.script];
   if (typeof body !== 'string') return null;
   const t = toolOf(words(body));
   if (!t) return null;
-  return { tool: t.tool, via: s.script, simple: !COMPOUND.test(body), has: [...t.args, ...s.extra].some((a) => FLAG[t.tool].test(a)), npm: s.pm === 'npm', dashed: s.extra.includes('--') };
+  const npm = s.pm === 'npm';
+  const dashed = s.extra.includes('--');
+  // What reaches the script: npm keeps the words before its `--`; another runner passes them all on.
+  const passed = npm ? (dashed ? s.extra.slice(s.extra.indexOf('--') + 1) : []) : s.extra;
+  const simple = !COMPOUND.test(body) && !t.args.includes('--') && (npm || !dashed);
+  return { tool: t.tool, via: s.script, simple, has: [...t.args, ...passed].some((a) => FLAG[t.tool].test(a)), npm, dashed, at: ws.length };
 }
 
 export const flagFor = (tool, n) => (tool === 'jest' ? `--maxWorkers=${n}` : `--concurrency=${n}`);
 
 // `ws` with its bound added, where it needs one and `limits` ({ jest, turbo }, each a whole number or
-// null) gives it. A `sh -c '<string>'` whose string is one simple command is bounded inside the string.
+// null) gives it. A `sh -c '<string>'` whose string is one simple command is bounded inside the string;
+// where the bound goes in before a `--` there, a string holding a quote or backslash is left alone,
+// since its words cannot be rejoined as written.
 // -> { words, added: [{ tool, flag }] }.
 export function bound(ws, limits, opts = {}) {
+  const none = { words: ws, added: [] };
   if (ws.length === 3 && ws[1] === '-c' && /^(?:ba|z|da)?sh$/.test(basename(ws[0]))) {
     const inner = words(ws[2]);
-    if (COMPOUND.test(ws[2])) return { words: ws, added: [] };
+    if (COMPOUND.test(ws[2])) return none;
     const r = bound(inner, limits, opts);
-    return r.added.length ? { words: [ws[0], ws[1], [ws[2].trim(), ...r.words.slice(inner.length)].join(' ')], added: r.added } : { words: ws, added: [] };
+    if (!r.added.length) return none;
+    const appended = inner.every((w, i) => r.words[i] === w);
+    if (!appended && /['"\\]/.test(ws[2])) return none;
+    return { words: [ws[0], ws[1], appended ? [ws[2].trim(), ...r.words.slice(inner.length)].join(' ') : r.words.join(' ')], added: r.added };
   }
   const a = analyse(ws, opts);
   const n = a ? limits[a.tool] : null;
-  if (!a || a.has || !a.simple || !n) return { words: ws, added: [] };
+  if (!a || a.has || !a.simple || !n) return none;
   const flag = flagFor(a.tool, n);
-  return { words: [...ws, ...(a.npm && !a.dashed ? ['--'] : []), flag], added: [{ tool: a.tool, flag }] };
+  const add = [...(a.npm && !a.dashed ? ['--'] : []), flag];
+  return { words: [...ws.slice(0, a.at), ...add, ...ws.slice(a.at)], added: [{ tool: a.tool, flag }] };
 }
 
 // Why a §4 command item starts an unbounded run, with its bounded form, or null: `cmd` and `dir` as

@@ -30,6 +30,13 @@ t('#1526 AC1 npm takes it after --, once', [b(['npm', 'test']), b(['npm', 'run',
 t('#1526 AC1 a cap already set, in the command or the script, is left alone', [b(['jest', '--maxWorkers=2']), b(['jest', '-w', '2']), b(['bun', 'run', 'test', '--maxWorkers=50%']), b(['bun', 'run', 'capped'])],
   ['jest --maxWorkers=2', 'jest -w 2', 'bun run test --maxWorkers=50%', 'bun run capped']);
 t('#1526 AC2 turbo run gets its concurrency, directly or through a script', [b(['turbo', 'run', 'test']), b(['bun', 'run', 'typecheck'])], ['turbo run test --concurrency=1', 'bun run typecheck --concurrency=1']);
+t('#1526 a bound goes in before the command\'s own --, which a flag after it does not count as set', [b(['turbo', 'run', 'test', '--', '--ci']), b(['jest', '--', 'a.test.ts']), b(['jest', '--', '--maxWorkers=2'])],
+  ['turbo run test --concurrency=1 -- --ci', 'jest --maxWorkers=4 -- a.test.ts', 'jest --maxWorkers=4 -- --maxWorkers=2']);
+t('#1526 sh -c bounds before its --, and leaves a quoted string it would have to rejoin alone', [bound(['sh', '-c', 'turbo run test -- --ci'], L, { scripts }).words[2], bound(['sh', '-c', 'jest -- "a b.test.ts"'], L, { scripts }).words[2]],
+  ['turbo run test --concurrency=1 -- --ci', 'jest -- "a b.test.ts"']);
+t('#1526 npm keeps flags before its -- for itself, so they set no bound', [b(['npm', 'test', '--maxWorkers=2']), b(['npm', 'test', '-w', 'web']), b(['npm', 'test', '--', '-w', '2'])],
+  ['npm test --maxWorkers=2 -- --maxWorkers=4', 'npm test -w web -- --maxWorkers=4', 'npm test -- -w 2']);
+t('#1526 a script holding --, or another runner given --, gets nothing', [bound(['bun', 'run', 'dashed'], L, { scripts: { dashed: 'turbo run test -- --ci' } }).added, b(['pnpm', 'test', '--', 'x'])], [[], 'pnpm test -- x']);
 t('#1526 AC2 a concurrency already set is left alone', b(['turbo', 'run', 'test', '--concurrency=4']), 'turbo run test --concurrency=4');
 t('#1526 a script that is not one simple command, bun test, or another tool gets nothing', [b(['bun', 'run', 'both']), b(['bun', 'test']), b(['bun', 'run', 'lint']), b(['pytest', '-x']), b(['turbo', 'test'])],
   ['bun run both', 'bun test', 'bun run lint', 'pytest -x', 'turbo test']);

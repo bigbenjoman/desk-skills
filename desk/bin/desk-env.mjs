@@ -1985,7 +1985,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
 }
 
 // §4 Unit tests and Typecheck items that start Jest with no worker cap or `turbo run` with no
-// --concurrency (locked-run.mjs unbounded), each with its bounded form at the test cap and the
+// --concurrency (run-bounds.mjs unbounded), each with its bounded form at the test cap and the
 // profile's turbo-concurrency: -> [{ row, item, why, bounded }].
 export function unboundRuns(parsed, root) {
   const n = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : null);
