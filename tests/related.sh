@@ -16,9 +16,9 @@
 # with no slot.
 # An end-to-end (L3) suite the change reaches only through imports, not claiming a changed file
 # directly, is not run here but named as left for CI, which runs it before merge (scope_sections.mjs
-# --l3-direct). A change to desk-env.mjs or config-schema.mjs that only edits or adds named functions and
-# constants runs the suites reaching those names, and the scope line names them (--by-name); CI runs
-# every suite for it. run.sh's record of the run carries the scope it chose (full or changed), why, and how
+# --l3-direct). A change to a desk/bin/ .mjs module that only edits or adds named functions and
+# constants runs the suites reaching those names, and the scope line names them (--by-name); CI does not
+# narrow it. run.sh's record of the run carries the scope it chose (full or changed), why, and how
 # many suites it left for CI.
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"
