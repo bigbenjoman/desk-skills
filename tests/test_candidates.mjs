@@ -235,11 +235,11 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
   const issues = [issue('ACME-60', 'Bug', 'P0'), mine('ACME-61', 'Task', 'P2'), mine('ACME-62', 'Bug', 'P1'), mine('ACME-63', 'Task', 'P0'),
     mine('ACME-64', 'Task', 'P0', 'acct-someone-else'), issue('ACME-65', 'Task', 'P1')];
   const r = readsOf({ issues, desc: { ...Object.fromEntries(issues.map((x) => [x.key, CLEAN])), 'ACME-62': 'h2. Design\nNo UI.' },
-    open: [{ number: 400, title: 'feat: something', headRefName: 'feat/ACME-63-started' }] });
+    open: [{ number: 400, title: 'feat: something', headRefName: 'feat/ACME-63-started', author: { login: 'mousedown' } }] });
   const got = list(r);
   t('#1484 AC1 the person\'s own come first, in priority order, a flagged one too, then the unassigned', got.offered.map((c) => [c.key, c.own]),
     [['ACME-62', true], ['ACME-61', true], ['ACME-60', false], ['ACME-65', false]]);
-  t('#1484 AC1 one an open PR names is started, so left out', got.left, [{ key: 'ACME-63', why: 'started: open PR #400 names it' }]);
+  t('#1484 AC1 one someone else\'s open PR names is started, so left out', got.left, [{ key: 'ACME-63', why: 'open PR #400 by mousedown' }]);
   t('#1484 AC1 the open PRs are read once a listing', r.calls.openPrs, 1);
   t('#1484 AC2 a ticket assigned to someone else is neither searched for nor offered', [r.calls.search.some((c) => c.jql.includes('acct-someone-else')), got.offered.some((c) => c.key === 'ACME-64'), got.left.some((l) => l.key === 'ACME-64')], [false, false, false]);
   t('#1484 VERIFY the listing names them first, as ready to admit', renderLines(got, { project: 'ACME' }), [
@@ -249,7 +249,7 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
     'candidates for a free slot from ACME, by priority:',
     '  3. ACME-60  P0  Bug  ACME-60 summary',
     '  4. ACME-65  P1  Task  ACME-65 summary',
-    'left out: ACME-63 (started: open PR #400 names it)',
+    'left out: ACME-63 (open PR #400 by mousedown)',
     'admit one with /desk-admit <KEY>; this list admits nothing',
   ]);
   const only = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) }), ownOnly: true });
@@ -261,6 +261,39 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
   unread.openPrs = () => null;
   t('#1484 AC1 unread open PRs are said, not taken as none', list(unread).offered[0].flags, ['not checked for an open PR: the open PRs could not be read']);
   t('#1484 the unassigned heading says when only the person\'s own are offered', renderLines(list(readsOf({ issues: [mine('ACME-68', 'Bug', 'P0')], desc: { 'ACME-68': CLEAN } })), { project: 'ACME' })[2], 'no unassigned candidates for a free slot from ACME');
+}
+{
+  // #1501: an open PR naming a candidate's key, by anyone but §1 GitHub handle, leaves it out; the
+  // person's own keeps it offered, flagged for the batch to adopt; closed PRs change nothing.
+  const issues = [issue('ACME-70', 'Bug', 'P0'), issue('ACME-71', 'Bug', 'P1'), issue('ACME-72', 'Task', 'P1'), mine('ACME-73', 'Task', 'P2'), issue('ACME-74', 'Task', 'P2')];
+  const desc = Object.fromEntries(issues.map((x) => [x.key, CLEAN]));
+  const open = [
+    { number: 3478, title: 'fix(auth-roles): ACME-70 tell a locked account why', headRefName: 'fix/acme-70-locked', isDraft: true, author: { login: 'mousedown' } },
+    { number: 3480, title: 'fix: ACME-71 retry', headRefName: 'fix/ACME-71-retry', author: { login: 'Me-GH' } },
+    { number: 3481, title: 'feat: unrelated', headRefName: 'feat/ACME-73-own', author: { login: 'me-gh' } },
+    { number: 3482, title: 'fix: ACME-74 by me', headRefName: 'fix/ACME-74', author: { login: 'me-gh' } },
+    { number: 3483, title: 'fix: ACME-74 by them', headRefName: 'fix/ACME-74-b', author: { login: 'someone' } },
+  ];
+  // ACME-72's only PR is closed without merging: the open list never holds it, and no merged PR names it.
+  const r = readsOf({ issues, desc, open });
+  const got = listCandidates({ project: 'ACME', priority: PRIORITY, handle: 'me-gh', reads: r, now: Date.parse('2026-11-26T12:00:00Z') });
+  t('#1501 AC1 another author\'s open PR, draft or not, leaves it out naming the PR and its author', got.left,
+    [{ key: 'ACME-70', why: 'open PR #3478 by mousedown' }, { key: 'ACME-74', why: 'open PR #3483 by someone' }]);
+  t('#1501 AC2 the person\'s own open PR keeps it offered, flagged with the PR, own or unassigned', got.offered.map((c) => [c.key, c.flags, c.openPr ?? null]),
+    [['ACME-73', ['open PR #3481'], 3481], ['ACME-72', [], null], ['ACME-71', ['open PR #3480'], 3480]]);
+  t('#1501 AC3 one whose PRs are all closed unmerged is offered clean', got.offered.find((c) => c.key === 'ACME-72')?.flags, []);
+  t('#1501 the open PRs are read once a listing', r.calls.openPrs, 1);
+  t('#1501 VERIFY the listing names them', renderLines(got, { project: 'ACME' }).filter((l) => /ACME-7[01]/.test(l)), [
+    '  3. ACME-71  P1  Bug  ACME-71 summary — open PR #3480',
+    'left out: ACME-70 (open PR #3478 by mousedown), ACME-74 (open PR #3483 by someone)',
+  ]);
+  const noHandle = listCandidates({ project: 'ACME', priority: PRIORITY, reads: readsOf({ issues, desc, open }) });
+  t('#1501 with no GitHub handle every open PR is someone else\'s', noHandle.left.map((l) => l.key), ['ACME-70', 'ACME-71', 'ACME-73', 'ACME-74']);
+  const unread = readsOf({ issues, desc });
+  unread.openPrs = () => null;
+  const blind = listCandidates({ project: 'ACME', priority: PRIORITY, handle: 'me-gh', reads: unread });
+  t('#1501 AC4 with GitHub unread, each candidate is marked unchecked, not offered as clear', [blind.left, blind.offered.map((c) => c.flags.includes('not checked for an open PR: the open PRs could not be read'))],
+    [[], [true, true, true, true, true]]);
 }
 {
   // AC3: the idle pass asks for the person's own alone with §3b "Propose candidates" off, and a kept
