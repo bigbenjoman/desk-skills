@@ -4435,6 +4435,65 @@ export function ticketJson(r, key, { now = Date.now() } = {}) {
   return envelope('ticket', now, { queues: queueAges([r], now) }, { ticket }, ticketParts(r, key, { now }));
 }
 
+// The last spawn line in a worker's log: the model and effort its session started on, or null.
+function spawnOf(file) {
+  let text;
+  try { text = tailText(file, STAGE_TAIL); } catch { return null; }
+  const at = text.lastIndexOf('{"type":"desk_spawn"');
+  if (at < 0) return null;
+  const end = text.indexOf('\n', at);
+  try { const d = JSON.parse(text.slice(at, end < 0 ? undefined : end)); return { model: d.model ?? null, effort: d.effort ?? null }; } catch { return null; }
+}
+// The email a repo's new workers start on (its §3 Subscription row, `default` the computer's), or null.
+function subscriptionEmail(slug) {
+  try { return repoSubscription(readSubscriptions(subscriptionsPath()), { value: repoConfigValue(slug, 'subscription'), source: 'row' }).email ?? null; } catch { return null; }
+}
+const isoOrNull = (t) => (t == null ? null : isoOf(t));
+
+// What the desk app's ticket page reads (desk-ui GET /api/repos/<slug>/tickets/<KEY>): the facts its
+// state line, Overview tab and PR & CI tab are drawn from, each as the queue and the last pass hold it.
+// null where batch `r` has no ticket `key`.
+export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {}) {
+  const t = r.q?.tickets?.[key];
+  if (!t) return null;
+  const x = r.rows.find((y) => y.t.key === key) ?? r.prs.find((y) => y.t.key === key) ?? null;
+  const k = x?.k ?? shownState(r.q, t, r.ctx);
+  const tr = triageOf(r, key) ?? {};
+  const h = holdShown(r.q, t, r.ctx);
+  // A ticket on a fix try is running again on the PR it opened, which the last pass recorded only while it was done.
+  const prN = t.result?.pr ?? t.fix?.pr ?? null;
+  const ps = prN != null ? prStatusOf(t) : null;
+  const stageOf = (row) => (row?.st?.label ? { label: row.st.label, at: isoOrNull(row.st.at), log: !!row.st.log } : null);
+  const rowOf = (b) => r.rows.find((y) => y.t.key === b) ?? r.prs.find((y) => y.t.key === b) ?? null;
+  const behind = unmergedBlockers(r.q, t).map((b) => ({ key: b, state: r.q.tickets[b] ? shownState(r.q, r.q.tickets[b], r.ctx) : null, stage: stageOf(rowOf(b))?.label ?? r.q.tickets[b]?.stage ?? null }));
+  const f = fixOn(t);
+  const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
+  const port = portLeaseOf(r, key, now);
+  const spawn = spawnOf(logPath(r, key));
+  const field = ([label, segs]) => ({ label, text: segText(segs.slice(0, 1)), note: segText(segs.slice(1)).trim() || null });
+  return {
+    key, repo: r.repo ?? r.name, slug: r.slug, batch: r.batch ?? null, gh_repo: r.slug.replace('__', '/'), jira_browse: jiraBrowseOf(r.slug),
+    state: k, group: groupOf(k), type: t.type ?? tr.type ?? null, size: tr.size ?? null, lane: laneOf(t, tr),
+    pos: x?.pos ?? null, places: r.places ?? null, placed: !!t.placed, title: tr.summary ?? null,
+    stage: k === 'running' ? stageOf(x) : null,
+    question: t.state === 'parked' ? t.park?.question ?? null : null, open_questions: t.open_questions ?? 0,
+    hold: h ? { kind: h.k, text: h.text } : null, behind, wait: ['ready', 'queued'].includes(k) ? startWait(r, t) : null,
+    collides: keysOf(t.collides_with),
+    fix: f ? { try: f.try ?? null, of: f.of ?? null, what: f.what ?? null } : null,
+    stuck: stuck ? { why: stuck.why } : null,
+    failed_why: k === 'failed' ? failedWhy(t) : null,
+    merged_at: isoOrNull(t.merged_at ?? (ps?.state === 'MERGED' ? ps.merged_at : null)), merged_by: t.merge?.by ?? null,
+    pr: prN != null ? { number: prN, url: ps ? prUrl(r, t) : `https://github.com/${r.slug.replace('__', '/')}/pull/${prN}`, state: ps?.state ?? null, draft: ps?.isDraft === true,
+      head: ps?.head ?? null, at: isoOrNull(ps?.at), need: ps && prRow(t) ? segText(prNeed(r.q, t, r.ctx, now).segs) : null, hold: parseHoldNote(t.merge_blocked)?.why ?? null } : null,
+    passes: { live: !!r.live, last: isoOrNull(r.last), next: isoOrNull(r.next), merges: !!r.ctx?.merges },
+    schedule: x && !x.pr ? timingFields(r, forecastOf(r, { now, checkin }), x, h, now).map(field) : [],
+    lane_reason: tr.lane_reason ?? null, files: tr.files_in_scope ?? [],
+    blocks: r.rows.filter((y) => y.t.key !== key && blockersOf(y.t).includes(key)).map((y) => y.t.key),
+    worker: { branch: t.branch ?? tr.branch ?? null, worktree: t.worktree ?? null, port: port ? String(port.key) : t.port ?? null,
+      subscription: subscriptionEmail(r.slug), model: spawn?.model ?? null, effort: spawn?.effort ?? null, session_id: t.session_id ?? null, log: logPath(r, key) },
+  };
+}
+
 // Every Claude and Codex login on this computer, as the Usage view lists them.
 /** @returns {UsageView} */
 export function usageViewJson(repos, { now = Date.now() } = {}) {

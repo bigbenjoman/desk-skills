@@ -34,6 +34,11 @@
 // <slug> is the snapshot's repos[].slug; <repo> is that repo's name, as needs-you names it.
 // DESK_UI_TEST_BIN names the folder those commands run from, read only under a test HOME.
 //
+// The ticket page: GET /api/repos/<slug>/tickets/<KEY> is desk-q-model.mjs ticketPageJson, from the batch
+// of <slug> holding the ticket. GET …/<KEY>/pr is its PR as GitHub has it now (desk-ui-ticket.mjs), read
+// with this computer's gh and cached for 60 s at the head the last pass recorded, or the last pass's copy
+// when gh does not answer; GET …/<KEY>/pr/jobs/<id>/log is the last 40 lines of one of its jobs' logs.
+//
 // First run: GET /api/setup is { installed, checkout, repos, found }: whether desk's commands are
 // installed, the checkout install.sh last ran from (~-relative), how many repos are configured, and,
 // while installed with none configured, the git repos directly under ~/studia ([{ name, path }]).
@@ -49,6 +54,7 @@ import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
+import { makePrReader } from './desk-ui-ticket.mjs';
 import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
 import { tilde } from './logins.mjs';
 import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
@@ -189,7 +195,8 @@ const openTerminal = (dir) => new Promise((resolve) => {
 
 // `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
 // `terminal(dir)` opens Terminal for /api/terminal (openTerminal); the tests pass a stub.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal } = {}) {
+// `github` passes options to the PR reader (makePrReader): the tests' gh stub and clock.
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = {} } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -199,6 +206,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   const boot = randomBytes(8).toString('hex');
   const feed = makeFeed(events);
   const clock = events.now ?? Date.now; // the feed's, which dates each model it reads
+  const prs = makePrReader(github);
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = Buffer.isBuffer(body) ? body : type.startsWith('application/json') ? JSON.stringify(body) : String(body);
@@ -339,6 +347,35 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return send(res, STATUS[done.ran.exit] ?? 500, done.ran);
   }
 
+  // A repo's required, advisory and known flaky checks (§4), by name, as the PR & CI tab labels them.
+  async function checkKinds(slug) {
+    const G = await import('./gate.mjs');
+    const list = (id) => { try { return (E.repoConfigValues(slug, id) ?? []).filter((v) => !E.isNone(v)); } catch { return []; } };
+    return { required: list('required-checks'), advisory: list('advisory-checks'), flaky: G.parseFlaky(list('flaky-checks')).flaky.map((f) => f.name) };
+  }
+
+  // The ticket page's reads: the ticket, its PR, or one of its PR's job logs (`sub`, `job`).
+  async function ticketRead(res, slugPart, keyPart, sub, job) {
+    let slug, key;
+    try { slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); } catch { return refuse(res, 400, 'ticket', 'That is not a ticket key.'); }
+    if (!KEY.test(key)) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
+    let t, recorded;
+    try {
+      const { Q, all } = await loadAll();
+      const batches = all.filter((r) => r.slug === slug);
+      if (!batches.length) return refuse(res, 404, 'repo', 'That is not a configured repo.');
+      // A live copy before an archived one, as the writes read it.
+      const r = batches.find((b) => b.q?.tickets && Object.hasOwn(b.q.tickets, key)) ?? batches.find((b) => b.q?.tickets?.[key]);
+      if (!r) return refuse(res, 404, 'ticket', `${key} is in no batch of ${batches[0].repo}.`);
+      t = Q.ticketPageJson(r, key, { now: Date.now() });
+      const { prStatusOf } = await import('./batch-state.mjs');
+      recorded = t.pr ? prStatusOf(r.q.tickets[key]) : null;
+    } catch (e) { console.error(`desk-ui: ticket: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+    if (!sub) return send(res, 200, t);
+    const out = job === undefined ? await prs.pr(t, await checkKinds(slug), recorded) : await prs.log(t, job);
+    return send(res, out.status, out.body);
+  }
+
   // Terminal for one folder setup lists as found, sent as {folder: <its name>} and nothing else.
   async function openFolder(req, res, query) {
     const no = (message) => refuse(res, 400, 'folder', message);
@@ -395,6 +432,8 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       if (w) return method === 'POST' ? write(req, res, path, w[3], w[1], w[2]) : refuse(res, 405, 'method', 'POST only.');
       if (path === '/api/terminal') return method === 'POST' ? openFolder(req, res, query) : refuse(res, 405, 'method', 'POST only.');
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
+      const tk = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)(?:\/(pr)(?:\/jobs\/(\d{1,20})\/log)?)?$/);
+      if (tk) return ticketRead(res, tk[1], tk[2], tk[3], tk[4]);
       if (path === '/api/setup') {
         try { return send(res, 200, setup()); } catch (e) { console.error(`desk-ui: setup: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }

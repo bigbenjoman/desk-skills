@@ -1,6 +1,8 @@
 // The screens the frame can open, in the sidebar's order, each with its ⌘ shortcut (screen-spec §2.3, §13).
 // A screen's sidebar item, shortcut and any button that opens it are drawn only once ROUTES holds it:
 // each screen's story adds its `id: Component` there.
+import { TicketPage } from './ticket.jsx';
+
 export const SCREENS = [
   { id: 'inbox', path: '/inbox', label: 'Inbox', key: '1', icon: 'inbox' },
   { id: 'repos', path: '/repos', label: 'Repos', key: '2', icon: 'folder-git-2' },
@@ -13,8 +15,16 @@ export const SCREENS = [
   { id: 'settings', path: '/settings', label: 'Settings', key: ',' },
 ];
 
-export const ROUTES = {};
+// The pages a link opens rather than the sidebar: a ticket's is /t/<repo>/<KEY>[/<tab>], titled by its key.
+export const PAGES = [
+  { id: 'ticket', path: '/t', label: 'Ticket', title: (path) => path.split('/')[3] ?? 'Ticket' },
+];
+
+export const ROUTES = { ticket: TicketPage };
 
 // The screen `path` opens, among those `routes` holds, or null.
 export const screenAt = (path, routes) =>
-  SCREENS.find((s) => routes[s.id] && (path === s.path || path.startsWith(`${s.path}/`))) ?? null;
+  [...SCREENS, ...PAGES].find((s) => routes[s.id] && (path === s.path || path.startsWith(`${s.path}/`))) ?? null;
+
+// Where a ticket's page is, for a repo named `repo` (the snapshot's repos[].name).
+export const ticketPath = (repo, key) => `/t/${encodeURIComponent(repo)}/${encodeURIComponent(key)}`;

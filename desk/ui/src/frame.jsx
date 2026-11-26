@@ -2,7 +2,7 @@
 // or the 56 px rail in Compact), the banner slot and the 28 px status bar, all read from the live snapshot.
 import { useEffect, useState } from 'react';
 import { Icon } from './icons.jsx';
-import { SCREENS } from './routes.js';
+import { SCREENS, ticketPath } from './routes.js';
 
 export const SERVER = '127.0.0.1:4823';
 // Below this width the window is Compact: Standard's sidebar, list and detail pane need 1192 px.
@@ -49,20 +49,21 @@ const fullName = (slug) => slug.replace('__', '/');
 
 // The link rule (§1.6): ⌘-click, or the ↗ that follows the key on hover and focus, opens the ticket's
 // Jira page in the Mac's browser and leaves the window where it was. `browse` is the repo's
-// `jira_browse` from the server; with none the key is plain text. A plain click does nothing until
-// the ticket page exists.
-export function TicketLink({ ticket, browse }) {
+// `jira_browse` from the server; with none the key is plain text. A plain click runs `open`, which
+// opens the ticket's page where there is one, and does nothing without it.
+export function TicketLink({ ticket, browse, open = null }) {
   const url = browse ? `${browse}${ticket}` : null;
-  if (!url) return <span className="font-mono text-[.93em] font-medium">{ticket}</span>;
+  if (!url && !open) return <span className="font-mono text-[.93em] font-medium">{ticket}</span>;
   const click = (e) => {
     e.preventDefault();
-    if (e.metaKey || e.target.closest?.('[data-ext]')) window.desk?.openExternal?.(url);
+    if (url && (e.metaKey || e.target.closest?.('[data-ext]'))) window.desk?.openExternal?.(url);
+    else open?.();
   };
   return (
-    <a href={url} onClick={click} title={`⌘-click to open ${ticket} in Jira`} style={noDrag}
+    <a href={url ?? '#'} onClick={click} title={[open && `Open ${ticket}`, url && `⌘-click to open ${ticket} in Jira`].filter(Boolean).join(' · ')} style={noDrag}
       className="group inline-flex items-center gap-0.5 rounded-sm font-mono text-[.93em] font-medium text-foreground no-underline hover:underline hover:decoration-ring hover:underline-offset-3">
       {ticket}
-      <span data-ext="" className="hidden group-hover:inline-block group-focus-visible:inline-block"><Icon name="arrow-up-right" size={12} /></span>
+      {url && <span data-ext="" className="hidden group-hover:inline-block group-focus-visible:inline-block"><Icon name="arrow-up-right" size={12} /></span>}
     </a>
   );
 }
@@ -76,7 +77,7 @@ export function bannersFor({ snapshot, online, routes, go }) {
     for (const key of r.production_broken ?? []) {
       out.push({
         id: `broken ${r.slug} ${key}`, tone: 'crit', glyph: '!',
-        body: <>Production is broken in {r.name}: <TicketLink ticket={key} browse={r.jira_browse} /> is waiting for your answer.</>,
+        body: <>Production is broken in {r.name}: <TicketLink ticket={key} browse={r.jira_browse} open={routes.ticket ? () => go(ticketPath(r.name, key)) : null} /> is waiting for your answer.</>,
         action: routes.inbox ? { label: 'Answer now', run: () => go('/inbox') } : null,
       });
     }
