@@ -258,8 +258,13 @@ function askedAt(question, at) {
   return !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
 }
 
-// A clause after an ask that waits on someone else first (once the worker saves …, after run 991 finishes).
-const HANDOFF = /\b(?:once|when|after|until|while|before|if|unless|since)\b.*\b(?:worker|pass|job|CI|script|orchestrator|bot|run\s+#?\d+)\b/i;
+// A clause after an ask that waits on someone else first (once the worker saves …, after run 991 finishes):
+// the actor is the when-clause's subject, straight after its word (or "the", "next"), so "once it is in,
+// the next worker commits" is not one. CI only capitalised, so "if npm ci fails" is not one either.
+const anyCase = (w) => w.replace(/[a-z]/g, (ch) => `[${ch}${ch.toUpperCase()}]`);
+const WHEN_WORD = ['once', 'when', 'after', 'until', 'while', 'before', 'if', 'unless', 'since'].map(anyCase).join('|');
+const ACTOR = [...['workers?', 'pass(?:es)?', 'jobs?', 'scripts?', 'orchestrator', 'bots?'].map(anyCase), 'CI', `${anyCase('run')}\\s+#?\\d+`].join('|');
+const HANDOFF = new RegExp(`\\b(?:${WHEN_WORD})\\s+(?:${anyCase('the')}\\s+)?(?:${anyCase('next')}\\s+)?(?:${ACTOR})\\b`);
 // Whether question `q` asks the person for a step in any of its sentences. Unlike askedAt, a clause after
 // the ask that only says when (… before resuming) leaves it an ask; one waiting on another actor does not.
 export function asksStep(q) {

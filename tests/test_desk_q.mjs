@@ -2676,6 +2676,14 @@ t('DS-1005 AC1 so does one whose ask is followed by when to take it',
   st1005(park1005('Please run npm install in the worktree before resuming.', lock1005)), 'needs');
 t('DS-1005 AC3 one asking for a step only once the worker saves the file still waits',
   st1005(park1005('Please run the check once the worker saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
+t('DS-1005 AC3 so does one waiting until CI passes, and one waiting on run 991',
+  `${st1005(park1005('Please run npm install in the worktree until CI passes.', lock1005))} ${st1005(park1005('Please run npm install after run 991 finishes.', lock1005))}`, 'waiting waiting');
+t('DS-1005 AC1 an ask whose later clause only names a worker, not as its subject, still needs them',
+  st1005(park1005('Please run npm install in the worktree; once it is in, the next worker commits the lockfile.', lock1005)), 'needs');
+t('DS-1005 AC1 an ask whose clause names a lowercase ci command still needs them',
+  st1005(park1005('Please run npm install in the worktree, not npm ci, since npm ci fails here.', lock1005)), 'needs');
+t('DS-1005 AC1 an ask ending "if npm ci fails" still needs them',
+  st1005(park1005('Please run npm install in the worktree if npm ci fails.', lock1005)), 'needs');
 t('DS-1005 AC1 so does one stored with it', st1005(park1005(q1005, { ...lock1005, person: true })), 'needs');
 t('DS-1005 AC1 negative: a file the question leaves to a script still waits',
   st1005(park1005('waiting on the recall capture to write $DESK_STATE/fixtures/X/meet.json', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
