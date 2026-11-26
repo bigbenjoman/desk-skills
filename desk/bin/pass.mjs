@@ -54,7 +54,7 @@ import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
+import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
@@ -1065,6 +1065,13 @@ const ADVANCE_HANDLERS = {
   // The branch and author of the PR a worker's DONE marker names, or null when GitHub cannot be read.
   'pr-owner': (a) => {
     try { return prOwner(a.pr); } catch { return null; }
+  },
+  // What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
+  'pr-verdict': (a) => {
+    if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
+    try {
+      return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${a.pr}`, 'gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
+    } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
   },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),

@@ -42,7 +42,7 @@ const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
   'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
-  'park-file': null, progress: PROGRESS,
+  'pr-verdict': null, 'park-file': null, progress: PROGRESS,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -108,10 +108,30 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const as = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])));
   const done = as.find((a) => a.type === 'done');
   t('AC3 a DONE worker is recorded done on the PR it names', j(done), j({ type: 'done', key: 'D', pr: '12', summary: 'pr=12 jira=Done', line: 'pr=12 jira=Done', sets: [] }));
-  t('AC3 after recording its exited head and reading whose its PR is, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","pr-owner","done","settle-links","park-links"]');
+  t('AC3 after recording its exited head and reading whose its PR is, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","pr-owner","pr-verdict","done","settle-links","park-links"]');
   t('DS-193 AC1 a finished worker with no screenshot records none', j(sets(as)), j([`log_bytes=${logOf('D', DONE, [said(DONE), RESULT]).size}`, 'idle_passes=0', 'images_uploaded=none']));
   const parkedLinks = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])), { 'settle-links': [{ why: 'no grant', link: null }] });
   t('links a DONE worker asked for that were not made go to park-links', j(parkedLinks.at(-1)), j({ type: 'park-links', key: 'D', needs: [{ why: 'no grant', link: null }], pr: '12' }));
+}
+
+// issue-1477: a finished ticket's done line leads with the review read from its PR, whatever its
+// worker's marker says, and keeps the worker's own words after it.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=12 jira=none review=posted round 3 clean at e0691d3';
+  const read = 'review read from the PR: round 2 at abcdef012, p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
+  const asked = [];
+  const as = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])), { 'pr-verdict': (a) => { asked.push(a.pr); return read; } });
+  const done = as.find((a) => a.type === 'done');
+  t('issue-1477 AC1/AC3 the line leads with the PR\'s verdict, the worker\'s own review text after it', done.line, `${read}; its worker said: pr=12 jira=none review=posted round 3 clean at e0691d3`);
+  t('issue-1477 the verdict is read for the PR the marker names', j(asked), '["12"]');
+  t('issue-1477 the recorded summary is still the worker\'s own words', done.summary, 'pr=12 jira=none review=posted round 3 clean at e0691d3');
+  const bare = 'AUTOPILOT_DONE: pr=12 jira=none';
+  const none = 'review read from the PR: the head abcdef012 has no review verdict';
+  t('issue-1477 AC2 a worker that says nothing of its review still gets the PR\'s word on it', advance(snap(ticket('D'), logOf('D', bare, [said(bare), RESULT])), { 'pr-verdict': none }).find((a) => a.type === 'done').line, `${none}; its worker said: pr=12 jira=none`);
+  const noPr = 'AUTOPILOT_DONE: pr=none jira=none';
+  t('issue-1477 a DONE naming no PR reads no verdict', types(advance(snap(ticket('D'), logOf('D', noPr, [said(noPr), RESULT])), { 'pr-verdict': () => { throw new Error('read with no PR'); } })).includes('pr-verdict'), false);
+  const ended = snap(ticket('N-2'), logOf('N-2', '', [said('working'), RESULT]));
+  t('issue-1477 a worker that printed no marker has the PR\'s verdict on its line too', advance(ended, { 'open-pr': '31', 'pr-verdict': none }).find((a) => a.type === 'done')?.line, `PR #31 (no marker printed — PR exists on GitHub; verify its merge state); ${none}`);
 }
 
 // A DONE marker naming a PR that is not the worker's own: on another branch, or opened by another

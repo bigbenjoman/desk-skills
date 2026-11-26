@@ -373,7 +373,10 @@ export function* decideAdvance(s) {
     // Steps that wait on the merge (follow_on=), kept for needs-you once the PR merges.
     const follow = followOnIn(done);
     if (follow.error) yield say(t.key, 'inputs', `${t.key}: unreadable follow_on on its DONE marker (${follow.error}), nothing kept: ${done.trim()}`);
-    yield { type: 'done', key: t.key, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: [
+    // The review the line states is the verdict on the PR at its head, whatever the marker says; the
+    // worker's own words follow it.
+    const review = pr ? yield { type: 'pr-verdict', key: t.key, pr } : null;
+    yield { type: 'done', key: t.key, pr, summary: done.trim(), line: `${review ? `${review}; its worker said: ` : ''}${done.trim()}${stopped}`, sets: [
       ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
       ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),
     ] };
@@ -437,7 +440,8 @@ export function* decideAdvance(s) {
     // the merge (merge-driver.sh instruction_held) and, for a rename, spend its one try (renamesFix).
     const held = !t.fix?.finished && ['instruction', 'renames'].includes(t.fix?.kind) ? t.fix.kind : null;
     if (prOpen && !held) {
-      yield { type: 'done', key: t.key, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`, sets: [] };
+      const review = yield { type: 'pr-verdict', key: t.key, pr };
+      yield { type: 'done', key: t.key, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify its merge state)${review ? `; ${review}` : ''}`, sets: [] };
     } else {
       yield { type: 'decisions', key: t.key, pr: null };
       if (prOpen) {

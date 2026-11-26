@@ -140,7 +140,7 @@ say "AUTOPILOT_STAGE: 9/9 cleanup" "AUTOPILOT_DONE: pr=10 jira=none" > "$T/state
 out=$(node "$B/pass.mjs" 2>&1)
 gone=no; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SPID" 2>/dev/null || { gone=yes; break; }; sleep 0.2; done
 check "a DONE log with a live session records the ticket done" '[ "$(field T-10 state)" = "\"done\"" ] && [ "$(field T-10 result.pr)" = 10 ]'
-check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: pr=10 jira=none (session still live after DONE — stopped pid $SPID)"'
+check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: review read from the PR: .*; its worker said: pr=10 jira=none (session still live after DONE — stopped pid $SPID)"'
 kill "$SPID" 2>/dev/null
 
 # P-1: a live worker that opens its draft PR at Stage 7 and carries on. The stub gh has it open.
