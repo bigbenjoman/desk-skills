@@ -537,6 +537,9 @@ check "DS-1028 AC1 the stall and the alert name it"    'grep -qF "fix: Docker no
 echo colima > "$T/ctx.docker"
 DESK_HEALTH_TIMEOUT_MS=500 pj
 check "DS-1028 AC1 another engine is named by its context" 'grep -qF "Docker not responding: restart colima" <<< "$out" && ! grep -q OrbStack <<< "$out"'
+echo default > "$T/ctx.docker"
+DESK_HEALTH_TIMEOUT_MS=500 pj
+check "DS-1028 AC1 the default context, which names no engine, says Docker" 'grep -qF "Docker not responding: restart Docker" <<< "$out" && ! grep -qF "restart default" <<< "$out"'
 rm -f "$T/ctx.docker"
 mode docker ok
 pj
