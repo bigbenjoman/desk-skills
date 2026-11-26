@@ -2451,8 +2451,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const wtDrop = N.record({ word: 'ups1494', ticket: 'U-1', action: 'drop' });
   t('issue-1494 AC2 drop on a put-off ticket row closes it, and it leaves Put off', `${wtDrop.ok} ${ups().putOff}`, 'true 0');
   const listed = N.record({ word: 'ups1494', ticket: 'U-2', action: 'done' });
-  t('issue-1494 a listed row\'s done is noted as before, and says nothing about Put off',
-    `${listed.ok} ${/: noted: the next pass that finds the worktree clean/.test(listed.line)} ${listed.line.includes('put off')}`, 'true true false');
+  const u2Entry = [...NN.readRegister(join(env.HOME, '.desk-autopilot', 'acme__ups1494')).entries.values()].some((x) => x.ticket === 'U-2');
+  t('issue-1494 a listed row\'s done is noted as before, says nothing about Put off, and writes nothing to the not-now register',
+    `${listed.ok} ${/: noted: the next pass that finds the worktree clean/.test(listed.line)} ${/put off/i.test(listed.line)} ${u2Entry}`, 'true true false false');
 }
 
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
