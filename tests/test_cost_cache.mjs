@@ -253,6 +253,17 @@ t('DS-1019 AC2 a failed Neon org whose kept usage is last month\'s is unreadable
 t('DS-1019 AC2 a failed Neon org with this month\'s usage kept shows that figure, so is not listed', 'org-s' in keptUnread, false);
 const keptAll = { exists: true, entries: keptCosts.entries.slice(0, 3) };
 t('DS-1019 AC3 Neon orgs whose kept usage gives no figure count as unreadable, so none is pending', C.allUnread({ cache: keptCache, costs: keptAll }), true);
+// An AWS profile failing across a month boundary keeps October's lines, which give no November figure
+// once another profile has read November; alone, October is the month shown and its lines are its figure.
+const awsLines = [{ service: 'Amazon EC2', used: 5, credits: 0, charged: 5 }];
+const awsCosts = { exists: true, entries: [{ supplier: 'aws', key: 'old', name: 'a1' }, { supplier: 'aws', key: 'new', name: 'a2' }] };
+const awsCache = { aws: { profiles: {
+  old: { at: NOV2, period: oct, total: 5, lines: awsLines, ...failed('Error when retrieving token from sso: Token has expired and refresh failed') },
+  new: { at: NOV2, period: nov, total: 5, lines: awsLines, failed: null } } } };
+t('DS-1019 AC2 an AWS profile whose kept lines are last month\'s, beside one read this month, names its fix',
+  C.unreadSources({ cache: awsCache, costs: awsCosts }).map((u) => `${u.label} | ${u.fix}`).join(), 'old | run aws sso login --profile old');
+t('DS-1019 AC2 and with no other figure, last month\'s lines are the figure shown, so it is not listed',
+  C.unreadSources({ cache: { aws: { profiles: { old: awsCache.aws.profiles.old } } }, costs: { exists: true, entries: awsCosts.entries.slice(0, 1) } }).length, 0);
 
 console.log(fails ? `${fails} FAILED` : 'all cost cache checks passed');
 process.exit(fails ? 1 : 0);
