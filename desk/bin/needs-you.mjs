@@ -137,7 +137,7 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -465,8 +465,11 @@ const SHA = String.raw`(?<![\w./-])[0-9a-f]{7,40}(?![\w/-]|\.\w)`;
 const passWords = (s) => s.replace(new RegExp(String.raw`,\s*at ${SHA},`, 'g'), '').replace(new RegExp(String.raw`\s*\bat ${SHA}`, 'g'), '').replace(new RegExp(SHA, 'g'), 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
-// Once the person's step is done: desk merges it where it may, else merging is theirs too.
-const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green' : 'then merge it on GitHub once its checks are green');
+// Once the person's step is done: desk merges it where it may, whoever merges for the batch does where
+// the grant covers it with no merge driver running, else merging is theirs too.
+const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green'
+  : r.ctx?.batchMerges ? `it then ${BATCH_MERGES} (its merge driver, or the session relaying its merge lines)${r.ctx.mergeHolds ? HOLD_CAVEAT : ''} once its checks are green`
+    : 'then merge it on GitHub once its checks are green');
 const REPAIRED = "desk's own repairs did not fix";
 // A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.
 const CAPTURE = /^(\d+) screenshot\(s\) still not taken after a capture try: (.+?)(?:; the capture try said: ([^]*))?$/;
@@ -983,7 +986,7 @@ function stepItem(key, ws) {
   const summary = ws.map(({ b, t }) => (triageOf(b, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
   const what = ({ t }) => (t.state === 'done' && t.result?.pr != null ? `PR #${t.result.pr} (${t.key})` : `${t.key} (${t.state === 'running' ? 'being built' : t.state === 'done' ? 'no PR' : 'not built yet'})`);
   const starts = ws.filter((w) => w.start).map(({ t }) => t.key), mw = ws.filter((w) => !w.start);
-  const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges).length;
+  const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges || b.ctx?.batchMerges).length;
   const merger = merges === n ? 'desk merges them in order' : merges === 0 ? 'you merge them on GitHub'
     : 'desk merges those in batches it merges, and you merge the rest on GitHub';
   // `m` tickets wait to `verb` on it; after the first clause, one is "one", not "one ticket".
@@ -2230,7 +2233,9 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
   items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
-  return { repos, scope, items, named, putOff, off };
+  // Green PRs whoever merges for the batch takes (desk-q batchMerging): shown, never the person's items.
+  const moving = scope.filter((x) => !x.error && x.q).flatMap((r) => batchMerging(r).map((m) => ({ r, ...m })));
+  return { repos, scope, items, named, putOff, off, moving };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -2243,6 +2248,8 @@ const runLine = (r) => {
 
 // The put-off count, after the item count: they are not listed again until their inputs change.
 const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left out until ${c.putOff === 1 ? 'it changes' : 'they change'}.` : '');
+// The PRs that move without the person, on the same line, in desk-q's words for its Merging row.
+const movingLine = (c) => (c.moving ?? []).map((m) => ` Moves without you: PR #${m.pr} (${m.key}${c.named ? '' : `, ${m.r.name}`}), ${m.text}.`).join('');
 
 // A parked write awaiting approval, as listText prints it under its item: a header naming its kind and
 // target, the body line for line as the worker wrote it, and an end line, so the body is never cut or
@@ -2254,7 +2261,7 @@ export const approvalLines = (key, a) => [
 ];
 
 export function listText(c, now = Date.now()) {
-  if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}`;
+  if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}${movingLine(c)}`;
   // A repo-level item is the person's own step, so who runs the batch says nothing about it.
   const lines = [...new Set(c.items.filter((i) => !i.repoLevel).map((i) => i.r))].map(runLine);
   const repos = [...new Set(c.items.map((i) => i.r))];
@@ -2269,7 +2276,7 @@ export function listText(c, now = Date.now()) {
     if (a?.body) lines.push(...approvalLines(i.t.key, a));
   }
   const n = new Set(repos.map((r) => r.slug)).size;
-  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);
+  lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}${movingLine(c)}`);
   return lines.join('\n');
 }
 
@@ -2310,7 +2317,8 @@ export function listItems({ word = null, settle = false, now = Date.now(), repos
   const batches = [...new Set(c.scope.filter((x) => !x.error && x.q))];
   return { v: 1, generated_at: new Date(now).toISOString(), settled: settle, settled_lines: settled,
     inputs: { queues: batches.map((b) => ({ batch: b.word, ...inputAge(mtimeOf(b.queuePath), now) })) },
-    scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)) };
+    scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)),
+    moving: c.moving.map(({ r, key, pr, text }) => ({ batch: r.word, key, pr, text })) };
 }
 
 // A queue.mjs command run from the named repo's checkout, so the permissions and GitHub repo it reads

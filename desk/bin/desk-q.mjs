@@ -156,7 +156,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
+const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -240,7 +240,10 @@ function holdContext(r) {
   let outages = [];
   if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
+  // relaying its merge lines), not on the person. `mergeHolds`: §4 Merge holds names a path, and only the
+  // driver records a PR's hold (merge_blocked), so with none running the words say a hold makes it theirs.
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -419,6 +422,12 @@ export function parseHoldNote(note) {
   };
 }
 
+// What a green PR waits on where the grant covers it, passes run and no merge driver does (holdContext
+// batchMerges): its merge driver, or the session relaying the batch's merge lines.
+export const BATCH_MERGES = 'waits on whoever merges for the batch';
+// Where §4 Merge holds is set, no driver has read the PR's files against it, so a hold may make it the person's.
+export const HOLD_CAVEAT = ', or on you where a merge hold covers its files';
+const batchMergesText = (ctx) => `${BATCH_MERGES}${ctx?.mergeHolds ? HOLD_CAVEAT : ''}`;
 function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
   const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
@@ -519,10 +528,11 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
       : passed === checks.length ? (passed === 1 ? '1 check passed' : `all ${passed} checks passed`)
         : `${passed} check${passed === 1 ? '' : 's'} passed`;
     const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
-    return ctx.merges ? merging(all, [' · merges at the next pass', null]) : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
+    if (ctx.merges) return merging(all, [' · merges at the next pass', null]);
+    return ctx.batchMerges ? { ...merging(all, [` · ${batchMergesText(ctx)}`, null]), byBatch: true } : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
-  return ctx.merges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
+  return ctx.merges || ctx.batchMerges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
 }
 
 // Where the merge driver is with a red PR's reruns, from what the pass read of its files (pr_status
@@ -3253,6 +3263,11 @@ const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
 // Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
 export const prWhy = (r, t) => (prRow(t) ? prNeed(r.q, t, r.ctx, null).why ?? null : null);
+// The green PRs a batch leaves to whoever merges for it (prNeed's byBatch), as { key, pr, text }, `text`
+// what desk-q's Merging row says after the PR number: needs-you shows each as moving without the person.
+export const batchMerging = (r) => Object.entries(r.q?.tickets ?? {}).filter(([, t]) => t?.result?.pr != null && prRow(t))
+  .map(([key, t]) => ({ key, pr: t.result.pr, m: prNeed(r.q, t, r.ctx ?? NOBODY, null) })).filter((x) => x.m.byBatch)
+  .map(({ key, pr, m }) => ({ key, pr, text: segText(m.segs) }));
 // An interactive session's claim on a parked ticket (queue.mjs park --claimed-by), in any lane.
 const claimOf = sessionClaim;
 

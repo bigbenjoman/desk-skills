@@ -104,6 +104,7 @@ function put(name, r) {
     `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.holds ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Merge holds | ${r.holds.map((h) => `\`${h}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
@@ -489,6 +490,25 @@ const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
   'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red | 2');
+// DS-1015: where §3 grants merging and a session runs the batch's passes with no merge driver, a green
+// PR waits on whoever merges for the batch, not on the person; without the grant it is still theirs.
+const green1015 = { state: 'done', lane: 'A', result: { pr: 71 }, pr_status: { pr: 71, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } };
+put('granted1015', { port: 3710, beat: 1, merge: 'yes', tickets: { 'G-1': green1015 } });
+put('ungranted1015', { port: 3720, beat: 1, tickets: { 'G-1': green1015 } });
+const g1015 = N.collect({ word: 'granted1015' }), u1015 = N.collect({ word: 'ungranted1015' });
+t('DS-1015 AC1 a green PR in a granted session-run batch with no merge driver is not the person\'s to merge',
+  `${g1015.items.map((i) => i.need).join(' | ')}|${needsRows(g1015.named).length} ${g1015.named?.ctx?.batchMerges}`, '|0 true');
+t('DS-1015 AC2 with the merge rows not yes, a green PR keeps today\'s wording', u1015.items.map((i) => i.need).join(' | '),
+  'PR #71 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done.');
+t('DS-1015 AC3 needs-you shows the PR as desk-q\'s Merging row does, outside the person\'s items, in the list and its JSON',
+  `${N.listText(g1015)} | ${JSON.stringify(N.listItems({ word: 'granted1015', reads: null }).moving)} | ${/Moves without you/.test(N.listText(u1015))}`,
+  'Nothing needs you in granted1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch.'
+  + ' | [{"batch":"granted1015","key":"G-1","pr":71,"text":"1 check passed · waits on whoever merges for the batch"}] | false');
+// With §4 Merge holds set no driver has read the PR's files against them, so the words say a hold makes it the person's.
+put('holds1015', { port: 3730, beat: 1, merge: 'yes', holds: ['backend/**: build the images first'], tickets: { 'G-1': green1015 } });
+t('DS-1015 a granted batch with merge holds and no merge driver says a hold covering its files makes the PR the person\'s',
+  N.listText(N.collect({ word: 'holds1015' })),
+  'Nothing needs you in holds1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch, or on you where a merge hold covers its files.');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 // DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.
