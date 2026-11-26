@@ -62,6 +62,8 @@ const DS = repo('acme__desk-skills', 'ds@desk.example', 3800, { tickets: { 'DS-5
 // 30 queue workers running, the machine's whole cap.
 const running = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`VP-${i + 1}`, { key: `VP-${i + 1}`, state: 'running' }]));
 repo('acme__voicepa', null, 3900, { tickets: running });
+// studia-reports is pinned to an account no login here is signed in to.
+repo('acme__studia-reports', 'old@studia.example', 4000, { tickets: {} });
 const dsConfigBefore = readFileSync(DS.config, 'utf8');
 
 // ---- the stub claude
@@ -187,6 +189,10 @@ t('AC4 a login that is itself at its limit is refused too', (await start({ purpo
 t('AC4 an email no login here is signed in to is refused', (await start({ purpose: 'blank', repo: 'acme__studia-web', login: 'nobody@example.com' })).status, 400);
 const roomy = await start({ purpose: 'blank', repo: 'acme__studia-web', login: 'ds@desk.example' });
 t('AC4 another subscription is refused while the repo\'s own has room', [roomy.status, roomy.json?.error?.code], [409, 'subscription']);
+const signedOut = await start({ purpose: 'blank', repo: 'acme__studia-reports' });
+t('AC4 a repo whose own subscription is signed out is refused', [signedOut.status, signedOut.json?.error?.code], [409, 'subscription']);
+const signedOutOther = await start({ purpose: 'blank', repo: 'acme__studia-reports', login: 'ops@studia.example' });
+t('AC4 and naming another subscription does not get past it: signing in does', [signedOutOther.status, signedOutOther.json?.error?.code, /Sign it in/.test(signedOutOther.json?.error?.message ?? '')], [409, 'subscription', true]);
 t('AC4 none of those started anything', starts().length, 2);
 
 // ---- AC5: 30 queue workers against a cap of 30: the conversation still runs, and the budget is unchanged

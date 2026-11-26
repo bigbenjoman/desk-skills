@@ -507,17 +507,18 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
     const sub = repoSubscription(subs, { value: E.repoConfigValue(slug, 'subscription'), source: 'row' });
     const mine = !subs.exists && sub.source === 'default' ? own : sub.login;
-    // Another subscription only for a conversation the repo's own cannot run: signed out or at its limit.
-    const mineHeld = mine && heldReason(Q, all, mine, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
+    // Signed out is fixed by signing in, not by another subscription (screen-spec 8.3), so it refuses
+    // whatever the request names. Another subscription only once the repo's own is at its limit.
+    if (!mine) return refuse(res, 409, 'subscription', `${possessive(name)} subscription, ${sub.email ?? 'the default'}, is not signed in to any login here, so nothing started. Sign it in, then try again.`);
+    const mineHeld = heldReason(Q, all, mine, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
     let login, email;
     if (other === undefined) {
-      if (!mine) return refuse(res, 409, 'subscription', `${possessive(name)} subscription, ${sub.email ?? 'the default'}, is not signed in to any login here, so nothing started.`);
       if (mineHeld) return refuse(res, 429, 'usage_limit', `${mineHeld}, so nothing started. Name another subscription for this conversation to start it there.`);
       login = mine; email = sub.email ?? null;
     } else {
       const o = repoSubscription(subs, { value: other, source: 'request' });
       if (!o.login) return refuse(res, 400, 'login', `${other} is not one of this computer's subscriptions.`);
-      if (mine && !mineHeld) return refuse(res, 409, 'subscription', `${possessive(name)} own subscription has room, so a conversation runs on it: another is named only once it is at its limit. Nothing started.`);
+      if (!mineHeld) return refuse(res, 409, 'subscription', `${possessive(name)} own subscription has room, so a conversation runs on it: another is named only once it is at its limit. Nothing started.`);
       const held = heldReason(Q, all, o.login, o.email);
       if (held) return refuse(res, 429, 'usage_limit', `${held}, so nothing started.`);
       login = o.login; email = o.email;
