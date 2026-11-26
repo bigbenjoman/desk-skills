@@ -75,7 +75,7 @@ import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -249,9 +249,11 @@ claim();
 // The lock only exists for the seconds a pass runs, so between passes a second batch's
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
 // A heartbeat per queue file closes that window; queue.mjs treats one fresher than 15 minutes as live.
-// A pass with no --next, as one run by hand is, keeps the loop's session (loopCarried).
+// A pass with no --next, as one run by hand is, keeps the loop's session (loopCarried) and the loop's
+// tick still to come (loopTick, as `tick`: `next` stays unset), so it never reads as a stall.
 try {
-  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT, loop: loopCarried(lastBeat(STATE, QUEUE_FILE), { next: NEXT }) });
+  const prev = lastBeat(STATE, QUEUE_FILE);
+  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT, loop: loopCarried(prev, { next: NEXT }), tick: loopTick(prev, { next: NEXT }) });
 } catch { /* advisory */ }
 
 // A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).

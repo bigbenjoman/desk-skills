@@ -961,6 +961,16 @@ out=$(node "$B/queue.mjs" next-pass +1200 2>&1); rc=$?
 check "DS-185 AC6 queue.mjs next-pass records the next pass the orchestrator scheduled" '[ $rc -eq 0 ] && [ "$(nextin)" -ge 1199 ] && [ "$(nextin)" -le 1260 ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-185 AC6 a pass with no --next records none" '[ "$(nextin)" = none ]'
+# #1420: it carries the loop's next pass, still to come, as the loop's tick, so it never reads as a stall
+tickat(){ node -e 'const fs = require("fs"), p = require("path"); const d = process.argv[1];
+  const h = fs.readdirSync(d).map((x) => JSON.parse(fs.readFileSync(p.join(d, x), "utf8"))).find((x) => x.queue === process.argv[2]);
+  console.log(h?.tick ?? "none")' "$DESK_AUTOPILOT_STATE/orchestrators" "$DESK_QUEUE"; }
+tick1=$(tickat)
+check "#1420 a pass with no --next carries the loop's tick still to come" '[ "$tick1" != none ] && [ "$(( $(date -d "$tick1" +%s) - $(date +%s) ))" -ge 1100 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1420 and a second pass by hand carries it on" '[ "$(tickat)" = "$tick1" ] && [ "$(nextin)" = none ]'
+out=$(node "$B/queue.mjs" next-pass +600 2>&1)
+check "#1420 a next pass recorded replaces the carried tick" '[ "$(tickat)" = none ] && [ "$(nextin)" != none ]'
 out=$(node "$B/pass.mjs" --next soon 2>&1); rc=$?
 check "DS-185 AC6 a --next that is not a time is refused" '[ $rc -ne 0 ] && grep -q "\-\-next wants +<seconds> or an ISO time" <<< "$out"'
 

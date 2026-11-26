@@ -792,6 +792,8 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.live = liveBeat(beat, now);
   r.session = beat?.session ?? null;
   r.loop = beat?.loop ?? null;
+  // The loop's tick a pass run by hand carried, still to come when it ran (borrow.mjs loopTick).
+  r.tick = beat?.tick ?? null;
   r.stoppedAt = beat ? stoppedAt(beat) : null;
   r.ctx = r.q ? holdContext(r) : NOBODY;
   const rows = Object.values(r.q?.tickets ?? {});

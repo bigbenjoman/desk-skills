@@ -597,7 +597,9 @@ def own_beats(slug, session):
         if (hb.get("loop") or hb.get("session")) != session:
             continue
         p = parse_iso(hb["pass"] if "pass" in hb else hb.get("at"))
-        n = parse_iso(hb["next"]) if hb.get("next") else None
+        # The loop's tick: its next pass, else the one a pass run by hand carried (borrow.mjs loopTick).
+        due = hb.get("next") or hb.get("tick")
+        n = parse_iso(due) if due else None
         if p is not None:
             out.append((p, n, str(hb.get("queue") or "")))
     return out

@@ -22,9 +22,10 @@ import { LIVE_MS, lastBeat } from './borrow.mjs';
 // Each batch's lost tick, in its state folder: { pass, session, told_at, rearmed_at, why }.
 export const TICK_FILE = 'loop-tick.json';
 
-// The interval the loop keeps: from its last pass to the next it recorded; with none recorded, half
-// of LIVE_MS.
-export const loopInterval = (r) => (r.next != null && r.last != null && r.next > r.last ? r.next - r.last : LIVE_MS / 2);
+// The loop's tick: the next pass recorded, else the loop's tick a pass run by hand carried (r.tick).
+const dueOf = (r) => r.next ?? r.tick ?? null;
+// The interval the loop keeps: from its last pass to its tick; with none recorded, half of LIVE_MS.
+export const loopInterval = (r) => { const due = dueOf(r); return due != null && r.last != null && due > r.last ? due - r.last : LIVE_MS / 2; };
 // When a batch with no next pass to come reads its loop lost: twice its interval after its last pass,
 // or sooner where desk-q reads its passes stopped before that (r.stoppedAt), so needs-you's stalled
 // item never shows a loop its session has not yet been told to re-arm.
@@ -32,9 +33,10 @@ export const lostAt = (r) => Math.min(r.last + 2 * loopInterval(r), r.stoppedAt 
 // The session whose /loop runs the batch: the one that recorded its next pass, else the one its last
 // pass ran in (borrow.mjs loopCarried).
 export const loopSession = (r) => r.loop ?? r.session;
-// A batch a session runs, that has run a pass, with no next pass recorded still to come.
+// A batch a session runs, that has run a pass, with no next pass recorded (or the loop's tick a pass
+// run by hand carried) still to come.
 export const unscheduled = (r, now = Date.now()) => !!r.q && r.run?.by === 'session' && r.last != null
-  && (r.next == null || r.next <= now);
+  && (dueOf(r) == null || dueOf(r) <= now);
 
 const readTick = (stateDir) => { try { return JSON.parse(readFileSync(join(stateDir, TICK_FILE), 'utf8')) || null; } catch { return null; } };
 // The record for the batch's last pass `last`, or null.

@@ -48,14 +48,17 @@ export const beatFile = (stateDir, queuePath) => join(stateDir, 'orchestrators',
 // idle tick, which runs none (null with none recorded). `session`, the Claude Code session it runs in
 // (CLAUDE_CODE_SESSION_ID), where there is one: intake.mjs admit reads it to know it runs in the session
 // that runs the batch. `loop`, the session whose /loop schedules the batch's passes, where known
-// (loopCarried). Advisory: a failed write is ignored.
-export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass = Date.now(), now = Date.now(), loop = null } = {}) {
+// (loopCarried). `tick`, the loop's tick still to come that a pass given no next time carries
+// (loopTick), so a pass run by hand leaves `next` unset and the loop still reads armed. Advisory: a
+// failed write is ignored.
+export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass = Date.now(), now = Date.now(), loop = null, tick = null } = {}) {
   const session = process.env.CLAUDE_CODE_SESSION_ID || null;
   const iso = (t) => (t == null ? null : new Date(t).toISOString());
   try {
     mkdirSync(join(stateDir, 'orchestrators'), { recursive: true });
     writeFileSync(beatFile(stateDir, queuePath), JSON.stringify({
-      queue: queuePath, batch, pid: process.pid, at: iso(now), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }), ...(session ? { session } : {}), ...(loop ? { loop } : {}),
+      queue: queuePath, batch, pid: process.pid, at: iso(now), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }),
+      ...(next == null && tick != null ? { tick: iso(tick) } : {}), ...(session ? { session } : {}), ...(loop ? { loop } : {}),
     }));
   } catch { /* advisory */ }
 }
@@ -69,7 +72,20 @@ export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass
 export function loopCarried(prev, { next = null, session = process.env.CLAUDE_CODE_SESSION_ID || null, now = Date.now() } = {}) {
   if (next != null) return session;
   const was = prev?.loop ?? prev?.session ?? null;
-  return was && (prev.next == null || prev.next > now) ? was : null;
+  const due = dueTick(prev);
+  return was && (due == null || due > now) ? was : null;
+}
+
+// The loop's tick a beat records: its next pass, else the tick a pass run by hand carried (tick).
+export const dueTick = (beat) => beat?.next ?? beat?.tick ?? null;
+
+// The loop's tick a pass given no next time carries into its heartbeat: the one the last beat records
+// while it is still to come, so a pass run by hand between the loop's passes never reads as a stall.
+// A pass given its next time (the loop's own) carries none.
+//   prev: lastBeat's, or null  ->  epoch ms, or null
+export function loopTick(prev, { next = null, now = Date.now() } = {}) {
+  const due = dueTick(prev);
+  return next == null && due != null && due > now ? due : null;
 }
 
 // A next-pass time as given on a command line: `+<seconds>` or `<seconds>` from now, or an ISO time.
@@ -84,9 +100,9 @@ export function parseNext(word, now = Date.now()) {
 // The newest heartbeat on `queuePath`: pass.mjs (and a supervisor's idle tick) writes one per queue
 // file into the state directory, so only that queue's count. `next` is the pass or tick planned after,
 // where one was recorded; `pass` is when the last pass ran (`at` for a beat that does not say).
-//   -> { at, next, pass } in epoch ms (next and pass null when none), with `session` the Claude Code
-//      session it was written in and `loop` the session whose /loop runs the batch (each null with
-//      none), or null with no heartbeat
+//   -> { at, next, pass, tick } in epoch ms (next, pass and tick null when none), with `session` the
+//      Claude Code session it was written in and `loop` the session whose /loop runs the batch (each
+//      null with none), or null with no heartbeat
 export function lastBeat(stateDir, queuePath) {
   const dir = join(stateDir, 'orchestrators');
   let last = null;
@@ -95,20 +111,21 @@ export function lastBeat(stateDir, queuePath) {
       const hb = JSON.parse(readFileSync(join(dir, f), 'utf8'));
       const at = Date.parse(hb.at);
       const next = hb.next == null ? NaN : Date.parse(hb.next);
+      const tick = hb.tick == null ? NaN : Date.parse(hb.tick);
       const pass = 'pass' in hb ? Date.parse(hb.pass ?? '') : at;
       if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last.at)) {
         last = { at, next: Number.isFinite(next) ? next : null, pass: Number.isFinite(pass) ? pass : null, session: typeof hb.session === 'string' ? hb.session : null,
-          loop: typeof hb.loop === 'string' ? hb.loop : null };
+          loop: typeof hb.loop === 'string' ? hb.loop : null, tick: Number.isFinite(tick) ? tick : null };
       }
     } catch { /* a torn heartbeat is no heartbeat */ }
   }
   return last;
 }
 
-// A batch is live while its last pass is fresher than LIVE_MS, or while the next pass it recorded is
-// not yet PASS_GRACE_MS overdue: an orchestrator waiting longer than LIVE_MS between passes has not gone.
-// stoppedAt is when a beat stops reading live (epoch ms).
-export const stoppedAt = (beat) => Math.max(beat.at + LIVE_MS, beat.next != null ? beat.next + PASS_GRACE_MS : -Infinity);
+// A batch is live while its last pass is fresher than LIVE_MS, or while the next pass it recorded (or
+// the loop's tick a pass run by hand carried) is not yet PASS_GRACE_MS overdue: an orchestrator waiting
+// longer than LIVE_MS between passes has not gone. stoppedAt is when a beat stops reading live (epoch ms).
+export const stoppedAt = (beat) => Math.max(beat.at + LIVE_MS, dueTick(beat) != null ? dueTick(beat) + PASS_GRACE_MS : -Infinity);
 export const liveBeat = (beat, now = Date.now()) => beat != null && now < stoppedAt(beat);
 
 // Whether otherQueues() entry `o` has an orchestrator with a live beat.
