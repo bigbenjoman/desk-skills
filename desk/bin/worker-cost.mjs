@@ -217,6 +217,9 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
 // A cloud worker writes no log here and nothing reports its tokens or cost: its row is its session
 // URL and its wall time from session start to PR (`cloud`), and its usage stays null. Its one session
 // starts at Stage 0 with no model or effort passed, which is what startFields gives for nothing.
+// A worker log's file name, any ticket's: the current `<KEY>.log` or a round moved aside, gzipped or not.
+// Its groups are the key and the round (none for the current log).
+export const WORKER_LOG = /^(.+)\.log(?:\.round(\d+)(?:\.gz)?)?$/;
 // A log's place in a ticket's round order: `.round<n>` by n, the current log last.
 export const logRound = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
 

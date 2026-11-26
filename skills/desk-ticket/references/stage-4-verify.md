@@ -57,7 +57,7 @@ An autopilot worker still runs its suites as above.
 
 Where §4 Suite weight (`desk-env get suite-weight`) is `light`, `with-lock.sh test` runs the suite
 under a light lock of its own instead, as many runs at once across the machine as §3b "Light lock
-slots" (`desk-env get light-lock-slots`; one where unset, and one while available memory is under
+slots" (`desk-env get light-lock-slots`; where unset, the machine profile's `light-lock-slots`, else one, and one while available memory is under
 the spawn gate's start), so it neither holds nor waits behind the heavy suites and typechecks on the
 test lock. Run it the same way; typechecks still
 take the test lock.

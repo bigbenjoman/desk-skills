@@ -255,7 +255,9 @@ t('AC2 the change is one neutral commit, no merged history', of(cx).log.trim().s
 t('AC2 each seat has its own checkout', of(cl).cwd !== of(cx).cwd, true);
 t('AC2 the Claude seat is refused the seeds and the results by name', [join(setDir, 'seeds'), out, setFile].every((p) => of(cl).permissions.deny.some((d) => d.includes(p))), true);
 t('the Claude seat cannot write', of(cl).permissions.allow.some((a) => a.startsWith('Edit(')) || !of(cl).permissions.deny.includes('Edit'), false);
-t('the current seat runs Opus with the finder prompt', `${of(cl).args[of(cl).args.indexOf('--model') + 1]} ${/You are Lena/.test(of(cl).args[of(cl).args.indexOf('--append-system-prompt') + 1])}`, 'opus true');
+const sysFile = of(cl).args[of(cl).args.indexOf('--append-system-prompt-file') + 1];
+t('the current seat runs Opus with the finder prompt, by file', `${of(cl).args[of(cl).args.indexOf('--model') + 1]} ${/You are Lena/.test(readFileSync(sysFile, 'utf8'))}`, 'opus true');
+t('the current seat sends no inline system prompt', of(cl).args.includes('--append-system-prompt'), false);
 t('the Codex seat is read-only', of(cx).args[of(cx).args.indexOf('--sandbox') + 1], 'read-only');
 const one = res['one.codex'], oneC = res['one.current'], hang = res['hang.codex'];
 t('AC3 the current seat found the seed', JSON.stringify(scoreFindings(oneC.seeds, oneC.findings).found), '["seed-1"]');
