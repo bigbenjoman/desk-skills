@@ -124,7 +124,7 @@ account(join(L('login-1'), '.claude.json'), 'me@example.test', 'Ultra');
 f = await A.until((x) => folderOf(x) === 'login-2');
 t('AC8 the file has the Account column', /^\| Tool \| Name \| Folder \| Account \| Rule \|$/m.test(subsText()), true);
 t('AC8 with the first folder pinned to the current account, the default as ~/.claude was', pinRow('login-1', 'me@example.test', 'default').test(subsText()), true);
-t('AC8 and ~/.claude in the Removed table', /## Removed[\s\S]*^\| `claude` \| `default` \| `~\/\.claude` \|$/m.test(subsText()), true);
+t('AC8 and ~/.claude in the Removed table', /## Removed[\s\S]*^\| `claude` \| `default` \| `~\/\.claude` \| `\d{4}-\d\d-\d\d` \|$/m.test(subsText()), true);
 t('AC8 the panel moves on to the new account', `${stepText(f, 1)} | ${stepText(f, 2)}`,
   '1 In another terminal, run CLAUDE_CONFIG_DIR=~/.claude-logins/login-2 claude | 2 Type /login and sign in to the account you want to add.');
 t('AC8 its row reads new account', waitingRow(f), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in…', null, '0'));

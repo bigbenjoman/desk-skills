@@ -2655,15 +2655,20 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
 }
 
 // With accounts pinned, the lines under the key: that desk's sign-ins are its own, the selected
-// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds.
+// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds: removed, and
+// when, where the file's Removed table names ~/.claude.
 function accountLines(t, rows, selected, w) {
   if (!t.claude.some((x) => x.multi)) return [];
   const x = rows.find((r) => r.id != null && r.id === selected) ?? rows.find((r) => r.id != null);
   const own = accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null;
   const unpinned = own && !t.claude.some((c) => c.login.account === own) ? own : null;
+  let gone = null;
+  try { gone = readSubscriptions(subscriptionsPath()).removed.find((r) => r.tool === 'claude' && r.dir === defaultLogin('claude').dir) ?? null; } catch { /* unreadable: said as not added */ }
+  const said = !gone ? `${unpinned} isn't one of desk's accounts yet. Press `
+    : `${unpinned} was removed from desk's accounts ${gone.at ? `on ${ymdText(gone.at)}` : '(the date was not recorded)'}, when accounts were pinned. Press `;
   return [...leadLines('  ', [['Desk keeps its own sign-ins, so switching account in your own Claude Code changes nothing here.', GREY]], w),
     ...(x?.login?.tool === 'claude' && x.login.account ? leadLines('  ', [[`${x.login.account} signs in for desk through ${x.login.folder}.`, GREY]], w) : []),
-    ...(unpinned ? leadLines('  ', [[`${unpinned} isn't one of desk's accounts yet. Press `, GREY], ['a', BOLD], [' to add it.', GREY]], w) : [])];
+    ...(unpinned ? leadLines('  ', [[said, GREY], ['a', BOLD], [gone ? ' to add it again.' : ' to add it.', GREY]], w) : [])];
 }
 
 // The note for a row desk won't use: what is wrong and the command that puts it right, which y copies.
@@ -4740,8 +4745,11 @@ export function interactive({
     if (!args) return;
     tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
     saveStarted();
-    loginsWith(args, () => {
+    loginsWith(args, (r) => {
       lastLogins = null;
+      // A migration that moved ~/.claude to Removed says so here too, as it does in the terminal.
+      const moved = String(r?.out ?? '').split('\n').filter((l) => / moved to Removed: /.test(l));
+      if (args[0] === 'migrate' && moved.length) msg = moved.join('\n');
       saveEnded(true);
     });
   }

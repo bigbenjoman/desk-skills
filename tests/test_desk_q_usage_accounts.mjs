@@ -136,12 +136,16 @@ subscriptions([PERSONAL, ['claude', 'work', '~/.claude-logins/work', 'unused'], 
 const M = open();
 await sleep(20);
 await M.press('6');
-let f = await M.until((x) => /\| Account \|/.test(subsText()) && x.some((l) => l.includes('Press a to add it.')));
+let f = await M.until((x) => /\| Account \|/.test(subsText()) && prose(x).includes('Press a to add it again.') && prose(x).includes('moved to Removed'));
+const TODAY = (() => { const d = new Date(); return { ymd: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+  text: `${d.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]} ${d.getFullYear()}` }; })();
 t('DS-533 AC17 desk-q migrates the old file: work is pinned to its account and keeps its word', /^\| `claude` \| `work` \| `~\/.claude-logins\/work` \| `work@example.test` \| `unused` \|$/m.test(subsText()), true);
 t('DS-533 AC17 AC19 and the found spare is pinned, unused', /^\| `claude` \| `spare` \| `~\/.claude-logins\/spare` \| `spare@example.test` \| `unused` \|$/m.test(subsText()), true);
-t('DS-533 AC17 ~/.claude goes to the Removed table', /^## Removed[\s\S]*^\| `claude` \| `personal` \| `~\/.claude` \|$/m.test(subsText()), true);
+t('DS-533 AC17 #1489 ~/.claude goes to the Removed table, dated today', subsText().includes(`| \`claude\` | \`personal\` | \`~/.claude\` | \`${TODAY.ymd}\` |`), true);
 t('DS-533 AC17 once: the file has one Account column', subsText().split('| Account |').length, 2);
-t('DS-533 AC18 the footer offers to add ~/.claude\'s account', f.find((l) => l.includes('Press a to add it.'))?.trim(), 'me@example.test isn\'t one of desk\'s accounts yet. Press a to add it.');
+t('#1489 AC1 desk-q says ~/.claude moved, as the migration printed it', prose(f).includes('claude personal (~/.claude) moved to Removed: once a Claude login is pinned to an account'), true);
+t('DS-533 AC18 #1489 AC3 the footer says ~/.claude\'s account was removed, and when', prose(f).includes(`me@example.test was removed from desk's accounts on ${TODAY.text}, when accounts were pinned. Press a to add it again.`), true);
+t('#1489 AC3 and never that it was not added', prose(f).includes('isn\'t one of desk\'s accounts yet'), false);
 t('DS-533 AC2 no row for ~/.claude', `${rowOf(f, 'me@example.test')} ${rowOf(f, 'personal')} ${rowOf(f, 'default')}`, 'null null null');
 M.done();
 
@@ -198,6 +202,17 @@ t('DS-533 AC10 y copies the command that signs its folder in', D.copied.join('\n
 D.done();
 account(join(SPARE, '.claude.json'), 'spare@example.test', 'Pro');
 rmSync(join(WORK, '.signed-out'));
+
+// ---- #1489 AC3: ~/.claude named by a Removed table from before its date column: removed, date unknown
+subscriptions(ROWS3);
+writeFileSync(env.DESK_SUBSCRIPTIONS, `${subsText()}\n## Removed\n\n| Tool | Name | Folder |\n|---|---|---|\n| \`claude\` | \`personal\` | \`~/.claude\` |\n`);
+const R = open();
+await sleep(20);
+await R.press('6');
+f = await R.until((x) => prose(x).includes('own@example.test was removed'));
+t('#1489 AC3 an old Removed table: removed, with the date said to be unknown', prose(f).includes('own@example.test was removed from desk\'s accounts (the date was not recorded), when accounts were pinned. Press a to add it again.'), true);
+R.done();
+subscriptions(ROWS3);
 account(join(H, '.claude.json'), 'me@example.test', 'Ultra');
 
 // ---- DS-533 AC14, AC16: a folder desk could not pin is not set up, named by its folder
