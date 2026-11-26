@@ -111,8 +111,9 @@ For a page behind real auth, on a development instance only. It needs §4 Env fi
 who already holds the app's grant: §4 Test sign-in (`desk-env cmds test-signin`) gives one per app as
 `DIR<TAB>EMAIL`, so take the line whose directory is the app's, exactly as for the dev server. An
 app with no line there has no user to sign in as: `desk-env drift --app <dir>` names it `NOSIGNIN`.
-Where §4 Test sign-in permissions names what the app's pages need, the same call reads the user from
-Clerk and names each permission it lacks `NOPERM`, or `PERMREAD` where it could not read them.
+Where §4 Test sign-in permissions (`desk-env list test-signin-permissions`) names what the app's
+pages need, the same call reads the user from Clerk and names each permission it lacks `NOPERM`, or
+`PERMREAD` where it could not read them.
 
 1. **Start the right app.** `desk-env cmds dev-cmd` gives one `DIR<TAB>CMD` line per app, so in a
    multi-app repo pick the line whose directory holds the page. Run it through `with-lock.sh nolock
