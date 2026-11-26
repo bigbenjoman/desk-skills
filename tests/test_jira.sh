@@ -639,6 +639,9 @@ lint "$LD/gwt2.md" customfield_10208=M
 check "DS-824 lint: another block under the criteria heading stays code" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link" && ! printf "%s\n" "$out" | grep -q -e "no acceptance criteria" -e "leaves a decision open"'
 gwtblock '{noformat}' '{noformat}' 'Given the job|When it runs|Then p95 in production is under 300 ms'
 check "DS-824 lint: a production run in preformatted criteria is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
+clean | grep -v -e '^## Acceptance criteria' -e '^1\. AC1' | awk '{ print } /^Reviewers see/ { print "{noformat}"; print "Given a draft"; print "When lint runs"; print "Then it lists each finding"; print ""; print "Given a clean draft"; print "Then it says ok"; print "{noformat}" }' > "$LD/gwtout.md"
+lint "$LD/gwtout.md" customfield_10208=M
+check "#1488 AC1 lint: unlabelled Given/When/Then criteria outside a criteria heading are listed numbered, for admit to move" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria section, but 2 Given/When/Then criteria with no AC labels (line [0-9]*, [0-9]*): move them under an \"Acceptance criteria\" heading as AC1: … items$"'
 clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://www.figma.com/design/Ab/x?node-id=1-2" }' > "$LD/figmaref.md"
 lint "$LD/figmaref.md" customfield_10208=M
 check "DS-824 AC2 lint: a Figma URL under a References heading is a design link" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no design link"'

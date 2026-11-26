@@ -1,6 +1,6 @@
 // What /desk-admit writes into a ticket triage would refuse only for sections desk can write from the
-// ticket itself: acceptance criteria triage drafted from its goal and proposal (its
-// `drafted_criteria`), "No UI." where triage found nothing renders, and, with either, "None." under a
+// ticket itself: its own Given/When/Then criteria numbered AC1… where they carry no labels, else
+// acceptance criteria triage drafted from its goal and proposal (its `drafted_criteria`), "No UI." where triage found nothing renders, and, with either, "None." under a
 // missing Out of scope and the repo's test command under a missing Verification. intake.mjs admit
 // writes them (a GitHub issue under config §3 gh-issue-edit, a ticket file always), lints the ticket
 // again and admits it on that.
@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sections } from './desk-design.mjs';
 import * as E from './desk-env.mjs';
-import { designRoot, lintTicket } from './ticket-lint.mjs';
+import { designRoot, lintTicket, unlabelledCriteria, withoutLines } from './ticket-lint.mjs';
 
 export const DRAFTED_NOTE = 'Drafted by desk from the proposal: reviewed like any other criteria.';
 const NO_DESIGN = /^no design link and no "No UI\." line/;
@@ -19,8 +19,14 @@ const blocking = (rec, rule, re = null) => (rec.lint ?? []).some((f) => f.severi
 // [] where the ticket's text states no testable outcome.
 export const draftedCriteria = (rec) => (Array.isArray(rec?.drafted_criteria)
   ? rec.drafted_criteria.map((c) => String(c ?? '').replace(/^\W*(?:AC\d+\W*)?/i, '').trim()).filter(Boolean) : null);
+// The Given/When/Then criteria lint found outside a criteria heading with no AC labels, as lint numbered
+// them (ticket-lint.mjs), or null.
+export const numberedCriteria = (rec) => {
+  const f = (rec?.lint ?? []).find((x) => x.severity === 'blocking' && x.rule === 'criteria' && Array.isArray(x.numbered) && x.numbered.length);
+  return f ? f.numbered.map((c) => String(c)) : null;
+};
 // Whether the ticket has no criteria and triage found no testable outcome in its text to draft them from.
-export const noTestableOutcome = (rec) => blocking(rec, 'criteria') && draftedCriteria(rec)?.length === 0;
+export const noTestableOutcome = (rec) => blocking(rec, 'criteria') && !numberedCriteria(rec) && draftedCriteria(rec)?.length === 0;
 
 // The files a ticket triage found renders nothing changes, as its reason says them (`: it changes a, b,
 // c and 2 more`), or '' with none: the refusal line (intake.mjs) and the Design section written here.
@@ -47,7 +53,13 @@ export function fillSections(rec, text, { test = testCommand() } = {}) {
   const has = (re) => [...have].some((n) => re.test(n));
   const out = [];
   const drafted = draftedCriteria(rec);
-  if (blocking(rec, 'criteria') && drafted?.length) {
+  // Criteria the ticket wrote as Given/When/Then with no AC labels are numbered and moved under its
+  // criteria heading, in place of any triage drafted.
+  const own = unlabelledCriteria(text);
+  const heading = sections(text).find((s) => /^(?:acceptance criteria|definition of done)\b/i.test(s.name))?.name.replace(/:/g, '').trim();
+  if (own.length) {
+    out.push({ name: heading || 'Acceptance criteria', body: own.map((c, i) => `- AC${i + 1}: ${c.text}`).join('\n'), drop: own.flatMap((c) => c.lines) });
+  } else if (blocking(rec, 'criteria') && drafted?.length) {
     out.push({ name: 'Acceptance criteria', body: [`_${DRAFTED_NOTE}_`, ...drafted.map((c, i) => `- AC${i + 1}: ${c}`)].join('\n') });
   }
   if (rec.renders === false && blocking(rec, 'design', NO_DESIGN)) out.push({ name: 'Design', body: noUiReason(rec) });
@@ -57,9 +69,11 @@ export function fillSections(rec, text, { test = testCommand() } = {}) {
   return out;
 }
 
-// `text` with each section written: under its heading where the ticket has it empty, else appended.
+// `text` with each section written: under its heading where the ticket has it empty, else appended. A
+// section's `drop` lines (source line numbers) are taken out first.
 export function withSections(text, secs) {
-  const lines = String(text ?? '').replace(/\s+$/, '').split('\n');
+  const drop = secs.flatMap((s) => s.drop ?? []);
+  const lines = (drop.length ? withoutLines(text, drop) : String(text ?? '')).replace(/\s+$/, '').split('\n');
   const tail = [];
   for (const s of secs) {
     const at = lines.findIndex((l) => /^\s*#{1,6}\s+/.test(l) && l.replace(/^\s*#{1,6}\s+/, '').replace(/[*_:]/g, '').trim().toLowerCase() === s.name.toLowerCase());

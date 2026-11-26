@@ -190,13 +190,16 @@ no design link is not the user's where the ticket's comments answer it: read the
   A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`). Where the line
   adds `triage drafted <n> from its goal and proposal`, it lists them: write them as they are, under
   the note it quotes. Where it adds `its text states no testable outcome`, admit has put that one
-  ask on `/desk-needs-you`: say so, and do not ask it again below.
+  ask on `/desk-needs-you`: say so, and do not ask it again below. Where the line reads `no acceptance
+  criteria section, but <n> Given/When/Then criteria with no AC labels`, they are the ticket's own:
+  move them under an `Acceptance criteria` heading as the `AC1: …` items it lists, keeping their text.
 - **no design link** where the line adds `triage found nothing renders` (its change is confined to
   tests, CI, tooling or config): no comment is needed. Write `No UI.` and the reason the line gives
   (`No UI. Triage found nothing renders: it changes …`) as the Design section.
 
 **Admit has already written what it could.** For a GitHub issue where config §3 `gh-issue-edit` is
-`yes`, and for a ticket in a ticket file, it writes the criteria triage drafted and `No UI.` itself,
+`yes`, and for a ticket in a ticket file, it numbers Given/When/Then criteria written with no AC
+labels (moving them under the criteria heading), writes the criteria triage drafted and `No UI.` itself,
 with `None.` under a missing Out of scope and §4 Unit tests (`desk-env cmds test-cmd`) under a missing
 Verification, prints the `ISSUE EDIT` (or `TICKET FILE EDIT`) block marked `posted`, lints the
 ticket again and places it on that: nothing is left to do for it. Where `gh-issue-edit` is not
