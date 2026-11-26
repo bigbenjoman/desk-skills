@@ -689,13 +689,15 @@ acline 'Given the billing tables, when a read-only query is run against the live
 check "lint: a read-only query run against the live database is still a production run" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
 # Words that sit only in quoted copy, an example list or a note naming where a value comes from
 # leave nothing open and ask nobody to act; the same words in the ticket's own prose still block.
+# desk-jira reads a body only from inside the repo's worktree, so each fixture is copied into it first.
 for n in 1436 1423 1447; do
-  lint "$S/fixtures/ticket-lint/gh-$n-v1.md" customfield_10208=M
+  cp "$S/fixtures/ticket-lint/gh-$n-v1.md" "$LD/gh-$n-v1.md"
+  lint "$LD/gh-$n-v1.md" customfield_10208=M
   check "DS-1014 lint: the first version of GitHub #$n has no blocking finding" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "^blocking"'
 done
 openline(){ clean | awk -v o="$1" '{ print } /^Reviewers see/ { print o }' > "$LD/open2.md"; lint "$LD/open2.md" customfield_10208=M; }
 for o in 'A "Decide whether…" Task is left out.' 'A “TBD” label is left out.' 'A `decide` task is left out.' 'It skips work (rotate a key, promote rules, decide a policy).' 'It skips work (for example tickets marked TBD).' 'It reports one ("decide") per line.' 'Neither leaves anything for anyone to decide.' \
-  'It reports "leaves a decision open ("decide")" per line.' "The label is 'TBD'." 'The label is ‘TBD’.' 'Skip unfinished labels (e.g. the TBD label).' 'Nothing is left to decide.' 'The filter omits placeholder statuses (draft, TBD, and archived).'; do
+  'It reports "leaves a decision open ("decide")" per line.' "The label is 'TBD'." "The label is ‘TBD’." 'Skip unfinished labels (e.g. the TBD label).' 'Nothing is left to decide.' 'The filter omits placeholder statuses (draft, TBD, and archived).'; do
   openline "$o"
   check "DS-1014 AC1 lint: an open-decision word only in quotes, backticks or an example list is not an open decision ($o)" '[ $rc -eq 0 ]'
 done
