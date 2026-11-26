@@ -108,10 +108,11 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // else required reads unknown.
 // `was` is the red record kept before (readBaseRed): a check it holds red that passes now counts only
 // where its job ran work (read.work(w, wasEntry) -> 'ran' | 'none', ranWork; no read.work counts every
-// pass). A pass that did nothing is passed over, as a run still going is, and the walk reads on down;
+// pass), and a completed skipped run of it is no work whatever read.work says. A pass that did nothing is passed over, as a run still going is, and the walk reads on down;
 // where it finds no run that counts, the check stays red as `was` had it, and the answer carries
 // `no_work`, the passes passed over ({ name, sha, url }). read.files(url), where given, names the test
 // files a failing run's log shows, kept on its check as `files` for the next read.work.
+const skippedRun = (r) => String(r?.status ?? '').toLowerCase() === 'completed' && String(r?.conclusion ?? '').toLowerCase() === 'skipped';
 export function baseState({ required, branch, read, was = null }) {
   if (!required.length) return { state: 'none' };
   const unread = (why) => ({ state: 'unread', why });
@@ -129,7 +130,13 @@ export function baseState({ required, branch, read, was = null }) {
       const mine = runs.filter((r) => r?.name === name);
       if (mine.length) seen.add(name);
       const st = runsState(mine);
-      if (!st) { if (i > 0) idle.delete(name); continue; }
+      if (!st) {
+        // A skipped job of a check it holds red did nothing, as a pass with no work does.
+        const skip = wasRed.has(name) ? mine.find(skippedRun) : null;
+        if (skip) { noWork.push({ name, sha: c.sha, url: skip.url ?? null }); if (i === 0) idle.add(name); continue; }
+        if (i > 0) idle.delete(name);
+        continue;
+      }
       if (st === 'pass' && wasRed.has(name) && read.work) {
         const run = mine.find((r) => String(r?.conclusion ?? '').toLowerCase() === 'success') ?? mine[0];
         const w = { name, sha: c.sha, url: run?.url ?? null };

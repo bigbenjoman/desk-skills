@@ -13,7 +13,7 @@
 //   isRepair   (key) -> whether the key is a red-base repair of this batch's base
 //   base       the base's name, for the lines
 //   dry        a dry run: say what would be done, change nothing
-//   baseRed    whether the base is red now (a live red record)
+//   repairKey  the live red record's repair_key, or null when the base is not red now
 //
 // Actions:
 //   push-fix {key}              -> null (nothing of its own to push) | { pr } | { why } (not pushed)
@@ -26,6 +26,20 @@
 //   report (say)
 import { say } from './shared.mjs';
 import { doneByFields } from './parks.mjs';
+import { untestedChecks, untestedWords } from '../base-red.mjs';
+
+// What the driver's own reads of the base say of a repair begun at `began` (ms): { untested: words } where
+// the base is red only on passes that tested nothing, so the failure was never exercised and it is kept
+// open; else { green, at, mark }. `red` is the red record (readBaseRed), `greenRec` the last green read
+// (readGreenRec), whose mark is the tip SHA it read (its time in a record from before that was kept).
+// Green: the base is not red, read green since the repair began, and not on the read the repair was
+// closed on before (closedGreen), so a requeue is not closed again on it.
+export function greenRead({ red, greenRec, base, began, closedGreen = null }) {
+  if (red?.branch === base && untestedChecks(red).length) return { untested: untestedWords(red) };
+  const at = Date.parse(greenRec?.at ?? '');
+  const mark = greenRec ? (greenRec.sha ?? greenRec.at) : null;
+  return { green: (!red || red.branch !== base) && Number.isFinite(at) && at > began && mark !== closedGreen, at, mark };
+}
 
 // The repair's PR while it is open: its result or draft PR, unless the PR status reads it closed or merged.
 export const openRepairPr = (t) => {
@@ -44,8 +58,11 @@ const short = (sha) => String(sha ?? '').slice(0, 12);
 
 // A repair whose worker exited, failed or recorded done, with no PR, while the base is still red: what it
 // committed and left unpushed is the fix, pushed and opened as its PR (push-fix) rather than asked about.
+// Only the live red spell's own repair (repairKey): one from an earlier spell fixed another failure. Not
+// one this step closed itself (closed_superseded, cleared by a requeue), whose commits it judged needless.
 // A handoff's next session pushes its own.
-export const unpushedRepair = (t, s) => s.isRepair(t.key) && s.baseRed && !t.merged_at && !t.done_by && !t.handoff
+export const unpushedRepair = (t, s) => s.isRepair(t.key) && s.repairKey != null && t.key === s.repairKey
+  && !t.closed_superseded && !t.merged_at && !t.done_by && !t.handoff
   && (t.state === 'failed' || t.state === 'done') && t.result?.pr == null && t.draft_pr == null;
 
 export function* decideSupersededRepairs(s) {
@@ -74,7 +91,7 @@ export function* decideSupersededRepairs(s) {
     const closedOwn = pr != null ? `; its PR #${pr} closed unmerged` : '';
     // A pending fix try is cleared too, so no worker is spawned on it.
     const fields = [...(by ? doneByFields(t, by.pr, { why: `it fixed the red ${s.base} this repair was for`, at: by.at }, `(it fixed the red ${s.base} this repair was for): ${how}${closedOwn}`)
-      : ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `result.summary=closed unmerged: ${how}${closedOwn}`]), 'fix=null',
+      : ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `result.summary=closed unmerged: ${how}${closedOwn}`]), 'fix=null', 'closed_superseded=yes',
       // The green read it was closed on, so a requeue is not closed again on that same read.
       ...(r.mark ? [`closed_green=${r.mark}`] : [])];
     if (!(yield { type: 'write', key: t.key, fields })) continue;

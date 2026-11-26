@@ -408,7 +408,9 @@ function requeue(q, key, { handedBack = false } = {}) {
   Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     // Done by another's PR no longer, once sent back for work of its own.
-    spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null, updated_at: new Date().toISOString() });
+    spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null,
+    // A red-base repair the pass closed as needless is owed its own work again, so what it commits next is pushed.
+    ...(t.closed_superseded ? { closed_superseded: null } : {}), updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
