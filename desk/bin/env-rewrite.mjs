@@ -13,10 +13,12 @@
 //        <files, one per line> [host port]
 // <db> is one name, or `<dir><TAB><db>` lines, one per app; a var line may be `<dir><TAB><var>`.
 // Prints one line per change; exits 1 if the result is not what the rule says.
+//      node env-rewrite.mjs owned <apps> <items> <app>: the items that app owns (ownedBy, below).
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseCommandItem } from './config-schema.mjs';
+import { nearestDir } from './test-scope.mjs';
 
 // Every host but the container's own name reaches it through the port it publishes on this machine.
 const VIA_HOST = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', 'host.docker.internal']);
@@ -24,7 +26,14 @@ const URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([^@/]*)@)?(\[[^\]]*\]|[^/:?#]*)(:\d
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const holds = (dir, rel) => dir === '.' || rel === dir || rel.startsWith(`${dir}/`);
+const repoRel = (p) => p.replace(/^(\.\/+)+/, '');
+
+// -> the items (`{ dir, cmd }`) whose owner is `app`: the deepest of `appDirs` holding the item's
+// directory, '' where none does. setup-worktree.sh asks this for each app's migrate and seed items.
+export function ownedBy(appDirs, items, app) {
+  const apps = appDirs.map((dir) => ({ dir }));
+  return items.filter((i) => (nearestDir(apps, repoRel(i.dir))?.dir ?? '') === app);
+}
 
 // -> { bad, touched }: bad counts values that still break the rule on disk. `vars` are §4 Database URL
 // variable items, each optionally `<dir>: <var>`; `dbs` maps an app directory to its database, and
@@ -33,14 +42,13 @@ export function rewriteEnvFiles({ mode, wt, db = '', dbs = null, container = '',
   const items = vars.map(parseCommandItem).filter((v) => VAR_NAME.test(v.cmd));
   if (!items.length) return { bad: 0, touched: 0 };
   const names = [...new Set(items.map((v) => v.cmd))];
-  const depth = (dir) => (dir === '.' ? 0 : dir.split('/').length);
-  const byDepth = [...items].sort((a, b) => depth(a.dir) - depth(b.dir));
-  // The database each variable is pointed at in one file: '' blanks it. Deepest app holding the file wins.
-  const plan = (rel) => {
-    const out = {};
-    for (const v of byDepth) if (!dbs || holds(v.dir, rel)) out[v.cmd] = dbs ? dbs[v.dir] ?? '' : db;
-    return out;
-  };
+  // The database each variable is pointed at in one file: '' blanks it. For each name, the deepest
+  // app holding the file that lists it wins.
+  const plan = (rel) => Object.fromEntries(names.map((name) => {
+    if (!dbs) return [name, db];
+    const app = nearestDir(items.filter((v) => v.cmd === name), repoRel(rel))?.dir;
+    return [name, app == null ? '' : dbs[app] ?? ''];
+  }));
   const LOCAL = new Set([...VIA_HOST, container].filter(Boolean).map((h) => h.toLowerCase()));
   // `(.*)` cannot match a trailing \r, so a CRLF file (common on WSL) would skip every line and keep
   // its production URL. Lines are matched with the \r removed; a rewritten or blanked line is written back with a plain \n.
@@ -102,9 +110,15 @@ export function rewriteEnvFiles({ mode, wt, db = '', dbs = null, container = '',
 }
 
 const isMain = (() => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
-if (isMain) {
+const tabbed = (raw) => raw.split('\n').filter(Boolean).map((l) => (l.includes('\t') ? l.split('\t') : ['.', l]));
+if (isMain && process.argv[2] === 'owned') {
+  // node env-rewrite.mjs owned <`DIR<TAB>DB` app lines> <`DIR<TAB>CMD` item lines> <app dir, or '' for none>
+  // Prints the item lines that app owns, as given.
+  const [, appsRaw = '', itemsRaw = '', app = ''] = process.argv.slice(2);
+  const items = tabbed(itemsRaw).map(([dir, cmd]) => ({ dir, cmd }));
+  for (const i of ownedBy(tabbed(appsRaw).map(([dir]) => dir), items, app)) console.log(`${i.dir}\t${i.cmd}`);
+} else if (isMain) {
   const [mode, wt, dbRaw = '', container, varsRaw = '', filesRaw = '', hostPort = ''] = process.argv.slice(2);
-  const tabbed = (raw) => raw.split('\n').filter(Boolean).map((l) => (l.includes('\t') ? l.split('\t') : ['.', l]));
   const vars = tabbed(varsRaw).map(([dir, v]) => `${dir}: ${v}`);
   const dbLines = tabbed(dbRaw);
   const dbs = dbRaw.includes('\t') ? Object.fromEntries(dbLines) : null;

@@ -3373,8 +3373,8 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
     fixBrief(t, reviewRun()),
     baselineBrief(),
     triageBrief(t),
-    migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed}, so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
-      'Read it and run §4 Database migrate yourself before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
+    migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed} (with an app per database, a failed seed counts too), so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
+      'Read it and run §4 Database migrate (and §4 Seed, where a seed failed) yourself, for the database that failed only, before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
     fixturesBrief(t.key, wt),
     t.cleared?.tail ? tailBrief(t)
       : t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
@@ -4102,7 +4102,10 @@ for (const t of spawnable) {
   const resumable = kept && resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE }).ok;
   const restart = t.fix && !t.fix.finished ? null : decisionsRestart(t, { resumable });
   const resumed = restart ? { ...restart, brief: `${restart.brief}${round.brief}` } : round;
-  const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
+  // With several apps, `database=` lists every app's database and `migrate-failed=` the ones that failed.
+  const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup)
+    ? ([...setup.matchAll(/\[setup-worktree\] migrate-failed=(\S+)/g)].pop()?.[1] ?? database).replaceAll(',', ', ')
+    : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);

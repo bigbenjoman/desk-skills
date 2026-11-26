@@ -112,7 +112,7 @@ url(){ sed -nE "s/^$3=\"?([^\"]*)\"?\$/\1/p" "$T/wt/$1/$2"; }
 ROOT=widgets_t_1; PORTAL=widgets_t_1_apps_portal
 
 out=$(bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?
-check "AC1 setup succeeds"                                         '[ $rc -eq 0 ] && [[ "$out" == *"database=$ROOT"* ]]'
+check "AC1 setup succeeds, naming every app's database"            '[ $rc -eq 0 ] && [[ "$out" == *"[setup-worktree] database=$ROOT,$PORTAL"* ]]'
 check "AC1 each app gets a database of its own"                    '[ -f "$T/db.$ROOT" ] && [ -f "$T/db.$PORTAL" ] && [ "$(grep -c create "$T/pg.log")" = 2 ]'
 check "AC1 the root env file names the root database"              '[ "$(url T-1 .env DATABASE_URL)" = "postgresql://postgres:s3cret@localhost:5432/$ROOT" ] && [ "$(url T-1 .env WEB_DATABASE_URL)" = "postgresql://postgres:s3cret@localhost:5432/$ROOT" ]'
 check "AC1 the portal package env file names the portal database"  '[ "$(url T-1 apps/portal/packages/db/.env DATABASE_URL)" = "postgresql://postgres:s3cret@localhost:5432/$PORTAL" ]'
@@ -129,15 +129,18 @@ check "AC3 a failed app migrate: setup still hands over"           '[ $rc -eq 0 
 check "AC3 the failure names the app and its database"             '[[ "$out" == *"WARNING: app apps/portal: migrations did not complete against widgets_t_2_apps_portal"* ]]'
 check "AC3 the error is kept and masked"                           'grep -q "P1010: denied" "$T/wt/T-2/.desk-migrate.log" && ! grep -q s3cret "$T/wt/T-2/.desk-migrate.log" && [[ "$out" != *"s3cret"* ]]'
 check "AC3 the failed app is not seeded; the other app is"         '[ "$(cat "$T/calls")" = "$(printf "migrate widgets_t_2\nseed widgets_t_2\nmigrate widgets_t_2_apps_portal")" ]'
+check "AC3 the machine-read line names only the failed database"   '[[ "$out" == *"[setup-worktree] migrate-failed=widgets_t_2_apps_portal"* ]]'
 
 : > "$T/calls"; touch "$T/fail.seed.widgets_t_3"
 out=$(bash "$B/setup-worktree.sh" T-3 fix/T-3 2>&1); rc=$?
 check "AC3 a failed seed names the app and its database"           '[ $rc -eq 0 ] && [[ "$out" == *"WARNING: app .: the seed did not complete against widgets_t_3"* ]] && [[ "$out" == *"migrate=failed"* ]]'
 
-# A kept worktree whose last run failed: every app is migrated again, and success clears the log.
+# A kept worktree whose last run failed: only the failed app runs again (both databases hold tables, so
+# only the log can pick it), the app that seeded cleanly is not seeded twice, and success clears the log.
 rm -f "$T/fail.migrate.widgets_t_2_apps_portal"; : > "$T/calls"
+echo 9 > "$T/tables.widgets_t_2"; echo 9 > "$T/tables.widgets_t_2_apps_portal"
 out=$(bash "$B/setup-worktree.sh" T-2 fix/T-2 2>&1); rc=$?
-check "kept, last run failed: both apps run again, log cleared"   '[ $rc -eq 0 ] && [ "$(grep -c migrate "$T/calls")" = 2 ] && [ ! -e "$T/wt/T-2/.desk-migrate.log" ] && [[ "$out" != *"migrate=failed"* ]]'
+check "kept, last run failed: only the failed app runs, log cleared" '[ $rc -eq 0 ] && [ "$(cat "$T/calls")" = "$(printf "migrate widgets_t_2_apps_portal\nseed widgets_t_2_apps_portal")" ] && [ ! -e "$T/wt/T-2/.desk-migrate.log" ] && [[ "$out" != *"migrate=failed"* ]]'
 # Kept, no failure: only an app whose database is empty is migrated.
 echo 9 > "$T/tables.$ROOT"; : > "$T/calls"
 out=$(bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?
@@ -148,5 +151,11 @@ out=$(bash "$B/setup-worktree.sh" T-4 fix/T-4 2>&1); rc=$?
 check "AC6 a failed setup drops every database it created"        '[ $rc -ne 0 ] && [ ! -d "$T/wt/T-4" ] && grep -qx "drop widgets_t_4" "$T/pg.log" && grep -qx "drop widgets_t_4_apps_portal" "$T/pg.log" && [ ! -f "$T/db.widgets_t_4" ] && [ ! -f "$T/db.widgets_t_4_apps_portal" ]'
 check "AC6 it says which it dropped"                               '[[ "$out" == *"dropped database widgets_t_4 (this run created it)"* ]] && [[ "$out" == *"dropped database widgets_t_4_apps_portal (this run created it)"* ]]'
 rm -f "$T/install.fail"
+
+# `./apps/portal` names the same app as `apps/portal`, so its items and env files match either spelling.
+out=$(node --input-type=module -e "import { parseCommandItem as p } from '$B/config-schema.mjs'; console.log(p('./apps/portal/: X').dir, p('./: Y').dir)")
+check "a leading ./ on an app directory is dropped"               '[ "$out" = "apps/portal ." ]'
+out=$(node "$B/env-rewrite.mjs" owned "$(printf '.\ta\napps/portal\tb')" "$(printf './apps/portal/packages/db\tm1\napps/portalx\tm2\n.\tm3')" apps/portal)
+check "an item under ./apps/portal belongs to the portal app"     '[ "$out" = "$(printf "./apps/portal/packages/db\tm1")" ]'
 
 echo "worktree database per app: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

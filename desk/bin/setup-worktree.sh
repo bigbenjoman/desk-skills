@@ -62,8 +62,9 @@
 #
 # The last lines printed are machine-read by pass.mjs: `steps=` (each step this run took, as
 # `<step>:<seconds>` joined by commas, in the order run), `worktree=`, `branch=`, `database=`
-# (`database=<name>` only when that per-ticket database exists, the first app's with apps; otherwise
-# `database=none`), and `migrate=failed` only when migrations (or, with apps, a seed) did not complete on this run.
+# (`database=<name>` only when that per-ticket database exists, with apps every app's joined by commas,
+# the root app's first; otherwise `database=none`), and `migrate=failed` only when migrations (or, with
+# apps, a seed) did not complete on this run, then with apps `migrate-failed=` naming those databases.
 set -euo pipefail
 STEPS=""; STEP_T0=$SECONDS
 step_done() { STEPS="${STEPS:+$STEPS,}$1:$((SECONDS - STEP_T0))"; STEP_T0=$SECONDS; }
@@ -254,18 +255,6 @@ while IFS= read -r d; do
 done <<EOF_APPS
 $APP_DIRS
 EOF_APPS
-app_of() { # app_of <dir relative to the worktree>: the deepest app directory holding it, or nothing
-  local best="" bl=-1 d n l
-  while IFS="$(printf '\t')" read -r d n; do
-    [ -n "$d" ] || continue
-    if [ "$d" = . ]; then l=0; else case "$1" in "$d"|"$d"/*) l=${#d} ;; *) continue ;; esac; fi
-    [ "$l" -gt "$bl" ] && { best="$d"; bl=$l; }
-  done <<EOF_OF
-$APPS
-EOF_OF
-  printf '%s' "$best"
-}
-app_db() { printf '%s\n' "$APPS" | awk -F '\t' -v d="$1" '$1 == d { print $2; exit }'; }
 DB_MODE=none
 if [ -z "$LOCAL_DB" ]; then
   say "note: config §4 Local database is unset — no per-ticket database (run /desk-setup to set it, or \`none\`)"
@@ -423,14 +412,15 @@ migrate_db() { # a failure is kept, printed and reported on the machine-read lin
     tail -n 15 "$MIGRATE_LOG" | sed 's/^/[setup-worktree]   | /'
   fi
 }
-cmds_of() { # cmds_of <DIR<TAB>CMD lines> <app dir>: the items the app holds (the deepest app holding each)
-  local d c
-  while IFS="$(printf '\t')" read -r d c; do
-    [ -n "$c" ] && [ "$(app_of "$d")" = "$2" ] && printf '%s\t%s\n' "$d" "$c"
-  done <<EOF_CMDS
-$1
-EOF_CMDS
-  return 0
+cmds_of() { # cmds_of <DIR<TAB>CMD lines> <app dir, or '' for none>: the items the app owns (the deepest app holding each)
+  [ -n "$1" ] || return 0
+  node "$DESK_ENV_DIR/env-rewrite.mjs" owned "$APPS" "$1" "$2"
+}
+FAILED_DBS=""   # the databases whose migrate or seed failed on this run, for the `migrate-failed=` line
+app_failed() { # app_failed <app dir> <db>: recorded in the log, so a kept worktree's next run retries only this app
+  MIGRATE_FAILED=1
+  printf '== failed app %s\n' "$1" >> "$MIGRATE_LOG"
+  FAILED_DBS="${FAILED_DBS:+$FAILED_DBS,}$2"
 }
 # With apps, each app's migrate then seed run against its own database, their output appended to the
 # one log under a heading naming the app and database; an app whose migrate failed is not seeded.
@@ -442,7 +432,7 @@ migrate_app() { # migrate_app <app dir> <db>
     printf '== app %s: migrate against %s\n' "$1" "$2" >> "$MIGRATE_LOG"
     if run_cmds "$m" 2>&1 | mask_urls >> "$MIGRATE_LOG"; then say "  migrated $2"
     else
-      MIGRATE_FAILED=1
+      app_failed "$1" "$2"
       say "  WARNING: app $1: migrations did not complete against $2 — a data-dependent ticket will need to fix this. Full output: $MIGRATE_LOG"
       return 0
     fi
@@ -454,7 +444,7 @@ migrate_app() { # migrate_app <app dir> <db>
   printf '== app %s: seed against %s\n' "$1" "$2" >> "$MIGRATE_LOG"
   if run_cmds "$s" 2>&1 | mask_urls >> "$MIGRATE_LOG"; then say "  seeded $2"
   else
-    MIGRATE_FAILED=1
+    app_failed "$1" "$2"
     say "  WARNING: app $1: the seed did not complete against $2 — a data-dependent ticket will need to fix this. Full output: $MIGRATE_LOG"
   fi
 }
@@ -462,8 +452,7 @@ migrate_apps() { # migrate_apps <DIR<TAB>DB lines>: those apps; a command no app
   local d n stray
   exclude_from_git '/.desk-migrate.log'
   : > "$MIGRATE_LOG"
-  stray="$(printf '%s\n%s\n' "$MIGRATE_CMDS" "$SEED_CMDS" | while IFS="$(printf '\t')" read -r d n; do
-    [ -n "$n" ] && [ -z "$(app_of "$d")" ] && printf '%s: %s\n' "$d" "$n"; done; true)"
+  stray="$(cmds_of "$(printf '%s\n%s\n' "$MIGRATE_CMDS" "$SEED_CMDS")" '' | sed "s/$(printf '\t')/: /" | mask_urls)"
   if [ -n "$stray" ]; then
     MIGRATE_FAILED=1
     say "  WARNING: these §4 Database migrate or Seed items sit in no app's directory (§4 Database URL variable), so they ran against no database:"
@@ -484,22 +473,28 @@ db_table_count() { # db_table_count [<db>]: the tables in that database, or noth
 }
 # A kept worktree: only where the last migrate failed, or never ran. Worktrees made while the URLs
 # named the wrong server have an empty database and no log, so the empty database is what counts.
-# With apps, a failed last run migrates every app again, and otherwise only the apps whose database is empty.
+# With apps, only the apps the last run's log names as failed run again, plus any whose database is
+# empty: an app that migrated and seeded cleanly is never seeded twice.
 remigrate_if_needed() {
   [ "$DB_MODE" = ticket ] || return 0
   if [ -z "$MULTI" ]; then
     if [ -f "$MIGRATE_LOG" ] || [ "$(db_table_count)" = 0 ]; then migrate_db; fi
     return 0
   fi
-  if [ -f "$MIGRATE_LOG" ]; then migrate_apps "$APPS"; return 0; fi
-  local d n empty=""
+  local d n again="" failed=""
+  [ -f "$MIGRATE_LOG" ] && failed="$(sed -n 's/^== failed app //p' "$MIGRATE_LOG")"
   while IFS="$(printf '\t')" read -r d n; do
-    [ "$(db_table_count "$n" </dev/null)" = 0 ] && empty="${empty:+$empty
+    [ -n "$d" ] || continue
+    if printf '%s\n' "$failed" | grep -qxF "$d" || [ "$(db_table_count "$n" </dev/null)" = 0 ]; then
+      again="${again:+$again
 }$d	$n"
+    fi
   done <<EOF_APPS
 $APPS
 EOF_APPS
-  [ -z "$empty" ] || migrate_apps "$empty"
+  # A leftover log runs migrate_apps even with no app to retry, so a stray item is reported again
+  # and a log that no longer holds a failure is removed.
+  if [ -n "$again" ] || [ -f "$MIGRATE_LOG" ]; then migrate_apps "$again"; fi
 }
 
 # ---- failure cleanup -----------------------------------------------------------------------------
@@ -533,8 +528,9 @@ finish() {
   say "steps=$STEPS"
   say "worktree=$WT"
   say "branch=$BRANCH"
-  case "$DB_MODE" in ticket) say "database=$([ -n "$MULTI" ] && printf '%s\n' "$APPS" | head -1 | cut -f2 || echo "$DB")" ;; *) say "database=none" ;; esac
+  case "$DB_MODE" in ticket) say "database=$([ -n "$MULTI" ] && printf '%s\n' "$APPS" | cut -f2 | paste -sd , - || echo "$DB")" ;; *) say "database=none" ;; esac
   if [ -n "$MIGRATE_FAILED" ]; then say "migrate=failed"; fi
+  if [ -n "$FAILED_DBS" ]; then say "migrate-failed=$FAILED_DBS"; fi
 }
 
 # A branch can be checked out in only one worktree. Another worktree holding it is detached at the same
