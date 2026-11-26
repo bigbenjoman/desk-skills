@@ -1,28 +1,38 @@
-import { useEffect, useState } from 'react';
 import { useColorScheme } from './color-scheme.js';
-import { loadSnapshot } from './snapshot.js';
+import { BLOCKED, useConnection, Writes } from './connection.jsx';
+import { FirstRun, NotInstalled, SignedOut, Toast, Unreachable } from './system.jsx';
 
 const clock = (at) => new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-function useSnapshot() {
-  const [snapshot, setSnapshot] = useState(null);
-  useEffect(() => {
-    let live = true;
-    loadSnapshot()
-      .then((s) => { if (live && s) setSnapshot(s); })
-      .catch(() => {});
-    return () => { live = false; };
-  }, []);
-  return snapshot;
-}
+// Opens Terminal running /desk-setup in one of the repos /api/setup found.
+const openFolder = (get) => (folder) => get('/api/terminal', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder }),
+});
 
-export default function App() {
-  useColorScheme();
-  const snapshot = useSnapshot();
+function Body({ c, get }) {
+  if (c.view === 'unreachable') return <Unreachable snapshot={c.snapshot} attempt={c.attempt} left={c.left} onRetry={c.retry} />;
+  if (c.view === 'signed-out') return <SignedOut checkout={c.checkout} />;
+  if (c.view === 'not-installed') return <NotInstalled />;
+  if (c.view === 'first-run') return <FirstRun found={c.setup?.found ?? []} open={openFolder(get)} />;
   return (
     <main className="flex h-full flex-col items-center justify-center gap-1 bg-background text-foreground">
       <h1 className="text-base font-semibold">Desk</h1>
-      {snapshot?.at && <p className="text-xs text-muted-fg">As of {clock(snapshot.at)}</p>}
+      {c.snapshot?.at && <p className="text-xs text-muted-fg">As of {clock(c.snapshot.at)}</p>}
     </main>
+  );
+}
+
+// `deps` stands in for fetch, EventSource, Cache Storage and the countdown's second (useConnection).
+// `children` sit around the body, under the same write rule.
+export default function App({ deps = {}, children }) {
+  useColorScheme();
+  const c = useConnection(deps);
+  const get = deps.get ?? ((u, o) => fetch(u, o));
+  return (
+    <Writes.Provider value={BLOCKED[c.view] ?? null}>
+      <Body c={c} get={get} />
+      {children}
+      <Toast text={c.toast} onDismiss={c.dismiss} />
+    </Writes.Provider>
   );
 }
