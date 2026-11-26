@@ -321,16 +321,19 @@ lq_pass
 check "a fix try last parked at Stage 7 is held by the deep queue, as its task runs suites" '[ "$(spawns_of LQ-8)" = 0 ] && echo "$out" | grep -q "Stage 4 (.*LQ-8"'
 q set LQ-8 state=done session_id=null
 # One waiter drains: below the hold at 2 with 1 waiting, each pass starts at most 2 - 1 = 1 of the held
-# three (the listing stays as it is, so each pass has the same room).
+# suite-bound two (the listing stays as it is, so each pass has the same room). The fresh LQ-1 takes no
+# room (#1544): its first suite is a stage away, so it starts on the first pass beside one of them.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 # Each one started is marked done before the next pass, so the repo's worker cap never holds the others.
 lq_started(){ echo $(( $(spawns_of LQ-1) + $(spawns_of LQ-2) + $(spawns_of LQ-3) )); }
 lq_retire(){ for k in LQ-1 LQ-2 LQ-3; do [ "$(field "$k" state)" = '"running"' ] && q set "$k" state=done session_id=null; done; :; }
 lq_pass
-check "DoD5 below the hold, a pass starts at most the hold less those waiting: one of the three, the rest held past a room of 1" \
-  '[ "$(lq_started)" = 1 ] && echo "$out" | grep -qF "under the hold at 1 x 2 = 2" && echo "$out" | grep -qF "past the 1 this pass had room for"'
+check "DoD5 below the hold, a pass starts at most the hold less those waiting: one of the suite-bound two, the other held past a room of 1" \
+  '[ $(( $(spawns_of LQ-2) + $(spawns_of LQ-3) )) = 1 ] && echo "$out" | grep -qF "under the hold at 1 x 2 = 2" && echo "$out" | grep -qF "past the 1 this pass had room for"'
+check "#1544 AC1 below the hold, the fresh Stage 0 start takes no lock-queue room and starts on the first pass" \
+  '[ "$(spawns_of LQ-1)" = 1 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-1"'
 lq_retire; lq_pass
-check "DoD5 the next pass starts one more" '[ "$(lq_started)" = 2 ]'
+check "DoD5 the next pass starts one more" '[ "$(lq_started)" = 3 ]'
 lq_retire; lq_pass
 check "DS-662 AC3 below the hold, the held resume, handoff and new ticket all start in time, and then nothing names the lock queue" \
   'grep -qx "LQ-2 resume=yes stage=" "$T/rr-spawns" && grep -qx "LQ-3 resume= stage=4b" "$T/rr-spawns" && [ "$(spawns_of LQ-1)" = 1 ] && ! echo "$out" | grep -q "test lock queue"'
@@ -362,18 +365,23 @@ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-queue-fa
   for p in 9301 9302 9303; do printf 'p%s\ncbash\nfcwd\nn/elsewhere\n' "$p"; done; } > "$T/lsof.out"
 # A worker cap of 8 leaves the lock gate as the only limit.
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; } > "$T/config-lq.md"
-for k in LQ-10 LQ-11 LQ-12; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+# The three are handoffs to 4b, whose next step is a suite; two fresh Stage 0 starts beside them take no
+# lock-queue room (#1544), so both start whatever the share.
+for k in LQ-10 LQ-11 LQ-12; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; done
+for k in LQ-16 LQ-17; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
 check "DoD1 with the queue deep and three repos on it, this repo with no run starts its share of 2 of 3 ready tickets" \
   '[ $(( $(spawns_of LQ-10) + $(spawns_of LQ-11) + $(spawns_of LQ-12) )) = 2 ]'
 check "DoD4 the held note names the runs of each active repo, and this repo share, and the third ticket" \
   'echo "$out" | grep -q "Stage 4 (LQ-1[012]), past the 2" && echo "$out" | grep -qF "6 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 6 = 6; runs by repo: api 4, other 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && echo "$out" | grep -qF "past the 2 this pass had room for"'
-for k in LQ-10 LQ-11 LQ-12; do q set "$k" state=done session_id=null; done
+check "#1544 AC2 with this repo waiting on no lock and free slots, every fresh start begins and only the suite-bound handoff past the room is held" \
+  '[ "$(spawns_of LQ-16)" = 1 ] && [ "$(spawns_of LQ-17)" = 1 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-1[67]"'
+for k in LQ-10 LQ-11 LQ-12 LQ-16 LQ-17; do q set "$k" state=done session_id=null; done
 # Two configured repos of one name under different owners are two repos, each named owner/name as
 # desk-q names them: the three runs in /elsewhere are now beta/api's, not merged into acme's api.
 mkdir -p "$T/cfg-lq/repos/beta__api"
 printf '## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | `/elsewhere` |\n' > "$T/cfg-lq/repos/beta__api/config.md"
-for k in LQ-13 LQ-14 LQ-15; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+for k in LQ-13 LQ-14 LQ-15; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; done
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
