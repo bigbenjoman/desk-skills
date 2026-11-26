@@ -404,6 +404,11 @@ t('#1489 migrate: login-2, unchanged, gets no before and after', m.out.includes(
 m = await sc.run('set', 'claude', 'default', 'unused');
 t('#1489 AC1 the command the line names lists ~/.claude again', `${m.rc} ${sc.read().removed.some((r) => r.folder === '~/.claude')} ${/^\| `claude` \| `default` \| `~\/\.claude` \| `-` \| `unused` \|$/m.test(sc.text())}`, '0 false true');
 
+// #1489 a file that never listed ~/.claude: migration still moves it to Removed, and says so
+sc = scenario(ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |']), { default: 'x@a.io', 'login-2': 'y@a.io' });
+m = await sc.run('migrate');
+t('#1489 AC1 migrate: an unlisted ~/.claude moved to Removed is shown before and after, and why', `${sc.read().removed.some((r) => r.folder === '~/.claude')} ${m.out.includes('claude default (~/.claude): not listed -> Removed')} ${m.out.includes('claude default (~/.claude) moved to Removed: ')}`, 'true true true');
+
 sc = scenario(OLD, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-3': 'y@a.io' });
 m = await sc.run('migrate');
 after = sc.read();

@@ -664,6 +664,12 @@ export function migrationLines(was, text) {
     lines.push(`${l.tool} ${l.name} (${l.folder}): ${ruleWord(l)} -> ${word}`);
     if (gone && l.tool === 'claude' && !l.configDir) moved.push(l);
   }
+  // ~/.claude moved to Removed though the file never listed it (migratePins' fallback): said too.
+  for (const r of now.removed) {
+    if (r.tool !== 'claude' || r.dir !== defaultLogin('claude').dir || was.logins.some(same(r)) || was.removed.some(same(r))) continue;
+    lines.push(`${r.tool} ${r.name} (${r.folder}): not listed -> Removed`);
+    moved.push(r);
+  }
   for (const l of moved) {
     lines.push(`${l.tool} ${l.name} (${l.folder}) moved to Removed: once a Claude login is pinned to an account, desk signs in only through pinned folders, never ${l.folder}. To list it again: desk-env logins set ${l.tool} ${l.name} unused`);
   }
