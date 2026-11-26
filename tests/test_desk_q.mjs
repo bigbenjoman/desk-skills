@@ -2686,6 +2686,10 @@ t('DS-1005 AC1 an ask ending "if npm ci fails" still needs them',
   st1005(park1005('Please run npm install in the worktree if npm ci fails.', lock1005)), 'needs');
 t('DS-1005 AC3 one waiting until a worker, or the recall capture script, saves the file still waits',
   `${st1005(park1005('Please run the check once a worker saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' }))} ${st1005(park1005('Please run the check once the recall capture script saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' }))}`, 'waiting waiting');
+t('DS-1005 AC3 one waiting until workers save the file still waits',
+  st1005(park1005('Please run the check after workers save $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
+t('DS-1005 AC1 an ask whose own first step is stopping the worker still needs them',
+  st1005(park1005('Please run npm install after stopping the worker to make the lockfile.', lock1005)), 'needs');
 t('DS-1005 AC1 an ask giving its reason, since workers cannot install, still needs them',
   st1005(park1005('Please run npm install in the worktree since workers cannot install packages.', lock1005)), 'needs');
 t('DS-1005 AC1 an ask saying when you take it, once you pass the review, still needs them',
