@@ -1,5 +1,5 @@
 // suite: Clerk sign-in capture (the script desk-pr documents parses, refuses any key but sk_test_, and waits on the session cookie)
-// layer: L1
+// layer: L2
 // covers: skills/desk-pr/references/screenshot-surfaces.md
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
