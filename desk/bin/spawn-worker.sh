@@ -19,7 +19,8 @@
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
 # AUTOPILOT_START_STAGE starts a fresh session at that stage: 4b or 7 after a handoff, or Stage 3 on
-# when a requeue resumes the round its worker parked in. AUTOPILOT_LOGIN_DIR is the Claude login it
+# when a requeue resumes the round its worker parked in, or 3 when a requeue's ticket file gained
+# Decisions since its PR's last review (pass.mjs decisionsRestart). AUTOPILOT_LOGIN_DIR is the Claude login it
 # runs on, its preflight too: a config folder, or empty for the default login. Unset, it keeps the
 # caller's own.
 set -euo pipefail
