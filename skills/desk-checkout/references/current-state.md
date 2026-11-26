@@ -32,16 +32,20 @@ seen by them.
 **A claim about when a merged change reaches production** ("from the next deploy") **is read from
 the latest production deploy first**, in a repo the GitHub collector read:
 
-1. Its newest successful GitHub deployment to production:
-   `gh api -X GET "repos/<owner/name>/deployments" -f environment=production -f per_page=1`, then
-   that deployment's `statuses` for `success`. The environment may be named `Production`.
-2. With no deployment recorded, the newest successful run of the deploy workflow on the repo's
-   default branch (§0 Default branch, `desk-env get default-branch`; `gh workflow list` names the
-   workflow):
+1. Its newest successful GitHub deployment to production. The list has no status filter and comes
+   newest first, so walk it:
+   `gh api -X GET "repos/<owner/name>/deployments" -f environment=production -f per_page=10`, and
+   for each deployment in turn read
+   `gh api -X GET "repos/<owner/name>/deployments/<id>/statuses" -f per_page=1` (its latest
+   status). Take the first whose latest status is `success`: a newer one that failed or is still
+   queued or in progress is skipped, never compared. The environment may be named `Production`.
+2. With no successful deployment found, the newest successful run of the deploy workflow on the
+   repo's default branch (§0 Default branch, `desk-env get default-branch`;
+   `gh workflow list --repo <owner/name>` names the workflow):
    `gh run list --repo <owner/name> --workflow <file> --branch <default> --status success --limit 1 --json headSha,updatedAt`.
 
 The change is live when that deploy's commit contains the PR's merge commit
-(`gh pr view <n> --json mergeCommit`, then
+(`gh pr view <n> --repo <owner/name> --json mergeCommit`, then
 `gh api "repos/<owner/name>/compare/<merge sha>...<deploy sha>" --jq .status` is `ahead` or
 `identical`). Then its line says it is live and since when, never "from the next deploy"; only a
 merge the latest deploy does not contain is still waiting for one.

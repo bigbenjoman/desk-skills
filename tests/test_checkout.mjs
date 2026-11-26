@@ -405,8 +405,10 @@ has('#1471 a teammate\'s fix is named or the ticket left out', current, 'is said
 has('#1471 and its ask is dropped', current, 'Any ask in its bullet is\ndropped, and so is any claim that PR settles');
 has('#1471 a failed ticket read goes under Check before posting', current, 'name the ticket under **Check before posting** as last\nseen by them.');
 has('#1471 a deploy claim is read from the latest production deploy', current, '**is read from\nthe latest production deploy first**');
-has('#1471 GitHub deployments first', current, '1. Its newest successful GitHub deployment to production:');
-has('#1471 then the default branch\'s deploy workflow', current, '2. With no deployment recorded, the newest successful run of the deploy workflow on the repo\'s\n   default branch');
+has('#1471 GitHub deployments first', current, '1. Its newest successful GitHub deployment to production.');
+has('#1471 a newer failed or unfinished deployment is skipped', current, 'Take the first whose latest status is `success`: a newer one that failed or is still\n   queued or in progress is skipped, never compared.');
+lacks('#1471 never only the single newest deployment', current, 'per_page=1`, then');
+has('#1471 then the default branch\'s deploy workflow', current, '2. With no successful deployment found, the newest successful run of the deploy workflow on the\n   repo\'s default branch');
 has('#1471 a merge the latest deploy contains is live, never from the next deploy', current, 'Then its line says it is live and since when, never "from the next deploy"');
 has('#1471 an unread deploy goes under Check before posting', current, 'the line says only that it merged, and the deploy claim goes\nunder **Check before posting** with why');
 
