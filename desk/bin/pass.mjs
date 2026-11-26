@@ -16,6 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
+import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief } from './decisions-change.mjs';
 import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
@@ -53,8 +54,8 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, doneVerdictLine } from './undraft.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn } from './gate.mjs';
+import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
@@ -3424,6 +3425,34 @@ function resumeRound(t, { wt, kept, branch }) {
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
+// A ticket with a PR whose ticket file ($STATE/tickets/<key>.md) gained Decisions entries dated after
+// that PR's last desk review, and after the last restart delivered for them (`decisions_seen`,
+// decisions-change.mjs), restarts at Stage 3 with those entries in its briefing, whatever stage a last
+// round or a handoff names; at Stage 0 when `resumable` is false (its round's worktree or resume file
+// was refused). Returns { stage: '3' or null, brief, line, seen }, `seen` the time to record as
+// `decisions_seen` once it spawns, or null: no ticket file or PR, nothing new, or the PR unread (said
+// in the report, and the ticket resumes as it would have).
+function decisionsRestart(t, { resumable = true } = {}) {
+  const pr = t.result?.pr ?? t.draft_pr ?? null;
+  const file = join(STATE, 'tickets', `${t.key}.md`);
+  if (pr == null || !existsSync(file)) return null;
+  const got = shOut('gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'createdAt,reviews']);
+  let view = null;
+  try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
+  if (!view) {
+    report.waiting.push(`${t.key}: PR #${pr} could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}), so its ticket file's Decisions were not compared with its last review`);
+    return null;
+  }
+  const reviewAt = lastReviewAt(view, { isVerdict: (b) => parseVerdict(b) != null, ownLogin: (l) => loginIn(l, conflictHandle) });
+  const since = decisionsSince(reviewAt, t.decisions_seen);
+  const entries = newDecisions(readFileSync(file, 'utf8'), { since, changedAt: statSync(file).mtime.toISOString() });
+  if (!entries.length) return null;
+  const count = `${entries.length} Decisions ${entries.length === 1 ? 'entry' : 'entries'} dated after PR #${pr}'s last review`;
+  return { stage: resumable ? '3' : null, seen: new Date().toISOString(),
+    brief: decisionsBrief({ key: t.key, pr, since: reviewAt, entries, file, resumable }),
+    line: resumable ? ` restarted at Stage 3: ${count}` : ` restarted at Stage 0, its round not resumable: ${count}` };
+}
+
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
 // on the same branch, starting at the stage it named with the handoff briefing in its first message.
 // Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
@@ -3478,15 +3507,19 @@ function spawnCloud(t) {
 
 async function spawnHandoff(t, pick) {
   // queue.mjs stores a stage of 7 as a number.
-  const stage = t.handoff_stage == null ? '' : String(t.handoff_stage);
+  const handedTo = t.handoff_stage == null ? '' : String(t.handoff_stage);
   const parkIt = (why) => { q('set', t.key, 'handoff=null'); q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
-  if (!HANDOFF_STAGES[stage]) return parkIt(`handed off to "${stage}", which no session starts at, so no session was spawned. ${FROM_ZERO(t)}`);
+  if (!HANDOFF_STAGES[handedTo]) return parkIt(`handed off to "${handedTo}", which no session starts at, so no session was spawned. ${FROM_ZERO(t)}`);
   // The worktree may have gone while it waited for a slot.
-  const refused = handoffRefusal(t, stage);
+  const refused = handoffRefusal(t, handedTo);
   if (refused) return parkIt(refused);
+  // A requeue after the ticket file's Decisions changed builds them from Stage 3, with the handoff kept
+  // as what the sessions before it did.
+  const restart = decisionsRestart(t);
+  const stage = restart?.stage ?? handedTo;
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
+  const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? ''}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits })}`);
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -3515,7 +3548,8 @@ async function spawnHandoff(t, pick) {
   const spawnRefused = spawnRefusal(spawned.out);
   if (spawnRefused) return fail(spawnRefused);
   leaseToWorker(t.key, port, spawned.out);
-  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
+  if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
+  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off${restart ? ` at Stage ${handedTo};${restart.line}` : ''}) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
@@ -4060,7 +4094,14 @@ for (const t of spawnable) {
   const model = models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model, ...pick.vars };
 
-  const resumed = resumeRound(t, { wt, kept, branch });
+  // A fix try keeps its own task (fixTask); any other ticket with a PR whose Decisions changed since its
+  // last review restarts at Stage 3, after the last round's summary where one resumes. A round whose
+  // worktree or resume file is refused starts at Stage 0 with the entries, and its resume file is
+  // moved aside below as for any round not resumed.
+  const round = resumeRound(t, { wt, kept, branch });
+  const resumable = kept && resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE }).ok;
+  const restart = t.fix && !t.fix.finished ? null : decisionsRestart(t, { resumable });
+  const resumed = restart ? { ...restart, brief: `${restart.brief}${round.brief}` } : round;
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
@@ -4139,6 +4180,8 @@ for (const t of spawnable) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
+  // So the restart's own handoffs and later requeues compare the entries with this spawn, not the review.
+  if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
