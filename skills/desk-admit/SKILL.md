@@ -26,7 +26,9 @@ node ~/.claude/desk/bin/candidates.mjs
 ```
 
 It lists §4 Jira project's unassigned, unstarted Bugs and self-contained Tasks (no open "is blocked
-by" link, and not a child of an epic whose feature batch is running) by §4 Priority, clean ones first.
+by" link, and not a child of an epic whose feature batch is running) by §4 Priority, then Bugs before
+Tasks, then newest, clean ones first. One whose summary or labels read as a decision, or as access, key
+or infrastructure work outside the repo, is left out naming the word.
 A ticket a merged PR or a commit on the default branch already names is shown as `already on main (PR
 #n)` and not offered; one missing its Acceptance criteria or Design section says so, and one naming a
 file a PR merged in the last 7 days changed names that PR as possible overlap. Show the list and ask

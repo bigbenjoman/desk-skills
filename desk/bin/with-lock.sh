@@ -233,7 +233,22 @@ queued=""; w=""
 waited_s() { if [ -n "$w" ]; then echo "$w"; elif [ -n "$queued" ]; then echo $((SECONDS - t0)); else echo 0; fi; }
 # Logs this run's queued, grant or gave-up line ($1), saying nothing whatever happens.
 note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(waited_s)" ${lane:+--lane "$lane"} </dev/null >/dev/null 2>&1 || true; }
-queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && : > "$wdir/$$" 2>/dev/null; note queued; }
+# This wrapper's process start time as leases.mjs startTimes reads it and admit-ledger.mjs startStamp
+# writes it (/proc's starttime, else ps's lstart in UTC), which the marker holds so a reader tells a
+# later process given its pid from it; empty where it does not read.
+start_stamp() {
+  local s
+  if [ -r "/proc/$$/stat" ]; then
+    s="$(cat "/proc/$$/stat" 2>/dev/null)"; s="${s##*) }"
+    # shellcheck disable=SC2086
+    set -- $s; printf '%s' "${20:-}"
+  else
+    s="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$$" 2>/dev/null)"
+    # shellcheck disable=SC2086
+    set -- $s; local IFS=_; printf '%s' "$*"
+  fi
+}
+queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && start_stamp > "$wdir/$$" 2>/dev/null; note queued; }
 unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
 gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 # Headroom admission's look at this run while it waits (admission.mjs watch): in the background, so the

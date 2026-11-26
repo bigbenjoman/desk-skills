@@ -43,14 +43,16 @@ const list = (reads) => listCandidates({ project: 'ACME', priority: PRIORITY, re
 
 // AC1: unassigned, unstarted Bugs and self-contained Tasks, ranked by the repo's priority field.
 const BASE = 'project = "ACME" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"';
-t('AC1 the searches ask for unassigned, unstarted Bugs and Tasks, a priority tier each, then the unset or unlisted', candidatesJqls('ACME', priorityOf(PRIORITY)), [
-  `${BASE} AND cf[10300] = "P0" ORDER BY created ASC`,
-  `${BASE} AND cf[10300] = "P1" ORDER BY created ASC`,
-  `${BASE} AND cf[10300] = "P2" ORDER BY created ASC`,
-  `${BASE} AND (cf[10300] is EMPTY OR cf[10300] not in ("P0", "P1", "P2")) ORDER BY created ASC`,
+t('AC1 the searches ask for unassigned, unstarted Bugs and Tasks, a priority tier each, then the unset or unlisted by the field', candidatesJqls('ACME', priorityOf(PRIORITY)), [
+  `${BASE} AND cf[10300] = "P0" ORDER BY created DESC`,
+  `${BASE} AND cf[10300] = "P1" ORDER BY created DESC`,
+  `${BASE} AND cf[10300] = "P2" ORDER BY created DESC`,
+  `${BASE} AND (cf[10300] is EMPTY OR cf[10300] not in ("P0", "P1", "P2")) ORDER BY cf[10300] ASC, created DESC`,
 ]);
-t('AC1 with no values listed, one search Jira orders by its own priority', candidatesJqls('ACME', priorityOf(['none'])), [`${BASE} ORDER BY priority DESC, created ASC`]);
-t('AC1 a quote in a value is escaped', candidatesJqls('ACME', priorityOf(['Must "now"']))[0], `${BASE} AND priority = "Must \\"now\\"" ORDER BY created ASC`);
+t('AC1 with no values listed, one search Jira orders by its own priority', candidatesJqls('ACME', priorityOf(['none'])), [`${BASE} ORDER BY priority DESC, created DESC`]);
+t('AC1 with only a custom field named, one search ordered by its options', candidatesJqls('ACME', priorityOf(['customfield_10300'])), [`${BASE} ORDER BY cf[10300] ASC, created DESC`]);
+t('AC1 a quote in a value is escaped', candidatesJqls('ACME', priorityOf(['Must "now"']))[0], `${BASE} AND priority = "Must \\"now\\"" ORDER BY created DESC`);
+t('AC1 a value written with its option id is searched and ranked by its name', priorityOf(['customfield_10207', 'P0=10089', 'P1=10090']), { field: 'customfield_10207', names: ['P0', 'P1'], order: ['p0', 'p1'] });
 {
   const r = readsOf({
     issues: [issue('ACME-1', 'Task', 'P2'), issue('ACME-2', 'Bug', 'P0'), issue('ACME-3', 'Task', null), issue('ACME-4', 'Bug', 'P1')],
@@ -58,7 +60,48 @@ t('AC1 a quote in a value is escaped', candidatesJqls('ACME', priorityOf(['Must 
   });
   const got = list(r);
   t('AC1 ranked by §4 Priority\'s own order, an unset one last', got.offered.map((c) => c.key), ['ACME-2', 'ACME-4', 'ACME-1', 'ACME-3']);
-  t('AC1 the priority field is asked for beside the links and parent', r.calls.search[0].fields, ['issuelinks', 'parent', 'customfield_10300']);
+  t('AC1 the priority field is asked for beside the links and parent', r.calls.search[0].fields, ['issuelinks', 'parent', 'created', 'customfield_10300']);
+}
+{
+  // The repo's own row form, option ids beside the names: P2s are searched and checked before any P4,
+  // Bugs before Tasks within a priority, newest first.
+  const P = ['customfield_10300', 'P0=1', 'P1=2', 'P2=3', 'P3=4', 'P4=5'];
+  const at = (d) => ({ created: `2026-11-${d}T09:00:00.000+0000` });
+  const issues = [issue('ACME-31', 'Task', 'P4', at(10)), issue('ACME-32', 'Task', 'P2', at(11)), issue('ACME-33', 'Bug', 'P4', at(12)),
+    issue('ACME-34', 'Task', 'P2', at(20)), issue('ACME-35', 'Bug', 'P2', at(5)), issue('ACME-36', 'Bug', 'P2', at(15))];
+  const r = readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) });
+  const got = listCandidates({ project: 'ACME', priority: P, reads: r, checkMax: 4 });
+  t('AC1 the P2s are checked before any P4', got.offered.map((c) => c.key), ['ACME-36', 'ACME-35', 'ACME-34', 'ACME-32']);
+  t('AC3 Bugs before Tasks at one priority, each newest first', got.offered.map((c) => c.type), ['Bug', 'Bug', 'Task', 'Task']);
+  t('AC1 a priority at option-id form ranks by its name', got.offered.map((c) => c.rank), [2, 2, 2, 2]);
+  t('AC1 the P2 tier filled the list, so no P4 search ran', r.calls.search.map((c) => /cf\[10300\] = "([^"]+)"/.exec(c.jql)?.[1]), ['P0', 'P1', 'P2']);
+}
+{
+  // Values the row does not list rank by their own text: P3 before P4, then Bugs, then newest, unset last.
+  const at = (d) => ({ created: `2026-${d}T09:00:00.000+0000` });
+  const issues = [issue('ACME-51', 'Task', 'P4', at('11-20')), issue('ACME-52', 'Task', 'P3', at('01-10')), issue('ACME-53', 'Bug', null, at('11-25')),
+    issue('ACME-54', 'Task', 'P3', at('04-10')), issue('ACME-55', 'Bug', 'P4', at('02-10')), issue('ACME-56', 'Task', 'P2', at('03-10'))];
+  const got = list(readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) }));
+  t('AC1 P3 before P4 though the row lists neither, a Bug first in each, unset last', got.offered.map((c) => c.key), ['ACME-56', 'ACME-54', 'ACME-52', 'ACME-55', 'ACME-51', 'ACME-53']);
+}
+
+// AC2: a decision, or access, key or infrastructure work outside the repo, is left out naming the word.
+{
+  const say = (k, s, extra) => leftOut({ ...issue(k, 'Task', 'P2', extra), fields: { ...issue(k, 'Task', 'P2', extra).fields, summary: s } });
+  t('AC2 a policy question is left out', say('ACME-40', 'Decide whether to adopt the new retention schedule'), 'a decision or work outside the repo ("Decide" in its summary)');
+  t('AC2 a key rotation is left out', say('ACME-41', 'Rotate the licence key for the reporting service'), 'a decision or work outside the repo ("Rotate" in its summary)');
+  t('AC2 a WAF rule is left out', say('ACME-42', 'Promote WAF rule 12 to block'), 'a decision or work outside the repo ("WAF" in its summary)');
+  t('AC2 a label marks it too', say('ACME-43', 'Move the build cache', { labels: ['infra'] }), 'a decision or work outside the repo ("infra" in its label infra)');
+  t('AC2 a Bug is left out the same way', leftOut({ key: 'ACME-44', fields: { issuetype: { name: 'Bug' }, summary: 'Staff lose access to reports after sign-in' } }), 'a decision or work outside the repo ("access" in its summary)');
+  t('AC2 a word inside another word is not one', say('ACME-45', 'Accessibility of the infrared sensor page'), null);
+  t('AC2 a should-we is left out', say('ACME-48', 'Should we drop Node 18?'), 'a decision or work outside the repo ("Should we" in its summary)');
+  t('AC2 a key is left out', say('ACME-49', 'Issue a new Sentry key for staging'), 'a decision or work outside the repo ("key" in its summary)');
+  t('AC2 an ops label marks it', say('ACME-50', 'Bump the runner image', { labels: ['devops-ci'] }), 'a decision or work outside the repo ("devops" in its label devops-ci)');
+  t('AC2 a label or summary only containing those letters is not one', [say('ACME-57', 'Keyboard focus lost in modal', { labels: ['opsdashboard'] }), say('ACME-58', 'Show ops totals on the dashboard')], [null, null]);
+  const tickets = [issue('ACME-46', 'Task', 'P2'), { ...issue('ACME-47', 'Task', 'P2'), fields: { ...issue('ACME-47', 'Task', 'P2').fields, summary: 'Should we adopt pnpm workspaces?' } }];
+  const got = list(readsOf({ issues: tickets, desc: { 'ACME-46': CLEAN, 'ACME-47': CLEAN } }));
+  t('VERIFY a policy-question Task is listed under left out, not offered', [got.offered.map((c) => c.key), renderLines(got, { project: 'ACME' }).find((l) => l.startsWith('left out'))],
+    [['ACME-46'], 'left out: ACME-47 (a decision or work outside the repo ("Should we" in its summary))']);
 }
 t('AC1 a row naming no field ranks Jira\'s own priority by its own names', rankOf({ fields: { priority: { name: 'High' } } }, priorityOf(['none'])), 1);
 t('AC1 the field is read from the row', priorityOf(PRIORITY), { field: 'customfield_10300', names: ['P0', 'P1', 'P2'], order: ['p0', 'p1', 'p2'] });

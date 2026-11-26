@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // What to admit into a free batch slot: §4 Jira project's unassigned, unstarted Bugs and self-contained
-// Tasks, ranked by §4 Priority, each checked against the default branch before it is offered. It only
+// Tasks, ranked by §4 Priority, then Bugs before Tasks, then newest, each checked against the default branch before it is offered. It only
 // lists and writes nothing in Jira or GitHub: /desk-admit admits.
 //
 //   node candidates.mjs [--json]   the list (exit 0); 1 when the Jira search failed, 3 with no Jira
 //                                  tracker or project in the config, 2 on bad usage
 //
 // A Task is self-contained with no open "is blocked by" link and no parent epic whose feature batch is
-// live. A ticket already in a live batch is left out. Jira is searched a priority tier at a time, one
+// live. A ticket already in a live batch, or whose summary or labels read as a decision or as access,
+// key or infrastructure work outside the repo, is left out. Jira is searched a priority tier at a time, one
 // page each, until CHECK_MAX are found; of those, the first CHECK_MAX by priority are read from Jira
 // and GitHub:
 //   - a PR merged into §0 Default branch whose title or head branch names its key, or a commit on
@@ -48,10 +49,11 @@ const STANDARD = ['highest', 'high', 'medium', 'low', 'lowest'];
 // §4 Priority as { field, names, order }: the custom field it names (else Jira's `priority`), the values
 // it lists as written, highest first (empty where it lists none), and those in lower case (else Jira's
 // own names).
+// A value written with its Jira option id (`P2=10091`) is named without it.
 export function priorityOf(items) {
   const list = [].concat(items ?? []).map((v) => String(v ?? '').trim()).filter((v) => v && !E.isNone(v) && !/^todo\b/i.test(v));
   const field = list.map((v) => /customfield_\d+/.exec(v)?.[0]).find(Boolean) ?? 'priority';
-  const names = list.filter((v) => !/customfield_\d+/.test(v));
+  const names = list.filter((v) => !/customfield_\d+/.test(v)).map((v) => v.replace(/\s*=\s*\d+$/, '')).filter(Boolean);
   return { field, names, order: names.length ? names.map((v) => v.toLowerCase()) : STANDARD };
 }
 const valueOf = (v) => String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
@@ -60,23 +62,56 @@ export function rankOf(issue, { field, order }) {
   const i = order.indexOf(valueOf(issue?.fields?.[field]).toLowerCase());
   return i < 0 ? order.length : i;
 }
+const NATURAL = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+// Among values §4 Priority does not list, by the value itself (P3 before P4), an unset one last.
+function unlistedOrder(a, b, pr) {
+  if (rankOf(a, pr) !== pr.order.length) return 0;
+  const va = valueOf(a?.fields?.[pr.field]);
+  const vb = valueOf(b?.fields?.[pr.field]);
+  return va === vb ? 0 : !va ? 1 : !vb ? -1 : NATURAL.compare(va, vb);
+}
+// Within a priority, Bugs before Tasks, then newest first.
+const bugFirst = (issue) => (/^bug$/i.test(issue?.fields?.issuetype?.name ?? '') ? 0 : 1);
+// Jira writes the offset without a colon (`+0000`), which ISO date parsing does not promise to read.
+const createdAt = (issue) => Date.parse(String(issue?.fields?.created ?? '').replace(/([+-]\d{2})(\d{2})$/, '$1:$2')) || 0;
 
 const jqlValue = (v) => `"${String(v).replace(/["\\]/g, '\\$&')}"`;
-// The searches, highest priority first, each read one page: one per value §4 Priority lists, then one
-// for a value unset or unlisted, so a backlog past a page still reads its top tickets first. With none
-// listed, one search, which Jira orders by its own priority (a custom field: by age).
+// The searches, highest priority first, each read one page, newest first: one per value §4 Priority
+// lists, then one for a value unset or unlisted, which Jira orders by the field (a select field by its
+// options' order), so a backlog past a page still reads its top tickets first. With none listed, one
+// search, ordered the same way.
 export function candidatesJqls(project, { field, names }) {
   const base = `project = "${project}" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"`;
-  if (!names.length) return [`${base} ORDER BY ${field === 'priority' ? 'priority DESC, ' : ''}created ASC`];
   const f = field === 'priority' ? 'priority' : `cf[${field.slice('customfield_'.length)}]`;
-  return [...names.map((v) => `${base} AND ${f} = ${jqlValue(v)} ORDER BY created ASC`),
-    `${base} AND (${f} is EMPTY OR ${f} not in (${names.map(jqlValue).join(', ')})) ORDER BY created ASC`];
+  const byField = `ORDER BY ${f} ${field === 'priority' ? 'DESC' : 'ASC'}, created DESC`;
+  if (!names.length) return [`${base} ${byField}`];
+  return [...names.map((v) => `${base} AND ${f} = ${jqlValue(v)} ORDER BY created DESC`),
+    `${base} AND (${f} is EMPTY OR ${f} not in (${names.map(jqlValue).join(', ')})) ${byField}`];
 }
 
-// Why a searched issue is not a candidate, or null: it is in a live batch (`queued`), or it is a Task
-// with an open blocker or a parent epic in `liveEpics`.
+// Words in a summary or label marking a decision, or access, key or infrastructure work outside the repo.
+const OUTSIDE = /\b(decide|decision|whether|policy|should we|adopt(?:ion)?|licen[cs]e|keys?|rotat(?:e|ion)|credentials?|access|IAM|WAF|DNS|infra(?:structure)?)\b/i;
+// A label naming operations work, which a summary saying "ops" does not.
+const OPS_LABEL = /\b((?:dev)?ops)\b/i;
+// Why `issue` reads as a decision or work outside the repo, naming the word and where, or null.
+function outsideWork(issue) {
+  const why = (word, where) => `a decision or work outside the repo ("${word}" in its ${where})`;
+  const s = OUTSIDE.exec(String(issue?.fields?.summary ?? ''));
+  if (s) return why(s[1], 'summary');
+  for (const l of [].concat(issue?.fields?.labels ?? [])) {
+    const m = OUTSIDE.exec(String(l)) ?? OPS_LABEL.exec(String(l));
+    if (m) return why(m[1], `label ${l}`);
+  }
+  return null;
+}
+
+// Why a searched issue is not a candidate, or null: it is in a live batch (`queued`), its summary or a
+// label reads as a decision or work outside the repo, or it is a Task with an open blocker or a parent
+// epic in `liveEpics`.
 export function leftOut(issue, { queued = new Set(), liveEpics = new Set() } = {}) {
   if (queued.has(issue?.key)) return 'in a batch already';
+  const out = outsideWork(issue);
+  if (out) return out;
   if (!/^task$/i.test(issue?.fields?.issuetype?.name ?? '')) return null;
   const open = blockersFact(issue).filter((b) => b.category !== 'done').map((b) => b.key);
   if (open.length) return `blocked by ${open.join(', ')}`;
@@ -133,7 +168,7 @@ export function onMain(key, { prs = [], commits = [] } = {}) {
 // {key, type, priority, summary, rank, flags, overlap[, pr | commit]}.
 export function listCandidates({ project, priority, reads, now = Date.now(), checkMax = CHECK_MAX }) {
   const pr = priorityOf(priority);
-  const fields = ['issuelinks', 'parent', ...(pr.field === 'priority' ? [] : [pr.field])];
+  const fields = ['issuelinks', 'parent', 'created', ...(pr.field === 'priority' ? [] : [pr.field])];
   const ctx = { queued: reads.queued(), liveEpics: reads.liveEpics() };
   const left = [];
   const pool = [];
@@ -149,7 +184,7 @@ export function listCandidates({ project, priority, reads, now = Date.now(), che
       if (why) left.push({ key: i.key, why }); else pool.push(i);
     }
   }
-  pool.sort((a, b) => rankOf(a, pr) - rankOf(b, pr));
+  pool.sort((a, b) => rankOf(a, pr) - rankOf(b, pr) || unlistedOrder(a, b, pr) || bugFirst(a) - bugFirst(b) || createdAt(b) - createdAt(a));
   let recent;
   const offered = [];
   const main = [];

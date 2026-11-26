@@ -4,11 +4,11 @@
 // admit() against a scratch lock directory and lease log, with fixture readings and a fixed clock; the
 // CLI as eight real processes for the admission lock.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, grant, judge, ledgerFile, parseLedger, poolRows, pressureLevel, sayNow, waitText } from '../desk/bin/admission.mjs';
-import { liveAdmits } from '../desk/bin/admit-ledger.mjs';
+import { liveAdmits, liveWaiters } from '../desk/bin/admit-ledger.mjs';
 import { admissionRows } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -284,6 +284,31 @@ const ask = (dir, { cls = 'light', pid = process.pid, rows = ON, sample = readin
   });
   s.kill();
   t('DS-977 AC13 an admission row written TODO turns admission off', [out, lines(d2).length], ['', 0]);
+}
+
+// #1480: the waiting markers whose run has exited, or whose pid a later process has taken, are removed
+// as the queue is read, and only the rest are counted.
+{
+  const d = fresh();
+  const wdir = join(d, 'desk-light.waiting');
+  mkdirSync(wdir, { recursive: true });
+  for (let p = 501; p <= 509; p++) writeFileSync(join(wdir, String(p)), `${p}000`);
+  writeFileSync(join(wdir, '600'), '600000');
+  writeFileSync(join(wdir, 'stray'), '');
+  const alive = new Set([600]);
+  const live = liveWaiters('light', d, { isAlive: (p) => alive.has(p), startsOf: (pids) => new Map(pids.map((p) => [p, `${p}000`])) });
+  t('#1480 AC1 nine markers of exited runs and one live waiter: one waits, and the nine are removed', [live, readdirSync(wdir).sort()], [[600], ['600', 'stray']]);
+
+  const e = fresh();
+  const edir = join(e, 'desk-test.waiting');
+  mkdirSync(edir, { recursive: true });
+  writeFileSync(join(edir, '700'), '111');
+  writeFileSync(join(edir, '701'), '222');
+  writeFileSync(join(edir, '702'), '');
+  const starts = new Map([[700, '999'], [701, '222']]);
+  const got = liveWaiters('tsc', e, { isAlive: () => true, startsOf: (pids) => new Map(pids.map((p) => [p, starts.get(p) ?? null])) });
+  t('#1480 AC3 a live pid now started at another time is a run that has exited; one with no stamp is judged alive alone', [got, readdirSync(edir).sort()], [[701, 702], ['701', '702']]);
+  t('#1480 with no waiting directory nobody waits', liveWaiters('light', fresh()), []);
 }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
