@@ -235,5 +235,24 @@ t('issue-1425 AC2 a refused Neon key names the key file to replace it in', fixes
 t('issue-1425 AC2 Neon unreachable says desk tries again', fixes['neon org-t'], `could not reach Neon: ECONNRESET | ${C.RETRY_FIX}`);
 t('issue-1425 AC2 gh missing names the CLI to install', C.failureFix('github', 'spawn gh ENOENT').fix, 'install the GitHub CLI (gh)');
 
+// ---- DS-1019: usage an earlier reading kept is no figure once the key is missing or refused, or it is last month's
+const nov = { year: 2026, month: 11 }, oct = { year: 2026, month: 10 };
+const keptCosts = { exists: true, entries: [
+  { supplier: 'neon', orgId: 'org-r', key: 'org-r/p', name: 'n1' }, { supplier: 'neon', orgId: 'org-m', key: 'org-m/p', name: 'n2' },
+  { supplier: 'neon', orgId: 'org-o', key: 'org-o/p', name: 'n3' }, { supplier: 'neon', orgId: 'org-s', key: 'org-s/p', name: 'n4' }] };
+const kept = { at: NOV2, usage: { p: { compute_unit_seconds: 3600 } } };
+const keptCache = { neon: { period: nov, orgs: {
+  'org-r': { ...kept, period: nov, cantRead: 'refused', ...failed('HTTP 401: Neon refused the API key') },
+  'org-m': { ...kept, period: nov, cantRead: 'missing', ...failed('no Neon API key in ~/k') },
+  'org-o': { ...kept, period: oct, cantRead: null, ...failed('could not reach Neon: ECONNRESET') },
+  'org-s': { ...kept, period: nov, cantRead: null, ...failed('could not reach Neon: ECONNRESET') } } } };
+const keptUnread = Object.fromEntries(C.unreadSources({ cache: keptCache, costs: keptCosts }).map((u) => [u.label, u.fix]));
+t('DS-1019 AC2 a refused Neon key with usage kept from an earlier reading still names its fix', keptUnread['org-r'], `replace the API key in ${keyFile} with one that can read this org`);
+t('DS-1019 AC2 a missing Neon key with usage kept still names its fix', keptUnread['org-m'], `save a Neon API key in ${keyFile}`);
+t('DS-1019 AC2 a failed Neon org whose kept usage is last month\'s is unreadable', keptUnread['org-o'], C.RETRY_FIX);
+t('DS-1019 AC2 a failed Neon org with this month\'s usage kept shows that figure, so is not listed', 'org-s' in keptUnread, false);
+const keptAll = { exists: true, entries: keptCosts.entries.slice(0, 3) };
+t('DS-1019 AC3 Neon orgs whose kept usage gives no figure count as unreadable, so none is pending', C.allUnread({ cache: keptCache, costs: keptAll }), true);
+
 console.log(fails ? `${fails} FAILED` : 'all cost cache checks passed');
 process.exit(fails ? 1 : 0);

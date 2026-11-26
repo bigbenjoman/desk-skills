@@ -822,7 +822,9 @@ const UNREAD = {
   },
   neon: (s, cache) => {
     const o = cache?.neon?.orgs?.[s.orgId];
-    if (!o?.failed || o.usage) return null;
+    // Usage kept from an earlier reading is a figure only as neonCharges counts one: this period's,
+    // with the key still read. A key now missing or refused, or last month's usage, gives none.
+    if (!o?.failed || (o.usage && !o.cantRead && samePeriod(o.period, cache.neon.period))) return null;
     const label = s.key.split('/')[0], file = neonKeyFile();
     if (o.cantRead === 'missing') return { label, why: o.failed.why, fix: `save a Neon API key in ${file}` };
     if (o.cantRead === 'refused') return { label, why: o.failed.why, fix: `replace the API key in ${file} with one that can read this org` };
