@@ -247,19 +247,26 @@ check "#1467 AC1 the first wait records when it started and the merges pending" 
 step 2026-10-27T10:20:00Z
 check "#1467 AC1 the second pass still waits, and says how long it has" '[ "$(calls install)" = "$inst" ] && [ "$(waiting since)" = 2026-10-27T10:15:00.000Z ] && [ "$(waiting passes)" = 2 ] && grep -q "(waited 5m over 2 pass(es), 1 merge(s) pending;" <<< "$out"'
 step 2026-10-27T10:25:00Z
-check "#1467 AC2 past 2 passes it installs with the Stage 7 session running, named as left on its release" '[ "$(installed)" = "$b1" ] && grep -q "release: desk-skills ${was:0:12} -> ${b1:0:12} (1 merge(s) to main) installed, main.s tests check passed on it; installed past the Stage 7 wait (waited 10m over 3 pass(es), 1 merge(s) pending), leaving .*R-7 at Stage 7 on the release it started on" <<< "$out" && mlog | grep -q "installed past the Stage 7 wait (waited 10m over 3 pass(es)"'
+check "#1467 AC2 past 2 passes it installs with the Stage 7 session running, and says what that session runs" '[ "$(installed)" = "$b1" ] && grep -q "release: desk-skills ${was:0:12} -> ${b1:0:12} (1 merge(s) to main) installed, main.s tests check passed on it; installed past the Stage 7 wait (waited 10m over 3 pass(es), 1 merge(s) pending) with .*R-7 at Stage 7 running: the scripts it has running stay on their release, and its next call to the bin runs this one" <<< "$out" && mlog | grep -q "installed past the Stage 7 wait (waited 10m over 3 pass(es)"'
 check "#1467 AC3 it is one ordinary install, and the wait is cleared" '[ "$(calls install)" = $((inst + 1)) ] && [ -z "$(waiting since)" ]'
 was=$(installed); upstream m1; upstream m2; upstream m3; m3=$(originhead)
 step 2026-10-27T10:30:00Z
 check "#1467 AC2 three pending merges install at once, on the first pass that would wait" '[ "$(installed)" = "$m3" ] && [ "$(calls install)" = $((inst + 2)) ] && grep -q "${was:0:12} -> ${m3:0:12} (3 merge(s) to main) installed, .*installed past the Stage 7 wait (waited 0m over 1 pass(es), 3 merge(s) pending)" <<< "$out"'
+# An install past the bound that fails keeps the wait, so the next pass tries again at once.
+was=$(installed); upstream w1 waitblock.txt; w1=$(originhead); echo mine > "$T/desk-src/waitblock.txt"
+step 2026-10-27T10:35:00Z; step 2026-10-27T10:40:00Z; step 2026-10-27T10:45:00Z
+check "#1467 AC2 a failed install past the bound keeps the wait it had" '[ "$(installed)" = "$was" ] && grep -q "not installed: .*waitblock.txt" <<< "$out" && [ "$(waiting since)" = 2026-10-27T10:35:00.000Z ] && [ "$(waiting passes)" = 2 ]'
+rm "$T/desk-src/waitblock.txt"
+step 2026-10-27T10:50:00Z
+check "#1467 AC2 the next pass installs at once, the wait counted from its start" '[ "$(installed)" = "$w1" ] && grep -q "installed past the Stage 7 wait (waited 15m over 3 pass(es), 1 merge(s) pending)" <<< "$out" && [ -z "$(waiting since)" ]'
 printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
 inst=$(calls install)
 
 # ---- AC8: the maintenance window open ----------------------------------------------------------
 upstream six; new=$(originhead)
-printf '{"week":"x","phase":"draining","since":"2026-10-27T10:29:00.000Z","window":"Mon 06:30 UTC"}\n' > "$T/maint/maintenance.json"
+printf '{"week":"x","phase":"draining","since":"2026-10-27T10:59:00.000Z","window":"Mon 06:30 UTC"}\n' > "$T/maint/maintenance.json"
 printf '{"version":1,"batch":"r","tickets":{"R-2":{"key":"R-2","state":"running","stage":"3/9"}}}\n' > "$T/queue.json"
-step 2026-10-27T10:30:00Z
+step 2026-10-27T11:00:00Z
 check "AC8 an open window: the auto-release does nothing"   '[ "$(calls install)" = "$inst" ] && ! grep -q "release:" <<< "$out" && grep -q "maintenance: draining" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"

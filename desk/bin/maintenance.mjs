@@ -182,6 +182,8 @@ function incomingBlock(git, dir, to) {
 // commit where the new head is past it and else the old head (first parent only), so a PR merged with a
 // merge commit is one however many commits its branch held.
 // -> {ok, old, from, new, merges, restarted} | {ok: false, why, old}
+// main's own commits after `from`, up to `to` (first parent only).
+const pendingMerges = (git, from, to) => Number(git('rev-list', '--first-parent', '--count', `${from}..${to}`).out) || 0;
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -197,7 +199,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   // the release watch's row (installed.mjs), so the log and the row give the same figure.
   const inst = readInstalled()?.commit;
   const from = inst && inst !== head && git('merge-base', '--is-ancestor', inst, head).ok ? inst : old;
-  const merges = from === head ? 0 : Number(git('rev-list', '--first-parent', '--count', `${from}..${head}`).out) || 0;
+  const merges = from === head ? 0 : pendingMerges(git, from, head);
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const done = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!done.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(done)}` };
@@ -298,8 +300,6 @@ const stage7Rows = (q) => [...runningWorkers(q), ...Object.values(q?.tickets ?? 
 // times, or WAIT_MERGES merges are pending, it installs with them running.
 export const WAIT_PASSES = 2;
 export const WAIT_MERGES = 3;
-// main's own commits after the installed one, up to the one to install (first parent only).
-const pendingMerges = (git, base, to) => Number(git('rev-list', '--first-parent', '--count', `${base}..${to}`).out) || 0;
 // The wait on Stage 7 sessions, carried in release.json as {since, base, merges, passes: {<repo>: n}}
 // while main stays uninstalled behind them; it starts again once the installed commit moves.
 // -> {over, next}: `over` once it has waited past the bound, `next` the record with this pass counted.
@@ -407,17 +407,19 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
         lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')} (${waitedText(w.next, at)}; installs anyway past ${WAIT_PASSES} passes or ${WAIT_MERGES} pending merges)`);
         return { lines };
       }
-      // A running session keeps the scripts it loaded from its release folder (runBin), and install.sh
-      // keeps the replaced release among the newest it prunes to, so the session is not cut off.
-      past = `; installed past the Stage 7 wait (${waitedText(w.next, at)}), leaving ${pushing.join(', ')} on the release it started on`;
+      // `current` moves under the session: the scripts it has running keep their release folder (runBin),
+      // which install.sh's record step holds from pruning while the release watch may roll back to it,
+      // and its next call to the bin runs the new release.
+      past = `; installed past the Stage 7 wait (${waitedText(w.next, at)}) with ${pushing.join(', ')} running: the scripts it has running stay on their release, and its next call to the bin runs this one`;
     }
-    if (s.waiting) { delete s.waiting; save(); }
 
     // The workers still running here pick the new bin up on their next call to it.
     const live = othersRunning(selfQueue, { self: true, selfView }).running;
     const u = updateDesk(src, { to });
+    // A failed install keeps the wait, so the next pass is still past the bound and tries again.
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
+    delete s.waiting;
     save();
     // install.sh's record step wrote the release watch's row for this move (installed.mjs).
     // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
