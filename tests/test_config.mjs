@@ -690,8 +690,9 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'preview-db|4|Preview database', // DS-550
     'plan-first-wait|3b|Plan-first wait before needs-you (hours)', // issue-1384
     'slot-candidates|3b|Propose candidates for a free slot', // #1394
+    'light-lock-slots|3b|Light lock slots',
   ];
-  const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit']; // DS-550, #1383
+  const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
   t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));
@@ -784,7 +785,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
 
   // The machine profile fallback desk-env reads.
-  t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
+  t('DS-868 MACHINE_FALLBACK is the four machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap","light-lock-slots":"light-lock-slots"}');
 }
 
 // `desk-env get --json`: typed rows with where each value came from, its default and its type errors.

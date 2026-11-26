@@ -54,8 +54,10 @@ const admitMaxLoad = (cores) => String(Math.round(ADMIT_LOAD_PER_CORE * (known(n
 // The admission rows, read through `get(key)` (a profile value or null), each with its default where
 // unset: -> { rows: { key: number | string }, problems: [line] }. A row set but unreadable, or a ceiling
 // under its floor, is a problem naming the row and what it wants; any problem means mode off.
-// `testSlots` is the heavy floor as the test lock reads it (desk-env testLockSlots).
-export function admissionRows(get, { testSlots = null } = {}) {
+// `testSlots` is the heavy floor as the test lock reads it (desk-env testLockSlots), `lightSlots` the
+// light floor as the light lock reads it (desk-env lightLockSlots), which with admission on is held to
+// light-lock-max rather than read as a problem.
+export function admissionRows(get, { testSlots = null, lightSlots = null } = {}) {
   const problems = [];
   const raw = (k) => { const v = get(k); return v == null ? null : String(v).trim(); };
   const rows = {};
@@ -68,10 +70,11 @@ export function admissionRows(get, { testSlots = null } = {}) {
   for (const [k, v] of Object.entries(ADMISSION_FIXED)) rows[k] ??= k === 'lock-admission' ? v : Number(v);
   const slots = raw('test-lock-slots');
   rows['test-lock-slots'] = testSlots ?? (wholeAtLeast(1)(slots ?? '') ? Number(slots) : 1);
+  if (lightSlots != null) rows['light-lock-slots'] = lightSlots;
   rows['light-lock-slots'] ??= 1;
   for (const [max, floor] of [['test-lock-max', 'test-lock-slots'], ['light-lock-max', 'light-lock-slots']]) {
     if (rows[max] == null) { if (raw(max) == null) rows[max] = rows[floor]; continue; }
-    if (rows[max] < rows[floor]) problems.push(`\`${max}\` is "${rows[max]}": want a whole number of slots, at least \`${floor}\` (${rows[floor]})`);
+    if (rows[max] < rows[floor] && !(floor === 'light-lock-slots' && lightSlots != null)) problems.push(`\`${max}\` is "${rows[max]}": want a whole number of slots, at least \`${floor}\` (${rows[floor]})`);
   }
   if (rows['admit-max-load'] == null && raw('admit-max-load') == null) rows['admit-max-load'] = Number(admitMaxLoad(get('cpu-cores')));
   if (rows['admit-run-load'] == null && raw('admit-run-load') == null) {
@@ -80,7 +83,9 @@ export function admissionRows(get, { testSlots = null } = {}) {
     // Only a problem where admission would run: a profile with neither row and admission off is fine.
     else if (rows['lock-admission'] !== 'off') problems.push('`admit-run-load` is unset and so is `test-cap`, its default: want a number, the load one run adds');
   }
-  return { rows, problems, mode: problems.length ? 'off' : rows['lock-admission'] };
+  const mode = problems.length ? 'off' : rows['lock-admission'];
+  if (mode === 'on' && rows['light-lock-max'] < rows['light-lock-slots']) rows['light-lock-slots'] = rows['light-lock-max'];
+  return { rows, problems, mode };
 }
 
 const SIZING_RULES = Object.freeze({

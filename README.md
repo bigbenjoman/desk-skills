@@ -1,1134 +1,328 @@
+<div align="center">
+
+<img src="docs/brand/desk-skills-icon-128.png" alt="desk-skills icon: a monitor on a desk with a prompt on screen" width="96" height="96">
+
 # desk-skills
 
-Claude Code skills that take a ticket to a merged PR and a closed ticket, or work a batch of tickets
-unattended. They are installed **once per machine** and **configured once per repo**: each
-repository has its own Jira (or none), login, people, commands, checks, conventions and
-permissions, and nothing set for one repo applies to another.
+**From ticket to merged PR, on its own, inside the rules you set for each repo.**
 
-macOS, Linux and WSL.
+Claude Code skills that triage a ticket, build it, review it and fix what the review finds,
+open the PR with screenshots, and, where you allow it, merge it once it is green and move the
+ticket on. Hand it one ticket
+or a whole epic, then leave it to run.
+
+[![tests](https://github.com/bigbenjoman/desk-skills/actions/workflows/tests.yml/badge.svg)](https://github.com/bigbenjoman/desk-skills/actions/workflows/tests.yml)
+![platforms](https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux%20%C2%B7%20WSL-1E2A4A)
+![Claude Code](https://img.shields.io/badge/built%20for-Claude%20Code-FF8A3D)
+
+[Quick start](#quick-start) ·
+[How it works](#how-it-works) ·
+[The skills](#the-skills) ·
+[Autopilot](#autopilot-a-batch-while-you-do-something-else) ·
+[Safety](#safe-by-default) ·
+[Docs](docs/guide/README.md)
+
+<img src="docs/images/desk-q-overview.png" alt="desk-q home screen: three repos with batches, tickets running, ready, merging and needing you, worker capacity, and Claude and Codex usage bars" width="900">
+
+<sub>desk-q, the live view of every autopilot queue on the computer (demo data)</sub>
+
+</div>
+
+---
+
+## Why desk
+
+Coding agents can write a fix. Getting it **merged** is the slow part: a self-review, a PR body, CI,
+review comments, a branch that fell behind, then the ticket left in the wrong column. desk does all of
+it, the same way every time, and it stops to ask only when a person really has to decide.
+
+- **Whole tickets, not just diffs.** One command reads the ticket and takes it all the way: triage,
+  build, self-review, screenshots, PR, CI, merge, ticket transition.
+- **Batches that run while you are away.** `/desk-autopilot` gives each ticket its own headless worker,
+  worktree and port (and its own database where the repo has a local one), orders the batch so tickets
+  don't collide, and, where you allow it, merges each PR once it is green. A supervisor can keep the
+  batch going after you close Claude Code.
+- **Reviews that try to prove themselves wrong.** `/desk-review` sends specialist finders over the diff,
+  Claude's and Codex's, has the other vendor try to refute each finding, and checks the change against
+  its ticket in both directions. Only P0 to P2 findings make the report.
+- **Each repo has its own rules.** Every repo has its own tracker, people, commands, required checks,
+  conventions and permissions. Nothing set for one repo leaks into another, and desk's config for
+  each repo lives outside the repo, never in git.
+- **Permissions you answer once.** Every capability (push, open a PR, merge, comment on Jira, read
+  Slack…) is `yes`, `ask` or `no`, per repo. Anything at `ask` is asked each time; `no` is never done.
+- **"Green" means green.** Every required check passed on the exact commit, nothing else failed, and
+  the merge is pinned to that commit. A skipped check doesn't count.
+- **One place to answer.** Anything that needs you, from every repo, lands in `/desk-needs-you`: four
+  questions at a time, each with a recommendation.
+- **You can see everything.** `desk-q` shows every queue on the computer: what's running, what's
+  parked, when each ticket should ship, and what it is costing.
 
 ## Quick start
 
+You need [Claude Code](https://claude.com/claude-code), `git`, `gh`, `node`, `python3`, `jq` and
+`curl`. [Codex](https://github.com/openai/codex) is optional but recommended, for cross-vendor review.
+
 ```bash
 gh repo clone bigbenjoman/desk-skills ~/desk-skills
-cd ~/desk-skills && ./install.sh     # once per machine; asks before touching your settings
+cd ~/desk-skills && ./install.sh     # once per computer; asks before it touches your settings
 ```
 
-1. **Restart Claude Code**, so it loads the skills, agents and hooks.
-2. **`cd` into a repo and run `/desk-setup`.** It detects what it can, you confirm it, and it asks
-   every permission for that repo, one question at a time. Allow 15–20 minutes the first time.
-3. **Repeat step 2 in each repo.** From the second repo on, setup can start from an earlier repo's
-   answers, and you confirm each one.
-4. **Before the first autopilot batch in a repo**, run its preflight once (see
-   [Checking a repo's setup](#checking-a-repos-setup)).
+1. **Restart Claude Code** so it loads the skills, agents and hooks.
+2. **`cd` into a repo and run `/desk-setup`.** It works out what it can from the repo and GitHub, you
+   confirm it, then it asks each permission for that repo, one question at a time. Allow 15 to 20
+   minutes the first time.
+3. **Do step 2 in each repo you want desk in.** From the second repo on, setup can start from an
+   earlier repo's answers, and you confirm each one.
+4. **Before a repo's first autopilot batch**, run the [preflight](docs/guide/autopilot.md#the-preflight)
+   once. It proves the worker sandbox on your computer.
 
-Then `/desk-ticket <TICKET>` for one ticket, `/desk-autopilot <TICKET> <TICKET> …` for a batch, or
-`/desk-autopilot <EPIC>` for a large feature written as an epic, which runs as its own feature batch
-on its feature branch while the standing batch carries on.
+Then:
 
-## Skills
-
-| Skill | What it does | Start it with |
-|---|---|---|
-| `desk-setup` | Detects this repo's Jira, checks, toolchain and conventions, asks what the skills may do here, then writes this repo's config | `/desk-setup` |
-| `desk-ticket` | One ticket, from triage to merged PR | `/desk-ticket ABC-123` |
-| `desk-autopilot` | A batch of tickets (or an epic's children), one detached worker each, merged as each goes green | `/desk-autopilot ABC-1 ABC-2`, `/desk-autopilot ABC-900` |
-| `desk-admit` | Admits tickets into the batch the supervisor runs, after the checks standing intake makes (fresh triage, lane, blocking lint, open questions, size, blockers outside the batch); refuses what fails one, with why and what to do | `/desk-admit ABC-1 ABC-2`, `--front` to jump the queue |
-| `desk-needs-you` | Asks about every item desk-q shows as needing you, in every repo, four at a time with a recommendation each, and records each answer through the commands that already exist | `/desk-needs-you`, `/desk-needs-you <repo>` |
-| `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
-| `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub, leaked memory (scripted scans in `bin/`) | `/desk-cleanup` |
-| `desk-disk` | When the Mac or its Time Machine drive runs low: measures each known offender (Docker volumes, Messages and Chrome copies, iCloud downloads, worktrees, Postgres, Backblaze logs, backups), explains it, and frees it one approved fix at a time, measured before and after (read-only scan in `bin/`) | `/desk-disk` |
-| `desk-design` | Saves a ticket's Claude Design canvas or Slides deck into the repo (or imports its HTML export), says whether the saved copy is still current, renders every board at each breakpoint, compares the built UI with each board, and estimates the uploads a ticket's PR needs; the steps desk-ticket and desk-admit take, on request | `/desk-design ABC-123` |
-| `desk-groom` | Checks every open ticket for work already on the default branch, duplicates, missing links, stale citations, blank fields and dead blockers, and every epic for uncovered DoD items, a stale Children list, a child that outranks it and a status its children have moved past; proposes each fix with its evidence, and asks where loose tickets belong and each call with no single correct fix; writes nothing (scripted checks in `bin/`) | `/desk-groom` |
-| `desk-checkout` | Drafts your end-of-day check-out from calendar, meeting notes, Jira, GitHub, Slack and Claude Code; never sends it | `/desk-checkout` |
-| `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
-| `desk-jira` | Ticket comments, edits, transitions | loads itself |
-| `desk-review` | Reviews a branch, a PR or the open queue at this repo's bar: read-only finders, codex refutation, ticket checked both ways, posted as a verdict where allowed | `/desk-review`, `/desk-review 460` |
-| `desk-kiss` | Makes a change smaller: the "should this be smaller?" passes desk-review runs on every review (scope creep, one-consumer abstractions, narrating comments against the ticket), then a per-finding fix offer | `/desk-kiss`, `/desk-kiss 460` |
-| `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
-| `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
-| `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
-| `desk-resume` | After a context handoff's `/clear`: reads the handoff and carries on from its next step | `/desk-resume` |
-| `desk-reboot` | Before a reboot: every session, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
-| `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget, and holds an autopilot batch's red rate to that baseline; saves and restores branch protection, pins required checks to GitHub Actions and makes the default workflow token read-only, each change shown first and gated on §3 `ci-protection` | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure`, `/desk-ci protection` |
-
-A "ticket" is whatever this repo names work by: a tracker key (`VPL-123`), another id you list in
-setup (a planning id such as `P1-M14-FIX-1`, a bug id such as `BUG-119-5`), or, in a repo with no
-tracker, a GitHub issue URL or a plain description.
-
-"Loads itself" means there is no command to remember: say what you want ("open the PR", "move it to
-review", "reply to the review") and Claude loads the skill. Every skill can also be started by name.
-All of them read this repo's config first, and do only what its §3 permissions allow: anything not
-`yes` is asked before each use.
-
-## Using the skills
-
-### The ticket workflow
-
-**`/desk-ticket <TICKET>`** takes one ticket from triage to a merged PR. It reads the ticket, routes
-the work to the cheapest path that can solve it, then runs the same tail every time: diff hygiene, a
-self-review with §4 Local review command (at most three rounds), screenshots where a picture helps,
-the PR, the ticket transition, and the merge if you allowed it. Anything with consequences (product
-or design calls, a fix that grows beyond the ticket) stops and asks.
-
-```
-/desk-ticket ABC-123                      a tracker key
-/desk-ticket P1-M14-FIX-1                 another work id from §4 Other work id patterns
-/desk-ticket https://github.com/o/r/issues/42   or "#42", in a repo with no tracker
-/desk-ticket "the export button is greyed out for admins"
-/desk-ticket ABC-123 --tail               resume an interrupted run from Stage 4 (verify, self-review, PR…)
+```text
+/desk-ticket ABC-123                    one ticket, from triage to merged PR
+/desk-autopilot ABC-1 ABC-2 ABC-3       a batch, one worker per ticket
+/desk-autopilot ABC-900                 an epic: its open children, on its own feature branch
+/desk-needs-you                         answer everything waiting on you, in every repo
 ```
 
-It also applies mid-ticket to a single step: "just push it", "give me the PR body".
+No Jira? A "ticket" can also be a GitHub issue (`#42` or its URL), a work id you list in setup, or a
+plain sentence: `/desk-ticket "the export button is greyed out for admins"`.
 
-**`/desk-autopilot`** runs a batch unattended, one detached headless worker per ticket, each in its
-own worktree and port (see [Using autopilot](#using-autopilot)). Give it several tickets, or one epic
-key to run the epic's open children. Come back to it ("how's the batch going?", "pick the batch
-back up") to check progress, answer a parked question or resume.
+## How it works
 
-**`desk-pr`** (loads itself) owns the pull request: a diff-hygiene block before any prose, the body
-in the sections §5 PR body names (plus *Not migrated* when equivalent code was left on the old
-pattern), before/after screenshots uploaded through a signed-in browser where §3 `pr-images`
-allows, and stacked PRs. Ask for "the PR body" to get only the markdown.
+`/desk-ticket` runs the same pipeline on every ticket. It sends the work down the cheapest route that
+can solve it, and always finishes with the same tail.
 
-**`desk-jira`** (loads itself) is every tracker write: create, edit, comment, assign, link, transition,
-and a sweep that reconciles your in-review tickets against GitHub ("which of my tickets have
-merged?"). It uses the per-repo `desk-jira` CLI, never the Atlassian MCP, and each write is gated
-by its own §3 row (`jira-comment`, `jira-transition`, `jira-close`…). The CLI works on its own too:
-
-```bash
-desk-jira get ABC-123                          # the ticket, custom fields included
-desk-jira search 'assignee = currentUser()'    # any JQL
-desk-jira transitions ABC-123                  # where it can move next
+```mermaid
+flowchart TB
+    T([Ticket]) --> TR[Triage<br/>read ticket, size, lane]
+    TR --> B[Build<br/>branch, worktree when needed]
+    B --> SR[Self-review<br/>desk-review, up to 3 rounds]
+    SR --> PR[Open PR<br/>body, screenshots]
+    PR --> CI{Green at<br/>this commit?}
+    CI -- no --> FX[Fix and push] --> CI
+    CI -- yes --> M[Merge<br/>pinned to that commit]
+    M --> J([Ticket moved on])
+    TR -. product or design call .-> NY[[Needs you]]
+    SR -. fix outgrows the ticket .-> NY
 ```
 
-**`desk-dev`** (loads itself) runs the app locally, and against a copy of staging data when the work
-depends on real records (§3 `db-clone-staging`). It will not say "it's up with staging data" without
-a filled-in proof block from live output, and it never writes to real staging without §3
-`staging-write`, a backup and an independent review.
+Anything with consequences, such as a product or design call or a fix that grows beyond the
+ticket, stops and asks instead of guessing. Merging happens only where you allowed it in that repo.
+The recommended setup leaves merging to you, and reports PRs that are ready instead.
 
-### Reviews
+### Reviews that argue with themselves
 
-**`/desk-review`** reviews a branch, a PR or the open queue before a human does. It reports P0, P1
-and P2 only, against this repo's review bar (§4 Review bar, else the default in
-[`skills/desk-review/references/review-bar.md`](skills/desk-review/references/review-bar.md)).
-Read-only finder subagents are routed by path (Lena always; Nadia, Theo, Mira, Jim, Suki or a §4
-Review domain experts skill when their paths change, and desk-kiss's simplicity passes on every diff),
-codex refutes each finding from a different vendor, and Bea checks the diff against its ticket in both directions. Where §3 allows, it posts one
-`COMMENTED` review with a machine-readable verdict a required check can read. It never approves or
-blocks.
-
-```
-/desk-review                     the current branch against its PR base
-/desk-review 460                 one PR (number, #460 or URL); someone else's needs §3 read-others
-/desk-review main...feat/x       a ref range, report only
-/desk-review path/to/file.ts     one file in full, report only
-/desk-review --sweep             every open PR not yet reviewed at its head (--limit N, default 30)
-/desk-review --no-comment        report only, nothing reaches GitHub
+```mermaid
+flowchart LR
+    D[Diff] --> F1[Lena<br/>code review]
+    D --> F2[Nadia, Theo, Mira,<br/>Jim, Suki<br/>by path]
+    D --> F3[desk-kiss<br/>should this be smaller?]
+    D --> F4[Codex<br/>reads the diff cold]
+    D --> BEA[Bea checks the diff<br/>against the ticket, both ways]
+    F1 & F2 & F3 & F4 --> R[Cross-vendor refutation<br/>each finding argued<br/>by the other vendor]
+    R --> V[Verdict<br/>P0, P1, P2 only]
+    BEA --> V
+    V --> G[desk-gate check<br/>can require it]
 ```
 
-`/desk-setup` offers to commit the CI side of it, `desk/templates/.github/workflows/desk-gate.yml`:
-a `desk-review verdict` check that fails a PR whose latest verdict is missing, not at the head, not
-clean, or under a heading that says otherwise; a `CLAUDE.md size` check (20,000 characters, the most
-the reviewer loads); and an optional `protected-path approval` check that wants an approval on the
-paths you list unless the PR is a small `fix`, `docs` or `chore` change. Each blocks only once a repo
-requires it.
+Specialist finders run read-only, routed by the paths the diff touches, while Codex reads the diff
+cold and Bea checks it against the ticket. A finding has to survive a refutation from the other
+vendor (Codex for Claude's findings, Claude for Codex's) before it is reported. Where the repo allows it, the verdict is
+posted as one `COMMENTED` review with a machine-readable line that a required check
+(`desk-gate.yml`) can read. desk-review never approves or blocks a PR itself.
 
-It is also what desk-ticket and autopilot workers run as their self-review. Codex is optional: when
-it is missing, desk-review asks before falling back to Claude checking Claude, and says so.
+<details>
+<summary><b>See a real desk-review verdict and desk-pr body</b> (from <a href="https://github.com/bigbenjoman/desk-skills/pull/1433">PR #1433</a> in this repo)</summary>
+<br>
 
-**`/desk-kiss`** answers one question, should this change be smaller?, and offers to make it so. It holds the diff
-against its stated intent (the ticket, else the PR body, else the commits, and names which) and looks
-for scope creep, abstractions with exactly one consumer, and comments that narrate history or
-restate the code. A justification gate and a refutation that argues the author's case run before
-anything is reported. When the target is your checked-out `HEAD` on a clean tree, it then offers
-each mechanical fix one at a time, showing the exact diff, and never commits. desk-review runs the
-same passes on every review and reports what they find; reach for desk-kiss when you want those
-simplifications made.
+<img src="docs/images/desk-review-verdict.png" alt="A desk-review comment: round 2 found no P0, P1 or P2 findings; round 1's two P0s and a requirement gap were fixed; three Codex findings were rejected after refutation" width="760">
 
-```
-/desk-kiss        /desk-kiss 460        /desk-kiss main...feat/x
-```
+<img src="docs/images/desk-pr-body.png" alt="A PR body written by desk-pr with a summary, a Closes line, a Changes list and Testing bullets" width="760">
 
-**`desk-review-response`** (loads itself) works a reviewer's comments: assess every comment first
-and agree what to change, fix only that, self-review the fixes, then reply in two or three sentences
-in this repo's review register and resolve the threads (§3 `pr-reply`). It also answers "is this
-reviewer right?".
+</details>
 
-### Your open work
+## Autopilot: a batch while you do something else
 
-**`/desk-clearance`** takes your reviewed PRs the rest of the way in: works the comments (through
-desk-review-response, one subagent per PR), resolves threads, updates branches, watches CI, merges
-by the repo's method where §3 allows, and transitions the tickets. It only ever touches your own PRs.
-One run is one pass; for repeats use `/loop desk-clearance` (while the session is open) or the
-`schedule` skill (survives closing the terminal).
-
-**`/desk-cleanup`** tidies up after a batch: it reconciles ticket statuses that drifted from GitHub,
-removes worktrees whose PRs merged (§3 `worktree-remove`), reports local branches and PRs behind the
-default branch, and finds leaked dev servers eating memory. It acts only on tickets assigned to you
-**and** PRs you authored, and needs two independent signals before removing anything.
-
-**`/desk-checkout`** drafts your end-of-day update from what actually happened: calendar meetings and
-their Gemini notes, Jira changes, GitHub PRs, your Claude Code sessions and your own Slack messages.
-It covers every desk repo that posts to the same §4 Check-out destination, and each source needs its
-own §3 row (`read-calendar`, `read-transcripts`, `read-slack-public`…); a skipped source is listed in
-the draft. To a Slack channel at §3 `slack-draft` `yes` it saves the post as a draft there and says
-so, copying it to the clipboard only when the draft cannot be saved; it never sends.
-
-```
-/desk-checkout                   today (before 10:00, yesterday)
-/desk-checkout yesterday         also a weekday name ("friday") or a date (2026-09-23)
-```
-
-### This machine and this repo
-
-**`/desk-setup`** configures desk for the repo you are in (see [Setting up a repo](#setting-up-a-repo)).
-
-```
-/desk-setup                          first run, or change anything
-/desk-setup permissions              straight to the permission interview
-/desk-setup plugins                  only which plugins this repo needs; changes nothing else
-/desk-setup costs                    where each repo is billed (GitHub, Vercel, AWS), for the whole machine
-/desk-setup from bigbenjoman__voicepa    start from another repo's §1, §3 and §3b answers
-/desk-setup list                     every configured repo; changes nothing
-```
-
-**`/desk-update`** brings everything on the machine up to date (see [Updating](#updating)).
-
-```
-/desk-update                 report everything, then upgrade only what you pick
-/desk-update outdated        report only
-/desk-update ux-designer     check and upgrade named skills
-/desk-update --all           upgrade everything that is behind, still after showing the diff
-```
-
-**`/desk-reboot`** gets the machine ready to restart. It lists every open Claude session with its
-state (busy, waiting, idle) and age, dev servers and heavy processes, and every worktree in each
-configured repo with uncommitted changes or unpushed commits. Once you confirm, it asks each busy or
-waiting session to finish its step and save a handoff. It writes its own handoff, then ends with `READY TO REBOOT` or what still blocks it. It never stops a
-session, never commits anyone's changes, and never reboots. The read-only half runs on its own:
-
-```
-node ~/.claude/desk/bin/reboot-check.mjs     worktrees across configured repos, heavy processes, FileVault
-```
-
-**`/desk-ci`** proposes which of a repo's GitHub Actions jobs can move to a self-hosted runner. CI
-runs on GitHub-hosted runners or a repo's own cloud runners; desk runs no CI on this computer.
-`classify` places a job hosted when it uses a secret other than `GITHUB_TOKEN` (workflow-level env
-included), an environment, `id-token`, a staging or preview URL, a third-party service, an image with
-no arm64 build, or exists for production x64 build parity, and self-hosted otherwise, citing the
-line that decided it. `ci-lint` fails a job that can run self-hosted and would receive a secret, an
-environment or `id-token`, or whose `runs-on` has no `github.actor == 'dependabot[bot]'` branch to a
-hosted runner. Neither writes anything. `measure` reports what a repo's CI costs and how often it
-holds PRs up (billed and self-hosted minutes, failure and red rates, round trips, time to green,
-queue time, minutes per merged PR), within an API call budget that leaves the rate limit a reserve,
-and saves the report to the main checkout's `.handoffs/`. `protection` saves a repo's branch
-protection and rulesets before any CI change and restores them, binds each required check to the
-GitHub Actions app so a same-named status from a personal token no longer satisfies it, and makes
-the default workflow token read-only once every workflow declares its permissions. Each write is
-printed as a plan first and applies only by that plan's id, under §3 `ci-protection`.
-`aws-fallback` is the other half of the AWS fallback watchdog (`.github/workflows/aws-fallback-watch.yml`,
-every 10 minutes): when a repo listed in this repo's `DESK_AWS_WATCHED_REPOS` variable has had a job
-queued on one of its declared AWS runner labels for over 15 minutes, the watchdog sets that repo's
-`DESK_AWS_FALLBACK` variable to `on`, opens an issue here saying so, and cancels its queued runs and
-re-runs their cancelled jobs. It never turns the fallback off; `aws-fallback off` does, and `aws-fallback status`
-says whether each repo's fallback is on, since when, and when the watchdog last ran:
-
-```
-node ~/.claude/desk/bin/desk-ci.mjs classify     placement per job, with file:line
-node ~/.claude/desk/bin/desk-ci.mjs ci-lint      exit 1 on any finding
-node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 days, sampled to a call budget
-node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
-node ~/.claude/desk/bin/desk-ci.mjs aws-fallback status [--repo owner/name] | off --repo owner/name
-```
-
-**`supervisor.mjs`** runs autopilot passes from launchd on macOS, or from a systemd user timer on
-Linux (WSL needs `systemd=true` under `[boot]` in `/etc/wsl.conf`), with no Claude session in the loop.
-Install it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a
-batch the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. On
-Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
-off. On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every
-terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs
-`wsl.exe --exec sleep infinity` (with `-d <distro>` if the supervisor's distro is not your default),
-with "Stop the task if it runs longer than 3 days" turned off; install says this on WSL. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
-that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
-log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
-Each tick does this for every batch the repo holds, one after another: the standing batch, then each
-named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
-PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under
-`batches/.done/` instead; a ticket PR still open then goes to the check-in digest for you to merge or
-close. A merge driver still running for such a batch has nothing left to merge, so the tick stops it
-(one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
-`batch.mjs discard <EPIC>` removes one no ticket has started in. An epic's start that fails discards
-its batch with `--keep-triage`, which keeps the children's triage records, so admitting the epic again
-on the same branch within six hours triages only the children with none; a child whose triage fails is
-tried once more after 60 seconds first. `batch.mjs discard <EPIC>` on a slot holding only those records
-removes them, and `move-batch.mjs` clears them from the slot it moves into.
-`./install.sh` puts desk's scripts and templates in a release folder of their own,
-`~/.claude/desk/releases/<commit>/` (`<commit>-<time>` from a dirty checkout), and makes it live in one
-step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through
-`current`, so a pass started before an install finishes on the release it started with. The newest
-three releases are kept, and `./install.sh --rollback` makes the one before the current one current.
-The release watch (`release-watch.mjs`) stands behind each release the auto-release installs. Once a
-release has 10 tickets finished on it, or 72 hours have passed since it went in (whichever comes
-first), it compares that release's tickets with the previous release's. It looks at fix tries per ticket, parked
-hours per ticket, post-merge reverts, and parks in an error class the previous release never parked in.
-The trips are the lever registry's: a post-merge revert trips at once. Fix tries and parked hours
-trip past their guardrail margin, and a new error class trips too, but each of those three only once
-both releases have 10 tickets. A trip pins the previous release (install.sh keeps the release before
-each one not yet judged, past the newest three) and opens one revert PR for every merge between the two releases. It also raises one
-needs-you item naming the merges, the metric and the evidence. The pin holds the auto-release and the
-maintenance window's update until main carries the revert, or until the PR is closed unmerged.
-`desk-q rollback <commit>` (7 or more hex digits) does the same on demand for the release installed
-at `<commit>`, and `desk-q rollback --unpin` lifts a pin.
-Each repo's queue and the other state under `~/.claude/desk` never move. It records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
-reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
-between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick
-keeps `code` in `<state>/supervisor.json`, saying whether the agent or the running merge driver
-started at an older version, and restarts a handed-over batch's driver on old code the same way once
-it waits between loops.
-
-```
-node ~/.claude/desk/bin/supervisor.mjs install [--interval <s>]   write and load the agent (default 180s)
-node ~/.claude/desk/bin/supervisor.mjs status                     the agent, then each batch and its log's tail
-node ~/.claude/desk/bin/supervisor.mjs uninstall                  remove it; no further passes for the repo
-```
-
-desk-q does the same for any repo set up here, from anywhere: `desk-q <repo> supervisor on|off`, bare
-`desk-q <repo> supervisor` for its status and last log line, and `s` on a repo's row in the full
-screen (turning it off asks first; running workers finish).
-
-Who runs a repo's batches is config §3b "Batches run by": `supervisor`, the default `/desk-setup`
-offers on macOS (it installs the agent, and Stage 4 hands each batch over and ends the session), or
-`session` (the batch runs in the interactive session through `/loop`; unset reads as this).
-`run-by.mjs stage4` makes Stage 4's call, installing a supervisor that is missing or unloaded.
-desk-q reads the same row: a repo at `session` is shown as run by its session, with a red band naming
-that session once its loop stops with work left, and desk-q offers `supervisor on` only on a computer
-where a supervisor can run (launchd, or a systemd user manager that answers).
-
-**`skill-eval.mjs`** runs a task set once with a skill loaded and once without it, so prose that
-only restates what the model now does by default can be found. Each task is a prompt with pass/fail
-checks on the final reply (`contains`, `absent` or `matches` a regex). Both arms run `claude -p`
-with no setting sources, so no installed skill reaches either, in an empty directory of their own;
-only the skill arm gets the skill's `SKILL.md`. The report lists each task's checks for both arms
-side by side and ends with one verdict: **keep** (the skill arm passed more), **trim** (the same
-number, with the transcripts linked to read) or **drop** (fewer). A run that fails or times out is
-marked failed and counted neither way. It refuses to start without `--max-budget-usd`, each run's
-spend ceiling. `--total-budget-usd` (default 5) caps the whole eval: a task starts only while both
-its runs fit under what is left, and any task left unstarted is named in the report, which then
-gives no verdict. The figures are claude's reported cost, so on a claude.ai subscription they are
-plan usage, not a charge:
-
-```
-node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> --max-budget-usd <usd> \
-  [--total-budget-usd 5] [--skills-dir skills] [--out <dir>] [--timeout 600] [--model <model>]
-```
-
-`evals/desk-pr.json` is desk-pr's task set; its last report is `docs/evals/desk-pr/report.md`.
-
-**`bench.mjs`** runs named arms over frozen tasks taken from real merged tickets. Each run gets a
-throwaway checkout of the task's repo at the commit the ticket started from: a repository of its
-own with no remote and no later history, so the merged fix is not there to read and there is
-nowhere to push. The merged PR's tests are kept outside it (a test file the PR changed is there in
-its base version, as the ticket's worker found it) and copied in only after the run, then
-run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
-passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
-which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web
-and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded in that run's
-result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
-default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its
-stream-json transcript, its test output and its tokens (uncached, cache write, cache read, output)
-under the output folder. Its `result.json` also has `ran_at`: the model and effort read back from
-the session's own init event. A value the log does not name is null, with the reason, and is never
-filled in from the arm's settings:
-
-```
-node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
-  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>] \
-  [--plans <file>] [--providers <file>]
-```
-
-Keep the task set outside this repo. Its paths are relative to the file:
-
-```json
-{"tasks": [{"id": "ds-123", "repo": "owner/name", "base": "<full SHA>", "prompt": "<ticket text>",
-  "hidden_tests": {"dir": "hidden/ds-123", "files": ["tests/test_x.mjs"]}}]}
-```
-
-`hidden_tests.run` (default: every file) names the files handed to the test command; the rest,
-such as fixtures, are only copied in.
-
-The bench spends at most a set share of each weekly allowance and always leaves a reserve for your own
-work. Before each run it reads the weekly use of the account the run will spend: for Claude, a usage
-probe on that login; for an arm on a GPT or Codex model, the signed-in Codex login's session logs.
-It stops before the run, naming the account, when the bench has used its cap of points in this
-weekly window, when less than the reserve is left, or when the reading is missing, older than 30
-minutes or cannot be parsed. A missing reading is never read as zero. The whole rise in weekly use
-during a run, other work on that account included, is that run's `quota.points` in its
-`result.json`, and is kept per computer in `<usage dir>/bench-quota.jsonl`. The points are printed at
-every stop and in the report. Run it again once the window resets and it picks up at the first task
-and arm not yet scored. The cap and reserve are per computer, set as the machine profile's Sizing rows
-`bench-cap-points` and `bench-reserve-percent` (unset: 10 points and 25%), which `/desk-setup` asks
-for once per computer and stores with `desk-env machine set`, which starts a profile holding only them where there is none. A value that is not a number refuses to
-start.
-
-An arm on OpenCode Go (model `opencode-go/<model>`) has no meter to read: each Go response
-reports only `opencode.allowance`, the dollars that request counted against the model's monthly
-limit. So the guard adds up the allowance the bench's own runs on that model recorded over rolling
-windows of 5 hours, 7 days and 30 days. It measures each window against the model's monthly limit in
-the plan table (below; `--plans <file>`, default `<out>/plans.json`), read from the longest `usd`
-window on the row serving the model. The 5-hour window is 20% of that limit, the week 50% and the
-month 100%, and the cap and reserve apply to each window. A run's `quota.points` is its share of the
-weekly window, and `quota.windows` holds its share of each window. Every stop line and report row
-for Go says it counts the bench's own use only, since use of the plan outside the bench is invisible
-to it. The bench stops before the next run on that model, naming the model and the reason, when a
-response's allowance is missing, is not a finite non-negative number or has a shape it does not know,
-or when no plan table row gives the model a monthly limit. A run whose allowance was never recorded
-holds that model's runs until the run is 30 days old. An arm on any other `<provider>/<model>` has no
-meter and no ledger, so it is refused unless the machine profile gives that provider a run limit,
-the most runs a week the bench may start on it: `desk-env machine set bench-run-limit-<provider>=<runs>`.
-Either kind of arm also needs a runner that sends its runs to that provider, and a Go one that records
-each response's allowance. An `--arm` from the command line has one only as an endpoint arm (below);
-otherwise it would run on claude, so the bench refuses it.
-
-An endpoint arm runs Claude Code itself against the provider's Anthropic-compatible endpoint, so the
-task, brief, sandbox and scoring are the Claude arms' and only the model differs:
-`--arm go-kimi=opencode-go/kimi-k3.1-pro`. The provider needs an entry in the providers file
-(`--providers <file>`, default `bench-providers.json` in the desk usage dir, beside
-`bench-quota.jsonl`):
-
-```json
-{"providers": {"opencode-go": {"base_url": "https://opencode.ai/inference/go/anthropic",
-  "key_file": "~/.config/desk/opencode-go.key", "session_header": "x-opencode-session"}}}
-```
-
-`headers` (name to value) are sent with every request, and `session_header` with one new id per run.
-Before any run, the bench refuses an arm whose entry is missing, whose base URL is unset or
-Anthropic's, or whose key file is missing, empty or open to group or others (fix: `chmod 600`).
-Claude runs on that endpoint with the model after the slash, behind a local forwarding proxy
-(`endpoint-proxy.mjs`) that alone reads the key: claude, and every command the model runs, hold only a
-token made for that run, which the proxy swaps for the key on each request it sends on, and the arm's
-settings deny the key file and its folder to every tool, by absolute path and by `~` and `$HOME`. Its environment holds no Claude credential and its `CLAUDE_CONFIG_DIR` is a
-fresh empty folder, checked again just before it starts, so the run cannot bill a Claude login. Its
-tokens come from the session's own log. Its USD figure is claude's pricing at Anthropic's rates, so it
-is kept as `claude_priced_usd`, its `cost` is null, and it spends none of `--total-budget-usd`. On
-OpenCode Go, the proxy also records each response's `opencode.allowance` for the guard.
-
-**`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
-merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and
-description as they read when the PR's first commit was authored: later edits are undone from the
-Jira changelog, and comments are never read. A ticket created after that commit is dropped, since
-all of its text came after the work. The size is the Size field's, else a first description line
-`Size: M`. The PR's added or changed test files at the merge go to `<set dir>/<task id>/hidden/`,
-where the task id is `<owner>__<name>-<n>`. A task is kept only if those tests fail at the base and pass at the
-merge, run as `bench.mjs` scores them. A PR with no test changes is skipped. The rest are dropped
-with the reason: tests that pass at the base, fail at the merge, or cannot run. The file counts the
-tasks per repo and per size, and lists the dropped PRs. A PR already in the set, kept or dropped, is
-left alone unless `--rewrite` is given, so a frozen set stays frozen:
-
-```
-node ~/.claude/desk/bin/bench-build.mjs --set <tasks.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout 3600]
-```
-
-```json
-{"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
-```
-
-**`bench-blind.mjs`** turns a bench run into blind scoring sheets. `export` reads the output
-folder's `run.json` and writes, under `<out>/blind`, one Markdown sheet per task in `sheets/`: the
-ticket text, the rubric (`desk/bin/bench-rubric.md`, or `--rubric <file>`) and every arm's diff
-under a letter drawn at random per task, with an arm that made no diff, or whose run failed, shown
-as "no change produced". Names of models, arms and efforts in a diff (a co-author trailer, a comment, a branch
-name) become `[redacted]`. It also writes `scores.csv`, a `task,letter,score` template with the
-scores blank, and `key.json`, which maps each letter to its arm and is named by no sheet. Fill in
-each score from 1 to 5, then `join` attaches them to the arms through the key and writes
-`joined.json`. A sheet with a missing, out-of-range or unknown score is listed and none of its
-scores count:
-
-```
-node ~/.claude/desk/bin/bench-blind.mjs export --tasks <tasks.json> [--out <dir>] [--dest <dir>] [--rubric <file>]
-node ~/.claude/desk/bin/bench-blind.mjs join --tasks <tasks.json> [--out <dir>] [--dest <dir>]
-```
-
-**`bench-report.mjs`** writes one report per bench run to `<out>/report.md`, with each arm beside the
-Phase 0 baseline. For each arm it shows the tasks accepted out of the tasks run, the mean blind score
-from `joined.json`, and the runs that failed, which count in no other figure. Per accepted task, it
-gives the median uncached input, cache-write, cache-read and output tokens, and the median quota
-points per account. Over every scored run, accepted or rejected, it gives the median cache-write
-tokens and the median input-equivalent tokens: each kind of token at its list price for the arm's
-model, as uncached input (cache writes at the 5-minute rate), or "not priced" for a model desk has no
-prices for. The baseline column comes from `phase0-report.mjs`'s output saved as
-`<out>/phase0-baseline.txt` (or `--baseline <file>`). It holds the baseline's tokens per accepted
-ticket, its 7-day quota points divided by the tickets it accepted, and its fix tries per accepted
-ticket, and it names the baseline's last day. With no baseline, the column reads "no baseline" and
-the report gives the command that produces one. Until the scores are joined, the score reads "not
-scored". A run the cap or budget never started is listed as not run. When the arms did not run the
-same tasks, the report puts no two arms side by side: each arm gets its own table beside the
-baseline.
-
-Each arm also shows £ per accepted task and accepted tasks per 5-hour window, priced from the plan
-table at `<out>/plans.json` (or `--plans <file>`), which you write by hand from each provider's own
-page. Each plan row gives its provider, plan, monthly price and currency, the date and URL the price
-was read from, its windows (`{ name, hours, size, unit }`), and the arms or models it serves; a
-served entry may carry its own windows where the plan's allowance is per model. The table's `rates`
-list gives each other currency's rate to GBP and the date it was read. Accepted tasks per 5-hour
-window is that window's size over the arm's median use per accepted task. £ per accepted task is the
-monthly price in £ over the accepted tasks a month of windows allows at that use, the tightest
-window binding. The bench records use only in `weekly points`, so a window in any other unit reads
-"not measured". An arm with no plan, or a price with no rate, reads "not priced" and the report
-names why; a price read over 31 days ago is flagged stale. The report states figures and gives no
-verdict:
-
-```
-node ~/.claude/desk/bin/phase0-report.mjs --days 7 > <out>/phase0-baseline.txt
-node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]
-```
-
-**`bench-replay.mjs`** asks whether the spawn preflight and the decider need Opus. It samples
-calls Opus answered in the last `--days` from every batch of this repo (or each `--state`): a
-preflight's record under `<state>/preflight/`, which `spawn-worker.sh` writes on every spawn, and a
-decider session's prompt and reply under `<state>/decider/`. A call whose files cannot be read, a
-preflight from before they were recorded, and an answer that cannot be read line by line are left
-out and counted. Each call is answered twice more. The no-model side is a script that answers from
-the call's recorded inputs whatever needs no model and marks the rest "needs a model". The model
-side (`--model`, Haiku by default, at low effort) is sent the same prompt: a preflight in a
-throwaway checkout with the recorded settings and tools, a decider with no tools. Each model replay
-goes through the bench's quota guard first. `<out>/replay-report.md` gives, per call type, each
-side's share of answers that match Opus's, tokens per call and quota points, and lists every
-mismatch:
-
-```
-node ~/.claude/desk/bin/bench-replay.mjs --out <dir> [--state <dir>]… [--days 7] [--sample 20] [--model haiku] \
-  [--max-budget-usd 0.5] [--total-budget-usd 5] [--seed <s>] [--no-haiku]
-```
-
-**`bench-arm1.mjs`** runs arm 1: each task twice, as `filed` (the ticket text alone) and as `packet`
-(the ticket text with its task packet after it), both on opus at medium effort, with nothing else
-different. A task's packet is `<set dir>/packets/<task id>.md`, written from the ticket and the base
-commit only, never from the merged PR. It names the entry points and consumers, the conventions to
-reuse, the criteria the worker can check itself and the commands that check them. No arm may read
-the packets folder. A task with no packet is skipped on both sides. A packet that quotes a line of the
-task's merged diff or hidden tests is refused. Lines under 20 characters, or with no letter or digit,
-do not count. Both kinds of task are named when the run starts and listed under "Left out" in
-the report. The report then puts `filed` beside `packet`:
-
-```
-node ~/.claude/desk/bin/bench-arm1.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--out <dir>] [--timeout 1800] [--seed <n>]
-```
-
-**`bench-arm-pack.mjs`** asks whether a start-4b stage pack saves quota: the first `--limit` tasks
-(default 10) run as the baseline and as `pack-4b`, both on opus at medium effort, the second with the
-start-4b pack appended to its system prompt, so it is in context from turn 0. The pack is the skill
-files a worker starting at Stage 4b reads, taken from the installed skills (`--skills`) and joined
-with every paragraph an earlier file already holds dropped. Each pack run keeps it as `system.md`,
-and its run key hashes it, so a changed skill file is a new run. The baseline arm keeps the name an
-earlier run gave it (`--baseline-arm`, default `opus`), so its stored results are reused rather than
-paid for again. No arm may read the skills folder. `bench-report.mjs` then puts the two side by side:
-
-```
-node ~/.claude/desk/bin/bench-arm-pack.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--out <dir>] [--timeout 1800] [--seed <n>] [--limit 10] [--baseline-arm opus] [--skills <dir>]
-```
-
-**`skill-ride.mjs`** measures what such a pack would replace. For each start stage, over the worker
-logs of the last `--days` (default 14), it prints the sessions, the bytes they read from skill files
-and the mean remaining-turn fraction of those reads: a Read at turn i of n rides the n - 1 - i turns
-after it, where a pack loaded at turn 0 rides them all. The byte-weighted mean is the share of the
-read bytes that rides the rest of the session. A session is one spawn, from `spawn-worker.sh`'s
-`desk_spawn` event to the next, and only the main thread's Reads count. It reads every batch's logs
-(the standing batch, named and archived ones) unless `--logs` names the folders. `--files <stage>`
-lists that stage's skill files instead:
-
-```
-node ~/.claude/desk/bin/skill-ride.mjs [--days 14] [--logs <dir>]… [--skills <dir>]… [--files <stage>]
-```
-
-**`bench-arm2.mjs`** runs arm 2, a shadow Codex review seat against the current Opus finder seat, on
-the frozen tasks with real defects put back. `seed` takes a CSV of review findings (`repo`, `pr`, `file`,
-`line`, `acted_commit`, any other columns kept) and reverts, onto each task's merged tree, the hunk of
-the acting commit at the finding's file and line. It records each seed in `<set dir>/seeds/<task id>/`
-and lists each finding it could not revert cleanly with the reason. A run gives `current` and `codex`
-each their own checkout holding the seeded change and the same brief, written from desk-review's
-files. Neither is told about the seeds. The Codex seat runs through `codex-exec.mjs`, read-only, at the
-finder effort in the repo's §3b Codex review and at this command's `--timeout`. A run that times out or
-fails is marked failed and none of its findings are scored. A finding inside a seeded hunk is a hit. Any
-other is listed in the report with an id, and counts only once you mark it `real` or `false-alarm`:
-
-```
-node ~/.claude/desk/bin/bench-arm2.mjs seed --tasks <tasks.json> --findings <findings.csv> [--seeds-dir <dir>] [--rewrite]
-node ~/.claude/desk/bin/bench-arm2.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--seeds-dir <dir>] [--out <dir>] [--timeout 1800] [--seed <n>]
-node ~/.claude/desk/bin/bench-arm2.mjs report --tasks <tasks.json> [--out <dir>]
-node ~/.claude/desk/bin/bench-arm2.mjs mark --tasks <tasks.json> [--out <dir>] <id> real|false-alarm
-```
-
-**`bench-arm3.mjs`** runs arm 3: each task on four implementers, `codex-medium` and `codex-high`
-(Codex Sol, `gpt-6.1-sol`, at medium and at high effort), `opus-medium` and `sonnet` (at the CLI's
-default effort), each in its own checkout at the task's base. A Codex side runs through
-`codex-exec.mjs`, the same call `desk-codex` makes: stdin closed, its final message saved as
-`last-message.txt`, ended at `--timeout`, and the model and effort passed on the command line. Its
-sandbox is `workspace-write` on the checkout, with no network and no writable `/tmp`, so it can write
-only there. It runs on the Codex login whose weekly reading the quota guard takes before and after,
-and spends none of the USD budget. Its tokens come from its own session log, kept as
-`codex-session.jsonl`. Every tool call the sandbox refused is listed under `refusals` in its
-`result.json`, and the run is still scored on its hidden tests. The report gives the Claude and Codex
-allowances separate rows.
-
-`--fable` adds a fifth side, `fable`, on Claude Fable. Before you use it, confirm usage credits are
-switched off in the settings of every Claude account desk signs in with. A headless request that
-would bill them goes through without asking, so the side also checks for itself: it probes each
-login, and refuses before anything runs unless every login's newest reading shows overage rejected
-for a reason other than `out_of_credits`, naming any login that does not and its reading. It checks
-again before each Fable run. A run whose log records `isUsingOverage` is ended, no further Fable run
-starts, and the task and account are printed and listed in the report:
-
-```
-node ~/.claude/desk/bin/bench-arm3.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--out <dir>] [--timeout 1800] [--seed <n>] [--fable]
-```
-
-**`bench-pr-text.mjs`** runs arm 4: each task's PR description written three ways from the same
-inputs (the ticket, the commit subjects, the changed files and the repo's PR template at the base).
-`opus` (medium effort) and `haiku` also get the merged diff, and run with no tools in an empty folder
-under the bench's quota guard and USD budget. `no-model` fills the template with no model call. A repo
-with no PR template gets desk-pr's Summary, Changes and Testing sections. Each description goes through
-the repo's §4 PR-description checks in a checkout at the base; a repo with none reads "no checks
-configured", not a pass. A task with no merge commit is left out and named. Results go to
-`bench-pr-text-out` beside the task set, apart from the code arms'. `bench-blind.mjs --out <that
-folder>` makes the sheets, showing descriptions under random letters against
-`desk/bin/bench-pr-text-rubric.md`. After `join`, `report` writes `<out>/report.md`, with each side's
-check pass rate, mean blind score, tokens per description and quota points:
-
-```
-node ~/.claude/desk/bin/bench-pr-text.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--out <dir>] [--timeout 1800] [--seed <n>]
-node ~/.claude/desk/bin/bench-pr-text.mjs report --tasks <tasks.json> [--out <dir>] [--blind <dir>]
-```
-
-### A second Claude login
-
-desk runs every repo's work on this computer's default Claude login, unless a repo is pinned to
-another. To add a login from the command line:
-
-1. `CLAUDE_CONFIG_DIR=~/.claude-logins/<name> claude`, then `/login` with the other account, and quit.
-2. `desk-env logins check` lists it with its account and plan once it is signed in.
-3. `desk-env logins default claude <name>` makes it the default for every repo here, or
-   `desk-env subscription set <repo slug> <email>` pins one repo to it (that repo's config §3b
-   Subscription).
-
-desk-q does the same in view 6: press `a` to add a login, then choose the default there.
-
-## Subagents
-
-Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
-Each one starts by reading the repo it is in: its desk config if there is one, its `CLAUDE.md` /
-`AGENTS.md` / `DESIGN.md`, and the stack it detects. None of them assumes a framework. Summon one
-by first name ("Hello Bea", "ask Nadia").
-
-| Agent | Model | Use for |
-|---|---|---|
-| `ada-devils-advocate` | opus | An adversarial second opinion; stress-testing a decision or plan; judging outputs |
-| `bea-business-analyst` | opus | Turning a rough idea into a well-formed ticket in this repo's tracker (or a GitHub issue); never files without approval |
-| `jim-solution-architect` | opus | Infrastructure and architecture across whatever clouds the repo uses |
-| `karen-seo-optimizer` | sonnet | SEO, GEO and AEO on the repo's public site |
-| `lena-code-reviewer` | opus | Critical, actionable review of a diff or PR against this repo's bar |
-| `mira-playwright-expert` | opus | Playwright E2E, placing a test in the pyramid, hunting flake |
-| `muriel-design-engineer` | sonnet | Figma to production components in the repo's design system |
-| `nadia-security-auditor` | opus | Auth, tenant and role isolation, payment and media boundaries |
-| `otto-ia-mapper` | opus | One role's slice of the product's screens, derived from the code (spawned by `/userflow`) |
-| `suki-frontend-architect` | opus | Frontend architecture, the repo's design system, motion (Muriel when there is a Figma comp) |
-| `theo-api-designer` | opus | API and contract design in the repo's API style, with expand-contract changes |
-
-`/userflow` (in `commands/`) maps the product's information architecture: one Otto per role.
-A repo that wants a tailored agent adds its own `.claude/agents/<name>.md`; Claude Code prefers
-the project copy over the user-level one.
-
-The reviewers among them (Lena, Nadia, Theo, Mira, Jim, Suki, Bea) are also desk-review's finders.
-There they report on the review bar's P0–P3 scale, which Lena, Nadia and Suki use natively.
-
-## Third-party skills and plugins
-
-`install.sh` also installs 59 skills other people publish, pinned in
-[`vendor/sources.json`](vendor/sources.json) (how that works: [Skills, one copy each](#skills-one-copy-each)).
-They load themselves when a request matches; `skills-upstream list` prints them with their sources.
-
-| Area | Skills |
-|---|---|
-| UX, UI and design | `ux-designer`, `ui-designer`, `ux-copywriter`, `ux-motion` (Yummy Labs), `frontend-design`, `web-design-guidelines` (UI review against the Web Interface Guidelines), `tailwind-design-system`, `kpi-dashboard-design` |
-| Frontend (React / Next.js) | `nextjs-app-router-patterns`, `react-state-management`, `vercel-react-best-practices`, `vercel-composition-patterns` |
-| Backend, APIs and data | `api-design-principles`, `openapi-spec-generation`, `error-handling-patterns`, `fastapi-pro`, `fastapi-templates`, `async-python-patterns`, `python-configuration`, `python-observability`, `python-performance-optimization`, `python-resilience`, `postgresql-table-design`, `supabase-postgres-best-practices`, `sql-optimization-patterns`, `database-migration`, `neon`, `neon-postgres`, `data-engineer`, `data-quality-frameworks`, `dbt-transformation-patterns`, `ml-pipeline-workflow` |
-| Auth and payments | `clerk` (a live checkout of `clerk/skills` with its sub-skills), `stripe-integration` |
-| Security and privacy | `api-security-best-practices`, `auth-implementation-patterns`, `secrets-management`, `gdpr-data-handling` |
-| Infrastructure and deployment | `deployment-pipeline-design`, `github-actions-templates`, `docker-expert`, `gcp-cloud-run`, `monorepo-management` |
-| Testing | `e2e-testing-patterns` (Playwright and Cypress) |
-| Marketing and SEO | `seo-audit`, `ai-seo` (citation by AI answer engines), `schema` (JSON-LD), `site-architecture`, `programmatic-seo`, `competitors` (vs and alternative pages), `content-strategy`, `directory-submissions`, `product-marketing` |
-| Domain | `backtesting-frameworks`, `risk-metrics-calculation` |
-| Planning | `working-backwards` (Amazon-style PR/FAQ) |
-| Claude Code tooling | `context-audit` (token waste in your setup), `context7-mcp` (current library docs), `find-skills` (discover and install more skills) |
-
-And these plugins, each asked before installing: `superpowers` (brainstorming, plans, TDD,
-debugging and other process skills), `code-review`, `code-simplifier`, `frontend-design`, `vercel` and
-`codex` (the OpenAI CLI bridge desk-review refutes with). `/desk-setup plugins` switches off, per repo,
-the ones that repo does not need.
-
-PR image upload, GitHub sign-in and Claude's browser (the Playwright MCP desk-pr and desk-dev drive)
-run on desk's own pinned Playwright, which `install.sh` puts in `~/.claude/desk/playwright` with its
-Chromium and `@playwright/mcp`, so they work in every repo; a repo's own Playwright is left to its
-tests. `install.sh` registers the MCP at user level, with `--isolated --storage-state` on the one
-GitHub login `node ~/.claude/desk/bin/github-signin.mjs` saves, and offers to disable the
-`playwright` plugin, whose own server would run beside it signed out. Sign in once per machine, and
-again when GitHub expires the session (about every two weeks); every session in every repo and
-worktree, and every upload, uses that login.
-
-## Skills, one copy each
-
-Every skill on the machine, desk's or anyone else's, has **one real copy** in
-`~/.agents/skills/<name>`; `~/.claude/skills/<name>` is a link to it. No skill is copied into a repo
-or duplicated between the two folders, so there is one thing to update and nothing to drift.
-
-Besides desk's own `desk-*` skills, `install.sh` installs the third-party skills listed in
-[`vendor/sources.json`](vendor/sources.json). Each entry records where the skill came from and
-which version is installed, as one of three source types:
-
-| Type | Use for | Where the files live | "Outdated" means |
-|---|---|---|---|
-| `github` | a skill published in a GitHub repo | `vendor/<name>/`, byte-identical to `{repo, path}` at `pin.commit` | a newer commit touches that path |
-| `drive` | a skill published as a zip in a public Google Drive folder (e.g. Yummy Design's ux/ui skills) | `vendor/<name>/`, unpacked from the zip whose `sha256` is pinned | the folder's file name or modified date changed |
-| `checkout` | your own skills, and upstreams you want to track live | a git clone at `~/.agents/skills/<name>`; nothing in `vendor/`. A repo holding several skills (`subskills`, e.g. `clerk/skills`) is cloned once to `~/.agents/sources/<name>` and each listed sub-skill linked in | `origin/<branch>` has commits you have not pulled |
-
-`vendor/<name>/` is never edited by hand: its `tree_sha256` in `sources.json` is checked by
-`skills-upstream verify`. A local change belongs upstream, in a repo-level override
-(`<repo>/.claude/skills/<name>`, which Claude Code prefers), or, for one every machine should get,
-in a patch: a diff relative to the skill folder under `vendor-patches/`, named in the entry's
-`patches` list. `upgrade` re-applies each patch to the new upstream before it reaches `vendor/`, and
-records the hash after patching; a patch that no longer applies refuses that skill (exit 1) and
-leaves `vendor/<name>` and its pin as they were, so rework the patch and upgrade again.
-
-Claude Code only sees a skill through `~/.claude/skills/<name>/SKILL.md`; an installed copy with no
-link there is "Unknown skill". `skills-upstream links` checks every skill desk installs (`desk-*`,
-`vendor/*` and each `checkout` and its `subskills`) and prints the fix for each gap, usually
-`ln -sfn ~/.agents/skills/<name> ~/.claude/skills/<name>`. A link or folder there that lands on any
-other copy is reported too (SHADOWED), since Claude Code would run that stale copy. A `checkout`'s
-`~/.agents/skills/<name>` must be its clone, or resolve into it for a sub-skill (WRONG COPY otherwise). When `~/.claude/skills` is itself a link
-to `~/.agents/skills` there are no per-skill links, and a gap means the skill is not installed.
-`install.sh` runs it after linking and under `--check`, and `verify` includes it.
-
-`skills-upstream` (installed to `~/.local/bin`, runs from this checkout) manages them:
-
-```bash
-skills-upstream list                  # every tracked skill, its source and pin
-skills-upstream outdated              # compare each pin with its source; exit 10 if any is behind
-skills-upstream upgrade <name>...     # pull the newest upstream into vendor/ (or git pull a checkout)
-skills-upstream upgrade --all
-skills-upstream verify                # vendor/ matches sources.json, installed copies match vendor/, and links
-skills-upstream links                 # every installed skill is reachable as ~/.claude/skills/<name>
-skills-upstream is-clone-of <dir> <owner/repo>   # exact origin test install.sh and links share
-skills-upstream plugins               # installed plugins vs their marketplaces
-skills-upstream rehash                # re-record tree hashes after adding an entry
-```
-
-`upgrade` only writes `vendor/` (review it with `git diff`, then commit and run `./install.sh`); a
-`checkout` upgrade is a `git pull --ff-only` in the clone and leaves nothing to commit here. To
-track a skill that has no entry yet, prove a specific upstream version is byte-identical to the
-installed copy first; a skill whose source cannot be proven stays untracked and is reported as such.
-
-## Skill index: listing skills by name only
-
-Claude Code resends every installed skill's description on every turn and cuts descriptions to fit
-its budget (about 30,000 characters on a machine with ~170 skills, desk's own among those cut). So
-`install.sh` builds a two-level catalogue and, if you agree, lists skills by name only:
-
-- `skills-upstream index` writes `~/.agents/skills/skill-index`: a short map of areas (desk
-  workflow, security and privacy, UX and design, ...) and `areas/<area>.md` with each skill's full
-  description. Claude reads the map, then one area file. Areas come from
-  [`desk/skill-areas.json`](desk/skill-areas.json); a skill no glob matches is reported, so add it there.
-- `skills-upstream index --name-only` (asked by `install.sh`) sets your own and claude.ai skills to
-  `name-only`, lowers `skillListingBudgetFraction` to 0.003, and adds
-  `~/.claude/rules/desk-skill-index.md` pointing at the index. Entries you set yourself are kept.
-- Plugin skills cannot be set name-only, so `/desk-setup` step 4b switches off, **per repo**, the
-  plugins that repo does not need (from its own files, confirmed by you).
-
-Measured 2026-10-02: the listing went from 29,954 to 9,648 characters; 29 of 30 test prompts loaded
-the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo: delete the
-`skillOverrides` entries listed in `~/.claude/desk/skill-index.name-only.json` and
-`skillListingBudgetFraction` from `~/.claude/settings.json`, and the rule file.
-
-## Install
-
-```bash
-./install.sh            # install or update
-./install.sh --check    # report missing tools and unreachable skills, change nothing
-./install.sh --yes      # accept the prompts (not large downloads)
-./install.sh --accept=hook-attribution,plugins --decline=statusline   # answer the prompts named, with no terminal
-./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
-./install.sh --rollback     # go back to the release installed before the current one
-```
-
-It fetches `origin/main` first and installs nothing from another branch, a detached HEAD or a `main`
-behind `origin/main`, saying the branch and how many commits behind; nor when the fetch fails,
-saying the check could not run.
-
-What it does:
-
-- **Writes without asking** (desk's own files; a copy you edited is backed up first):
-  the skills (`~/.agents/skills/desk-*`, linked into `~/.claude/skills`), the subagents and
-  `/userflow` (`~/.claude/agents`, `~/.claude/commands`; a same-named file you already had is backed
-  up), the third-party skills, the scripts (`~/.claude/desk/bin`), `desk-env`, `desk-q`,
-  `desk-jira` and `skills-upstream` (`~/.local/bin`), and the four hook scripts. It also removes the
-  files an older desk installed for its local CI runner, and that runner's launchd jobs.
-- **Asks first** before changing `~/.claude/settings.json` (registering the hooks, adding the
-  always-on deny rules, listing skills by name only), installing plugins, replacing a `desk-jira` it
-  didn't install, registering the Playwright MCP at user level, or disabling the `playwright` plugin.
-
-The four hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
-repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at session start, at
-most once a day) says when this checkout has new commits for `/desk-update` to install, and
-**`desk-handoff.py`** (on prompt submit, after each tool, at turn end, at session start and before a compaction) has a
-session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
-context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
-you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
-
-With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100
-under `env` in `~/.claude/settings.json`; `install.sh` offers to set it at 55 and keeps a value
-already there), nobody types anything: past §2 the session writes its
-handoff and keeps working, Claude Code compacts it on its own, the hook's `PreCompact` step names the
-handoff for the summary, and after the compaction the session is told to read it and carry on. Each
-later crossing refreshes that same handoff, and the turn cannot end until it has. A compaction does
-not mark it consumed, so the session's own later `/clear` still finds it, and from the moment it
-is named no other session's `/clear` takes it. Set §2 below the override, so the handoff is written before the compaction.
-
-**`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
-settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
-task it started is still running, which `claude -p` would kill, and logs a second attempt.
-**`desk-worker-reread.py`** is registered the same way, on the worker's Read calls and on
-compaction. It refuses a worker's Read of a file and range it has already read in this session when
-the file's content (by hash) has not changed since, naming the earlier read. A changed file, a new
-range, a compaction, a subagent's Read or `DESK_ALLOW_REREAD=1` in the environment lets it through.
-**`desk-worker-hints.py`** is registered the same way, on the worker's Bash calls, and only with the
-`wrappers` lever on (config §3b Phase 0 levers). A command the worker's allow-list refuses anyway is
-refused naming the single command that does the same: the command without a `cd` into its own
-worktree, `desk-env lines <file> A,B` for a `sed -n A,Bp` line range, or §4 Unit tests with the one
-test file it ran directly. It only ever denies, and stays silent on any command it cannot be sure of.
-- **Never** writes a repo config. That is `/desk-setup`'s job, per repo.
-
-Requirements (`./install.sh --check` names anything missing):
-
-| Tool | Notes |
-|---|---|
-| Claude Code, `git`, `curl`, `jq`, `node`, `python3` | |
-| `gh` | `gh auth login -s repo,workflow` |
-| `codex` | optional: cross-vendor review. `brew install --cask codex` or `npm i -g @openai/codex`, then `codex login` |
-| `mise` | only for repos that pin tools through it |
-| `lsof` | preinstalled on macOS; `apt install lsof` on Linux |
-| `flock` | optional; a fallback lock is used without it |
-
-## Setting up a repo
-
-Run `/desk-setup` from inside the repo (any worktree of it works). Have ready:
-
-- **A Jira API token**, if the repo uses Jira (<https://id.atlassian.com/manage-profile/security/api-tokens>).
-  You write it to a file yourself when setup asks (the exact commands are below); setup never asks
-  you to paste it into the chat.
-- **Who reviews and owns what** in this repo, if it isn't just you.
-
-What setup does, in order:
-
-| Step | What happens | Your part |
-|---|---|---|
-| 0. Which repo | Says which repo it is configuring and where the config will live. Offers to start from another configured repo's answers. | Pick a starting repo, or start fresh |
-| 1. Detect | Reads the repo and GitHub: default branch, required checks (branch protection **and** rulesets), merge method, lockfiles and scripts (Python under `apps/*` too), env files (names only), recent branch and PR-title conventions, Jira project and workflow states, checks that fail on most PRs. | Correct anything wrong, one table per section |
-| 2. Permissions | One question per capability, four at a time, each with a recommended answer and what it unlocks and exposes. | Answer every row; anything unanswered is `no` |
-| 3. Connectors | Checks that the tools a granted row needs are present (Atlassian, Slack, Figma, Vercel, Playwright). Never calls them. | Connect any that are missing |
-| 4. Harness rules | Adds the always-on deny rules to `~/.claude/settings.json`, then offers allow rules for your `yes` rows, written **only** to this repo's `.claude/settings.local.json` (refused unless git ignores it). | Approve the plan |
-| 4b. Plugins | Works out from the repo's own files which installed plugins it does not need, and switches those off for this repo only. | Confirm the list |
-| 5. Write | Writes the config and prints every row back. | Check the summary |
-
-Re-running `/desk-setup` in a configured repo changes only what you ask to change. Its other forms
-are listed under [This machine and this repo](#this-machine-and-this-repo).
-
-### Jira login, per repo
-
-Each repo's Jira login lives beside its config, so two repos can use two Atlassian sites or two
-accounts. Setup prints these with the real folder filled in; you run them yourself:
-
-```bash
-d="$(desk-jira where --dir)"; mkdir -p "$d" && chmod 700 "$d"
-printf %s you@example.com > "$d/jira-email" && chmod 600 "$d/jira-email"
-printf %s '<api token>' > "$d/atlassian-token" && chmod 600 "$d/atlassian-token"
-desk-jira where && desk-jira whoami      # shows the site, project and login it resolved
-```
-
-A repo with no Jira sets §4 Tracker to `none`; the ticket skills then work from a GitHub issue or a
-plain description, and every Jira step is skipped.
-
-## The config file
-
-```
-~/.config/desk/repos/
-  bigbenjoman__voicepa/
-    config.md            everything desk knows about this repo, and what it may do here
-    jira-email           your Atlassian login for this repo's Jira site (chmod 600)
-    atlassian-token      an API token for it (chmod 600)
-    harness-rules.json   the Claude Code permission rules setup added for this repo
-  bigbenjoman__forewatt/
-    ...
-```
-
-- **One folder per repo**, named from `git remote get-url origin` (`owner__name`, lower-case). Every
-  worktree of a repo finds the same config. `desk-env where` shows which one applies where you are.
-- **Nothing lives in the repo**, so nothing reaches git. The only file desk writes inside a repo is
-  `.claude/settings.local.json` (your allow rules), and only when git ignores it.
-- **A skill run in a repo with no config stops** and offers `/desk-setup`.
-
-What each section holds (template and full rules: [`desk-config.md`](desk-config.md)):
-
-| Section | Holds |
-|---|---|
-| §0 This repo | GitHub repo, default branch, a one-line description |
-| §1 Who you are | name, GitHub handle, Jira email and account, git author, all per repo |
-| §2 Paths | main checkout, worktrees, handoff and backup folders |
-| §3 Permissions | the allowlist: every capability `yes`, `ask` or `no`, answered by you |
-| §3b Cost and autonomy | budgets, concurrency, memory gates, dev-server port |
-| §4 Tracker, tools and team | Jira (or `none`), work id patterns, required and advisory checks, merge holds, merge method, local review command, review bar, review domain experts, clean review verdict, toolchain commands, databases, staging, Vercel, Slack, check-out destination, people by role |
-| §5 Conventions | branch and PR title format, PR body, AI attribution, ticket format, the repo's own instruction files |
-
-### How values are written
-
-Setup writes these for you; this is what to know when you read or edit the file by hand.
-
-| Rule | Example |
-|---|---|
-| The value is what is in backticks; words outside them are notes | `` | Merge method | `squash` (all 20 recent PRs) | `` |
-| A list has **one backtick span per item**, never comma-separated, so a name may contain a comma | `` | Required checks | `Lint, Type Check & Build` `Verify script sign-off` | `` |
-| A command may name the folder it runs in, relative to the repo root. Never write `cd dir && …` | `` | Unit tests | `pnpm turbo run test` `backend: uv run pytest` | `` |
-| `none` means the repo does not have that thing; the step is skipped and said so | `` | Staging | `none` | `` |
-| `TODO` means not answered yet; a skill stops and asks rather than guess. In §3 it means `no` | `` | Designer | `TODO` | `` |
-| §3 permissions are `yes` (standing), `ask` (ask each time) or `no` | `` | `pr-merge-green` | … | `ask` | `` |
-| A merge hold is `<glob>: <why>`, or `<glob>#<key>: <why>` to hold a JSON file only when that key changes; a PR into the default branch touching it is left for you to merge, unless the hold names its routine (`<why>; desk runs: <command>`) and §3 `merge-hold-routine` is `yes`, when the merge driver runs it and merges | `` | Merge holds | `backend/**: build and push the Lambda images first` | `` |
-
-"Green" means one thing everywhere: every required check succeeded on the exact commit (skipped
-does not count), nothing else failed or is still running unless it is listed as advisory, and at
-least one check succeeded. Merges are pinned to that commit.
-
-### How the same rows differ between repos
-
-The point of per-repo config, with examples of what setup found in real repos:
-
-| Row | A pnpm monorepo on Vercel with Neon | A Python-first repo | A repo with no branch protection |
-|---|---|---|---|
-| §4 Tracker / Ticket key pattern | `jira` / `VPL-[0-9]+` | `jira` / `FW-[0-9]+` (keys in PR titles only) | `none` / `none` |
-| §4 Other work id patterns | `P[0-9]+-M[0-9]+(-FIX)?-[0-9]+` | `none` (keyless branches are slugs) | `none` |
-| §4 Required checks | `Verify script sign-off` `Lint, Type Check & Build` | `web-test` | `none` |
-| §4 Advisory checks | `none` | `none` | `Lint code` `Run e2e tests` (red on every PR) |
-| §4 Merge holds | `backend/**: build and push the Lambda images first` | `none` | `none` |
-| §4 Unit tests | `pnpm turbo run test` | `apps/api: uv run pytest` `pnpm turbo run test` | `apps/api: uv run pytest` |
-| §4 Local database | `none` (hosted Neon: workers get no database) | `none` (`apps/api/.env` points at production: blanked for workers) | `postgres container supastarter-postgres` |
-| §5 AI attribution | `allowed` (commits carry Co-Authored-By) | `allowed` | `allowed` |
-
-A repo whose history must stay free of AI attribution sets §5 AI attribution to `forbidden`; the
-hook then refuses Claude trailers in that repo only, and autopilot workers there are not told to add one.
-
-## Checking a repo's setup
-
-```bash
-desk-env where                   # which repo and config apply here; EXISTS=yes once set up
-desk-env show [rules 3 5]        # the config's rules for the agent, headings and tables (never §3c)
-desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
-desk-env list required-checks    # every item of a list row, one per line
-desk-jira where                  # the Jira site, project and login this repo resolves to
-```
-
-**Before the first autopilot batch in a repo**, prove the worker sandbox on this machine. It starts
-one short real `claude -p` with the generated worker settings and checks that the worker can edit
-its own worktree and run every configured toolchain, and cannot touch the main checkout, stash, use
-git aliases or write outside its worktree:
-
-```bash
-AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> preflight
-```
-
-With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
-the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
-A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
-checks that should be OK, is run once more at default effort; a boundary failure is never retried.
-
-With the `ledger` lever on (config §3b Phase 0 levers), every queue write also appends what it
-changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.jsonl`, naming its
-writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
-batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
-first and read by everything; a missed append is reported by the writer and never fails the write.
-Each pass then compares queue.json with the queue rebuilt from the log: its report names each ticket
-field that differs and counts the pass's missed appends, and its line in `passes.jsonl` records both
-counts (`ledger_diffs`, `ledger_missed`). `queue.mjs rebuild [<batch | standing>]` writes the rebuilt
-queue to `queue.rebuilt.json` beside queue.json and prints each field that differs.
-
-The desk-skills test suite runs against throwaway homes and repos, never yours:
-
-```bash
-bash tests/run.sh
-```
-
-It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
-every shell script when shellcheck is installed (it says when it is not). On macOS,
-`/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
-those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
-chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
-it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
-set). One difference from CI: an end-to-end (`L3`) suite the change reaches only through imports,
-claiming no changed file directly, does not run locally; `related.sh` names it as left for CI, which
-still runs it before merge. `related.sh` decides its suites, then takes a test slot (`with-lock.sh test`) before any runs, so it never runs beside the slots'
-holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
-hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
-A run whose suites' seconds in `tests/suite_durations.json` total 300 or less asks as a small run; a
-suite with no record, or every suite, makes it large. Where the machine profile's `light-express-lane`
-row is `on` (`desk-env machine set light-express-lane=on`; off when unset), a small run that finds
-every light slot it may take held starts at once in the light lock's express lane, one slot of its own
-outside `light-lock-max` (`desk-light.lock.express`), whatever the slot lease kind; its lease log grant
-line says `"lane": "express"`.
-`bash tests/run.sh -j 3` runs up to three suites at once, the longest
-in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
-Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
-is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
-seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
-date, suites, job count, wall and CPU seconds, the load average at its start, its scope (`full` or
-`changed`) and why, the worktree it ran in, the lock it ran under with the seconds it waited for
-it, and how many suites `related.sh` left for CI (`left_for_ci`). Every lock wait is in the lease log (`~/.desk-autopilot/machine/leases.log.jsonl`) too: a
-`queued` line as a run starts to wait, then its `grant` or `gave-up` line, each with the class, the
-worktree, the seconds waited, how many other runs wait, the one-minute load average, the free memory
-percentage and the compressed memory in GB (a reading that fails is left `null`). A suite that fails
-runs once more: passing then, the run passes, the suite's report shows its first run's failure, and
-the summary names it under `flaked:` (CI's `tests` job prints each shard's); failing again, the run
-fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
-needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
-A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
-`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK` and `DESK_REQUIRE_PLAYWRIGHT`)
-or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cannot reach a suite.
-
-`bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
-runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory each; head defaults to
-`HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
-output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
-left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
-`spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
-when nothing differs, 1 when something does, and 2 when a run was not compared. With
-`PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
-directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
-in seconds and without replaying a suite. Both trees and every suite run side by side, as each pass
-suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/pass_setup.sh`);
-`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other. A base given as a
-commit is replayed once: its recording is cached under `${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass`
-(the 5 most recently used), keyed by the commit, the node, git and bash versions, the suites and
-`compare_pass.sh`, `compare_pass.mjs`, `suite_env.sh` and the usage probe the recorder holds probe stamps
-by, and a later comparison against it replays
-only the head. A base suite that failed a check or exited non-zero (for want of a tool, or on a busy
-machine) is left out of the entry and replayed on the base next time, and the comparison names the
-check; a base replay that was interrupted, or in which a pass crashed, is not cached at all, and the
-comparison says which suite kept it out. A directory base never is cached, and
-`PASS_CMP_CACHE=0` replays both trees. `test_compare_pass.sh` replays every pass suite against itself
-only on a main push and the nightly run; a pull request and a local run replay
-`test_pass_other_repo.sh` alone, unless `PASS_CMP_FULL=1` opts the run in.
-
-`pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
-is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
-PR bodies it needs included) and returns actions such as `{ type: 'set', key, fields }`. It starts no
-process, calls no git, gh or Jira, and writes nothing. `pass.mjs` runs it through `runPhase`
-(`desk/bin/pass/run-phase.mjs`), which reads the snapshot when the phase starts and carries the
-actions out in order. The `set` and `report` handlers are shared, and anything that does I/O stays in
-`pass.mjs` as a handler. A decision that needs a read only some cases make (a gh call, the usage
-probe), or the result of a write (the issue links it made), is a generator run by `runSteps` instead:
-it yields each read or write as an action and gets the handler's answer back, so each is made only
-where, and in the order, the pass made it before. Advancing running tickets and the usage limit
-(`desk/bin/pass/advance.mjs`) are decided that way, one running ticket at a time, and so is the spawn
-loop (`desk/bin/pass/spawn-loop.mjs`), one candidate at a time: its last action is the verdict (skip,
-record-done, park, hand-away or start), and starting the worker stays in `pass.mjs`. So are failed
-evidence runs on drafts (`desk/bin/pass/evidence-failures.mjs`), which yield filing a fix and starting
-a run again and settle each PR on what came back, and the fix tries (`desk/bin/pass/fix-tries.mjs`),
-one ready PR at a time, whose `reads` action hands fix-tries.mjs's calls the reads they make only
-where they need them. Every park and
-hold a pass settles (`desk/bin/pass/parks.mjs`: parks whose clears-when holds, parks waiting on the
-base, person-step, date, outside and merge holds) has one decision for each point in the pass where it
-runs, each called there. So is the base gate (`desk/bin/pass/base-gate.mjs`), whose last action
-says whether it keeps the batch from idle. Each phase has its
-own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
-fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
-the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
-false, its session ids null) when it failed, never as a registry with no sessions. The pure helpers
-more than one phase calls live in that module too (`tests/test_pass_shared.mjs`); a phase imports
-them from there, never from `pass.mjs`. The batch base sync and its baseline checks
-(`desk/bin/pass/batch-base.mjs`) are generators too: the sync's `synced` action hands what it settled
-(the spawn hold, the base worktree, the base fix try) back to `pass.mjs` for the sections after it.
-
-CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
-(`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
-shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers and fixtures,
-`install.sh` and `desk-config.md` run the suites that name them. A change that only adds exports to
-`desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
-a file no suite names, `tests/run.sh`, `scope_sections.mjs` and the `desk/bin/untracked.mjs` it
-reads, any other change to `desk-env.mjs`, CI itself, or a deletion. `tests/related.sh`, which
-decides for the working tree, leaves out the files desk itself leaves untracked there (that module's
-list: a desk-ticket resume file, a desk-review run's scratch files). Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
-shards (the `macOS` workflow, not a required check). Every run, pull requests included, uses
-Node 24, the version desk runs on. The `macOS` workflow's nightly run only runs the suite when no
-macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
-cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
-owner, and `/desk-needs-you` lists it for them.
-
-The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
-suite's duration on main's latest push run (its `suite-durations` artifact), or, when none can be
-fetched, the committed `tests/suite_durations.json`, and it says which. Each shard runs three suites
-at once, so it plans six times three lanes; a suite with no duration is planned at the 75th percentile.
-The one check named `tests` passes only when every shard and the bash 3.2 check did, and names each
-failed shard's suites. To refresh the committed durations from a green run on main:
-`gh run view <run id> --log | node tests/plan_shards.mjs --record`.
-
-Every suite has a CPU-second budget in CI: 30 for a `.mjs` suite and 150 for any other, or the N of a
-`# budget: N <ticket>` line (`//` in `.mjs`) in its first ten lines, which `test_lint.sh` requires to
-name a ticket and caps at 600. A suite that does more on a main push than on a pull request (as
-`test_compare_pass.sh` replays every pass suite there) writes `# budget: N (main M) <ticket>`: N on a
-pull request, M on a main push or a local run, and the cap holds N only. A suite over its budget prints a `::warning::`; on a pull request it
-fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push to main never fails on
-a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
-and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
-owner. Neither is `ci-main-red`.
-
-Every suite declares its test layer in one `# layer: <layer>` line (`//` in `.mjs`) in its first ten
-lines, which `test_lint.sh` requires (`node tests/scope_sections.mjs --layers` names any suite
-without exactly one). `L1` is in process: its cases import modules and start no process. `L2` is one
-process boundary: its cases start a desk script or command each. `L3` is end to end: it runs a pass,
-a batch, the merge driver or the installer through.
-
-## Using autopilot
-
-```
+```text
 /desk-autopilot ABC-1005 ABC-1008 ABC-763
 ```
 
-1. **Triage** reads each ticket (read-only) and flags anything it can't do alone.
-2. **Plan** orders the batch so tickets touching the same files don't collide.
-3. **Ask once**: every open question for the batch, in one go.
-4. **Run**: one headless worker per ticket, each in its own worktree and port, limited to the
-   permissions you granted in this repo. A worker gets its own database where the repo has a local
-   one; otherwise its database variables are blanked, so no worker can reach a shared or production
-   database.
-5. **Merge**: if you allowed merging in this repo, each PR is merged with the repo's merge method
-   once it is green at its head, pinned to that commit, one at a time. PRs into the default branch
-   that touch a merge hold are always left for you. The recommended settings leave merging to you, so green PRs are
-   reported instead.
-6. **Park**: anything that needs a person waits, and you get a notification.
+| Stage | What happens |
+|---|---|
+| 1. **Triage** | Reads each ticket, read-only, and flags anything it can't do on its own. |
+| 2. **Plan** | Orders the batch so tickets that touch the same files don't collide. |
+| 3. **Ask once** | Every open question for the whole batch, in one go. Then you can walk away. |
+| 4. **Run** | One headless worker per ticket, each in its own worktree and port, with only the permissions you granted in this repo. Each gets its own database where the repo has a local one. Otherwise its database variables are blanked, so no worker can reach a shared or production database. |
+| 5. **Merge** | Where you allowed it, each PR merges one at a time with the repo's merge method, once it is green at its head. PRs into the default branch that touch a merge-hold path are left for you, unless the hold names a routine you've let desk run. |
+| 6. **Park** | Anything that needs a person waits, and you get one desktop notification. |
 
-**An epic** runs as its open children (`/desk-autopilot ABC-900`). Jira "is blocked by" links are
-honoured: a blocked ticket waits until its blocker's PR merges. Tickets sized L or XL are parked to
-be split. When the last child merges, the epic's own criteria are checked; the epic's status is
-left to you. Bea writes epics in this shape ("Hello Bea, this is an epic"), with an adversarial
-readiness review before you approve them.
+```mermaid
+flowchart TB
+    S[Supervisor<br/>launchd or systemd, every 3 min] --> P[Pass]
+    P --> W1[Worker ABC-1005<br/>worktree, port, DB]
+    P --> W2[Worker ABC-1008<br/>worktree, port, DB]
+    P --> W3[Worker ABC-763<br/>worktree, port, DB]
+    W1 & W2 & W3 --> PRs[Draft PRs]
+    PRs --> MD[Merge driver<br/>green at head, one at a time]
+    P -. parked .-> N[[desk-needs-you<br/>+ one notification]]
+```
 
-Run `/desk-autopilot` again to check progress, answer a parked question or resume. Batch state is
-kept per repo, so two repos can run batches at once. Workers keep going if you close the session.
+- **Epics run as feature batches.** `/desk-autopilot ABC-900` runs the epic's open children on its own
+  feature branch, alongside the standing batch. Jira "is blocked by" links are honoured, L and XL
+  tickets are parked to be split, and the epic's own criteria are checked when the last child merges.
+  [Bea](#subagents) writes epics in this shape ("Hello Bea, this is an epic").
+- **No session needed.** Where a repo's batches are run by the supervisor (setup's default on macOS,
+  and available on Linux with systemd), it runs from launchd or a systemd user timer, so workers keep
+  going after you close Claude Code. On Linux, turn on lingering to keep it going after logout; on
+  WSL, keep a terminal open.
+- **Several repos at once.** Batch state is kept per repo, so two repos can run batches side by side.
+- **Come back any time.** Run `/desk-autopilot` again, or ask "how's the batch going?", to check
+  progress, answer a parked question or resume.
 
-Workers are sandboxed: they start **without your own Claude Code settings** (`--setting-sources
-""`), so a broad allow rule of yours never reaches them. A worker can push only its own branch, and
-cannot merge, undraft, run git config or aliases, use `gh api`, or write outside its worktree.
+Full detail: [docs/guide/autopilot.md](docs/guide/autopilot.md).
+
+## See every queue: `desk-q`
+
+<img src="docs/images/desk-q-repo.png" alt="desk-q queue for one repo: tickets grouped as running, ready, merging, waiting and needs you, with start and ship times" width="900">
+
+<details>
+<summary><b>More desk-q screens</b>: Timeline and Usage</summary>
+<br>
+
+<img src="docs/images/desk-q-timeline.png" alt="desk-q Timeline: a bar per ticket from start to forecast ship time, with check-in markers" width="900">
+
+<img src="docs/images/desk-q-usage.png" alt="desk-q Usage: each Claude and Codex login with its plan and 5-hour and 7-day use, and which login each repo runs on" width="760">
+
+</details>
+
+`desk-q` is a full-screen terminal view of every autopilot queue on the computer. It reads the queues
+straight from their files and changes nothing unless you ask it to (reorder a ticket, change the worker
+count, switch a supervisor), so it is fast and safe to leave open.
+
+| Tab | Shows |
+|---|---|
+| **Queue** | Each repo's unfinished tickets, grouped by state, in spawn order |
+| **Timeline** | A bar per ticket from when it starts to when it should ship, with a bar per epic first |
+| **By day** | Tickets grouped by the day they are forecast to ship |
+| **Epics** | Each epic and the state of its children |
+| **Costs** | This month's charges per repo and supplier (GitHub, Vercel, AWS…) |
+| **Usage** | Every Claude and Codex login on the computer, its plan and how much is used |
+
+```bash
+desk-q                          # every batch; arrow keys, Enter, Esc, 1-6 for tabs
+desk-q storefront               # one repo, by any unique prefix of its name
+desk-q storefront top ABC-763   # move a ticket to the front of the spawn order
+desk-q storefront workers 4     # change the batch's worker count
+desk-q --plain                  # plain text, for pipes
+desk-q --json home              # the same figures as JSON, for scripts
+```
+
+## The skills
+
+**21 skills.** You start the ones with a command. The ones marked *auto* load themselves when you
+say what you want ("open the PR", "move it to review", "reply to the review"). Every one reads this
+repo's config first and does only what its permissions allow.
+
+### Do the work
+
+| Skill | What it does | Start it with |
+|---|---|---|
+| `desk-ticket` | One ticket, from triage to merged PR. It can also do one step on its own: "just push it", "give me the PR body". | `/desk-ticket ABC-123` |
+| `desk-autopilot` | A batch of tickets, or an epic's children, with one detached worker each, merged as each goes green. | `/desk-autopilot ABC-1 ABC-2` |
+| `desk-admit` | Adds tickets to a running batch after the intake checks (fresh triage, lane, lint, open questions, size, blockers), and says why when it turns one away. | `/desk-admit ABC-7 --front` |
+| `desk-design` | Saves a ticket's Claude Design canvas into the repo, renders every board at each breakpoint, and compares the built UI with it. | `/desk-design ABC-123` |
+| `desk-pr` | Opens or updates the PR: diff hygiene, the body in this repo's sections, before and after screenshots, stacked PRs. | *auto* |
+| `desk-jira` | Every tracker write (create, edit, comment, link, transition), each gated by its own permission. | *auto* |
+| `desk-dev` | Runs the app locally, and against a copy of staging data where the work needs real records. | *auto* |
+
+### Review
+
+| Skill | What it does | Start it with |
+|---|---|---|
+| `desk-review` | Reviews a branch, a PR or every open PR at this repo's bar, with read-only finders, Codex refutation and a ticket check both ways. | `/desk-review`, `/desk-review 460` |
+| `desk-kiss` | Should this change be smaller? Finds scope creep, abstractions with one consumer and comments that narrate, then offers each fix. | `/desk-kiss 460` |
+| `desk-review-response` | Works a reviewer's comments: assess, agree, fix, self-review, reply in the repo's register, resolve. | *auto* |
+
+### Keep things moving
+
+| Skill | What it does | Start it with |
+|---|---|---|
+| `desk-needs-you` | Everything waiting on you, in every repo, four at a time with a recommendation each. | `/desk-needs-you` |
+| `desk-clearance` | Takes your reviewed PRs the rest of the way: comments, threads, branch updates, CI, merge, ticket. | `/desk-clearance` |
+| `desk-groom` | Checks every open ticket and epic for duplicates, work already merged, stale links and blank fields, and proposes each fix with evidence. It writes nothing. | `/desk-groom` |
+| `desk-cleanup` | Merged worktrees, stale branches, ticket statuses that drifted from GitHub, leaked dev servers. | `/desk-cleanup` |
+| `desk-checkout` | Drafts your end-of-day update from calendar, meeting notes, Jira, GitHub, Slack and your sessions. It never sends. | `/desk-checkout` |
+
+### This computer and this repo
+
+| Skill | What it does | Start it with |
+|---|---|---|
+| `desk-setup` | Detects the repo's tracker, checks, toolchain and conventions, asks what desk may do here, and writes the config. | `/desk-setup` |
+| `desk-update` | Brings every skill and plugin up to date, brew-style, showing the diff before each upgrade. | `/desk-update` |
+| `desk-ci` | Decides which CI jobs can safely run self-hosted, lints workflows so no self-hosted job gets a secret, measures CI cost and red rate, and hardens branch protection. | `/desk-ci measure` |
+| `desk-resume` | Carries on from a context handoff after `/clear`. | `/desk-resume` |
+| `desk-reboot` | Gets the computer ready to restart: busy sessions save a handoff, and unsaved worktrees are listed. It never reboots. | `/desk-reboot` |
+| `desk-disk` | When the disk runs low: measures each known offender, explains it, and frees space one approved fix at a time. | `/desk-disk` |
+
+Every command form, flag and permission: [docs/guide/skills.md](docs/guide/skills.md).
+
+### Subagents
+
+Eleven named specialists, available in every repo. Each one reads the repo's config, `CLAUDE.md` and
+stack before it starts, and none assumes a framework. Call one by first name: "Hello Bea", "ask
+Nadia".
+
+| | | |
+|---|---|---|
+| **Ada**, devil's advocate | **Bea**, business analyst (writes tickets and epics) | **Jim**, solution architect |
+| **Karen**, SEO, GEO and AEO | **Lena**, code reviewer | **Mira**, Playwright and E2E |
+| **Muriel**, design to code | **Nadia**, security auditor | **Otto**, IA mapper (`/userflow`) |
+| **Suki**, frontend architect | **Theo**, API designer | |
+
+### Batteries included
+
+`install.sh` also installs **59 third-party skills**, listed with their sources and pins in
+[`vendor/sources.json`](vendor/sources.json), covering UX and UI, React and Next.js, APIs and
+databases, auth and payments, security, infrastructure, testing and SEO. It also offers the
+`superpowers`, `code-review`, `code-simplifier`, `frontend-design`, `vercel` and `codex` plugins.
+`/desk-setup plugins` switches off, per repo, the ones that repo doesn't need. Every skill on the
+computer has [one real copy](docs/guide/install.md#skills-one-copy-each), so there is nothing to drift.
+
+## Safe by default
+
+desk is built to be left alone with a repo. These are the rails:
+
+| Rail | What it means |
+|---|---|
+| **Per-repo permissions** | Every configurable capability is `yes`, `ask` or `no`, answered by you in `/desk-setup`. Anything unanswered is `no`. Allow rules go only in that repo's git-ignored `.claude/settings.local.json`. |
+| **Sandboxed workers** | Autopilot workers start without your own Claude Code settings, so a broad allow rule of yours never reaches them. A worker can push only its own branch, and cannot merge, undraft, run `git config` or aliases, use `gh api`, or write outside its worktree. The preflight checks the worktree and git boundaries on your computer. |
+| **No shared databases** | A worker gets its own local database, or has its database variables blanked. |
+| **Merge holds** | Paths you name, such as infra or migrations, are left for a person to merge, unless the hold names a routine you've let desk run. |
+| **Config outside your repo** | Config lives in `~/.config/desk/repos/<owner>__<name>/`, never in git. The only settings file desk writes in a repo is `.claude/settings.local.json`, and only when git ignores it. |
+| **Secrets stay out of chat** | You write the Jira token to a file yourself. Setup never asks you to paste it. |
+| **AI attribution rules** | A repo can forbid AI co-author trailers, and a hook enforces it there. |
+| **Context handoffs** | Past a set context size, a session writes a handoff, and after `/clear` or a compaction it carries on from it. |
+| **Rollbacks** | Each install is its own release. A release watch compares each auto-released version with the one before, and pins back and opens revert PRs if it does worse. `./install.sh --rollback` does it by hand. |
+
+## Built with itself
+
+desk-skills is developed by its own autopilot. Since 27 September 2026 the repo has merged **over
+1,100 pull requests**, nearly all of them from ticket branches worked through desk itself, reviewed
+by `desk-review` and merged once green. **292 test suites** run in throwaway homes and repos, sharded across
+Linux CI and checked under macOS's bash 3.2.
+
+## Requirements
+
+| Tool | Notes |
+|---|---|
+| Claude Code, `git`, `curl`, `jq`, `node`, `python3` | Required |
+| `gh` | `gh auth login -s repo,workflow` |
+| `codex` | Optional, for cross-vendor review: `brew install --cask codex` or `npm i -g @openai/codex`, then `codex login` |
+| `mise` | Only for repos that pin tools through it |
+| `lsof`, `flock` | `lsof` comes with macOS (`apt install lsof` on Linux). `flock` is optional |
+
+`./install.sh --check` names anything missing and changes nothing. macOS, Linux and WSL are supported.
 
 ## Updating
 
@@ -1136,37 +330,8 @@ cannot merge, undraft, run git config or aliases, use `gh api`, or write outside
 cd ~/desk-skills && git switch main && git pull --ff-only && ./install.sh
 ```
 
-Pull and install only on `main`: a feature branch's files would put unmerged work in every session.
-`main` is protected, so changes to desk-skills go through a PR, never a push to `main`.
-
-Restart Claude Code. Repo configs are kept; if the template gained rows, `/desk-setup` in that repo
-asks only those.
-
-You don't need to remember to check: once a day, the first session you start says when desk-skills
-has new commits.
-
-**`/desk-update`** does all of it brew-style, from any directory: pulls desk-skills (only when the
-checkout is on `main`), runs `skills-upstream outdated`, `verify` and `plugins`, reports one table
-(outdated, drifted, unlinked, unreachable, untracked), says what changed upstream for each, and
-upgrades only what you pick, after showing the diff. Upgrades are committed on a new
-`chore/vendor-<date>` branch cut from `origin/main`, never on the branch you have checked out, and
-installed by the first `/desk-update` after that branch merges. It never pushes the branch without
-asking; when you agree, it pushes `chore/vendor-<date>`, opens a PR into `main` and prints its URL.
-Once that PR is open it closes each older open vendor PR whose every upgrade it repeats or `main`
-already pins at the same commit, naming the new one, and leaves open any other. A run whose upgrades leave `vendor/` as
-`main` has it opens no PR.
-
-## Changing things
-
-- **A permission:** `/desk-setup permissions` in the repo. Revoking also removes the allow rules
-  setup added there, and leaves any rules you wrote yourself.
-- **Any other value:** re-run `/desk-setup` and say what to change, or edit the config file
-  directly (`desk-env where` prints its path) following [How values are written](#how-values-are-written).
-- **Every configured repo:** `/desk-setup list`.
-- **Behaviour:** change it in this repo rather than in your installed copy; `install.sh` backs up
-  local edits before replacing them. [`docs/porting-contract.md`](docs/porting-contract.md) has the
-  rules that keep the skills generic, and [`docs/review-2026-09-27.md`](docs/review-2026-09-27.md)
-  the adversarial review they were hardened against.
+Then restart Claude Code. Or run `/desk-update` from anywhere. Once a day, your first session says when there is something new.
+Repo configs are kept. If the template gained rows, `/desk-setup` asks only those.
 
 ## Troubleshooting
 
@@ -1174,16 +339,21 @@ already pins at the same commit, naming the new one, and leaves open any other. 
 |---|---|
 | A skill says there is no config for this repo | Run `/desk-setup` here. `desk-env where` shows the slug it looked up; a clone with no GitHub `origin` gets a `local__…` slug of its own |
 | A skill stops on a `TODO` | That row was never answered; re-run `/desk-setup` in the repo |
-| `desk-jira` says authentication failed | The token in the repo's folder is wrong or expired; rewrite `atlassian-token` (see [Jira login](#jira-login-per-repo)) |
+| `desk-jira` says authentication failed | The token in the repo's folder is wrong or expired; rewrite `atlassian-token` (see [Jira login](docs/guide/configuration.md#jira-login-per-repo)) |
 | The autopilot preflight fails `ESCAPE` | The worker was not isolated from your own settings: reinstall (`./install.sh`) and re-run the preflight |
 | Claude Code keeps asking before commands | Expected for anything you did not grant as `yes`; grant it per repo with `/desk-setup permissions` |
 | A green PR is never merged by autopilot | It touches a §4 Merge holds path, has outstanding review feedback, has no clean §4 Local review verdict at its head, needs an approving review GitHub requires, or `pr-merge-green`/`autopilot-merge` is not `yes` and merging was not approved for the batch at Stage 3 |
 
-## Origin
+## Documentation
 
-desk-skills began as a copy of studia-skills 2.3, with every company-specific fact moved into the
-per-repo config. The workflow and its safety rails are unchanged, and were hardened by the review in
-`docs/`. `desk-review` and `desk-kiss` are studia-web's `/pullbot` and `/kiss` made repo-generic,
-and the subagents began as studia-web's. Upstream changes are checked from time to time and brought
-back where they are not company-specific; the last check was 3 October 2026.
-[`docs/porting-contract.md`](docs/porting-contract.md) records each mapping.
+| | |
+|---|---|
+| [Skills reference](docs/guide/skills.md) | Every skill, command form and permission, plus subagents and third-party skills |
+| [Autopilot](docs/guide/autopilot.md) | Batches, the worker sandbox, the preflight, the supervisor |
+| [Configuring a repo](docs/guide/configuration.md) | `/desk-setup`, the config file, Jira logins, changing things |
+| [Install and update](docs/guide/install.md) | What `install.sh` does, hooks, updating, the skill index |
+| [Skill evals and benchmarks](docs/guide/benchmarks.md) | Proving a skill earns its place, and comparing models on real tickets |
+| [Developing desk-skills](docs/guide/development.md) | Tests, CI, and how the pass is built |
+
+desk-skills began as studia-skills 2.3, with every company-specific fact moved into the per-repo
+config. [`docs/porting-contract.md`](docs/porting-contract.md) records each mapping.

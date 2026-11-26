@@ -56,8 +56,10 @@ full run only where CI does not run the full suite, or to reproduce a CI failure
 An autopilot worker still runs its suites as above.
 
 Where §4 Suite weight (`desk-env get suite-weight`) is `light`, `with-lock.sh test` runs the suite
-under a light lock of its own instead, one run at a time across the machine, so it neither holds nor
-waits behind the heavy suites and typechecks on the test lock. Run it the same way; typechecks still
+under a light lock of its own instead, as many runs at once across the machine as §3b "Light lock
+slots" (`desk-env get light-lock-slots`; one where unset, and one while available memory is under
+the spawn gate's start), so it neither holds nor waits behind the heavy suites and typechecks on the
+test lock. Run it the same way; typechecks still
 take the test lock.
 
 A typecheck is often a single multi-GB process; take the same lock for it

@@ -313,6 +313,28 @@ export function ledgerLine({ check, missed, queueBin }) {
   return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
 }
 
+// The ledger-record lever's line, or null when there is nothing to say. `restore` is queue-ledger.mjs
+// restoreQueue's result this pass, { error } when it did not run, or null with record mode off;
+// `ignored` is the lever on without the ledger lever (queue-ledger.mjs recordMode).
+export function recordLine({ restore, ignored }) {
+  if (ignored) return 'ledger: the ledger-record lever is ignored: it needs the ledger lever on as well, so queue.json is written as before';
+  if (!restore) return null;
+  if (restore.error) return `ledger: queue.json could not be checked against the log, so it was not restored (${restore.error})`;
+  if (restore.restored === 'missing') return `ledger: queue.json was missing, so it was rebuilt from the log (${restore.tickets.length} ticket(s))`;
+  if (restore.restored === 'behind' && restore.tickets.length) {
+    const named = restore.tickets.slice(0, LEDGER_SHOWN).join(', ');
+    const more = restore.tickets.length > LEDGER_SHOWN ? `, and ${restore.tickets.length - LEDGER_SHOWN} more` : '';
+    return `ledger: queue.json was behind the log, so it was rebuilt from it: ${named}${more}`;
+  }
+  return null;
+}
+
+// The line every pass stops with while queue.json carries queue-ledger.mjs REBUILT_MARK, `mark`: it
+// was rebuilt whole from the log, which holds none of the batch's own fields.
+export function rebuiltLine(mark, queueBin) {
+  return `ledger: queue.json was missing, so it was rebuilt from the log at ${mark.at ?? '?'} (${mark.tickets ?? '?'} ticket(s)); the log holds no batch fields (base, concurrency, supervised, …), so the pass stops until they are set again: run node ${queueBin} set-batch with each the batch had and rebuilt_from_log=null, then run the pass again`;
+}
+
 // ---- merges recorded with no PR ------------------------------------------------
 // Each merge recorded with its PR missing (queue.mjs merged run with no --pr, by an older caller) among
 // `tickets`, as `<key>@<merge time>`: a ticket merged again with its PR missing is a second one.
@@ -329,6 +351,20 @@ export function mergeGapLine(tickets, reported = []) {
   const keys = tickets.filter((t) => t?.merge && typeof t.merge === 'object' && t.merge.pr == null && !seen.has(`${t.key}@${t.merge.at}`)).map((t) => t.key);
   if (!keys.length) return null;
   return `merges: ${keys.length} recorded with the PR missing (${keys.join(', ')}): queue.mjs merged was run with no --pr, so the merge names no PR`;
+}
+
+// The line for the tickets the lock-queue gate held this pass (`held`, keys), or null with none. `gate`
+// is suite-wait.mjs lockGate's reading, `running` the workers running now and `concurrency` the batch's
+// cap. With a run waiting on a queue it is a stall, the gate's line. With none waiting on any, the room
+// went to this pass's own suite-bound starts (the cap is checked before the gate, so it held none of
+// these): a wait for the next pass, which names the workers running against the cap beside it, not a
+// stall. -> { line, stall }.
+export function lockHeldLine({ gate, held, running, concurrency }) {
+  if (!held.length || !gate) return null;
+  if (gate.queues?.some((q) => q.waiting > 0) ?? true) {
+    return { stall: true, line: `${gate.line}: holding new workers and resumes into Stage 4 (${held.join(', ')}), past the ${gate.room} this pass had room for` };
+  }
+  return { stall: false, line: `held for the next pass, not a stall (${held.join(', ')}): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; ${running} worker(s) running against the batch's cap of ${concurrency}` };
 }
 
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.

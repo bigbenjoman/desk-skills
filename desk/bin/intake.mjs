@@ -86,7 +86,7 @@ import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, pr
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
-import { DRAFTED_NOTE, changesClause, draftedCriteria, fillTicket, noTestableOutcome } from './ticket-fill.mjs';
+import { DRAFTED_NOTE, changesClause, draftedCriteria, fillTicket, noTestableOutcome, numberedCriteria } from './ticket-fill.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -139,9 +139,12 @@ const rendersNothing = (r) => {
   if (r.renders !== false) return '';
   return ` — triage found nothing renders${changesClause(r)}; write "No UI." with that reason in its Design section, then admit it again`;
 };
-// No acceptance criteria: the ones triage drafted from the ticket's goal and proposal, to write as they
-// are, or that its text states no testable outcome, which only the person can settle.
+// No acceptance criteria: its own unlabelled Given/When/Then lines numbered, or the ones triage drafted
+// from the ticket's goal and proposal, to write as they are, or that its text states no testable
+// outcome, which only the person can settle.
 const criteriaDrafted = (r) => {
+  const own = numberedCriteria(r);
+  if (own) return `; write them as they are: ${own.map((c, i) => `AC${i + 1}: ${c}`).join(' · ')}`;
   const drafted = draftedCriteria(r);
   if (drafted?.length) return ` — triage drafted ${drafted.length} from its goal and proposal; write them as its Acceptance criteria, under "${DRAFTED_NOTE}", then admit it again: ${drafted.map((c, i) => `AC${i + 1}: ${c}`).join(' · ')}`;
   return noTestableOutcome(r) ? ' — its text states no testable outcome, so desk drafted none: the person writes them (asked on /desk-needs-you)' : '';

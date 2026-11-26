@@ -104,6 +104,7 @@ function put(name, r) {
     `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.holds ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Merge holds | ${r.holds.map((h) => `\`${h}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
@@ -489,6 +490,25 @@ const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
   'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red | 2');
+// DS-1015: where §3 grants merging and a session runs the batch's passes with no merge driver, a green
+// PR waits on whoever merges for the batch, not on the person; without the grant it is still theirs.
+const green1015 = { state: 'done', lane: 'A', result: { pr: 71 }, pr_status: { pr: 71, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } };
+put('granted1015', { port: 3710, beat: 1, merge: 'yes', tickets: { 'G-1': green1015 } });
+put('ungranted1015', { port: 3720, beat: 1, tickets: { 'G-1': green1015 } });
+const g1015 = N.collect({ word: 'granted1015' }), u1015 = N.collect({ word: 'ungranted1015' });
+t('DS-1015 AC1 a green PR in a granted session-run batch with no merge driver is not the person\'s to merge',
+  `${g1015.items.map((i) => i.need).join(' | ')}|${needsRows(g1015.named).length} ${g1015.named?.ctx?.batchMerges}`, '|0 true');
+t('DS-1015 AC2 with the merge rows not yes, a green PR keeps today\'s wording', u1015.items.map((i) => i.need).join(' | '),
+  'PR #71 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done.');
+t('DS-1015 AC3 needs-you shows the PR as desk-q\'s Merging row does, outside the person\'s items, in the list and its JSON',
+  `${N.listText(g1015)} | ${JSON.stringify(N.listItems({ word: 'granted1015', reads: null }).moving)} | ${/Moves without you/.test(N.listText(u1015))}`,
+  'Nothing needs you in granted1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch.'
+  + ' | [{"batch":"granted1015","key":"G-1","pr":71,"text":"1 check passed · waits on whoever merges for the batch"}] | false');
+// With §4 Merge holds set no driver has read the PR's files against them, so the words say a hold makes it the person's.
+put('holds1015', { port: 3730, beat: 1, merge: 'yes', holds: ['backend/**: build the images first'], tickets: { 'G-1': green1015 } });
+t('DS-1015 a granted batch with merge holds and no merge driver says a hold covering its files makes the PR the person\'s',
+  N.listText(N.collect({ word: 'holds1015' })),
+  'Nothing needs you in holds1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch, or on you where a merge hold covers its files.');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 // DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.
@@ -610,6 +630,18 @@ t('DS-807 AC1 a park on a file its question asks the person to make is listed wi
   `${f807['F-1']?.need === fileQ} ${f807['F-1']?.actions.map((a) => a[0])[0]}`, 'true resume');
 t('DS-807 AC3 one a script makes is still left out', 'F-2' in f807, false);
 
+// ---- DS-1005: a park stored before its question was read as the person's (no person flag) is listed
+// from its question; a self-clearing one is not.
+const q1005 = 'H-1\'s app needs its npm packages installed to make /w/H-1/desk/ui/package-lock.json, and npm is refused to workers. Please run `npm install` in /w/H-1/desk/ui (the next worker commits the lockfile and runs the tests). Not reached: the push, the draft PR.';
+put('host1005', { port: 4905, beat: 1, supervised: true, tickets: {
+  'H-1': filePark(q1005, { root: 'worktree', path: 'desk/ui/package-lock.json' }),
+  'H-2': { ...parked('A', 30, q1005), park: { ...parked('A', 30, q1005).park, clears_when: { kind: 'pr-merged', pr: 12 } } },
+} });
+const h1005 = Object.fromEntries(N.collect({ word: 'host1005' }).items.map((i) => [i.t.key, i]));
+t('DS-1005 AC2 a park asking for a host-side step on a file no pass makes is listed with the step, and resume',
+  `${h1005['H-1']?.need} ${h1005['H-1']?.actions.map((a) => a[0])[0]}`, `${q1005.replace(/ Not reached:.*$/, '')} resume`);
+t('DS-1005 AC3 one on a PR merging is still left out', 'H-2' in h1005, false);
+
 // ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
 const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const review586 = (login, sha, lines) => ({ author: { login }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${lines.length} unrefuted=0 partial=0 vendor=codex round=1 -->\n## desk-review: ${lines.length} requirement gaps\n\n### Requirement gaps\n${lines.map((l) => `- ${l}`).join('\n')}\n` });
@@ -652,6 +684,24 @@ const pgCall = 'Accept AC2 as built';
 const pgr = here('record', 'pg', 'PG-1', 'answer', pgCall);
 const pgq = queueOf('pg').tickets['PG-1'];
 t('DS-513 AC1 the call is posted and a worker is queued on the ready PR', `${pgr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 85 --repo acme/pg --body')} ${pgq.state} ${pgq.fix?.kind} ${pgq.fix?.ready} ${pgq.fix?.answer === pgCall}`, '0 true triaged gaps true true');
+
+// ---- #1434: a gap only the person's own comment accepts gets the ready comment, never a call desk posts.
+const ACC_GAP = 'PERSON\'S CALL · AC3: "the pass requeues it" — only a live run can check it. Recommended: accept AC3 as built';
+put('acc', { handle: 'me', port: 4211, beat: 1, supervised: true, tickets: {
+  'AC-1': readyPr(71, { stuck: { why: `review gaps only you can settle: ${ACC_GAP}`, pr: 71, head: 'h71' } }),
+  'AC-2': readyPr(72, { stuck: { why: `review gaps only you can settle: ${ACC_GAP}; PERSON'S CALL · AC4: "rows sort by date" — the ticket names no order`, pr: 72, head: 'h72' } }),
+  'AC-3': draftPr(73, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=1)`, action: 'settle the gaps on #73' }),
+} });
+onGitHub(73, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: SHA586, reviews: [review586('me', SHA586, [ACC_GAP])] });
+onGitHub(71, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: 'h71', body: '## Testing\n\n- AC3: covered by the requeue test in tests/test_x.mjs\n- AC4: rows sort by name\n' });
+const acc = Object.fromEntries(N.collect({ word: 'acc' }).items.map((i) => [i.t.key, i]));
+const READY = `gh pr comment 71 --repo acme/acc --body 'I accept this requirement gap as it stands on this PR:\n- AC3: "the pass requeues it"'`;
+t('#1434 AC2 a ready PR on a gap only the person accepts names the PR, the criterion, the evidence and the ready comment', acc['AC-1']?.need,
+  `PR #71's code review left a requirement gap only you can accept: AC3 ("the pass requeues it"), where the review found: only a live run can check it, and the PR's evidence for it: "AC3: covered by the requeue test in tests/test_x.mjs". Only your own comment can accept it, so desk applies no default; the rest of the evidence is in the PR body's Testing and Evidence sections on https://github.com/acme/acc/pull/71 and its checks on https://github.com/acme/acc/pull/71/checks. Post this yourself: ${READY}; the next pass then sends the PR to a worker that records it.`);
+t('#1434 AC1 it offers no answer desk would post, and no default', acc['AC-1']?.actions.map((a) => a[0]).join(), 'not-now,resume');
+t('#1434 AC1 beside a gap the person settles another way, answer stays for that one and the ready comment is still given', `${acc['AC-2']?.actions.map((a) => a[0])[0]} ${acc['AC-2']?.need.includes('settle: PERSON\'S CALL · AC4')} ${acc['AC-2']?.need.includes('It also left a requirement gap only you can accept: AC3')} ${acc['AC-2']?.need.includes('gh pr comment 72 --repo acme/acc')}`, 'answer true true true');
+t('#1434 AC2 where the PR body cannot be read, the need still says where the evidence is', `${acc['AC-2']?.need.includes('and the PR\'s evidence for it')} ${acc['AC-2']?.need.includes('Testing and Evidence sections on https://github.com/acme/acc/pull/72')}`, 'false true');
+t('#1434 AC2 a draft on such a gap gives the ready comment too, and offers no answer', `${acc['AC-3']?.need.includes('The gap only you can accept: AC3 ("the pass requeues it")')} ${acc['AC-3']?.need.includes('gh pr comment 73 --repo acme/acc')} ${acc['AC-3']?.actions.map((a) => a[0]).join()}`, 'true true not-now,resume');
 
 put('instr', { port: 4210, beat: 1, supervised: true, tickets: {
   'SG-1': { ...draftPr(91, passed, { call: 'person', why: 'its review verdict at abc123456 is not clean (gaps=1)', action: 'settle the gaps on #91' }), branch: 'fix/SG-1-x' },
@@ -763,6 +813,10 @@ t('DS-806 AC1 AC3 AC4 a stopped worker\'s park, with no reason of its own, is li
 t('DS-806 AC2 its resume reason is plain words, the "@aws-sdk" it names being no aws command', firstOf('K-10'), 'resume (a worker finishes it once it has your answer)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
+const accWait = presort([{ kind: 'waiting', ticket: 'K-1', text: 'K-1: STUCK — PR #9: review gaps only you can settle: PERSON\'S CALL · AC3: "x" — only a live run checks it. Recommended: accept AC3 as built' }]);
+t('#1434 AC1 the decider hands on a gap only the person\'s own comment accepts, and takes nothing for it', `${accWait.hand.length} ${accWait.ask.length} ${/own GitHub handle/.test(accWait.hand[0]?.why ?? '')}`, '1 0 true');
+t('#1434 AC1 so does a park marking acceptance as its recommendation', presort([{ kind: 'parked', lane: 'A', text: 'PR #9\'s review gap on AC3: accept it as built (recommended), or amend AC3?' }]).hand.length, 1);
+t('#1434 a review gap whose pick is not to accept it goes to the decider as before', presort([{ kind: 'parked', lane: 'A', text: 'PR #9\'s review gap on AC3: amend AC3 to the shipped wording (recommended), or accept it?' }]).ask.length, 1);
 t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, `stopped drop,open,not-now ${SESSION_REASON}`);
 t('DS-556 AC3 a stopped worker whose park says it has no worker work, in no lane C, recommends drop over requeue', `${kappa['K-9']?.kind} ${firstOf('K-9')} ${offers('K-9')} ${kappa['K-9']?.actions[1][2]}`,
   `stopped drop (its worker says nothing is left for a worker to do, so sending it back would only stop it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is) drop,requeue,not-now its worker gave up; requeue sends it back for a new worker to start again`);
@@ -3850,7 +3904,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const stalled = (w) => N.collect({ word: w }).items.filter((i) => i.kind === 'stalled');
   const s = stalled('stall911');
   t('#911 one item for the batch, naming its last pass and how to resume it', s.length === 1 && s[0].t.key === 'stalled'
-    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
+    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The loop lost its next tick, and the session could not re-arm it: it has taken no turn since \d{4}-\d\d-\d\d \d\d:\d\d UTC, when it was due to: resume the session, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
   t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago. Running workers carry on.');
   t('#911 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
   const standing = () => loadRepos(Date.now(), 'stall911').find((r) => r.slug === 'acme__stall911' && r.batch == null);

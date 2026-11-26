@@ -68,6 +68,10 @@ mlog(){ cat "$T/maint/maintenance.log" 2>/dev/null; }
 fetched(){ node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).fetched_at ?? "") } catch { console.log("") }' "$T/maint/release.json"; }
 installed(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).commit)' "$T/desk/installed.json"; }
 pushes(){ node -e 'console.log(JSON.parse(process.argv[1]).push.length)' "$out"; }
+# waiting <field>: release.json's wait on Stage 7 sessions (passes: the most any one repo counted).
+waiting(){ node -e 'try { const w = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).waiting; console.log(w == null ? "" : process.argv[2] === "passes" ? Math.max(...Object.values(w.passes)) : w[process.argv[2]]) } catch { console.log("") }' "$T/maint/release.json" "$1"; }
+# unwait: forgets the wait, so a case that holds the install starts its count afresh.
+unwait(){ node -e 'const f = process.argv[1], fs = require("fs"); const s = JSON.parse(fs.readFileSync(f, "utf8")); delete s.waiting; fs.writeFileSync(f, JSON.stringify(s))' "$T/maint/release.json"; }
 # One step at the given time: $out is its JSON.
 step(){ out=$(DESK_MAINT_NOW="$1" node "$B/maintenance.mjs" step 2>&1); }
 
@@ -109,17 +113,19 @@ printf '{"version":1,"batch":"o","tickets":{"O-1":{"key":"O-1","state":"running"
 step 2026-10-27T09:15:00Z
 check "AC4 the install waits"                               '[ "$(srchead)" = "$old" ] && [ "$(calls install)" = 0 ]'
 check "AC3 once origin/main moves past the failed commit its push stops" '[ "$(pushes)" = 0 ]'
-check "AC4 the report names the worker, and only it"        'grep -q "waiting to install it for other O-1 at Stage 7\"" <<< "$out"'
+check "AC4 the report names the worker, and only it"        'grep -q "waiting to install it for other O-1 at Stage 7 (waited" <<< "$out"'
 rm -r "$T/desk/repos"
 printf '{"version":1,"batch":"r","tickets":{"R-1":{"key":"R-1","state":"running","stage":null,"handoff_stage":7}}}\n' > "$T/queue.json"
 step 2026-10-27T09:16:00Z
 check "AC4 a worker started at Stage 7 in this repo's queue holds it too" '[ "$(calls install)" = 0 ] && grep -q "R-1 at Stage 7" <<< "$out"'
 # #773: a ticket handed off to Stage 7 is triaged with its handoff pending until its session starts,
 # keeping the stage its last session reached.
+unwait
 printf '{"version":1,"batch":"r","tickets":{"R-2":{"key":"R-2","state":"triaged","stage":"6/9","handoff":"pending","handoff_stage":"7"},"R-3":{"key":"R-3","state":"triaged","stage":"3/9","handoff":"pending","handoff_stage":"4b"}}}\n' > "$T/queue.json"
 step 2026-10-27T09:16:20Z
-check "#773 a ticket waiting on its Stage 7 session holds the install, named as waiting" '[ "$(calls install)" = 0 ] && grep -q "waiting to install it for .*R-2 waiting on its Stage 7 session\"" <<< "$out" && ! grep -q "R-3" <<< "$out"'
+check "#773 a ticket waiting on its Stage 7 session holds the install, named as waiting" '[ "$(calls install)" = 0 ] && grep -q "waiting to install it for .*R-2 waiting on its Stage 7 session (waited" <<< "$out" && ! grep -q "R-3" <<< "$out"'
 # A pass that harvested the handoff has it in memory before writing it: its view is judged, not the file.
+unwait
 printf '{"version":1,"batch":"r","tickets":{"R-6":{"key":"R-6","state":"running","stage":"6/9"}}}\n' > "$T/queue.json"
 out=$(DESK_MAINT_NOW=2026-10-27T09:16:40Z MAINT_MJS="$B/maintenance.mjs" QF="$T/queue.json" node --input-type=module -e '
   const { maintenance } = await import(process.env.MAINT_MJS);
@@ -233,11 +239,34 @@ step 2026-10-27T10:10:00Z
 check "a merge-commit history counts main's own commits, not each merged branch's" '[ "$fp" != "$all" ] && [ "$(installed)" = "$new" ] && grep -q "release: desk-skills ${was:0:12} -> ${new:0:12} ($fp merge(s) to main) installed" <<< "$out" && ! grep -q "($all " <<< "$out"'
 inst=$(calls install)
 
+# ---- the wait on Stage 7 sessions is bounded: 2 passes or 3 pending merges -----------------------
+printf '{"version":1,"batch":"r","tickets":{"R-7":{"key":"R-7","state":"running","stage":"7/9"}}}\n' > "$T/queue.json"
+was=$(installed); upstream b1; b1=$(originhead)
+step 2026-10-27T10:15:00Z
+check "#1467 AC1 the first wait records when it started and the merges pending" '[ "$(calls install)" = "$inst" ] && [ "$(waiting since)" = 2026-10-27T10:15:00.000Z ] && [ "$(waiting merges)" = 1 ] && [ "$(waiting passes)" = 1 ] && grep -q "waiting to install it for .*R-7 at Stage 7 (waited 0m over 1 pass(es), 1 merge(s) pending; installs anyway past 2 passes or 3 pending merges)" <<< "$out"'
+step 2026-10-27T10:20:00Z
+check "#1467 AC1 the second pass still waits, and says how long it has" '[ "$(calls install)" = "$inst" ] && [ "$(waiting since)" = 2026-10-27T10:15:00.000Z ] && [ "$(waiting passes)" = 2 ] && grep -q "(waited 5m over 2 pass(es), 1 merge(s) pending;" <<< "$out"'
+step 2026-10-27T10:25:00Z
+check "#1467 AC2 past 2 passes it installs with the Stage 7 session running, and says what that session runs" '[ "$(installed)" = "$b1" ] && grep -q "release: desk-skills ${was:0:12} -> ${b1:0:12} (1 merge(s) to main) installed, main.s tests check passed on it; installed past the Stage 7 wait (waited 10m over 3 pass(es), 1 merge(s) pending) with .*R-7 at Stage 7 running: the scripts it has running stay on their release, and its next call to the bin runs this one" <<< "$out" && mlog | grep -q "installed past the Stage 7 wait (waited 10m over 3 pass(es)"'
+check "#1467 AC3 it is one ordinary install, and the wait is cleared" '[ "$(calls install)" = $((inst + 1)) ] && [ -z "$(waiting since)" ]'
+was=$(installed); upstream m1; upstream m2; upstream m3; m3=$(originhead)
+step 2026-10-27T10:30:00Z
+check "#1467 AC2 three pending merges install at once, on the first pass that would wait" '[ "$(installed)" = "$m3" ] && [ "$(calls install)" = $((inst + 2)) ] && grep -q "${was:0:12} -> ${m3:0:12} (3 merge(s) to main) installed, .*installed past the Stage 7 wait (waited 0m over 1 pass(es), 3 merge(s) pending)" <<< "$out"'
+# An install past the bound that fails keeps the wait, so the next pass tries again at once.
+was=$(installed); upstream w1 waitblock.txt; w1=$(originhead); echo mine > "$T/desk-src/waitblock.txt"
+step 2026-10-27T10:35:00Z; step 2026-10-27T10:40:00Z; step 2026-10-27T10:45:00Z
+check "#1467 AC2 a failed install past the bound keeps the wait it had" '[ "$(installed)" = "$was" ] && grep -q "not installed: .*waitblock.txt" <<< "$out" && [ "$(waiting since)" = 2026-10-27T10:35:00.000Z ] && [ "$(waiting passes)" = 2 ]'
+rm "$T/desk-src/waitblock.txt"
+step 2026-10-27T10:50:00Z
+check "#1467 AC2 the next pass installs at once, the wait counted from its start" '[ "$(installed)" = "$w1" ] && grep -q "installed past the Stage 7 wait (waited 15m over 3 pass(es), 1 merge(s) pending)" <<< "$out" && [ -z "$(waiting since)" ]'
+printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
+inst=$(calls install)
+
 # ---- AC8: the maintenance window open ----------------------------------------------------------
 upstream six; new=$(originhead)
-printf '{"week":"x","phase":"draining","since":"2026-10-27T10:29:00.000Z","window":"Mon 06:30 UTC"}\n' > "$T/maint/maintenance.json"
+printf '{"week":"x","phase":"draining","since":"2026-10-27T10:59:00.000Z","window":"Mon 06:30 UTC"}\n' > "$T/maint/maintenance.json"
 printf '{"version":1,"batch":"r","tickets":{"R-2":{"key":"R-2","state":"running","stage":"3/9"}}}\n' > "$T/queue.json"
-step 2026-10-27T10:30:00Z
+step 2026-10-27T11:00:00Z
 check "AC8 an open window: the auto-release does nothing"   '[ "$(calls install)" = "$inst" ] && ! grep -q "release:" <<< "$out" && grep -q "maintenance: draining" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"

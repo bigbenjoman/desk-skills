@@ -155,6 +155,15 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/queue-ledger.mjs')],
     preconditions: [],
   },
+  // Record mode: the log is written first and queue.json restored from it. It has an effect only with
+  // the ledger lever on, and is pinned on once the shadow difference has stayed at zero, never trialled.
+  'ledger-record': {
+    layer: 'low-risk', trialled: false,
+    mechanism: metric('queue.json restores from the log per pass', null),
+    trips: [POST_MERGE_REVERT, ownStepError('queue-ledger.mjs')],
+    code: [code('desk/bin/queue-ledger.mjs'), code('desk/bin/queue-store.mjs')],
+    preconditions: [],
+  },
 });
 
 // The closed list of reason codes a lever log event may carry (lever-log.mjs refuses any other), each

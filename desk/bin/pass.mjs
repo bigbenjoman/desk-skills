@@ -60,7 +60,8 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
 import { leverOnFor } from './lever-pin.mjs';
@@ -75,7 +76,7 @@ import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -83,7 +84,7 @@ import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
 import { recordAsks, measure as measureAsks, ASK_BY_ENV } from './ask-ledger.mjs';
 import { defaultsAtCheckin, defaultAnswer, defaultCall, digestPresented, raisedOf } from './question-arms.mjs';
@@ -98,7 +99,7 @@ import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from '
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, lockHeldLine, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -114,7 +115,8 @@ import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
+import { kindMode, leaseCli, ledgerStarts, releasePreviews, slotPools } from './leases.mjs';
+import { liveWaiters } from './admit-ledger.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLogged } from './asks.mjs';
 import * as GR from './gate-reviewer.mjs';
@@ -197,6 +199,22 @@ const PASS_AT = new Date().toISOString();
 // sooner than the interval would.
 const WOKEN = process.argv.includes('--woken');
 
+// Record mode (queue-ledger.mjs recordMode): a queue.json that is missing or behind the log is restored
+// from it before anything reads it, and the report says so (pass/report.mjs recordLine). One rebuilt
+// whole has none of the batch's own fields, its base among them, which this pass has already read
+// (E.applyBatchBase above), so every pass stops while it carries REBUILT_MARK, until a person has set
+// them again and cleared it.
+const RECORD = recordMode();
+let LEDGER_RESTORE = null;
+if (!DRY && RECORD.on) {
+  try { LEDGER_RESTORE = restoreQueue(QUEUE_FILE, { waitMs: LOCK_WAIT_MS }); }
+  catch (e) { LEDGER_RESTORE = { error: String(e?.message ?? e).split('\n')[0] }; }
+}
+{
+  let mark = null;
+  try { mark = JSON.parse(readFileSync(QUEUE_FILE, 'utf8'))[REBUILT_MARK] ?? null; } catch { /* missing or corrupt: refused below */ }
+  if (mark) refuse(rebuiltLine(mark, join(SHOWN_BIN, 'queue.mjs')));
+}
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
 }
@@ -233,8 +251,11 @@ claim();
 // The lock only exists for the seconds a pass runs, so between passes a second batch's
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
 // A heartbeat per queue file closes that window; queue.mjs treats one fresher than 15 minutes as live.
+// A pass with no --next, as one run by hand is, keeps the loop's session (loopCarried) and the loop's
+// tick still to come (loopTick, as `tick`: `next` stays unset), so it never reads as a stall.
 try {
-  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
+  const prev = lastBeat(STATE, QUEUE_FILE);
+  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT, loop: loopCarried(prev, { next: NEXT }), tick: loopTick(prev, { next: NEXT }) });
 } catch { /* advisory */ }
 
 // A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).
@@ -263,7 +284,7 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
 // nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
 // leases.mjs says to go on without it). A push that fails starts no build, so freeSlot gives back a
 // unit it placed, unless another taker renewed it since, and keeps one it only renewed.
-const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
+const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, lightLockSlots: E.lightLockSlots, psRows: E.psRows };
 const leaseQuiet = (args) => leaseCli(args, { env: LEASE_ENV, out: () => {}, err: () => {} });
 function previewSlot(t, branch) {
   if (DRY || !E.previewSlotArgs('', 0)) return {};
@@ -302,8 +323,11 @@ function refusedLine(args, refused, why) {
 }
 // The report lines of one queue-writer.mjs flush: each change a refused write did not record, or each
 // field another writer had changed meanwhile, whose value stays; and done tickets left unarchived.
+// LEDGER_LEGACY counts the legacy_set events record mode appended for them, which record mode keeps.
+let LEDGER_LEGACY = 0;
 function writeLines(r) {
   if (!r.ok) return r.lost.map((args) => refusedLine(args, 'not recorded', r.why));
+  LEDGER_LEGACY += r.ledgerLegacy ?? 0;
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
@@ -1517,6 +1541,48 @@ const runClears = (onBase) => runSteps({
 });
 runClears(false);
 
+// ---- review gaps the person accepted on the PR ------------------------------------
+// A PR left for the person on gaps only their own comment accepts (accept-gaps.mjs) is read each pass;
+// once a comment or review from the §1 GitHub handle accepts one, the ticket goes back to a worker on
+// the PR, whoever runs the batch, to post the review's verdict again with it accepted (fix-tries.mjs
+// acceptedFix). A read that fails leaves it for the next pass. Where config §3 accept-review-gaps is yes,
+// the pass posts that acceptance itself as the handle (fix-tries.mjs grantedPost), then reads the PR
+// again, so only what GitHub shows from the handle requeues it.
+const acceptGrant = E.permission('accept-review-gaps') === 'yes';
+const readAccepting = (n) => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,isDraft,headRefOid,body,comments,reviews']));
+for (const t of Object.values(queue().tickets)) {
+  if (t.state === 'running' || t.state === 'queued' || !awaitsAcceptance(t)) continue;
+  const n = t.result.pr;
+  let v;
+  try { v = readAccepting(n); } catch (e) {
+    report.waiting.push(`${t.key}: PR #${n} waits on the person accepting review gaps, and whether they have could not be read (${e.message}): the next pass reads it again`);
+    continue;
+  }
+  let c = acceptedFix(t, v, { logins: conflictHandle });
+  const post = !c && acceptGrant ? grantedPost(t, v, { logins: conflictHandle }) : null;
+  if (post) {
+    const named = post.gaps.map((g) => gapParts(g).ac ?? 'a gap').join(', ');
+    if (DRY) { report.recovered.push(`${t.key} (dry run): would accept ${named} on PR #${n} under config §3 accept-review-gaps, then requeue it`); continue; }
+    const r = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', post.body]);
+    if (!r.ok) { report.waiting.push(`${t.key}: config §3 accept-review-gaps is yes, but posting the acceptance of ${named} on PR #${n} was refused (${lastLine(r.out)}): the next pass tries again`); continue; }
+    try { v = readAccepting(n); } catch (e) {
+      report.waiting.push(`${t.key}: accepted ${named} on PR #${n} under config §3 accept-review-gaps, but the PR could not be read again (${e.message}): the next pass requeues it`);
+      continue;
+    }
+    c = acceptedFix(t, v, { logins: conflictHandle });
+    if (!c) { report.waiting.push(`${t.key}: accepted ${named} on PR #${n} under config §3 accept-review-gaps, but the PR does not show it from ${conflictHandle.split(',')[0]}: check which account gh is signed in as`); continue; }
+  }
+  if (!c) continue;
+  const named = c.acceptance.gaps.map((g) => gapParts(g).ac ?? 'a gap').join(', ');
+  const said = `${c.acceptance.by} accepted ${named} on PR #${n}${c.acceptance.url ? ` (${c.acceptance.url})` : ''}`;
+  if (DRY) { report.recovered.push(`${t.key} (dry run): ${said}; would requeue it for a worker on the PR to record it`); continue; }
+  const fc = fixClass(c.fix, t);
+  q('set', t.key, `fix=${JSON.stringify({ ...c.fix, class: fc.class, class_rule: fc.class_rule, at: PASS_AT })}`);
+  const rq = qRun(['requeue', t.key]);
+  if (!rq.ok) { q('set', t.key, 'fix=null'); report.waiting.push(`${t.key}: ${said}, but the requeue was refused (${lastLine(rq.out)}): the next pass tries again`); continue; }
+  report.recovered.push(`${t.key}: ${said}: requeued for a worker on the PR to post the review's verdict again with it accepted`);
+}
+
 // ---- routine recoveries (recoveries.mjs) ------------------------------------------
 // A park the pass settles by script, before any decider or person is asked: a branch whose change a
 // merged PR already holds is dropped and the ticket recorded done; a refused push or draft PR is
@@ -2279,6 +2345,9 @@ const concurrency = CONC.n;
 // not be held by this machine's real queue.
 const SUITE_STAGES = ['4', '4b'];
 const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
+  // The waiting markers of runs that have exited are removed first, so no reader of a lock's queue
+  // counts them (admit-ledger.mjs liveWaiters).
+  for (const l of ['test', 'light']) liveWaiters(l, E.lockDir(), { startsOf: (pids) => ledgerStarts(pids, E.psRows) });
   const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
   let slug = null;
   try { slug = E.repoSlug(); } catch { /* no slug: this repo is still listed, by its checkout */ }
@@ -2316,32 +2385,38 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   try { light = E.configValue('suite-weight') === 'light'; } catch { /* unread: heavy, the default */ }
   return lockGate([
     queueOf('test', pools?.heavy.current ?? E.testLockSlots()),
-    light ? queueOf('light', pools?.light.current ?? 1) : null,
+    light ? queueOf('light', pools?.light.current ?? E.lightLockSlots()) : null,
   ]);
 })();
 // The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
 // resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
 const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
-// Bound for the suites: a local session that starts at Stage 0 or one that runs suites: a killed worker
-// last at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
-// resumes only in a kept worktree).
+// Bound for the suites: a local session that starts at Stage 0 ('fresh') or one that runs suites
+// ('suite'): an unfinished fix try, a killed worker last at Stage 4 or 4b, a handoff to 4b, or a requeue
+// resuming its last round there (resumeRound, which resumes only in a kept worktree). Null otherwise.
 const suiteBound = (r) => {
-  if (runsInCloud(r)) return false;
-  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
-  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
+  if (runsInCloud(r)) return null;
+  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage)) ? 'suite' : null;
+  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage)) ? 'suite' : null;
+  if (r.fix && !r.fix.finished) return 'suite';
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
-  return !round || SUITE_STAGES.includes(round);
+  return !round ? 'fresh' : SUITE_STAGES.includes(round) ? 'suite' : null;
 };
-// The gate's room left this pass: each suite-bound ticket let through uses one, and once none is left
-// the rest are held. A ticket skipped later in the pass keeps its unit used, which errs on the side of
-// starting fewer.
-let lockRoom = LOCK_QUEUE?.room ?? Infinity;
-const lockQueueHolds = (r) => {
-  if (!suiteBound(r)) return false;
-  if (lockRoom <= 0) return true;
-  lockRoom -= 1;
+// Each lock queue's room left this pass: each suite-bound ticket let through uses one of every queue it
+// would join, and once one has none left the tickets bound for it are held. A fresh session joins only
+// the test lock's queue (its typechecks): its suites are a stage away, so a full light queue holds only
+// the tickets whose next step is a suite. A ticket skipped later in the pass keeps its units used, which
+// errs on the side of starting fewer.
+const lockRoom = Object.fromEntries(['test', 'light'].map((l) => [l, LOCK_QUEUE?.queues.find((q) => q.lock === l)?.room ?? Infinity]));
+const takeLockRoom = (locks) => {
+  if (locks.some((l) => lockRoom[l] <= 0)) return true;
+  for (const l of locks) lockRoom[l] -= 1;
   return false;
+};
+const lockQueueHolds = (r) => {
+  const bound = suiteBound(r);
+  return !!bound && takeLockRoom(bound === 'fresh' ? ['test'] : ['test', 'light']);
 };
 const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
@@ -3429,8 +3504,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
       : { ticket: baseFixTicket, brief: baseFixBrief, task: baseFixTask };
   // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
   // first: with room for one, a pass starts the base try or a ticket, not both.
-  if (lockRoom <= 0) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
-  lockRoom -= 1;
+  if (takeLockRoom(['test', 'light'])) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();
@@ -4033,10 +4107,9 @@ for (const t of spawnable) {
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
 }
-const lockQueueHeldText = lockQueueHeld.length
-  ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}), past the ${LOCK_QUEUE.room} this pass had room for`
-  : null;
-if (lockQueueHeldText) report.stalled.push(lockQueueHeldText);
+const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
+const lockQueueHeldText = LOCK_HELD?.line ?? null;
+if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waiting'].push(LOCK_HELD.line);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
 // moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
 if (!DRY) {
@@ -4247,12 +4320,13 @@ runSteps({
 }
 
 // ---- candidates for a free slot ---------------------------------------------
-// With config §3b "Propose candidates for a free slot" on, a standing batch the supervisor runs, with a
-// slot free and nothing ready to take it, lists what could be admitted (candidates.mjs slotLines). It
-// lists only: /desk-admit admits.
+// A standing batch the supervisor runs, with a slot free and nothing ready to take it, names the
+// person's own unstarted assigned tickets as ready to admit, and with config §3b "Propose candidates
+// for a free slot" on, the unassigned ones too (candidates.mjs slotLines). It lists only: /desk-admit
+// admits.
 if (onJira && !E.batchName() && queue().supervised === true && running.length < concurrency && !spawnable.length
-  && !lowMemory && !MAINT.hold && slotCandidatesOn()) {
-  epicLines.push(...slotLines({ state: STATE, dry: DRY }));
+  && !lowMemory && !MAINT.hold) {
+  epicLines.push(...slotLines({ state: STATE, dry: DRY, ownOnly: !slotCandidatesOn() }));
 }
 
 // ---- outside holds -------------------------------------------------------
@@ -6115,9 +6189,14 @@ if (!DRY && ledgerOn()) {
   catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
   const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
   if (l) lines.push(l);
-  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers };
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers,
+    ...(RECORD.on ? { ledger_legacy: LEDGER_LEGACY } : {}) };
   // What each ask's steps cost in tokens, each step once its figures can be read (ask-ledger.mjs measure).
   lines.push(...measureAsks(STATE, { queue: QUEUE_FILE, on: true, by: 'pass' }));
+}
+{
+  const l = DRY ? null : recordLine({ restore: LEDGER_RESTORE, ignored: RECORD.ignored });
+  if (l) lines.push(l);
 }
 
 // ---- pass metrics ------------------------------------------------------------
@@ -6167,7 +6246,7 @@ if (!DRY) {
   const waits = [
     ...(spawnCause ? eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').map((r) => ({ key: r.key, cause: spawnCause })) : []),
     ...collisions.map((c) => ({ key: c.key, cause: 'collision' })),
-    ...lockQueueHeld.map((key) => ({ key, cause: 'test lock queue' })),
+    ...lockQueueHeld.map((key) => ({ key, cause: LOCK_HELD?.stall === false ? 'suite starts this pass' : 'test lock queue' })),
     ...stuckWaits,
     ...externalWaits.filter((w) => down.has(w.login)).map((w) => ({ key: w.key, cause: 'gate reviewer down' })),
   ];

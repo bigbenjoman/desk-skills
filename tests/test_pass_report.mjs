@@ -1,6 +1,6 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
 // layer: L1
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, lockHeldLine, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -277,6 +277,16 @@ const vsnap = (tickets, fields = {}) => {
   ]), j(['usage', 'the batch base sync holds every spawn: 30 behind', 'memory: 3.2G available, under the 6G spawn gate', 'the lock queue',
     'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3', 'the batch\'s worker count is 0', null]));
   t('a harm signal is named rather than avail', heldWhyOf({ ...free, lowMemory: true, harmWhy: 'memory harm: OOM-KILL within the last 10m (…)' }), 'memory harm: OOM-KILL within the last 10m (…)');
+}
+// #1480: the tickets the lock-queue gate held read as a stall only while a run waits on a queue.
+{
+  const q = (lock, waiting) => ({ lock, waiting, line: `${lock} lock queue: ${waiting} run(s) waiting on its 1 slot(s)` });
+  const gate = (...queues) => ({ ...queues[0], room: 1, queues });
+  t('#1480 nothing held, no line', lockHeldLine({ gate: gate(q('test', 3)), held: [], running: 2, concurrency: 3 }), null);
+  t('#1480 AC2 with live waiters the stall names the lock queue and its live count', j(lockHeldLine({ gate: gate(q('light', 1), q('test', 0)), held: ['A', 'B'], running: 2, concurrency: 3 })),
+    j({ stall: true, line: 'light lock queue: 1 run(s) waiting on its 1 slot(s): holding new workers and resumes into Stage 4 (A, B), past the 1 this pass had room for' }));
+  t('#1480 with no run waiting on any lock, the hold is no stall: it names this pass\'s own starts and the workers against the cap', j(lockHeldLine({ gate: gate(q('light', 0), q('test', 0)), held: ['A'], running: 2, concurrency: 5 })),
+    j({ stall: false, line: 'held for the next pass, not a stall (A): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; 2 worker(s) running against the batch\'s cap of 5' }));
 }
 
 // AC4: each decision returns its actions without starting a process, calling git, gh or Jira, or

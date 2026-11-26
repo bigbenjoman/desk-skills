@@ -6,6 +6,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { usageLocks } from '../desk/bin/prose-facts.mjs';
+import { ledgerStarts } from '../desk/bin/leases.mjs';
+import { psRows } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -293,6 +295,9 @@ try {
       await until(() => of(env, 'grant').length === 1);
       const b = run(env, ['light', '--', 'true']);
       await until(() => of(env, 'queued').length === 1);
+      const wdir = join(env.DESK_LOCK_DIR, 'desk-light.waiting');
+      const marks = readdirSync(wdir).map((p) => [readFileSync(join(wdir, p), 'utf8'), ledgerStarts([Number(p)], psRows).get(Number(p))]);
+      t(`#1480 AC3 ${label}: the waiting run's marker holds its process start time`, marks.length === 1 && !!marks[0][0] && marks[0][0] === marks[0][1], true);
       const c = run(env, ['light', '--', 'true']);
       await until(() => of(env, 'queued').length === 2);
       await sleep(2200);
@@ -549,6 +554,33 @@ try {
       const r = wl(env, ['tsc', '--timeout', '2', '--', 'true']);
       t('DS-984 AC4 job tokens on: a heavy run holds its heavy slot, and a typecheck waits for it', [r.status, jobLeases(env).length, readdirSync(env.DESK_LOCK_DIR).some((f) => f.startsWith('desk-test.lock'))], [75, 0, true]);
       a.release(); await a.done;
+    }
+  }
+
+  // ---- the light lock admits §3b "Light lock slots" runs at once ------------------------
+  {
+    const conf = (slots) => {
+      const p = join(S, `config-${n++}.md`);
+      writeFileSync(p, `## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Light lock slots | \`2\` | \`${slots}\` |\n`);
+      return p;
+    };
+    // Three light runs: how many hold at once, and whether the third, given 2 s, gave up waiting.
+    const three = async (env, opts = {}) => {
+      const a = await hold(env, ['light'], opts); const b = await hold(env, ['light'], opts, holdSh, { ms: 3000 });
+      const r = wl(env, ['light', '--timeout', '2', '--', 'true'], opts);
+      const got = [[a, b].filter((h) => existsSync(h.mark)).length, r.status];
+      for (const h of [a, b]) { h.release(); await h.done; }
+      return got;
+    };
+    const envOf = (profile, slots, avail = '64') => caseEnv({ leases: fresh('l'), locks: fresh('k'), profile,
+      extra: { DESK_CONFIG: conf(slots), DESK_MEM_AVAIL_GB: avail, AUTOPILOT_MIN_AVAIL_GB: '' } });
+    const paths = [['lock files', OFF1, {}], ['slot lease on', machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' }), {}]];
+    if (hasFlock) paths.push(['mkdir fallback', OFF1, { noFlock: true }]);
+    for (const [label, profile, o] of paths) {
+      const at = (slots, avail) => { const e = envOf(profile, slots, avail); if (o.noFlock) e.PATH = noFlock; return e; };
+      t(`#1458 AC1 ${label}: with the row at 2, two light runs hold the lock at once and a third waits`, await three(at('2')), [2, 75]);
+      t(`#1458 AC3 ${label}: with the row unset, one light run holds it and the others wait`, await three(at('TODO')), [1, 75]);
+      t(`#1458 AC1 ${label}: with available memory under the spawn gate's start, the row at 2 admits one`, await three(at('2', '2')), [1, 75]);
     }
   }
 } finally {

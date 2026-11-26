@@ -213,7 +213,7 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 no chart yet', tr.includes('<svg'), false);
   const lev = section(hToday, 'lev-h');
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
-  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 10);
+  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 11);
   t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
   t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling">.*?Testing starts (once|when) a repo is set to auto\./.test(lev), true);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
@@ -231,9 +231,9 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 the needs-you tile', tilesOf(hSix)[3], 'Needs you=1');
   t('AC5 four WBR cards', count(hSix, /<article class="card wbr"/g), 4);
   const lev = section(hSix, 'lev-h');
-  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 10);
+  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 11);
   t('AC5 with results and progress', lev.includes('>Result so far</th>') && lev.includes('>Progress to a decision</th>'), true);
-  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,ledger');
+  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,ledger,ledger-record');
   const ch = section(hSix, 'ch-h');
   t('AC5 Every change desk made', ch.includes('>Every change desk made</h2>'), true);
   t('AC5 since testing started', ch.includes('Newest first, since testing started on 17 Nov.'), true);
@@ -436,7 +436,10 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   const full = structuredClone(six);
   full.panels.merge_stages = { repos: [{ name: 'desk-skills', prs: 4, stages: { desk: { n: 4, median: 96, p75: 108 }, merge: { n: 3, median: 5, p75: 9 } }, outage: 1,
     learned: { since: '2026-11-24T00:00:00.000Z', before: { prs: 2, rereviews: 1.5, approval: 120 }, after: { prs: 2, rereviews: 0.5, approval: 40 } } }] };
-  full.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [{ cause: 'usage', hours: 15, tickets: 2, link: null }, { cause: 'lock', hours: 0.5, tickets: 1, link: null }] }, { week: '2026-W51', hours: 0, tickets: 0, causes: [] }] }] };
+  const usage = { cause: 'usage', hours: 15, tickets: 2, link: null }, lock = { cause: 'lock', hours: 0.5, tickets: 1, link: null }, hold = { cause: 'park: hold', hours: 4.5, tickets: 2, link: null };
+  full.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [usage, hold, lock],
+    groups: { stalled: { hours: 15.5, tickets: 3, causes: [usage, lock] }, held: { hours: 4.5, tickets: 2, causes: [hold] } } },
+  { week: '2026-W51', hours: 0, tickets: 0, causes: [], groups: { stalled: { hours: 0, tickets: 0, causes: [] }, held: { hours: 0, tickets: 0, causes: [] } } }] }] };
   full.panels.asks = { repos: [{ name: 'desk-skills', lever: 'question-handling', at: '2026-12-28T06:00:00.000Z', state: 'trial', arms: { batched: arm, 'one-at-a-time': arm } }] };
   const h = P.renderPage(full);
   const css = h.split('<style>')[1].split('</style>')[0];
