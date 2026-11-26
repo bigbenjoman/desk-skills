@@ -2208,6 +2208,16 @@ t('DS-279 AC9 no row with a failed check leads with a pass count, on PRs red on 
   `${/#801 · e2e failed/.test(fxRow(qGo, 'F-1'))} ${[fxRow(qNo, 'F-1'), fxRow(qRr, 'F-1')].every((l) => /#801 · 1 check failed/.test(l))} ${[...qGo, ...qNo, ...qRr].filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | ')}`, 'true true ');
 t('DS-279 a conflict names the batch\'s base, as its fix try will', rail279('F-4', rGo), 'Moves without you: PR #804, merge conflict with develop · the next pass sends it to a worker, try 1 of 2.');
 t('DS-279 a fix worker that parked needs your answer on its page, as its row says', `${/F-5 +◆ needs you/.test(fxRow(qGo, 'F-5'))} ${rail279('F-5', rGo).startsWith('Needs your answer: which copy?')}`, 'true true');
+// DS-1015: granted, a session running the passes and no merge driver: a green or running PR waits on
+// whoever merges for the batch, not on the person, and is in Merging.
+put(I.T, I.env, 'mergeby1015', { port: 5650, conc: '3 / 5', beat: 1, runBy: 'session', perms: grant, queue: { batch: 'mergeby1015', concurrency: 3, tickets: {
+  'M-1': prOn(830, okChecks(2)), 'M-2': prOn(831, [okCheck('build'), { ...okCheck('e2e'), status: 'in_progress', conclusion: null }]) } } });
+const rMb = Q.loadRepos(NOW).find((r) => r.name === 'mergeby1015'), qMb = lines(Q.repoScreen(rMb, { now: NOW }));
+t('DS-1015 AC1 AC3 a green PR in a granted session-run batch with no merge driver is merging and waits on whoever merges for the batch',
+  `${/M-1 +▸ merging/.test(fxRow(qMb, 'M-1'))} ${/M-2 +▸ merging/.test(fxRow(qMb, 'M-2'))} ${Q.needsRows(rMb).length} | ${rail279('M-1', rMb)}`,
+  'true true 0 | Moves without you: PR #830, all 2 checks passed · waits on whoever merges for the batch.');
+t('DS-1015 AC3 batchMerging gives needs-you the green PR in the Merging row\'s words, and not one still running',
+  JSON.stringify(Q.batchMerging(rMb)), '[{"key":"M-1","pr":830,"text":"all 2 checks passed · waits on whoever merges for the batch"}]');
 const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
 const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
