@@ -37,8 +37,9 @@ const WRITE_WORDS = { 'jira-comment': 'Jira comment', 'jira-transition': 'Jira t
   'pr-body': 'PR description', 'pr-review': 'PR review' };
 
 // An argument as the shell reads it back: bare when it is plain, else in single quotes, inside which
-// neither sh nor zsh expands anything (zsh's history expansion of ! included).
-const shellArg = (s) => (/^[\w.,:/@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+// neither sh nor zsh expands anything (zsh's history expansion of ! included). A leading = is quoted too,
+// as zsh expands =word to that command's path.
+const shellArg = (s) => (/^[\w.,:/@%+-][\w.,:/@%+=-]*$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
 // The record command for one answer, or null while the text it needs is missing.
 export function recordCommand(item, action, text = '') {
   const typed = text.trim();

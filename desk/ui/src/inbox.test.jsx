@@ -223,6 +223,7 @@ describe('the Inbox detail', () => {
     expect(recordCommand(i, 'override d-12', 'keep it')).toBe("node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 override d-12 'keep it'");
     expect(recordCommand(i, 'move', '')).toBeNull();
     expect(recordCommand(i, 'move', 'studia-web:w2')).toBe('node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 move studia-web:w2');
+    expect(recordCommand(i, 'resume', '=ls')).toBe("node ~/.claude/desk/bin/needs-you.mjs record studia-web SV-3844 resume '=ls'");
   });
 
   it('a proposal\'s reject, which needs no text, copies without any', () => {

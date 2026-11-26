@@ -139,7 +139,7 @@ import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q-model.mjs';
-import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
+import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, repoCheckinTimes } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
@@ -2316,9 +2316,17 @@ export function causeOf(i) {
 // One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
 // behind it. `id` is stable while the item is the same item: its batch, key and kind. `pr` is the
 // ticket's PR, and `approve` the write its park waits for the person to approve, its body verbatim.
-// Actions record refuses without text to pass on; a proposal's promote needs it only when it names no value.
+// A key record answers through recordRepoItem: an item of the repo's own, not a queue ticket's.
+function repoItem(ticket) {
+  return ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL);
+}
+// Actions a queue ticket's record refuses without text to pass on. A repo item's record reads text only
+// for a proposal's promote, and then only when the proposal names no value.
 const NEEDS_TEXT = ['answer', 'resume', 'reject', 'override', 'move'];
-const needsText = (i, action) => { const verb = action.split(' ')[0]; return i.proposal ? verb === 'promote' && !i.to : NEEDS_TEXT.includes(verb); };
+const needsText = (i, action) => {
+  const verb = action.split(' ')[0];
+  return repoItem(i.t.key) ? !!i.proposal && verb === 'promote' && !i.to : NEEDS_TEXT.includes(verb);
+};
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
   const a = i.t.state === 'parked' ? i.t.park?.approve : null;
@@ -2389,7 +2397,7 @@ const ASK_ANSWERS = ['answer', 'resume', 'approve', 'reject', 'done', 'requeue']
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (repoItem(ticket)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2816,10 +2824,7 @@ export function ask({ word, text, until = [], options = [], recommend = null, ap
     const by = applyBy == null ? null : applyByOf(applyBy, new Date(now));
     if (applyBy != null && !by) return { ok: false, line: `--apply-by wants a local HH:MM or an ISO time, not "${applyBy}"` };
     const nd = recommend ? neverDefault(what, recommend, never) : null;
-    let times = null;
-    try { times = [].concat(repoConfigValues(r.slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
-    const c = checkinTimes(times);
-    const at = !recommend || nd ? null : by ?? nextCheckin(c.ok ? c.times : DEFAULT_TIMES, new Date(now));
+    const at = !recommend || nd ? null : by ?? nextCheckin(repoCheckinTimes(r.slug), new Date(now));
     choice = { options, recommended: recommend, apply_by: at ? at.toISOString() : null, never_default: nd };
   }
   const { id, added, until: kept, ask: a } = addAsk(r.stateDir, what, now, { until, choice });

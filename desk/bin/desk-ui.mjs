@@ -151,15 +151,9 @@ export function githubState(stderr) {
 // The earliest next check-in across the repos, each at its own §3b Check-in times (the default where unset
 // or unread), as ms, or null.
 async function nextCheckinOf(slugs, now) {
-  const { checkinTimes, DEFAULT_TIMES } = await import('./digest.mjs');
+  const { repoCheckinTimes, DEFAULT_TIMES } = await import('./digest.mjs');
   const { nextCheckin } = await import('./ask-defaults.mjs');
-  const timesOf = (slug) => {
-    let raw = null;
-    try { raw = [].concat(E.repoConfigValues(slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
-    const c = checkinTimes(raw);
-    return c.ok ? c.times : DEFAULT_TIMES;
-  };
-  const ats = [...new Set(slugs)].map((s) => nextCheckin(timesOf(s), new Date(now))).filter(Boolean).map(Number);
+  const ats = [...new Set(slugs)].map((s) => nextCheckin(repoCheckinTimes(s), new Date(now))).filter(Boolean).map(Number);
   if (!slugs.length) ats.push(Number(nextCheckin(DEFAULT_TIMES, new Date(now))));
   return ats.length ? Math.min(...ats) : null;
 }
