@@ -142,7 +142,12 @@ export function reclaimOrphans({ held, rows, tickets, main, worktrees, reclaim, 
     if (a.act === 'not-granted') return `${who}; left running, as config §3 autopilot-reclaim is ${reclaim ?? 'unset'}: end its process group to free the lock`;
     if (a.act === 'grace') return `${who}; ended once it has been orphaned ${graceMs / 60000}m, in about ${Math.ceil(a.left / 60000)}m`;
     if (dry) return `${who}; would end it and its process group (dry run)`;
-    const r = end(endTarget(a.run.pid, rows));
+    // A failure ending one (ps unreadable mid-kill) is named and the orphan kept at its first sighting,
+    // so the next pass ends it again and the rest are still judged this pass.
+    let r;
+    try { r = end(endTarget(a.run.pid, rows)); } catch (e) {
+      return `${who}; ending it failed (${String(e?.message ?? e).split('\n')[0]}), so the next pass tries again`;
+    }
     delete next[orphanKey(a.run)];
     return `${who}; ended it and its process group under config §3 autopilot-reclaim, freeing its lock${r?.left?.length ? `, though pid(s) ${r.left.join(', ')} outlived SIGKILL` : ''}`;
   });

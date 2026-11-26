@@ -68,6 +68,20 @@ t('AC2 an orphan first seen now waits out the grace', [acts({}).acts[0].act, act
 t('AC2 an orphan seen 5 minutes ago is ended', acts({ seen: { [k]: 700_000 } }).acts[0].act, 'end');
 t('an orphan where §3 autopilot-reclaim is not yes is only named', acts({ seen: { [k]: 0 }, reclaim: 'no' }).acts[0].act, 'not-granted');
 t('another repo\'s orphan is only named', orphanActs({ orphans: [{ run, reason: 'r', ours: false }], graceMs: 1, now: 9, reclaim: 'yes', seen: { [k]: 0 } }).acts[0].act, 'not-ours');
+// Ending one fails (ps unreadable after its SIGTERM): it is named, kept at its first sighting, and the
+// next orphan is still ended this pass.
+{
+  const run2 = { pid: 601, args: 'bash tests/run.sh', cwd: `${WT}/DS-1` };
+  const k2 = `601 bash tests/run.sh`;
+  const rows = [INIT, row(600, 1, 'bash tests/run.sh'), row(601, 1, 'bash tests/run.sh')];
+  const ended = [];
+  const r = reclaimOrphans({ held: [run, run2], rows, tickets, main: '/w/main', worktrees: WT, reclaim: 'yes', seen: { [k]: 0, [k2]: 0 }, now: 1_000_000, graceMs: 300000,
+    claudeAbove: () => false, text: (x) => x.args,
+    end: (target) => { if (target.groups.includes(600)) throw new Error('ps could not be read'); ended.push(target); return { left: [] }; } });
+  t('a failed end is named and the orphan kept for the next pass, and the rest are still ended',
+    [/ending it failed \(ps could not be read\), so the next pass tries again/.test(r.lines[0]), /ended it and its process group/.test(r.lines[1]), r.seen, ended.length],
+    [true, true, { [k]: 0 }, 1]);
+}
 
 // ---- AC2 and AC3 on real processes: the pass's reclaim ------------------------------------------
 const S = scratch('lock-orphans-');
