@@ -368,6 +368,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       const r = batches.find((b) => b.q?.tickets && Object.hasOwn(b.q.tickets, key)) ?? batches.find((b) => b.q?.tickets?.[key]);
       if (!r) return refuse(res, 404, 'ticket', `${key} is in no batch of ${batches[0].repo}.`);
       t = Q.ticketPageJson(r, key, { now: Date.now() });
+      if (!t) return refuse(res, 404, 'ticket', `${key} is in no batch of ${batches[0].repo}.`);
       const { prStatusOf } = await import('./batch-state.mjs');
       recorded = t.pr ? prStatusOf(r.q.tickets[key]) : null;
     } catch (e) { console.error(`desk-ui: ticket: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }

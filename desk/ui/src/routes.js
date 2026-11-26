@@ -20,7 +20,8 @@ export const PAGES = [
   { id: 'ticket', path: '/t', label: 'Ticket', title: (path) => path.split('/')[3] ?? 'Ticket' },
 ];
 
-export const ROUTES = { ticket: TicketPage };
+// Read when a screen draws, not as this module loads: the ticket page imports the frame, which imports this.
+export const ROUTES = { get ticket() { return TicketPage; } };
 
 // The screen `path` opens, among those `routes` holds, or null.
 export const screenAt = (path, routes) =>
