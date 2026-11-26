@@ -86,7 +86,7 @@ describe('the Inbox list', () => {
     expect(list.firstChild.textContent).toBe('!Production broken · 1');
     expect(rows()[0].dataset.item).toBe(broken.id);
     expect(rows()[0].className).toContain('bg-fail-bg');
-    expect(screen.getByRole('article', { name: 'SV-4021 detail' })).toBeTruthy();
+    expect(await screen.findByRole('article', { name: 'SV-4021 detail' })).toBeTruthy();
   });
 
   it('AC9 with nothing to answer it says so, with the running workers, the next pass and the next check-in', async () => {
@@ -242,7 +242,7 @@ describe('the Inbox detail', () => {
   it('choosing move asks which batch, and copies nothing until one is named', async () => {
     await open();
     fireEvent.click(row('SV-3844'));
-    fireEvent.click(within(detail()).getByRole('radio', { name: /move/ }));
+    fireEvent.click(within(detail()).getByRole('radio', { name: /^move/ }));
     const copy = within(detail()).getByRole('button', { name: 'Copy needs-you command' });
     expect(copy.disabled).toBe(true);
     fireEvent.change(within(detail()).getByRole('textbox', { name: 'Which batch should it move to?' }), { target: { value: 'studia-web:w2' } });
