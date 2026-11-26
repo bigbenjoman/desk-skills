@@ -158,6 +158,9 @@
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
 //                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs logins fee <claude|codex> <name> <usd|none> [<plan>]
+//                                             record one login's plan and monthly fee in the Fees table,
+//                                             or clear it with none, keeping the previous file as .bak
 //   node desk-env.mjs preview-slot [--wait <s>] <label>
 //                                             take the preview-build slot for §4 Vercel's team before a push
 //                                             that starts a preview build, waiting up to <s> (default 600)
@@ -3139,6 +3142,13 @@ if (isMain) {
           console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${L.ruleWord(r.login)}`);
           break;
         }
+        if (sub === 'fee' && rest.length >= 3) {
+          const [tool, name, fee, ...plan] = rest;
+          const r = L.setFee(subs, { tool, name, fee, plan: plan.join(' ') });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${name}: ${r.login.fee ? `${r.login.fee.plan}, $${r.login.fee.usd.toFixed(2)} a month` : 'fee not set'}`);
+          break;
+        }
         if (sub === 'migrate' && rest.length === 0) {
           if (!L.needsPinMigration(subs)) { console.log('nothing to migrate'); break; }
           const r = L.migratePins(subs, () => L.checkLogins(subs));
@@ -3147,7 +3157,7 @@ if (isMain) {
           if (r.hint) console.log(`add ${r.hint} with a in view 6`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | migrate`);
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | fee <claude|codex> <name> <usd|none> [<plan>] | migrate`);
         process.exit(2);
         break;
       }

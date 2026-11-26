@@ -1,8 +1,9 @@
 # desk-setup costs: where each repo is billed
 
 Read for `/desk-setup costs`, which runs only this. The Modes table in `../SKILL.md` names this file
-for it. It reads and writes one file, `~/.config/desk/costs.md`, beside the machine profile and
-shared by every repo, and changes nothing else: no repo config, no settings.
+for it. It writes `~/.config/desk/costs.md`, beside the machine profile and shared by every repo,
+and the Fees table of `~/.config/desk/subscriptions.md` (step 4), and changes nothing else: no repo
+config, no settings.
 
 One GitHub account, Vercel team or AWS profile often bills several repos, and some bills belong to
 no repo in desk. The file records, for each name, its GitHub repo and account, its Vercel team (id,
@@ -51,6 +52,22 @@ AWS config), never a token.
 
    It overwrites the file, keeping the previous copy as `costs.md.bak`. A credit is stored with the
    day it was entered. **A no, or no answer, writes nothing**: say that no cost sources were saved.
+
+4. **Ask each subscription's plan and monthly fee.** `desk-env logins list` names the Claude and
+   Codex logins. In one `AskUserQuestion` call, ask for each login the plan it is on and what it
+   costs a month in dollars, with "not set" as an option. Never guess a fee or take one from a price
+   page: only the figure the user gives is written. Write each answer as it comes:
+
+   ```bash
+   desk-env logins fee claude default 200 Max
+   desk-env logins fee codex default none
+   ```
+
+   It writes that login's row in the file's `## Fees` table, keeping the previous copy as
+   `subscriptions.md.bak`; `none` clears it. desk-q's Costs shows each fee as a monthly line, shared
+   by the repos the login ran this month, and a login with no fee as `fee not set: /desk-setup costs`.
+   Beside the charges, Costs also shows each repo's Claude and Codex use this month at API list
+   prices, read from the session logs: that figure needs nothing set up, and is never a bill.
 
 **Neon is filled in by hand.** Nothing detects it: the user adds each name's row to the file's
 `## Neon` section from each org's Billing page (org id, plan, monthly fee, project ids, and the price
