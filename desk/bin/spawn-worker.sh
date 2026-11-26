@@ -19,7 +19,8 @@
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
 # AUTOPILOT_START_STAGE starts a fresh session at that stage: 4b or 7 after a handoff, or Stage 3 on
-# when a requeue resumes the round its worker parked in. AUTOPILOT_LOGIN_DIR is the Claude login it
+# when a requeue resumes the round its worker parked in, or 3 when a requeue's ticket file gained
+# Decisions since its PR's last review (pass.mjs decisionsRestart). AUTOPILOT_LOGIN_DIR is the Claude login it
 # runs on, its preflight too: a config folder, or empty for the default login. Unset, it keeps the
 # caller's own.
 set -euo pipefail
@@ -156,10 +157,11 @@ fi
 AGENT_NAMES="$(printf '%s\n' "$AGENTS_OUT" | sed -n 's/^AGENTS: //p')"
 
 # A database URL in the orchestrator's own environment would reach the worker however carefully its
-# env files were repointed. Every §4 Database URL variable is removed from what the worker inherits.
-while IFS= read -r v; do
+# env files were repointed. Every §4 Database URL variable is removed from what the worker inherits,
+# an item naming its app's directory (`apps/portal: DATABASE_URL`) included.
+while IFS="$(printf '\t')" read -r _ v; do
   case "$v" in ''|none|*[!A-Za-z0-9_]*) ;; *) unset "$v" ;; esac
-done < <(desk_list db-url-var 2>/dev/null || true)
+done < <(node "$DESK_ENV_MJS" cmds db-url-var 2>/dev/null </dev/null || true)
 # With no tracker (config §4 Tracker `none`) there is no Jira step to prove reachable.
 TRACKER="$(desk_cfg tracker 2>/dev/null || echo unset)"
 CONFIG_NOTE=""
@@ -227,7 +229,11 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
   if [ "$(node "$DESK_ENV_MJS" levers preflight 2>/dev/null </dev/null || true)" = on ]; then
     PRE_EFFORT_ARGS=(--effort low)
     MASK_ARGS=(--mask "WORKTREE=$WT" --mask "TICKET=$TICKET" --mask "BRANCH=$BRANCH")
-    case "$DATABASE" in ''|none|shared) ;; *) MASK_ARGS+=(--mask "DATABASE=$DATABASE") ;; esac
+    # With an app per database, `database=` lists each: the first keeps the one mask name.
+    case "$DATABASE" in ''|none|shared) ;; *)
+      i=0
+      for d in ${DATABASE//,/ }; do MASK_ARGS+=(--mask "DATABASE$([ "$i" = 0 ] || echo "_$i")=$d"); i=$((i + 1)); done ;;
+    esac
     # The main checkout is listed first and is the same for every ticket, so it stays as it is.
     first=1
     while IFS= read -r other; do
