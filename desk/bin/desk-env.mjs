@@ -371,6 +371,10 @@ export function declaredRows(text) {
   return { rows: rows.filter((r) => r.declared).map(({ section, label }) => ({ section, label })), tables: [...tables.values()] };
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
+// Every declared row of a config file's text with its value as the parse reads it (its items, a
+// trailing note left out), for comparing two copies of a config: [{ section, label, value }].
+export const configRowValues = (text) => tableLines(String(text)).rows.filter((r) => r.declared)
+  .map((r) => ({ section: r.section, label: r.label, value: cellItems(r.cells[settingCol(r.header)] ?? '').join(' ') }));
 
 // A config file's parse, by path, kept while its inode, size and modification time are unchanged:
 // desk-q reads many rows of every repo's config on each refresh. A missing file is not kept. Past
