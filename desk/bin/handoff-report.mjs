@@ -47,7 +47,7 @@ import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { requestOf, requestUsd } from './cache-report.mjs';
+import { keepRequest, requestOf, requestUsd } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { GUARDRAILS } from './lever-registry.mjs';
 import { EVIDENCE_KEEP_DAYS, GUARDS, outcomeIn, withOutcomes } from './levers-evaluate.mjs';
@@ -257,10 +257,7 @@ function sessionOf(file, text) {
     if (!seenRequest && resumed) overheads.push(inputOf(r));
     if (afterBoundary) { overheads.push(inputOf(r)); afterBoundary = false; }
     seenRequest = true;
-    const key = r.id ?? `line-${requests.size}`;
-    const had = requests.get(key);
-    if (had) had.output = Math.max(had.output, r.output);
-    else requests.set(key, r);
+    keepRequest(requests, r);
   }
   times.sort((a, b) => a - b);
   let active = 0;
@@ -268,8 +265,8 @@ function sessionOf(file, text) {
   return {
     id: basename(file, '.jsonl'), project: basename(join(file, '..')), arm, named, resumed_from: resumedFrom,
     fires: fires.size, compactions, resumed, handoffs: compactions + (resumed ? 1 : 0), resume_overheads: overheads,
-    usd: [...requests.values()].reduce((s, r) => s + (requestUsd(r)?.total ?? 0), 0),
-    unpriced: [...requests.values()].filter((r) => !requestUsd(r)).length,
+    usd: [...requests.values()].reduce((s, { r }) => s + (requestUsd(r)?.total ?? 0), 0),
+    unpriced: [...requests.values()].filter(({ r }) => !requestUsd(r)).length,
     active_hours: active / 3_600_000, start: times[0] ?? null, end: times.at(-1) ?? null, branch: [...branches].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
     branches: [...branches.keys()], prs: work.prs, pushed: [...new Set(work.pushed)], tool_calls: calls.size, tool_errors: errors,
   };

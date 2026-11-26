@@ -146,6 +146,12 @@ const after = L.parseSubscriptions(readFileSync(join(env.DESK_CONFIG_ROOT, 'subs
 t('logins fee: the Fees table holds both, the login rows unchanged', `${after.fees.length} ${after.logins.length} ${after.errors.length}`, '2 2 0');
 t('AC3 once set, the Codex line gives its fee', Q.run(['costs'], { now: FIXED, costWith: noRead }).includes('Pro, shared by solo and voicepa'), true);
 
+// ---- AC1 a file row named default in its own folder, beside the implicit default: one fee, one line
+writeFileSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'), FILE.replace(`\`${join(HOME, '.codex')}\``, `\`${join(HOME, '.codex-work')}\``)
+  .replace('| `claude` | `default` | `Max 20x` | `200` |', '| `codex` | `default` | `Pro` | `200` |'));
+const twin = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead })).subscriptions.filter((s) => s.tool === 'codex');
+t('AC1 two Codex logins named default: the fee shows once', JSON.stringify(twin.map((s) => s.usd)), JSON.stringify([200]));
+
 // ---- AC3 with no subscriptions file at all: each login still says its fee is not set
 rmSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'));
 const none = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');

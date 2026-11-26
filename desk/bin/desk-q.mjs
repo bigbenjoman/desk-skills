@@ -1825,9 +1825,15 @@ const listPriceUse = (win) => useByRepo({ repos: repoFolders(), ...win });
 // Use worth showing: some dollars, or requests on a model with no list price.
 const hasUse = (u) => !!u && (u.usd > 0 || u.unpriced > 0);
 const unpricedWords = (k) => `${k} request${k === 1 ? '' : 's'} on a model with no list price`;
-// The logins Costs gives a fee line: each one desk runs or may run work on, and any with a fee.
-const feeLogins = (subs) => TOOLS.flatMap((t) => toolLogins(t, subs))
-  .filter((l) => feeOf(subs, l) || (l.source !== 'found' && l.rule != null && l.rule !== 'off'));
+// The logins Costs gives a fee line: each one desk runs or may run work on, and any with a fee. A fee
+// is keyed by name, so where two logins share one (a file row named default in its own folder beside
+// the tool's implicit default), the file's row alone takes it.
+function feeLogins(subs) {
+  const ls = TOOLS.flatMap((t) => toolLogins(t, subs))
+    .filter((l) => feeOf(subs, l) || (l.source !== 'found' && l.rule != null && l.rule !== 'off'));
+  const rank = (l) => (l.source === 'file' ? 0 : 1);
+  return ls.filter((l) => ls.filter((o) => o.tool === l.tool && o.name === l.name).sort((a, b) => rank(a) - rank(b))[0] === l);
+}
 // The repos a login's fee is shared across: a Claude login's are those whose Subscription row resolves
 // to it; the Codex default runs every repo's Codex calls.
 function feeRepos(subs, l, slugs) {
