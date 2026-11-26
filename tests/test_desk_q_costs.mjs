@@ -204,6 +204,25 @@ t('DS-291 AC10 o opens the largest supplier\'s billing page: GitHub for voicepa,
   'https://github.com/settings/billing/usage https://console.aws.amazon.com/costmanagement/home#/cost-explorer https://vercel.com/ben-lavenders-projects/~/usage');
 D.ui.finish(0);
 
+// ---- At 60, 80 and 120 columns each line of the table fits, whole or cut at a whole
+// field with " …": what it keeps is its 104-column line up to a blank, so no tag or figure shows in part.
+for (const width of [60, 80, 120]) {
+  const S = await costsAt(null, width);
+  const f = S.frame().map((l) => l.replace(/^›/, ' '));
+  const at = f.findIndex((l) => l.startsWith('charged '));
+  const got = f.slice(at, at + 2 + TABLE.length);
+  const fits = [CHARGED, '', ...TABLE].map((full, i) => {
+    const l = got[i] ?? '';
+    if (l === full) return [...l].length <= width;
+    const kept = l.slice(0, -2);
+    return l.endsWith(' …') && [...l].length <= width && kept.trim() !== '' && full.startsWith(kept) && /\s/.test(full[kept.length]);
+  });
+  t(`issue-1485 AC2: costs at ${width} columns, every line whole or cut at a whole field`, fits.every(Boolean), true);
+  t(`issue-1485 AC2: costs at ${width} columns cuts where its 104-column lines are wider`, got.filter((l) => l.endsWith(' …')).length,
+    [CHARGED, ...TABLE].filter((l) => [...l].length > width).length);
+  S.ui.finish(0);
+}
+
 // AC3: a public repo whose CI minutes the cache marks as discounted in full.
 const pub = fixture();
 pub.github.repos['bigbenjoman/desk-skills'].items[0] = { ...pub.github.repos['bigbenjoman/desk-skills'].items[0], charged: 0, discount: 'full' };
