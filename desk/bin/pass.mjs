@@ -76,7 +76,7 @@ import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -99,7 +99,7 @@ import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from '
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, lockHeldLine, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -115,7 +115,8 @@ import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
+import { kindMode, leaseCli, ledgerStarts, releasePreviews, slotPools } from './leases.mjs';
+import { liveWaiters } from './admit-ledger.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLogged } from './asks.mjs';
 import * as GR from './gate-reviewer.mjs';
@@ -250,8 +251,11 @@ claim();
 // The lock only exists for the seconds a pass runs, so between passes a second batch's
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
 // A heartbeat per queue file closes that window; queue.mjs treats one fresher than 15 minutes as live.
+// A pass with no --next, as one run by hand is, keeps the loop's session (loopCarried) and the loop's
+// tick still to come (loopTick, as `tick`: `next` stays unset), so it never reads as a stall.
 try {
-  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
+  const prev = lastBeat(STATE, QUEUE_FILE);
+  writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT, loop: loopCarried(prev, { next: NEXT }), tick: loopTick(prev, { next: NEXT }) });
 } catch { /* advisory */ }
 
 // A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).
@@ -2341,6 +2345,9 @@ const concurrency = CONC.n;
 // not be held by this machine's real queue.
 const SUITE_STAGES = ['4', '4b'];
 const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
+  // The waiting markers of runs that have exited are removed first, so no reader of a lock's queue
+  // counts them (admit-ledger.mjs liveWaiters).
+  for (const l of ['test', 'light']) liveWaiters(l, E.lockDir(), { startsOf: (pids) => ledgerStarts(pids, E.psRows) });
   const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
   let slug = null;
   try { slug = E.repoSlug(); } catch { /* no slug: this repo is still listed, by its checkout */ }
@@ -4100,10 +4107,9 @@ for (const t of spawnable) {
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
 }
-const lockQueueHeldText = lockQueueHeld.length
-  ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}), past the ${LOCK_QUEUE.room} this pass had room for`
-  : null;
-if (lockQueueHeldText) report.stalled.push(lockQueueHeldText);
+const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
+const lockQueueHeldText = LOCK_HELD?.line ?? null;
+if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waiting'].push(LOCK_HELD.line);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
 // moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
 if (!DRY) {
@@ -6239,7 +6245,7 @@ if (!DRY) {
   const waits = [
     ...(spawnCause ? eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').map((r) => ({ key: r.key, cause: spawnCause })) : []),
     ...collisions.map((c) => ({ key: c.key, cause: 'collision' })),
-    ...lockQueueHeld.map((key) => ({ key, cause: 'test lock queue' })),
+    ...lockQueueHeld.map((key) => ({ key, cause: LOCK_HELD?.stall === false ? 'suite starts this pass' : 'test lock queue' })),
     ...stuckWaits,
     ...externalWaits.filter((w) => down.has(w.login)).map((w) => ({ key: w.key, cause: 'gate reviewer down' })),
   ];

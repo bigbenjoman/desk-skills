@@ -21,7 +21,7 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
+import { LIVE_MS, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -796,6 +796,12 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.next = beat?.next ?? null;
   r.live = liveBeat(beat, now);
   r.session = beat?.session ?? null;
+  r.loop = beat?.loop ?? null;
+  // The loop's tick a pass run by hand carried, still to come when it ran (borrow.mjs loopTick), and
+  // the loop pass its interval runs from (loopFrom).
+  r.tick = beat?.tick ?? null;
+  r.from = beat ? loopFrom(beat) : null;
+  r.stoppedAt = beat ? stoppedAt(beat) : null;
   r.ctx = r.q ? holdContext(r) : NOBODY;
   const rows = Object.values(r.q?.tickets ?? {});
   // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
@@ -1083,9 +1089,11 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
 const MOVABLE_STATES = ['running', 'finishing', 'ready', 'queued', 'waiting'];
+// Whether the batch has a ticket a pass could move.
+export const movable = (r) => r.rows.some((x) => MOVABLE_STATES.includes(x.k));
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
-export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
+export const passesPaused = (r) => !r.live && movable(r);
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.

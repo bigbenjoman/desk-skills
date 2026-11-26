@@ -62,6 +62,14 @@ export function rankOf(issue, { field, order }) {
   const i = order.indexOf(valueOf(issue?.fields?.[field]).toLowerCase());
   return i < 0 ? order.length : i;
 }
+const NATURAL = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+// Among values §4 Priority does not list, by the value itself (P3 before P4), an unset one last.
+function unlistedOrder(a, b, pr) {
+  if (rankOf(a, pr) !== pr.order.length) return 0;
+  const va = valueOf(a?.fields?.[pr.field]);
+  const vb = valueOf(b?.fields?.[pr.field]);
+  return va === vb ? 0 : !va ? 1 : !vb ? -1 : NATURAL.compare(va, vb);
+}
 // Within a priority, Bugs before Tasks, then newest first.
 const bugFirst = (issue) => (/^bug$/i.test(issue?.fields?.issuetype?.name ?? '') ? 0 : 1);
 // Jira writes the offset without a colon (`+0000`), which ISO date parsing does not promise to read.
@@ -69,25 +77,29 @@ const createdAt = (issue) => Date.parse(String(issue?.fields?.created ?? '').rep
 
 const jqlValue = (v) => `"${String(v).replace(/["\\]/g, '\\$&')}"`;
 // The searches, highest priority first, each read one page, newest first: one per value §4 Priority
-// lists, then one for a value unset or unlisted, so a backlog past a page still reads its top tickets
-// first. With none listed, one search, which Jira orders by its own priority (a custom field: by age).
+// lists, then one for a value unset or unlisted, which Jira orders by the field (a select field by its
+// options' order), so a backlog past a page still reads its top tickets first. With none listed, one
+// search, ordered the same way.
 export function candidatesJqls(project, { field, names }) {
   const base = `project = "${project}" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"`;
-  if (!names.length) return [`${base} ORDER BY ${field === 'priority' ? 'priority DESC, ' : ''}created DESC`];
   const f = field === 'priority' ? 'priority' : `cf[${field.slice('customfield_'.length)}]`;
+  const byField = `ORDER BY ${f} ${field === 'priority' ? 'DESC' : 'ASC'}, created DESC`;
+  if (!names.length) return [`${base} ${byField}`];
   return [...names.map((v) => `${base} AND ${f} = ${jqlValue(v)} ORDER BY created DESC`),
-    `${base} AND (${f} is EMPTY OR ${f} not in (${names.map(jqlValue).join(', ')})) ORDER BY created DESC`];
+    `${base} AND (${f} is EMPTY OR ${f} not in (${names.map(jqlValue).join(', ')})) ${byField}`];
 }
 
 // Words in a summary or label marking a decision, or access, key or infrastructure work outside the repo.
-const OUTSIDE = /\b(decide|decision|whether|policy|adopt(?:ion)?|licen[cs]e keys?|rotat(?:e|ion)|credentials?|access|IAM|WAF|DNS|infra(?:structure)?)\b/i;
+const OUTSIDE = /\b(decide|decision|whether|policy|should we|adopt(?:ion)?|licen[cs]e|keys?|rotat(?:e|ion)|credentials?|access|IAM|WAF|DNS|infra(?:structure)?)\b/i;
+// A label naming operations work, which a summary saying "ops" does not.
+const OPS_LABEL = /\b((?:dev)?ops)\b/i;
 // Why `issue` reads as a decision or work outside the repo, naming the word and where, or null.
 function outsideWork(issue) {
   const why = (word, where) => `a decision or work outside the repo ("${word}" in its ${where})`;
   const s = OUTSIDE.exec(String(issue?.fields?.summary ?? ''));
   if (s) return why(s[1], 'summary');
   for (const l of [].concat(issue?.fields?.labels ?? [])) {
-    const m = OUTSIDE.exec(String(l));
+    const m = OUTSIDE.exec(String(l)) ?? OPS_LABEL.exec(String(l));
     if (m) return why(m[1], `label ${l}`);
   }
   return null;
@@ -172,7 +184,7 @@ export function listCandidates({ project, priority, reads, now = Date.now(), che
       if (why) left.push({ key: i.key, why }); else pool.push(i);
     }
   }
-  pool.sort((a, b) => rankOf(a, pr) - rankOf(b, pr) || bugFirst(a) - bugFirst(b) || createdAt(b) - createdAt(a));
+  pool.sort((a, b) => rankOf(a, pr) - rankOf(b, pr) || unlistedOrder(a, b, pr) || bugFirst(a) - bugFirst(b) || createdAt(b) - createdAt(a));
   let recent;
   const offered = [];
   const main = [];
