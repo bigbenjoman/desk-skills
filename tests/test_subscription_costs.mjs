@@ -142,6 +142,12 @@ const js = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead 
 t('--json gives each login\'s fee', JSON.stringify(js.subscriptions.map((s) => [s.tool, s.plan, s.usd, s.repos.length])), JSON.stringify([['claude', 'Max 20x', 200, 2], ['codex', null, null, 2]]));
 t('--json gives each repo\'s list-price use', js.list_price.repos.bigbenjoman__voicepa.usd.toFixed(2), '7.91');
 
+// ---- AC2 a half cent of use: each row and the total round it the same way
+const half = { usd: 1.005, claude: 1.005, codex: 0, unpriced: 0 };
+const halves = Q.costsScreen(Q.loadRepos(FIXED), { now: FIXED, pinUsage: true, use: { bigbenjoman__voicepa: half, 'bigbenjoman__desk-skills': half } }).split('\n');
+const cents = (name) => halves.find((l) => l.startsWith(`  ${name} `))?.slice(26, 39).trim();
+t('AC2 half-cent use: the rows and the total agree', `${cents('voicepa')} + ${cents('desk-skills')} = ${cents('total')}`, '$1.00 + $1.00 = $2.00');
+
 // ---- desk-env logins fee writes the file
 const { execFileSync } = await import('node:child_process');
 const said = execFileSync(process.execPath, [join(BIN, 'desk-env.mjs'), 'logins', 'fee', 'codex', 'default', 'Pro', '200'], { env: process.env, encoding: 'utf8' });
@@ -155,6 +161,13 @@ writeFileSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'), FILE.replace(`\`${
   .replace('| `claude` | `default` | `Max 20x` | `200` |', '| `codex` | `default` | `Pro` | `200` |'));
 const twin = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead })).subscriptions.filter((s) => s.tool === 'codex');
 t('AC1 two Codex logins named default: the fee shows once', JSON.stringify(twin.map((s) => s.usd)), JSON.stringify([200]));
+
+// ---- AC1 every Codex login off: its fee line runs no repo, as no Codex call runs on it
+writeFileSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'), FILE.replace(`\`${join(HOME, '.codex')}\` | \`default\``, `\`${join(HOME, '.codex')}\` | \`off\``)
+  .replace('| `claude` | `default` | `Max 20x` | `200` |', '| `codex` | `default` | `Pro` | `200` |'));
+const offCodex = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead })).subscriptions.filter((s) => s.tool === 'codex');
+t('AC1 an off Codex login is shared by no repo', JSON.stringify(offCodex.map((s) => [s.usd, s.repos.length])), JSON.stringify([[200, 0]]));
+t('AC1 an off Codex login\'s line says no repo runs on it', Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n').some((l) => l.startsWith('  Codex default') && l.includes('Pro, no repo runs on it')), true);
 
 // ---- AC3 with no subscriptions file at all: each login still says its fee is not set
 rmSync(join(env.DESK_CONFIG_ROOT, 'subscriptions.md'));

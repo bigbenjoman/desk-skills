@@ -1835,9 +1835,10 @@ function feeLogins(subs) {
   return ls.filter((l) => ls.filter((o) => o.tool === l.tool && o.name === l.name).sort((a, b) => rank(a) - rank(b))[0] === l);
 }
 // The repos a login's fee is shared across: a Claude login's are those whose Subscription row resolves
-// to it; the Codex default runs every repo's Codex calls.
+// to it; the Codex default runs every repo's Codex calls, and an off one none (codex-login.mjs
+// codexCallLogin refuses every call while it is off).
 function feeRepos(subs, l, slugs) {
-  if (l.tool === 'codex') return toolDefault(subs, 'codex')?.dir === l.dir ? slugs : [];
+  if (l.tool === 'codex') { const d = toolDefault(subs, 'codex'); return d && d.rule !== 'off' && d.dir === l.dir ? slugs : []; }
   return repoSubscriptions({ repoSubscription }, subs).filter((s) => s.login?.dir === l.dir).map((s) => s.slug).filter((s) => slugs.includes(s));
 }
 // Each fee line as data.   -> [{ tool, name, plan, usd, repos }]
@@ -1899,11 +1900,13 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const aw = Math.max(10, usd(c.total).length + 3);
   // The LIST PRICE column, only once some row's repo has use this month.
   const useOf = (name) => (name === 'shared' ? null : use[slugOf(name)] ?? null);
+  // Each row's use in whole cents, read once: its cell and the total both show this figure.
+  const useCents = (name) => Math.round((useOf(name)?.usd ?? 0) * 100);
   const showUse = c.names.some((x) => hasUse(useOf(x.name)));
-  const useSum = c.names.reduce((a, x) => a + Math.round((useOf(x.name)?.usd ?? 0) * 100), 0) / 100;
+  const useSum = c.names.reduce((a, x) => a + useCents(x.name), 0) / 100;
   const lw = Math.max(13, usd(useSum).length + 3);
   const useCell = (x) => (!showUse ? [] : x.name === 'shared' ? [[rpad('', lw), null]]
-    : useOf(x.name)?.usd > 0 ? [[rpad(usd(useOf(x.name).usd), lw), null]] : [[rpad('–', lw), GREY]]);
+    : useCents(x.name) > 0 ? [[rpad(usd(useCents(x.name) / 100), lw), null]] : [[rpad('–', lw), GREY]]);
   const unpriced = c.names.reduce((a, x) => a + (useOf(x.name)?.unpriced ?? 0), 0);
   const suppliersOf = (name) => SUPPLIERS.filter((s) => costs.entries.some((e) => e.name === name && e.supplier === s));
   const repoless = new Set(costs.entries.filter((e) => !costs.entries.some((o) => o.name === e.name && o.repo)).map((e) => e.name));
