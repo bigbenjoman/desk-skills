@@ -2374,6 +2374,57 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
 }
 
+// issue-1494: an item put off with not-now is still settled by done, as a listed one is, and leaves Put off.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
+  put('omega1494', { port: 4494, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'W-1': merged(41, { follow_on: [{ step: 'check the a11y run passes on /calendar', row: null }] }),
+    'W-2': merged(42, { follow_on: [{ step: 'check the export opens in Excel', row: null }] }),
+  } });
+  const count = () => N.needsCount(loadRepos().find((r) => r.slug === 'acme__omega1494'));
+  N.record({ word: 'omega1494', ticket: 'follow:W-1', action: 'not-now' });
+  N.record({ word: 'omega1494', ticket: 'follow:W-2', action: 'not-now' });
+  t('issue-1494 both follow checks are put off', `${count().putOff} ${count().shown}`, '2 0');
+  const d1 = N.record({ word: 'omega1494', ticket: 'follow:W-1', action: 'done' });
+  t('issue-1494 AC1 done on a put-off follow check records it run, and it leaves Put off',
+    `${d1.ok} ${/^\S+ follow:W-1: recorded done, so it is off your list\. It leaves Put off \(.*not-now\.jsonl\)\.$/.test(d1.line)} ${typeof queueOf('omega1494').tickets['W-1'].follow_on_done} ${count().putOff} ${count().shown}`, 'true true string 1 0');
+  const d2 = N.record({ word: 'omega1494', ticket: 'W-2', action: 'done' });
+  t('issue-1494 AC1 done finds one by the ticket key its Put off row shows, as drop does',
+    `${d2.ok} ${typeof queueOf('omega1494').tickets['W-2'].follow_on_done} ${count().putOff}`, 'true string 0');
+  const never = N.record({ word: 'omega1494', ticket: 'follow:W-9', action: 'done' });
+  t('issue-1494 AC4 done on an item never recorded still records nothing, as before',
+    `${never.ok} ${never.line}`, 'false omega1494 follow:W-9: desk-q does not count it as needing you, so nothing was recorded.');
+
+  // A put-off ask: done takes it off, and drop and a pass settle it as they do a live one.
+  put('ask1494', { port: 4495 });
+  const standing = () => loadRepos(Date.now(), 'ask1494').find((r) => r.slug === 'acme__ask1494' && r.batch == null);
+  const off = () => N.collect({ word: 'ask1494' }).putOff;
+  for (const text of ['Send the Slack draft asking for PullBot on #3530 to #3534', 'Set the §3 row once #1461 merges', 'Tidy the old branch']) here('ask', 'ask1494', text);
+  for (const id of [1, 2, 3]) N.record({ word: 'ask1494', ticket: `ask:${id}`, action: 'not-now' });
+  t('issue-1494 three asks are put off', `${off()} ${N.needsCount(standing()).shown}`, '3 0');
+  const a1 = N.record({ word: 'ask1494', ticket: 'ask:1', action: 'done' });
+  t('issue-1494 AC1 done on a put-off ask takes it off the list, and it leaves Put off',
+    `${a1.ok} ${/^ask1494 ask:1: done, so it is off your list\. It leaves Put off/.test(a1.line)} ${off()}`, 'true true 2');
+  t('issue-1494 AC2 drop on a put-off ask takes it, and it leaves Put off', `${N.record({ word: 'ask1494', ticket: 'ask:3', action: 'drop' }).ok} ${off()}`, 'true 1');
+  const { addAsk, pruneAsks } = await import('../desk/bin/asks.mjs');
+  addAsk(standing().stateDir, 'Set the §3 row once #1461 merges', Date.now(), { until: ['W-1'] });
+  const pruned = pruneAsks(standing().stateDir, { known: (k) => k === 'W-1', finished: () => true });
+  t('issue-1494 AC3 a put-off ask whose tickets have merged is cleared by a pass as a live one is, and Put off reads 0',
+    `${pruned.map((a) => a.id).join()} ${off()} ${/Put off/.test(strip(repoScreen(standing())))}`, '2 0 false');
+}
+
+// issue-1494: a put-off step's done records nothing, so it is dismissed to leave Put off.
+{
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, held_outside: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+  const input = { key: 'OPS-8', category: 'new', type: 'Task', summary: 'Record the webhook payload', labels: ['ben-input'] };
+  put('psi1494', { port: 4496, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-8': held('OPS-8') }, triage: { 'H-8': { blockers: [input] } } });
+  const psi = () => N.needsCount(loadRepos().find((r) => r.name === 'psi1494'));
+  N.record({ word: 'psi1494', ticket: 'step:OPS-8', action: 'not-now' });
+  const s = N.record({ word: 'psi1494', ticket: 'step:OPS-8', action: 'done' });
+  t('issue-1494 AC1 done on a put-off step is noted as a listed one is, and it leaves Put off',
+    `${s.ok} ${/: noted: the next pass that reads OPS-8 from Jira .* It leaves Put off \(/.test(s.line)} ${psi().putOff} ${psi().shown}`, 'true true 0 0');
+}
+
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
 {
   const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });

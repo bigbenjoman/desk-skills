@@ -2394,8 +2394,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // offers, and a not-now puts off beside its own row's item.
   const dup = r.q ? duplicateRow(r, ticket) : null;
   const x = !row || verb === 'drop' ? dup ?? row : row;
-  // A drop the ticket's own row does not take may name a put-off item by the ticket key desk-q shows.
-  const offDrop = () => (verb === 'drop' ? dropPutOff(collect({ word, now, repos, reads: null }), ticket, now) : null);
+  // A drop or done the ticket's own row does not take may name a put-off item by the ticket key desk-q shows.
+  const offDrop = () => (verb === 'drop' ? dropPutOff(collect({ word, now, repos, reads: null }), ticket, now)
+    : verb === 'done' ? donePutOff(collect({ word, now, repos, reads: null }), ticket, { word, now, repos, reads }) : null);
   if (!x) return offDrop() ?? movedOn(r, ticket, verb, text, now);
   const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
@@ -2687,18 +2688,36 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   }
 }
 
-// A put-off item that is no ticket row has no batch to drop it from, so a drop records it dismissed:
-// it leaves Put off and is not listed again until what it keys to changes. Found in collect's `off`
-// by its own key, else by the ticket key desk-q shows for it (itemKey); refused naming each own key
-// where more than one shows so. null where none is put off under the key.
-function dropPutOff(c, ticket, now) {
+// The put-off items in collect's `off` that `ticket` names: by their own key, else by the ticket key
+// desk-q shows for them (itemKey). An answer is refused naming each own key where more than one shows so.
+function putOffHits(c, ticket) {
   const own = c.off.filter((y) => y.t.key === ticket);
-  const hits = own.length ? own : c.off.filter((y) => itemKey(y.t, y) === ticket);
-  if (!hits.length) return null;
-  if (hits.length > 1) return { ok: false, line: `${c.named?.name ?? hits[0].r.repo} ${ticket}: ${hits.length} put-off items show as ${ticket}, so nothing was dropped. Drop one by its own key: ${hits.map((y) => y.t.key).join(', ')}.`, message: null };
-  const [off] = hits, dir = off.putOffDir ?? off.r.stateDir;
+  return own.length ? own : c.off.filter((y) => itemKey(y.t, y) === ticket);
+}
+const manyPutOff = (c, ticket, hits, what, how) => ({ ok: false, line: `${c.named?.name ?? hits[0].r.repo} ${ticket}: ${hits.length} put-off items show as ${ticket}, so nothing was ${what}. ${how} one by its own key: ${hits.map((y) => y.t.key).join(', ')}.`, message: null });
+// Records put-off item `off` dismissed in its register: it leaves Put off until what it keys to changes. -> the register's path
+function dismissPutOff(off, now) {
+  const dir = off.putOffDir ?? off.r.stateDir;
   addPutOff({ ...putOffEntry({ question: off.putOffKey.question, ticket: off.t.key, inputs: off.putOffKey.inputs, at: new Date(now).toISOString() }), dismissed: true }, dir);
-  return { ok: true, line: `${off.r.repo} ${off.t.key}: dropped (${notNowPath(dir)}), so it leaves Put off and is not listed again until it changes.`, message: null };
+  return notNowPath(dir);
+}
+// A put-off item that is no ticket row has no batch to drop it from, so a drop records it dismissed:
+// it leaves Put off and is not listed again until what it keys to changes. null where none is put
+// off under the key.
+function dropPutOff(c, ticket, now) {
+  const hits = putOffHits(c, ticket);
+  if (!hits.length) return null;
+  if (hits.length > 1) return manyPutOff(c, ticket, hits, 'dropped', 'Drop');
+  const [off] = hits;
+  return { ok: true, line: `${off.r.repo} ${off.t.key}: dropped (${dismissPutOff(off, now)}), so it leaves Put off and is not listed again until it changes.`, message: null };
+}
+// Done on a put-off item named by the ticket key desk-q shows for it: answered by its own key, as
+// recordRepoItem answers it. null where none is put off under the key.
+function donePutOff(c, ticket, { word, now, repos, reads }) {
+  const hits = putOffHits(c, ticket);
+  if (!hits.length) return null;
+  if (hits.length > 1) return manyPutOff(c, ticket, hits, 'recorded', 'Say done on');
+  return recordRepoItem({ word, ticket: hits[0].t.key, action: 'done', now, repos, reads });
 }
 
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
@@ -2722,7 +2741,19 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   const [verb] = action.split(/\s+/);
   const dropped = !i && verb === 'drop' ? dropPutOff(c, ticket, now) : null;
   if (dropped) return dropped;
+  // Done on a put-off item is answered as the listed item's done is, and then it leaves Put off: a
+  // done that records nothing (a noted item) would otherwise leave it there.
+  const off = !i && verb === 'done' ? c.off.find((y) => y.t.key === ticket) : null;
+  if (off) {
+    const out = answerRepoItem(off, { ticket, verb, text, now, reads });
+    return out.ok ? { ...out, line: `${out.line} It leaves Put off (${dismissPutOff(off, now)}).` } : out;
+  }
   if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
+  return answerRepoItem(i, { ticket, verb, text, now, reads });
+}
+
+// Answers repo-level or step item `i` with `verb`, as recordRepoItem found it: { ok, line, message }.
+function answerRepoItem(i, { ticket, verb, text, now, reads }) {
   const say = (ok, line, message = null) => ({ ok, line: `${i.r.repo} ${ticket}: ${line}`, message });
   if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
   if (verb === 'not-now') {
