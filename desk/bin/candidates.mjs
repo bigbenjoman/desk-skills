@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// What to admit into a free batch slot: §4 Jira project's unassigned, unstarted Bugs and self-contained
-// Tasks, ranked by §4 Priority, then Bugs before Tasks, then newest, each checked against the default branch before it is offered. It only
+// What to admit into a free batch slot: first the unstarted Bugs and self-contained Tasks in §4 Jira
+// project already assigned to the person §1 names (§1 Jira account id, else the signed-in Jira user)
+// with no open PR naming their key, then its unassigned ones, each ranked by §4 Priority, then Bugs
+// before Tasks, then newest, and checked against the default branch before it is offered. It only
 // lists and writes nothing in Jira or GitHub: /desk-admit admits.
 //
 //   node candidates.mjs [--json]   the list (exit 0); 1 when the Jira search failed, 3 with no Jira
@@ -17,11 +19,13 @@
 //     expecting a clean admit;
 //   - a file its description names that a PR merged in the last OVERLAP_DAYS days changed: that PR is
 //     named as possible overlap.
-// Clean candidates come first, then flagged ones, each in priority order.
+// The person's own come first, in priority order; then clean unassigned candidates, then flagged ones,
+// each in priority order. A ticket assigned to anyone else is never searched for.
 //
-// With config §3b "Propose candidates for a free slot" on, the pass lists them too (slotLines) while
-// the standing batch has a slot free and nothing ready to take it, read at most every
-// CANDIDATES_EVERY_MS and kept in <state>/candidates.json between reads.
+// While the standing batch has a slot free and nothing ready to take it, the pass names the person's
+// own as ready to admit (slotLines), and with config §3b "Propose candidates for a free slot" on, the
+// unassigned ones too, read at most every CANDIDATES_EVERY_MS and kept in <state>/candidates.json
+// between reads.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,7 +35,7 @@ import { jiraSearch } from './jira-search.mjs';
 import { blockersFact } from './desk-q-eta.mjs';
 import { keyPattern } from './batch-state.mjs';
 import { lintTicket } from './ticket-lint.mjs';
-import { mergedNaming } from './recoveries.mjs';
+import { mergedNaming, prNames } from './recoveries.mjs';
 import { listBatches, liveBatch, repoTickets } from './batches.mjs';
 
 // Jira's largest page for a search returning fields.
@@ -40,6 +44,8 @@ export const SEARCH_MAX = 100;
 // GitHub reads.
 export const CHECK_MAX = 15;
 export const OVERLAP_DAYS = 7;
+// Open PRs read a listing, to leave out the person's own tickets one names.
+const OPEN_MAX = 200;
 export const CANDIDATES_EVERY_MS = 30 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GH_TIMEOUT_MS = 30 * 1000;
@@ -79,15 +85,24 @@ const jqlValue = (v) => `"${String(v).replace(/["\\]/g, '\\$&')}"`;
 // The searches, highest priority first, each read one page, newest first: one per value §4 Priority
 // lists, then one for a value unset or unlisted, which Jira orders by the field (a select field by its
 // options' order), so a backlog past a page still reads its top tickets first. With none listed, one
-// search, ordered the same way.
-export function candidatesJqls(project, { field, names }) {
-  const base = `project = "${project}" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"`;
+// search, ordered the same way. `assignee` is the search's assignee clause: unassigned unless given
+// (ownAssignee).
+export function candidatesJqls(project, { field, names }, assignee = 'assignee is EMPTY') {
+  const base = `project = "${project}" AND issuetype in (Bug, Task) AND ${assignee} AND statusCategory = "To Do"`;
   const f = field === 'priority' ? 'priority' : `cf[${field.slice('customfield_'.length)}]`;
   const byField = `ORDER BY ${f} ${field === 'priority' ? 'DESC' : 'ASC'}, created DESC`;
   if (!names.length) return [`${base} ${byField}`];
   return [...names.map((v) => `${base} AND ${f} = ${jqlValue(v)} ORDER BY created DESC`),
     `${base} AND (${f} is EMPTY OR ${f} not in (${names.map(jqlValue).join(', ')})) ${byField}`];
 }
+
+// §1 Jira account id, or null where it is unset or `none`.
+export function personOf(raw = E.configValue('jira-account-id')) {
+  const v = String(raw ?? '').trim().replace(/^`|`$/g, '');
+  return v && !E.isNone(v) && !/^todo\b/i.test(v) ? v : null;
+}
+// The assignee clause for the tickets of `person` (§1 Jira account id), else of the signed-in Jira user.
+export const ownAssignee = (person) => `assignee = ${person ? jqlValue(person) : 'currentUser()'}`;
 
 // Words in a summary or label marking a decision, or access, key or infrastructure work outside the repo.
 const OUTSIDE = /\b(decide|decision|whether|policy|should we|adopt(?:ion)?|licen[cs]e|keys?|rotat(?:e|ion)|credentials?|access|IAM|WAF|DNS|infra(?:structure)?)\b/i;
@@ -163,10 +178,12 @@ export function onMain(key, { prs = [], commits = [] } = {}) {
 //   mergedPrs(key)            -> [{number, title, headRefName}] merged into the default branch, or null when unread
 //   commits(key)              -> [{sha, subject}] on origin/<default>, or null when unread
 //   recent(sinceDate)         -> [{number, files}] merged into the default branch since then, or null when unread
+//   openPrs()                 -> [{number, title, headRefName}] open, or null when unread
 //   queued()                  -> Set of keys in a live batch;  liveEpics() -> Set of epic keys with a live feature batch
-// -> {ok, offered, onMain, left, unchecked, more} | {ok: false, why}. Each offered or on-main entry is
-// {key, type, priority, summary, rank, flags, overlap[, pr | commit]}.
-export function listCandidates({ project, priority, reads, now = Date.now(), checkMax = CHECK_MAX }) {
+// `person` is §1 Jira account id (null: the signed-in Jira user). `ownOnly` lists only the person's own.
+// -> {ok, offered, onMain, left, unchecked, more, ownOnly} | {ok: false, why, ownOnly}. Each offered or on-main
+// entry is {key, type, priority, summary, rank, own, flags, overlap[, pr | commit]}.
+export function listCandidates({ project, priority, person = null, ownOnly = false, reads, now = Date.now(), checkMax = CHECK_MAX }) {
   const pr = priorityOf(priority);
   const fields = ['issuelinks', 'parent', 'created', ...(pr.field === 'priority' ? [] : [pr.field])];
   const ctx = { queued: reads.queued(), liveEpics: reads.liveEpics() };
@@ -174,27 +191,41 @@ export function listCandidates({ project, priority, reads, now = Date.now(), che
   const pool = [];
   // `more`: a match was not read, on a page past the first or in a lower tier no search was needed for.
   let more = false;
-  for (const jql of candidatesJqls(project, pr)) {
+  // The person's own tiers first, then the unassigned ones. One of the person's own an open PR names is
+  // started, so it is left out.
+  const own = new Set();
+  let open;
+  const searches = [...candidatesJqls(project, pr, ownAssignee(person)).map((jql) => ({ jql, mine: true })),
+    ...(ownOnly ? [] : candidatesJqls(project, pr).map((jql) => ({ jql, mine: false })))];
+  for (const { jql, mine } of searches) {
     if (pool.length >= checkMax) { more = true; break; }
     const res = reads.search(jql, SEARCH_MAX, fields);
-    if (!res?.ok) return { ok: false, why: res?.why ?? 'the Jira search failed' };
+    if (!res?.ok) return { ok: false, why: res?.why ?? 'the Jira search failed', ownOnly };
     if (res.more) more = true;
     for (const i of res.issues) {
-      const why = leftOut(i, ctx);
-      if (why) left.push({ key: i.key, why }); else pool.push(i);
+      let why = leftOut(i, ctx);
+      if (!why && mine) {
+        if (open === undefined) open = reads.openPrs();
+        const p = open?.find(prNames(i.key));
+        if (p) why = `started: open PR #${p.number} names it`;
+      }
+      if (why) left.push({ key: i.key, why });
+      else { if (mine) own.add(i.key); pool.push(i); }
     }
   }
-  pool.sort((a, b) => rankOf(a, pr) - rankOf(b, pr) || unlistedOrder(a, b, pr) || bugFirst(a) - bugFirst(b) || createdAt(b) - createdAt(a));
+  const notOwn = (i) => (own.has(i.key) ? 0 : 1);
+  pool.sort((a, b) => notOwn(a) - notOwn(b) || rankOf(a, pr) - rankOf(b, pr) || unlistedOrder(a, b, pr) || bugFirst(a) - bugFirst(b) || createdAt(b) - createdAt(a));
   let recent;
   const offered = [];
   const main = [];
   for (const i of pool.slice(0, checkMax)) {
     const c = { key: i.key, type: i.fields?.issuetype?.name ?? null, priority: valueOf(i.fields?.[pr.field]) || null,
-      summary: i.fields?.summary ?? '', rank: rankOf(i, pr), flags: [], overlap: [] };
+      summary: i.fields?.summary ?? '', rank: rankOf(i, pr), own: own.has(i.key), flags: [], overlap: [] };
     const prs = reads.mergedPrs(i.key);
     const commits = reads.commits(i.key);
     const landed = onMain(i.key, { prs: prs ?? [], commits: commits ?? [] });
     if (landed) { main.push({ ...c, ...landed }); continue; }
+    if (c.own && !open) c.flags.push('not checked for an open PR: the open PRs could not be read');
     if (!prs || !commits) c.flags.push(`not checked against ${prs ? 'the default branch\'s commits' : 'merged PRs'}: it could not be read`);
     const d = reads.description(i.key);
     if (!d?.ok) c.flags.push(`its description could not be read (${d?.why ?? 'desk-jira get failed'})`);
@@ -209,24 +240,34 @@ export function listCandidates({ project, priority, reads, now = Date.now(), che
     }
     offered.push(c);
   }
-  const flagged = (c) => (c.flags.length || c.overlap.length ? 1 : 0);
-  offered.sort((a, b) => flagged(a) - flagged(b) || a.rank - b.rank);
-  return { ok: true, offered, onMain: main, left, unchecked: Math.max(0, pool.length - checkMax), more };
+  // The person's own first, by priority alone; then the clean unassigned ones, then the flagged.
+  const flagged = (c) => (c.own || !(c.flags.length || c.overlap.length) ? 0 : 1);
+  offered.sort((a, b) => Number(b.own) - Number(a.own) || flagged(a) - flagged(b) || a.rank - b.rank);
+  return { ok: true, offered, onMain: main, left, unchecked: Math.max(0, pool.length - checkMax), more, ownOnly };
 }
 
 // What a candidate's line says after its key: priority, type, summary, then each flag and overlap.
 const notes = (c) => [...c.flags, ...c.overlap.map((o) => `possible overlap with #${o.number}, merged in the last ${OVERLAP_DAYS} days (${o.files.join(', ')})`)];
-// The listing as lines, for a person or a pass report.
+// The listing as lines, for a person or a pass report. With `ownOnly` and none of the person's own to
+// offer, a failed read included, nothing.
 export function renderLines(r, { project }) {
-  if (!r.ok) return [`no candidates: ${r.why}`];
+  if (!r.ok) return r.ownOnly ? [] : [`no candidates: ${r.why}`];
+  const mine = r.offered.filter((c) => c.own);
+  const rest = r.offered.filter((c) => !c.own);
+  if (r.ownOnly && !mine.length) return [];
   const out = [];
-  if (r.offered.length) {
+  const line = (c, i) => {
+    const n = notes(c);
+    return `  ${i}. ${c.key}  ${c.priority ?? 'no priority'}  ${c.type ?? '?'}  ${c.summary}${n.length ? ` — ${n.join('; ')}` : ''}`;
+  };
+  if (mine.length) {
+    out.push(`your unstarted assigned tickets in ${project}, ready to admit:`);
+    mine.forEach((c, i) => out.push(line(c, i + 1)));
+  }
+  if (rest.length) {
     out.push(`candidates for a free slot from ${project}, by priority:`);
-    r.offered.forEach((c, i) => {
-      const n = notes(c);
-      out.push(`  ${i + 1}. ${c.key}  ${c.priority ?? 'no priority'}  ${c.type ?? '?'}  ${c.summary}${n.length ? ` — ${n.join('; ')}` : ''}`);
-    });
-  } else out.push(`no candidates for a free slot from ${project}`);
+    rest.forEach((c, i) => out.push(line(c, mine.length + i + 1)));
+  } else if (!r.ownOnly) out.push(`no ${mine.length ? 'unassigned ' : ''}candidates for a free slot from ${project}`);
   if (r.onMain.length) {
     out.push('not offered:');
     for (const c of r.onMain) out.push(`  ${c.key}  already on main (${c.pr != null ? `PR #${c.pr}` : `commit ${c.commit}`})`);
@@ -256,6 +297,8 @@ export function defaultReads({ repo, root, base }) {
       if (r.status !== 0) return null;
       return r.stdout.split('\n').filter(Boolean).map((l) => { const [sha, ...s] = l.split('\t'); return { sha, subject: s.join('\t') }; });
     },
+    // A list OPEN_MAX long may be cut short, so it reads as unread.
+    openPrs: () => { const l = ghJson(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,headRefName', '--limit', String(OPEN_MAX)]); return l && l.length < OPEN_MAX ? l : null; },
     recent: (since) => ghJson(['pr', 'list', '--repo', repo, '--state', 'merged', '--base', base, '--search', `merged:>=${since.toISOString().slice(0, 10)}`, '--json', 'number,files', '--limit', '100']),
     queued: () => { try { return new Set(repoTickets(E.repoSlug(), listBatches()).map((t) => t.key)); } catch { return new Set(); } },
     liveEpics: () => { try { return new Set(listBatches().filter((b) => b.name && liveBatch(b.name)).map((b) => b.name)); } catch { return new Set(); } },
@@ -267,30 +310,32 @@ export function trackerOf() {
   if (!/^jira\b/i.test(String(E.configValue('tracker') ?? '').trim())) return { why: 'config §4 Tracker is not jira, and candidates come from a Jira project' };
   const project = /^[`"]?([A-Z][A-Z0-9_]*)\b/.exec(String([].concat(E.configValues('jira-project') ?? [])[0] ?? '').trim())?.[1];
   if (!project) return { why: 'config §4 Jira project is not set' };
-  return { project, priority: E.configValues('jira-priority') };
+  return { project, priority: E.configValues('jira-priority'), person: personOf() };
 }
 
 // The listing for this repo: { ok, lines, result, noTracker }, `noTracker` true where it has no Jira
-// tracker to list from.
-export function runList({ reads } = {}) {
+// tracker to list from. `ownOnly` lists only the person's own unstarted assigned tickets, and says
+// nothing when there are none to offer.
+export function runList({ reads, ownOnly = false } = {}) {
   const t = trackerOf();
-  if (t.why) return { ok: false, noTracker: true, lines: [`no candidates: ${t.why}`], result: { ok: false, why: t.why } };
+  if (t.why) return { ok: false, noTracker: true, lines: ownOnly ? [] : [`no candidates: ${t.why}`], result: { ok: false, why: t.why } };
   const base = String(E.configValue('default-branch') ?? '').trim() || 'main';
-  const result = listCandidates({ project: t.project, priority: t.priority, reads: reads ?? defaultReads({ repo: E.ghRepo(), root: E.repoRoot(), base }) });
+  const result = listCandidates({ project: t.project, priority: t.priority, person: t.person, ownOnly,
+    reads: reads ?? defaultReads({ repo: E.ghRepo(), root: E.repoRoot(), base }) });
   return { ok: result.ok, lines: renderLines(result, t), result };
 }
 
 // Config §3b "Propose candidates for a free slot": on, or off for anything else.
 export const slotCandidatesOn = (raw = E.configValue('slot-candidates')) => String(raw ?? '').trim().toLowerCase() === 'on';
 
-// The pass's lines for a free slot: the kept listing while it is under CANDIDATES_EVERY_MS old, else a
-// fresh one, kept unless `dry`.
-export function slotLines({ state, now = Date.now(), dry = false, list = runList } = {}) {
+// The pass's lines for a free slot: the kept listing while it is under CANDIDATES_EVERY_MS old and was
+// read with the same `ownOnly`, else a fresh one, kept unless `dry`.
+export function slotLines({ state, now = Date.now(), dry = false, ownOnly = false, list = runList } = {}) {
   const file = join(state, 'candidates.json');
   let kept = null;
   try { kept = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none kept yet */ }
-  if (!Array.isArray(kept?.lines) || !(now - Date.parse(kept.at) < CANDIDATES_EVERY_MS)) {
-    kept = { at: new Date(now).toISOString(), lines: list().lines };
+  if (!Array.isArray(kept?.lines) || !(now - Date.parse(kept.at) < CANDIDATES_EVERY_MS) || Boolean(kept.own_only) !== ownOnly) {
+    kept = { at: new Date(now).toISOString(), own_only: ownOnly, lines: list({ ownOnly }).lines };
     if (!dry) { try { writeFileSync(file, `${JSON.stringify(kept, null, 2)}\n`); } catch { /* read again next pass */ } }
   }
   return kept.lines.map((l) => `free slot: ${l}`);

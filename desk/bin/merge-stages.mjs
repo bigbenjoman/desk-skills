@@ -44,6 +44,10 @@ export function cleanOf(body, clean) {
 const inOutage = (outages, login, from, to) => (outages ?? []).some((o) => o?.login === login
   && ms(o.from) < (ms(to) || Infinity) && (o.to == null || ms(o.to) > ms(from)));
 
+// Desk's verdict round among `rounds`: the last clean one, else the last; null with none. The record's
+// undraft stage runs from its end.
+const verdictOf = (rounds) => [...rounds].reverse().find((r) => r.clean) ?? rounds.at(-1) ?? null;
+
 // One merged PR's stages from a stagesQuery payload. `desk`: desk's verdict logins (loginIn's form);
 // `external`: the outside reviewer's login, or null where no §4 State check of kind external names one;
 // `clean`: §4 Clean review verdict; `outages`: gate-reviewer.mjs's. -> the record (without key and
@@ -66,7 +70,7 @@ export function stagesOf(payload, { desk, external = null, clean, outages = [], 
     const start = i ? mine[i - 1].submittedAt : reviewFrom;
     return { start, end: r.submittedAt, minutes: mins(start, r.submittedAt), clean: cleanOf(r.body, clean) };
   });
-  const verdict = [...rounds].reverse().find((r) => r.clean) ?? rounds.at(-1) ?? null;
+  const verdict = verdictOf(rounds);
   const theirs = external && ready ? reviews.filter((r) => loginIn(r.author?.login, external) && ms(r.submittedAt) >= ms(ready) && ms(r.submittedAt) <= ms(merged)) : [];
   const ext = external && ready ? {
     login: external,
@@ -154,6 +158,14 @@ export function summary(all) {
     return [s, { n: xs.length, median: quantile(xs, 0.5), p75: quantile(xs, 0.75) }];
   }));
   return { prs: entries.length, stages, outage };
+}
+
+// When a recorded PR left draft, as ms: desk's verdict round's end plus the undraft stage, or null
+// for a PR with no undraft read.
+export function readyAt(e) {
+  const v = verdictOf(e?.desk?.rounds ?? []);
+  const t = ms(v?.end) + e?.undraft * 60000;
+  return v && Number.isFinite(e?.undraft) && Number.isFinite(t) ? t : null;
 }
 
 export const fmt = (m) => (m == null ? '—' : m >= 90 ? `${Math.round(m / 6) / 10}h` : `${Math.round(m)}m`);

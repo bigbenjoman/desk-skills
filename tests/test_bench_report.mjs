@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSyn
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseBaseline, loadBaseline, loadRun, renderReport, loadPlans, planFor, armValue, runChecks, checksCell, NO_BASELINE, NOT_SCORED, NOT_PRICED, NOT_AVAILABLE, WEEKLY_POINTS, MONTH_HOURS } from '../desk/bin/bench-report.mjs';
+import { parseBaseline, loadBaseline, loadRun, renderReport, loadPlans, planFor, armValue, runChecks, checksCell, inputEquivalent, NO_BASELINE, NOT_SCORED, NOT_PRICED, NOT_AVAILABLE, WEEKLY_POINTS, MONTH_HOURS } from '../desk/bin/bench-report.mjs';
 import { report as phase0, figureLines, totalOf } from '../desk/bin/phase0-report.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -104,6 +104,29 @@ t('AC3 baseline tokens per accepted ticket', `${row('Input tokens of all kinds p
   '1,000,000 (mean over 3 ticket(s)) / 20,000 (mean over 3 ticket(s))');
 t('AC3 baseline quota per accepted ticket', row('Claude quota points per accepted task (median), per account')[0], 'signed-in login: 10.00 (40 point(s) ÷ 4 accepted)');
 t('AC3 baseline repair cycles per ticket', row('Repair cycles per ticket')[0], '1.50 (fix tries per accepted ticket)');
+t('per-run cache writes count rejected runs too, never a failed one', row('Median cache-write tokens per scored run').slice(1).join(' / '), '1,500 / 500');
+t('an arm whose model no price list covers is not priced in input-equivalent tokens',
+  row('Median input-equivalent tokens per scored run (every kind at its list price, as uncached input)').slice(1).join(' / '), `${NOT_PRICED} / ${NOT_PRICED}`);
+
+// Input-equivalent tokens: each kind at the opus list price over uncached input (cache write 5/4,
+// cache read 0.2/4, output 20/4), over the scored runs; the failed run counts in no figure. p1 is
+// 100 + (1000·5 + 5000·0.2 + 300·20)/4 = 3,100, and p2 and p3 sit either side of it, so the median
+// is the priced run's.
+t('input-equivalent prices every kind at its opus rate', Math.round(inputEquivalent(tok(100, 1000, 5000, 300), 'opus')), 3100);
+t('input-equivalent prices a cache write at the 5-minute rate', Math.round(inputEquivalent(tok(0, 1000, 0, 0), 'opus')), 1250);
+t('input-equivalent uses the base tier on a run\'s summed tokens', Math.round(inputEquivalent(tok(200000, 0, 0, 0), 'haiku')), 200000);
+t('input-equivalent is null for a model with no price', inputEquivalent(tok(1, 0, 0, 0), 'gpt-9'), null);
+const perRun = benchOut('per-run', {
+  p1: { pack: { status: 'accepted', model: 'opus', tokens: tok(100, 1000, 5000, 300) } },
+  p2: { pack: { status: 'rejected', model: 'opus', tokens: tok(1000, 0, 0, 0) } },
+  p3: { pack: { status: 'rejected', model: 'opus', tokens: tok(5000, 0, 0, 0) } },
+  p4: { pack: { status: 'failed', model: 'opus', tokens: tok(99999, 0, 0, 0) } },
+});
+r = run('--tasks', perRun.set);
+t('the per-run report runs', r.status, 0);
+const pricedText = readFileSync(join(perRun.out, 'report.md'), 'utf8');
+t('AC2 median input-equivalent tokens per scored run', pricedText.includes('| Median input-equivalent tokens per scored run (every kind at its list price, as uncached input) | no baseline | 3,100 |'), true);
+t('AC2 median cache-write tokens per scored run', pricedText.includes('| Median cache-write tokens per scored run | no baseline | 0 |'), true);
 t('the arms\' input of all kinds is beside it', row('Input tokens of all kinds per accepted task (median)').slice(1).join(' / '), '8,200 / 3,160');
 t('no verdict is given', /verdict|keep|drop/i.test(text), false);
 t('the CLI prices each arm from <out>/plans.json', row('£ per accepted task').slice(1).map((c) => c.slice(0, 5)).join(' / '), '£0.55 / £1.60');

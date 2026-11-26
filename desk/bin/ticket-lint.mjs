@@ -50,12 +50,55 @@ const quote = (s) => { const t = s.trim(); return t.length > 90 ? `${t.slice(0, 
 // "for the user to confirm" is behaviour; "(to confirm)" and "to be confirmed" leave a fact open.
 const OPEN = [/\bTBD\b/, /\bTBC\b/, /\bTODO\b/, /\bto be (?:decided|confirmed)\b/i, /\bdecide\b/i, /\bneeds? a decision\b/i,
   /\bproposals? for\b/i, /\(to confirm\)/i, /\bpending sign-?off\b/i];
+// A Design section line saying the change only prints to a terminal: as good as "No UI.".
+const TERMINAL_ONLY = /^\W*(?:terminal|cli|command[- ]line)(?: output)? only\b/i;
 const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\b/i;
-const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
+export const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
 // A Given/When/Then criterion: a line opening with Given (after a list mark, a list number or an AC1:
 // label), or a one-line "given …, when …, then …". When and Then alone are left out: both open code
 // lines too (a shell `then`, Kotlin's `when`).
 const GWT = /^\W*(?:\d+\W+)?(?:AC\d+\W*)?given\b|\bgiven\b.*\bwhen\b.*\bthen\b/i;
+const LABELLED = /^\W*(?:\d+\W+)?AC\d+\b/i;
+const GIVEN = /^\W*(?:\d+\W+)?given\b/i;
+const MORE = /^\W*(?:when|then|and|but)\b/i;
+const NOT_CRITERIA = /^(?:out of scope|verification)\b/i;
+const itemText = (l) => l.replace(/^\s*(?:[-*+#•]+|\d+[.)])?\s*/, '').trim();
+
+// Given/When/Then criteria written with no ACn labels: [{text, lines}], one per criterion, in order: a
+// line opening with Given and the When/Then/And/But lines straight under it, joined as one line, with
+// the source line numbers. Read anywhere but code blocks holding no Given line and the Out of scope and
+// Verification sections. [] where any line already carries an ACn label, or none reads as one.
+export function unlabelledCriteria(text) {
+  const code = [];
+  const blanked = blankCode(text, code);
+  const raw = String(text ?? '').split(/\r?\n/);
+  if (raw.some((l) => LABELLED.test(l))) return [];
+  const skip = new Set(code.filter((b) => !b.some((n) => GIVEN.test(raw[n - 1] ?? ''))).flat());
+  for (const s of sections(blanked.join('\n')).filter((x) => NOT_CRITERIA.test(x.name))) for (const l of s.lines) skip.add(l.n);
+  const out = [];
+  let cur = null;
+  raw.forEach((l, i) => {
+    if (skip.has(i + 1)) cur = null;
+    else if (GIVEN.test(l)) out.push(cur = { lines: [i + 1], parts: [itemText(l)] });
+    else if (cur && MORE.test(l)) { cur.lines.push(i + 1); cur.parts.push(itemText(l)); }
+    else cur = null;
+  });
+  return out.map((c) => ({ text: c.parts.join(' '), lines: c.lines })).filter((c) => /\bthen\b/i.test(c.text));
+}
+
+// `text` without the given source lines, and without any code block they leave holding nothing.
+export function withoutLines(text, drop) {
+  const code = [];
+  blankCode(text, code);
+  const raw = String(text ?? '').split(/\r?\n/);
+  const gone = new Set(drop);
+  for (const b of code) {
+    if (!b.some((n) => gone.has(n))) continue;
+    const empty = (l) => !l.trim() || /^\s*(?:`{3,}|~{3,}|\{(?:code|noformat)\})\s*$/i.test(l);
+    if (b.slice(1).every((n) => gone.has(n) || empty(raw[n - 1] ?? ''))) b.forEach((n) => gone.add(n));
+  }
+  return raw.filter((_, i) => !gone.has(i + 1)).join('\n');
+}
 const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|move[sd]?|assign(?:s|ed)?|label(?:s|l?ed)?|comment(?:s|ed)?|close[sd]?|reopen(?:s|ed)?|re-?parent(?:s|ed)?)`;
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
 const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|database|measurement|environment)\b/i;
@@ -132,7 +175,13 @@ export function lintTicket(t, { root, dir, ref } = {}) {
     if (back.size) criteria.lines = criteria.lines.map((l) => (back.has(l.n) ? { n: l.n, text: raw[l.n - 1] ?? '' } : l));
   }
   const all = secs.flatMap((s) => s.lines);
-  if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
+  // Unlabelled Given/When/Then lines outside that heading are its criteria, unnumbered: the finding
+  // carries them numbered, for admit to write under the heading (ticket-fill.mjs).
+  const own = filled(criteria) ? [] : unlabelledCriteria(t.text);
+  if (own.length) {
+    findings.push({ severity: 'blocking', rule: 'criteria', numbered: own.map((c) => c.text),
+      message: `no acceptance criteria section, but ${own.length} Given/When/Then criteria with no AC labels (line ${own.map((c) => c.lines[0]).join(', ')}): move them under an "Acceptance criteria" heading as AC1: … items` });
+  } else if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
 
   for (const l of all) {
     const p = asides(unquoted(prose(l.text)), exampleList).replace(SETTLED, ' ');
@@ -146,11 +195,12 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   }
 
   const design = sec(/^design\b/i);
-  const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)));
+  const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)))
+    || !!design?.lines.some((l) => TERMINAL_ONLY.test(prose(l.text)));
   // A Figma URL counts wherever the description has it. A Claude Design link counts only in the
   // Design section, where the saved-copy check and triage look for it.
   if (!noUi && !FIGMA_URL.test(t.text ?? '') && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
-    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." there');
+    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." (or "Terminal output only.") there');
   }
 
   if ('size' in t && !/sub-?task/i.test(t.type ?? '')) {

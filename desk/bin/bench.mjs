@@ -134,9 +134,10 @@ export const PACKET_HEADING = '## Task packet';
 // The prompt an arm starts from: the ticket text, with the task's packet after it on a packet arm.
 export const promptFor = (task, arm) => (arm.brief === 'packet' ? `${task.prompt}\n\n${PACKET_HEADING}\n\n${task.packet.trim()}` : task.prompt);
 
-// What makes a stored result the same run: the base and everything the arm starts with.
+// What makes a stored result the same run: the base and everything the arm starts with, its system
+// pack included where it has one.
 export const runKey = (task, arm) => createHash('sha256')
-  .update(JSON.stringify([task.base, promptFor(task, arm), arm.model, arm.effort])).digest('hex').slice(0, 12);
+  .update(JSON.stringify([task.base, promptFor(task, arm), arm.model, arm.effort, ...(arm.system ? [arm.system] : [])])).digest('hex').slice(0, 12);
 
 // The model and effort a session ran at, read from its own stream's init event, never from what it
 // was asked for. -> { model, effort, why } with each value the stream does not name null, and why.
@@ -270,12 +271,17 @@ export function writeSettings(repo, task, wt, file, secrets) {
 
 // One claude run, its stream going straight to the transcript. -> readRun's verdict plus usage.
 // `command` runs claude through a wrapper, which `killSignal` then ends at the timeout. `extraArgs` go on
-// claude's command line after the bench's own.
+// claude's command line after the bench's own. An arm's `system` text is kept as the run's system.md and
+// appended to the system prompt, so it is in context from the first turn; it goes by file, since one
+// argument that long is past Linux's per-argument limit.
+export const SYSTEM_FILE = 'system.md';
 export function runClaude(task, arm, wt, settings, opts, dir, { command = ['claude'], killSignal = 'SIGKILL', env = armEnv(), extraArgs = [] } = {}) {
   const file = join(dir, 'transcript.jsonl');
+  if (arm.system) writeFileSync(join(dir, SYSTEM_FILE), arm.system);
+  const system = arm.system ? ['--append-system-prompt-file', join(dir, SYSTEM_FILE)] : [];
   const fd = openSync(file, 'w');
   const err = openSync(join(dir, 'stderr.log'), 'w');
-  const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings, ...extraArgs] });
+  const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings, ...system, ...extraArgs] });
   const proc = spawnSync(command[0], [...command.slice(1), ...args], { cwd: wt, env, stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal });
   closeSync(fd);
   closeSync(err);

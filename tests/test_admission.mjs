@@ -234,10 +234,10 @@ const ask = (dir, { cls = 'light', pid = process.pid, rows = ON, sample = readin
     poolRows('light', admissionRows((k) => BASE[k] ?? null, { testSlots: 2 })), poolRows('heavy', admissionRows((k) => ({ ...ON, 'light-lock-max': '0' })[k] ?? null, { testSlots: 2 }))],
   [{ mode: 'on', floor: 1, ceiling: 3 }, { mode: 'on', floor: 1, ceiling: 3 }, { mode: 'shadow', floor: 1, ceiling: 1 }, { mode: 'off', floor: 2, ceiling: 2 }]);
   const light = (rows, lightSlots) => poolRows('light', admissionRows((k) => rows[k] ?? null, { testSlots: 1, lightSlots }));
-  t('#1458 AC1 the light floor the lock reads is the light pool\'s floor whatever the mode, held to light-lock-max with admission on', [
-    light({ ...BASE, 'lock-admission': 'off' }, 2), light(BASE, 2), light(ON, 2), light(ON, 5), light({ ...ON, 'light-lock-max': '1' }, 2).floor,
+  t('#1458 AC1 DS-1012 AC1 the light floor the lock reads is the light pool\'s floor whatever the mode, and with admission on the ceiling is max(row, light-lock-max)', [
+    light({ ...BASE, 'lock-admission': 'off' }, 2), light(BASE, 2), light(ON, 2), light(ON, 5), light({ ...ON, 'light-lock-max': '1' }, 2),
     admissionRows((k) => ({ ...ON, 'light-lock-max': '1' })[k] ?? null, { testSlots: 1, lightSlots: 2 }).problems],
-  [{ mode: 'off', floor: 2, ceiling: 2 }, { mode: 'shadow', floor: 2, ceiling: 2 }, { mode: 'on', floor: 2, ceiling: 3 }, { mode: 'on', floor: 3, ceiling: 3 }, 1, []]);
+  [{ mode: 'off', floor: 2, ceiling: 2 }, { mode: 'shadow', floor: 2, ceiling: 2 }, { mode: 'on', floor: 2, ceiling: 3 }, { mode: 'on', floor: 5, ceiling: 5 }, { mode: 'on', floor: 2, ceiling: 2 }, []]);
 }
 // Eight light runs at once, admission on: the admission lock lets exactly one take the last room.
 {

@@ -29,7 +29,8 @@ That is the render check's count.
   does that when filing), a live production measurement, a run only an operator can do, or someone's
   sign-off. A human or device step belongs under Verification, with the person who does it.
 - **The design is a URL in the Design section.** A web link or an attachment alone is not read by
-  triage. With nothing to show, write `No UI.`
+  triage. With nothing to show, write `No UI.`, or `Terminal output only.` for a change that only
+  prints to a terminal.
 - **Decisions are dated and name who made them. None of them is open.** An open question is asked
   before the ticket is filed, never written into it. No `TBD`, `TODO`, "to confirm" or "pending
   sign-off" anywhere in the body.
