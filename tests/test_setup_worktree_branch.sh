@@ -19,6 +19,11 @@ check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1";
 git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"
 printf 'one\n' > "$T/repo/a.txt"
+# DS-1027: two Next.js apps, one found by its next.config, one by its package.json.
+mkdir -p "$T/repo/apps/portal/apps/web" "$T/repo/apps/site" "$T/repo/apps/api"
+printf 'export default {}\n' > "$T/repo/apps/portal/apps/web/next.config.mjs"
+printf '{"dependencies": {"next": "16.0.0"}}\n' > "$T/repo/apps/site/package.json"
+printf '{"dependencies": {}}\n' > "$T/repo/apps/api/package.json"
 git -C "$T/repo" add -A; git -C "$T/repo" commit -q -m init
 git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
 cat > "$T/config.md" <<EOF
@@ -73,16 +78,17 @@ check "DS-833 the exclude file ends each pattern on a line of its own" '[ -z "$(
 check "DS-833 a desk-review results file left at the worktree root keeps git status clean" '[ -z "$(git -C "$T/wt/T-1" status --porcelain)" ]'
 
 # DS-1027: AGENTS.md and CLAUDE.md a dev server writes untracked into an app directory stay out of a commit.
-W="$T/wt/T-1"; mkdir -p "$W/apps/portal/apps/web" "$W/apps/api"
-printf 'generated\n' > "$W/apps/portal/apps/web/AGENTS.md"; printf 'generated\n' > "$W/apps/portal/apps/web/CLAUDE.md"
-printf 'ours\n' > "$W/apps/api/CLAUDE.md"; git -C "$W" add -f apps/api/CLAUDE.md; git -C "$W" commit -q -m 'tracked app CLAUDE.md'
+W="$T/wt/T-1"; WEB=apps/portal/apps/web
+for f in "$WEB/AGENTS.md" "$WEB/CLAUDE.md" apps/site/AGENTS.md apps/site/CLAUDE.md; do printf 'generated\n' > "$W/$f"; done
 printf 'change\n' > "$W/b.txt"; git -C "$W" add -A; git -C "$W" commit -q -m change
-check "DS-1027 AC1 untracked AGENTS.md and CLAUDE.md in an app directory are not in the commit" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = b.txt ] && [ -z "$(git -C "$W" status --porcelain)" ]'
-printf 'edited\n' > "$W/apps/api/CLAUDE.md"; git -C "$W" add -A; git -C "$W" commit -q -m edit
-check "DS-1027 AC2 an edit to a tracked CLAUDE.md in an app directory is committed" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = apps/api/CLAUDE.md ] && [ "$(git -C "$W" show HEAD:apps/api/CLAUDE.md)" = edited ]'
-printf 'root\n' > "$W/CLAUDE.md"; printf 'root\n' > "$W/AGENTS.md"
-check "DS-1027 a new AGENTS.md or CLAUDE.md at the repo root still shows as untracked" '[ "$(git -C "$W" status --porcelain)" = "$(printf "?? AGENTS.md\n?? CLAUDE.md")" ]'
-git -C "$W" clean -qf AGENTS.md CLAUDE.md
+check "DS-1027 AC1 untracked AGENTS.md and CLAUDE.md in a Next.js app directory are not in the commit" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = b.txt ] && [ -z "$(git -C "$W" status --porcelain)" ]'
+printf 'ours\n' > "$W/$WEB/CLAUDE.md"; git -C "$W" add -f "$WEB/CLAUDE.md"; git -C "$W" commit -q -m 'tracked app CLAUDE.md'
+printf 'edited\n' > "$W/$WEB/CLAUDE.md"; git -C "$W" add -A; git -C "$W" commit -q -m edit
+check "DS-1027 AC2 an edit to a tracked CLAUDE.md in that app directory is committed" '[ "$(git -C "$W" diff-tree --no-commit-id --name-only -r HEAD)" = "$WEB/CLAUDE.md" ] && [ "$(git -C "$W" show "HEAD:$WEB/CLAUDE.md")" = edited ]'
+mkdir -p "$W/vendor/skill" "$W/.claude"
+for f in CLAUDE.md AGENTS.md apps/api/CLAUDE.md vendor/skill/AGENTS.md .claude/CLAUDE.md; do printf 'new\n' > "$W/$f"; done
+check "DS-1027 a new AGENTS.md or CLAUDE.md outside a Next.js app still shows as untracked" '[ "$(git -C "$W" status --porcelain -uall)" = "$(printf "?? .claude/CLAUDE.md\n?? AGENTS.md\n?? CLAUDE.md\n?? apps/api/CLAUDE.md\n?? vendor/skill/AGENTS.md")" ]'
+git -C "$W" clean -qfd -- CLAUDE.md AGENTS.md apps/api/CLAUDE.md vendor .claude
 
 # AC2: uncommitted changes there.
 held 2; H="$T/other-2"; printf 'two\n' > "$H/a.txt"

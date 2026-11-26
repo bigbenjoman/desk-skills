@@ -395,6 +395,13 @@ exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without t
   if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then echo >> "$excl"; fi
   echo "$1" >> "$excl"
 }
+next_app_dirs() { # each tracked Next.js app directory below the root (a next.config.*, or a package.json naming next), escaped for an exclude pattern
+  { git -C "$WT" ls-files -- ':(glob)**/next.config.*' || true
+    git -C "$WT" grep -lE '"next"[[:space:]]*:' -- ':(glob)**/package.json' || true
+  } 2>/dev/null | while IFS= read -r f; do
+    case "$f" in */*) printf '%s\n' "${f%/*}" ;; esac
+  done | sort -u | sed 's/[][*?\\]/\\&/g'
+}
 mask_urls() { sed -E 's#(://[^:@/[:space:]]*):[^@/[:space:]]*@#\1:***@#g'; }
 migrate_db() { # a failure is kept, printed and reported on the machine-read lines, and setup carries on
   if [ -n "$MULTI" ]; then migrate_apps "$APPS"; return 0; fi
@@ -528,11 +535,13 @@ finish() {
   # keepReviewResults), so it must not dirty the tree a worker proves clean before it pushes.
   # Not worth failing setup over: a worker would then git clean it, as before.
   exclude_from_git '/desk-review-results-*.json' || say "WARNING: could not add desk-review results files to the git exclude"
-  # A dev server (next dev) writes untracked AGENTS.md and CLAUDE.md into an app directory, which a
-  # worker's commit would sweep up. Only below the root: the exclude is shared by every checkout of the
-  # repo, and a ticket may ask for a new root CLAUDE.md. A tracked one is never excluded, so edits commit.
-  { exclude_from_git '/*/**/AGENTS.md' && exclude_from_git '/*/**/CLAUDE.md'; } ||
-    say "WARNING: could not add generated AGENTS.md and CLAUDE.md files to the git exclude"
+  # next dev writes untracked AGENTS.md and CLAUDE.md into its app's directory, which a worker's commit
+  # would sweep up. Excluded only in the Next.js app directories below the root: the exclude is shared by
+  # every checkout of the repo, where a ticket may add a root or nested CLAUDE.md, or a vendored skill its
+  # AGENTS.md. A tracked one is never excluded, so edits to it still commit.
+  next_app_dirs | while IFS= read -r d; do
+    { exclude_from_git "/$d/AGENTS.md" && exclude_from_git "/$d/CLAUDE.md"; } || exit 1
+  done || say "WARNING: could not add generated AGENTS.md and CLAUDE.md files to the git exclude"
   rm -f "$MARKER"
   say "done"
   say "steps=$STEPS"
