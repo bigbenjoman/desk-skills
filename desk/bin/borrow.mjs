@@ -133,6 +133,9 @@ export function lastBeat(stateDir, queuePath) {
 // longer than LIVE_MS between passes has not gone. stoppedAt is when a beat stops reading live (epoch ms).
 export const stoppedAt = (beat) => Math.max(beat.at + LIVE_MS, dueTick(beat) != null ? dueTick(beat) + PASS_GRACE_MS : -Infinity);
 export const liveBeat = (beat, now = Date.now()) => beat != null && now < stoppedAt(beat);
+// Whether queue `q`'s last pass found the batch idle (pass.mjs `idle_at`): a session ends its loop then,
+// though that pass's beat still reads live for LIVE_MS.
+export const idlePass = (q) => q?.pass?.idle_at != null && q.pass.idle_at === q.pass.at;
 
 // Whether otherQueues() entry `o` has an orchestrator with a live beat.
 export const queueLive = (o, { now = Date.now(), stateRoot = join(E.HOME, '.desk-autopilot') } = {}) =>
