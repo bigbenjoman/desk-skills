@@ -74,7 +74,7 @@ export function analyse(ws, { cwd = process.cwd(), scripts = null } = {}) {
   const dashed = s.extra.includes('--');
   // What reaches the script: npm keeps the words before its `--`; another runner passes them all on.
   const passed = npm ? (dashed ? s.extra.slice(s.extra.indexOf('--') + 1) : []) : s.extra;
-  const simple = !COMPOUND.test(body) && !t.args.includes('--') && (npm || !dashed);
+  const simple = !COMPOUND.test(body) && !t.args.includes('--') && !passed.includes('--') && (npm || !dashed);
   return { tool: t.tool, via: s.script, simple, has: [...t.args, ...passed].some((a) => FLAG[t.tool].test(a)), npm, dashed, at: ws.length };
 }
 

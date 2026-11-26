@@ -36,6 +36,8 @@ t('#1526 sh -c bounds before its --, and leaves a quoted string it would have to
   ['turbo run test --concurrency=1 -- --ci', 'jest -- "a b.test.ts"']);
 t('#1526 npm keeps flags before its -- for itself, so they set no bound', [b(['npm', 'test', '--maxWorkers=2']), b(['npm', 'test', '-w', 'web']), b(['npm', 'test', '--', '-w', '2'])],
   ['npm test --maxWorkers=2 -- --maxWorkers=4', 'npm test -w web -- --maxWorkers=4', 'npm test -- -w 2']);
+t('#1526 npm passing a second -- on to the script gets nothing', [b(['npm', 'test', '--', '--', 'a.test.ts']), b(['npm', 'test', '--', '--', '--maxWorkers=2'])],
+  ['npm test -- -- a.test.ts', 'npm test -- -- --maxWorkers=2']);
 t('#1526 a script holding --, or another runner given --, gets nothing', [bound(['bun', 'run', 'dashed'], L, { scripts: { dashed: 'turbo run test -- --ci' } }).added, b(['pnpm', 'test', '--', 'x'])], [[], 'pnpm test -- x']);
 t('#1526 AC2 a concurrency already set is left alone', b(['turbo', 'run', 'test', '--concurrency=4']), 'turbo run test --concurrency=4');
 t('#1526 a script that is not one simple command, bun test, or another tool gets nothing', [b(['bun', 'run', 'both']), b(['bun', 'test']), b(['bun', 'run', 'lint']), b(['pytest', '-x']), b(['turbo', 'test'])],
