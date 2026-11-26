@@ -4,8 +4,8 @@
 //
 // `rows` everywhere is the process table as [{ pid, ppid, pgid, stat, tty, args }] (readRows below,
 // which worker-stop.mjs processRows reads with).
-import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
+import { psRows } from './ps-rows.mjs';
 
 // The process the kernel re-parents an orphan to: pid 1, or a Linux user manager acting as subreaper.
 const INIT = /^(?:\S*\/)?(?:launchd|init|systemd)(?:\s|$)/;
@@ -19,15 +19,12 @@ const isInit = (r) => r.pid === 1 || INIT.test(r.args);
 // waits for it (the pass, the merge driver, a base gate).
 const DRIVER = /^(?:\S*\/)?node(?:js)?(?:\s|$)|\/desk\/(?:bin|releases\/[^/\s]+\/bin)\//;
 
-// The process table, read once per call: [{ pid, ppid, pgid, stat, tty, args }], zombies left out. `tty`
-// is the controlling terminal, null for none. Null when ps cannot be read.
+// The process table, read once per call (ps-rows.mjs psRows): [{ pid, ppid, pgid, stat, tty, args }],
+// zombies left out. `tty` is the controlling terminal, null for none. Null when ps cannot be read.
 export function readRows() {
-  const r = spawnSync('ps', ['-ww', '-axo', 'pid=,ppid=,pgid=,stat=,tty=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
-  if (r.error || r.status !== 0) return null;
-  return r.stdout.split('\n').flatMap((l) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s?(.*)$/.exec(l);
-    return m && !m[4].startsWith('Z') ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], tty: /^[?-]+$/.test(m[5]) ? null : m[5], args: m[6] }] : [];
-  });
+  let rows;
+  try { rows = psRows('pid=,ppid=,pgid=,stat=,tty=,args='); } catch { return null; }
+  return rows.filter((r) => !r.stat.startsWith('Z')).map((r) => ({ ...r, tty: /^[?-]+$/.test(r.tty) ? null : r.tty }));
 }
 
 // Who process `pid` answers to: its parent and every pass-through shell above it, up to and with the
