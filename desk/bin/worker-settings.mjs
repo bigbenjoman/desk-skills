@@ -156,8 +156,10 @@ const FORBIDDEN = pmRaw && /forbid|block|never|not allowed|banned|disallow/i.tes
 
 // Which database the worktree was given (setup-worktree.sh's `database=` line). Migrate and seed
 // write to a database, so they are allowed only against a per-ticket one.
+// With an app per database it lists each app's, joined by commas.
 const DATABASE = (opt.database ?? 'none').trim();
-const HAS_TICKET_DB = /^[a-z0-9_]{1,63}$/.test(DATABASE) && !['none', 'shared', 'unknown'].includes(DATABASE);
+const DATABASES = DATABASE.split(',').map((d) => d.trim());
+const HAS_TICKET_DB = DATABASES.every((d) => /^[a-z0-9_]{1,63}$/.test(d) && !['none', 'shared', 'unknown'].includes(d));
 const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? '').trim())?.[1] ?? null;
 
 // The §4 command rows a worker may run; the lock each takes when wrapped by with-lock.sh is E.lockFor.
@@ -575,8 +577,8 @@ if (mode === 'triage') {
 
   // ---- database ---------------------------------------------------------------------------------
   if (HAS_TICKET_DB && PG_CONTAINER) {
-    allow.push(...[`docker exec ${PG_CONTAINER} psql -d ${DATABASE}`, `docker exec ${PG_CONTAINER} psql -U postgres -d ${DATABASE}`,
-      `docker exec -i ${PG_CONTAINER} psql -d ${DATABASE}`, `docker exec -i ${PG_CONTAINER} psql -U postgres -d ${DATABASE}`].map((c) => `Bash(${c}:*)`),
+    allow.push(...DATABASES.flatMap((db) => [`docker exec ${PG_CONTAINER} psql -d ${db}`, `docker exec ${PG_CONTAINER} psql -U postgres -d ${db}`,
+      `docker exec -i ${PG_CONTAINER} psql -d ${db}`, `docker exec -i ${PG_CONTAINER} psql -U postgres -d ${db}`]).map((c) => `Bash(${c}:*)`),
     'Bash(docker ps:*)');
   }
 
