@@ -4114,11 +4114,14 @@ for (const t of spawnable) {
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
 }
-// The pending handoffs the loop left for want of a slot while the batch's own slots were all held, by
-// key, each with the tickets holding them: the deadline sweep says these wait for a slot, with no
-// deadline until one frees. A spawn hold or low memory is its own report, so it makes none of these.
-const slotHolders = [...runningKeys, ...(baseFixLive ? ['the base conflict fix'] : [])];
-const SLOT_HELD = slotStopAt == null || spawnHeld || lowMemory || slotHolders.length < concurrency ? {}
+// The pending handoffs the loop left for want of a slot, by key, each with what holds the slots: the
+// batch's own workers, and where they leave some of its number free, the machine's or the repo's cap,
+// which other repos' or batches' workers fill. The deadline sweep says these wait for a slot, with no
+// deadline until one frees. A spawn hold, low memory, maintenance or an unlocked repo cap is its own
+// report, so it makes none of these.
+const slotHolders = [...runningKeys, ...(baseFixLive ? ['the base conflict fix'] : []),
+  ...(runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency ? [] : [MACHINE.room <= REPO.room ? "the machine's worker cap" : "the repo's worker cap"])];
+const SLOT_HELD = slotStopAt == null || spawnHeld || lowMemory || MAINT.hold || repoUnlocked ? {}
   : Object.fromEntries(spawnable.slice(slotStopAt).filter(toHandoff).map((t) => [t.key, slotHolders]));
 const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
 const lockQueueHeldText = LOCK_HELD?.line ?? null;

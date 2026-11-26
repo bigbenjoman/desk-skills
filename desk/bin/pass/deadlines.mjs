@@ -36,7 +36,7 @@
 // left for want of a slot) }. The actions are the shared `set` and `report` (pass/shared.mjs).
 import { set, say } from './shared.mjs';
 import { toHandoff } from './eligibility.mjs';
-import { prStatusOf } from '../batch-state.mjs';
+import { prStatusOf, slotWaitWords } from '../batch-state.mjs';
 import { UNKNOWN_LIMIT_MS, unknownSpell, freshMergeRef } from '../undraft.mjs';
 import { mergeWords } from '../base-red.mjs';
 
@@ -105,7 +105,7 @@ function escalation(t, on, w, said, at) {
 }
 
 // The line for ticket `t`'s handoff wait `w` while full slots hold it: nothing for the person to do.
-const slotLine = (t, w) => `${t.key}: waiting for a slot (held by ${w.held_by.join(', ')}) — its Stage ${w.stage} session starts once one frees, ` +
+const slotLine = (t, w) => `${t.key}: ${slotWaitWords(w.held_by)} — its Stage ${w.stage} session starts once one frees, ` +
   `and its ${WAITS.handoff.ms / MIN}-minute deadline runs from then`;
 
 // Ticket `t`'s waits after this pass, the lines for those escalated at `at`, and `held`, the lines for

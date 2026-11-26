@@ -98,8 +98,9 @@ export function* decideSpawn(s) {
       yield wait(`the machine's upload queue could not be read to drop its last round's upload (${claim.why}), so no worker was spawned. The next pass looks again`);
       return yield skip;
     }
+    // Nothing for the person to do: it waits for the next pass, so it notifies nobody.
     if (claim.up) {
-      yield wait(`its last round's upload to PR #${claim.up.pr} is running in the machine's upload queue, so its next round's worker waits for it to end. The next pass looks again`);
+      yield say(key, 'waits', `${key}: its last round's upload to PR #${claim.up.pr} is running in the machine's upload queue, so its next round's worker waits for it to end. The next pass looks again`);
       return yield skip;
     }
   }

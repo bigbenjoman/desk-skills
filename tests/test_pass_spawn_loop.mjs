@@ -153,6 +153,7 @@ const { threw, calls } = withNoIo(() => {
     const { actions, verdict } = step(snap(ticket('A')), { 'claim-upload': { ok: true, up: { pr: 41 } } });
     t('AC7 the step skips the candidate', j(verdict), j({ type: 'skip', key: 'A' }));
     t('AC7 with a line saying the worker waits for the upload', lines(actions)[0], 'A: its last round\'s upload to PR #41 is running in the machine\'s upload queue, so its next round\'s worker waits for it to end. The next pass looks again');
+    t('issue-1491 AC5 and lists it as waiting with nothing for the person to do, not WAITING ON YOU', actions.find((a) => a.type === 'report')?.list, 'waits');
     const unread = step(snap(ticket('A')), { 'claim-upload': { ok: false, why: 'EACCES' } });
     t('an upload queue that cannot be read holds it too', lines(unread.actions)[0], 'A: the machine\'s upload queue could not be read to drop its last round\'s upload (EACCES), so no worker was spawned. The next pass looks again');
     const resumed = step(snap(ticket('A', { resume: 'pending' }), { resume: true }), { fresh: false });
