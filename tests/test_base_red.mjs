@@ -703,4 +703,80 @@ test('read-cache: an entry set with its own ttl outlives the cache\'s, and one w
   assert.equal(openCache(path, { now: t0 + 2 * CACHE_MS + 1 }).get('long'), undefined);
 });
 
+// #1532: a pass of a check main was red on counts only where its job ran work.
+{
+  const { ranWork, failingFiles, untestedWords, readGreenRec } = await import('../desk/bin/base-red.mjs');
+  const was = { branch: 'main', checks: [{ name: 'tests', sha: sha('a'), url: 'u/job/1', files: ['guards.spec.ts'] }] };
+  const idleLog = 'No tasks were executed as part of this run.\n Tasks:    0 successful, 0 total\n';
+  const workRead = (commits, verdicts, calls = []) => ({ ...reader(commits), work: (w, prev) => { calls.push([w, prev]); return verdicts[w.url] ?? 'ran'; } });
+
+  test('#1532 ranWork: turbo with 0 tasks is no work; any task, the failing file, or no signal is work', () => {
+    assert.equal(ranWork(idleLog), 'none');
+    assert.equal(ranWork('\x1b[1mTasks:\x1b[0m    0 successful, 0 total'), 'none');
+    assert.equal(ranWork('Tasks:    0 successful, 0 total\nTasks:    3 successful, 3 total'), 'ran');
+    assert.equal(ranWork(`${idleLog}PASS src/guards.spec.ts`, ['guards.spec.ts']), 'ran');
+    assert.equal(ranWork('pytest: 12 passed'), 'ran');
+    assert.equal(ranWork(null), 'ran');
+  });
+  test('#1532 failingFiles names the test files on a log\'s FAIL lines only', () => {
+    assert.deepEqual(failingFiles('PASS a.spec.ts\n\x1b[31mFAIL\x1b[0m src/inngest-function-guards.spec.ts\n FAIL b.test.tsx > x'), ['inngest-function-guards.spec.ts', 'b.test.tsx']);
+    assert.deepEqual(failingFiles(null), []);
+  });
+
+  test('#1532 AC1/AC2 a pass of the red check that ran nothing keeps main red as it was, with no_work', () => {
+    const calls = [];
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: workRead({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }, { 'u/job/2': 'none' }, calls) });
+    assert.deepEqual(s, { state: 'red', sha: sha('b'), checks: was.checks, no_work: [{ name: 'tests', sha: sha('b'), url: 'u/job/2' }] });
+    assert.deepEqual(calls[0][1], was.checks[0]);
+  });
+  test('#1532 AC1 below an idle pass the walk reads on, and finds the failure still there', () => {
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: workRead({
+      [sha('c')]: { parent: sha('b'), runs: [run('tests', 'success', 'u/job/3')] },
+      [sha('b')]: { parent: null, runs: [run('tests', 'failure', 'u/job/1')] },
+    }, { 'u/job/3': 'none' }) });
+    assert.equal(s.state, 'red');
+    assert.deepEqual(s.checks.map((c) => c.sha), [sha('b')]);
+    assert.deepEqual(s.no_work.map((w) => w.sha), [sha('c')]);
+  });
+  test('#1532 a pass that ran work below an idle tip pass reads green, standing for the tip', () => {
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: workRead({
+      [sha('c')]: { parent: sha('b'), runs: [run('tests', 'success', 'u/job/3')] },
+      [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/4')] },
+    }, { 'u/job/3': 'none' }) });
+    assert.deepEqual(s, { state: 'green' });
+  });
+  test('#1532 a pass that ran work, a check not red before, and a read with no work() read as before', () => {
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was, read: workRead({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }, {}) }), { state: 'green' });
+    const calls = [];
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was: { ...was, branch: 'dev' }, read: workRead({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }, { 'u/job/2': 'none' }, calls) }), { state: 'green' });
+    assert.equal(calls.length, 0);
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was, read: reader({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }) }), { state: 'green' });
+  });
+  test('#1532 a failing run\'s test files are read once and kept on its check', () => {
+    let reads = 0;
+    const read = { ...reader({ [sha('a')]: { parent: null, runs: [run('tests', 'failure', 'u/job/1')] } }), files: () => { reads++; return ['guards.spec.ts']; } };
+    const s = baseState({ required: ['tests'], branch: 'main', read });
+    assert.deepEqual(s.checks, [{ name: 'tests', sha: sha('a'), url: 'u/job/1', files: ['guards.spec.ts'] }]);
+    baseState({ required: ['tests'], branch: 'main', read, was: { branch: 'main', checks: s.checks } });
+    assert.equal(reads, 1);
+  });
+  test('#1532 AC2 the record keeps no_work and the batch line says main\'s last green run tested nothing', () => {
+    const s = { state: 'red', sha: sha('b'), checks: was.checks, no_work: [{ name: 'tests', sha: sha('b'), url: 'u/job/2' }] };
+    const rec = nextRecord(null, s, { branch: 'main', merges: [], at: '2026-11-26T18:00:00Z' });
+    assert.deepEqual(rec.no_work, s.no_work);
+    assert.equal(untestedWords(rec), 'main\'s last green run tested nothing for "tests"');
+    assert.match(batchLine(rec, { repair: { key: rec.repair_key, state: 'queued' } }), /main's last green run tested nothing for "tests", so it stays red\./);
+    assert.equal(nextRecord(null, { ...s, no_work: undefined }, { branch: 'main', merges: [], at: '2026-11-26T18:00:00Z' }).no_work, undefined);
+  });
+  test('#1532 AC3 the green record carries the tip it read; readGreen still gives its time', () => {
+    const dir = scratch('base-green-sha-');
+    writeFileSync(join(dir, GREEN_FILE), JSON.stringify({ branch: 'main', at: '2026-11-26T18:00:00Z', sha: sha('b') }));
+    assert.deepEqual(readGreenRec(dir, 'main'), { at: '2026-11-26T18:00:00Z', sha: sha('b') });
+    assert.equal(readGreen(dir, 'main'), '2026-11-26T18:00:00Z');
+    writeFileSync(join(dir, GREEN_FILE), JSON.stringify({ branch: 'main', at: '2026-11-26T18:00:00Z' }));
+    assert.deepEqual(readGreenRec(dir, 'main'), { at: '2026-11-26T18:00:00Z', sha: null });
+    assert.equal(readGreenRec(dir, 'dev'), null);
+  });
+}
+
 console.log(`base-red: ${pass} passed, 0 failed`);

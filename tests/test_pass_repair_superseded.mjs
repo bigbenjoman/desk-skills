@@ -12,7 +12,7 @@ const byKey = (...ts) => Object.fromEntries(ts.map((x) => [x.key, x]));
 const snap = (tickets, more = {}) => ({ tickets: byKey(...tickets), isRepair, base: 'main', dry: false, ...more });
 // The runner with stub handlers: each action answers from `answers` (a value, or a function of it).
 function drive(s, answers = {}) {
-  const READS = { superseded: null, 'pr-close': { ok: true, out: '' }, write: true, 'drop-worktree': 'its worktree was removed', report: undefined };
+  const READS = { superseded: null, 'push-fix': null, 'pr-close': { ok: true, out: '' }, write: true, 'drop-worktree': 'its worktree was removed', report: undefined };
   const handlers = Object.fromEntries(Object.keys(READS).map((type) => [type, (a) => {
     const v = Object.hasOwn(answers, type) ? answers[type] : READS[type];
     return typeof v === 'function' ? v(a) : v;
@@ -59,6 +59,30 @@ t('a read that fails leaves it as it is and says why',
   /could not tell whether the red base it repairs is fixed elsewhere \(no history\): left as it is/.test(lines(drive(snap([draft]), { superseded: { error: 'no history' } }))[0]), true);
 t('a dry run says what it would do and changes nothing',
   j(drive(snap([draft], { dry: true }), { superseded: FIXED }).map((a) => a.type)), '["superseded","report"]');
+
+// #1532: a green that tested nothing, a requeue on the same green, and a fix left unpushed.
+{
+  const as = drive(snap([draft]), { superseded: { why: 'untested', words: 'main\'s last green run tested nothing for "tests"' } });
+  t('#1532 AC2 main red only on passes that tested nothing: kept open, nothing closed or written, its line says so',
+    `${of(as, 'pr-close').length}${of(as, 'write').length} ${lines(as)[0]}`, '00 base-red-main-20261123080000: kept open: main\'s last green run tested nothing for "tests"');
+}
+{
+  const as = drive(snap([{ key: 'base-red-main', state: 'triaged', added_at: 'x' }]), { superseded: { why: 'green', by: null, mark: 'b9276a8' } });
+  t('#1532 AC3 a repair closed on a green read keeps that read as closed_green', (of(as, 'write')[0]?.fields ?? []).includes('closed_green=b9276a8'), true);
+  const onBase = drive(snap([draft]), { superseded: FIXED });
+  t('#1532 a repair closed on its changes being on the base keeps no closed_green', (of(onBase, 'write')[0]?.fields ?? []).some((f) => f.startsWith('closed_green')), false);
+}
+{
+  const left = { key: 'base-red-main-20261126175511', state: 'done', branch: 'fix/base-red-main-20261126175511', worktree: '/w/x', result: { pr: null, summary: 'closed unmerged' } };
+  const as = drive(snap([left], { baseRed: true }), { 'push-fix': { pr: '3813' } });
+  t('#1532 AC4 a repair left with no PR while main is red has its fix pushed and its draft opened, no close',
+    `${of(as, 'superseded').length} ${lines(as)[0]}`, '0 base-red-main-20261126175511: its worker left an unpushed fix while main is still red: pushed fix/base-red-main-20261126175511 and opened draft PR #3813');
+  const refused = drive(snap([left], { baseRed: true }), { 'push-fix': { why: 'config §3 git-push is "ask"' } });
+  t('#1532 AC4 a push the pass may not make is said, and nothing else is done', `${refused.length} ${/but the pass did not push it: config §3 git-push is "ask"/.test(lines(refused)[0])}`, '2 true');
+  t('#1532 AC4 nothing of its own to push goes on to the read as before', j(drive(snap([{ ...left, state: 'failed' }], { baseRed: true })).map((a) => a.type)), '["push-fix","superseded"]');
+  t('#1532 AC4 with main not red, or a handoff pending, or in a dry run, nothing is pushed',
+    [snap([left]), snap([{ ...left, handoff: 'pending' }], { baseRed: true }), snap([left], { baseRed: true, dry: true })].map((s) => of(drive(s), 'push-fix').length).join(), '0,0,0');
+}
 
 // Which repairs are read at all.
 const c = (x) => repairCandidate(x, isRepair);
