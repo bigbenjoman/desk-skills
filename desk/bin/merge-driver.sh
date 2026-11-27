@@ -621,7 +621,7 @@ NODE
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then
-      node "$Q" set "$succ" state=triaged park=null held_by=null freed_from=null >/dev/null </dev/null \
+      node "$Q" set "$succ" --merged state=triaged park=null held_by=null freed_from=null >/dev/null </dev/null \
         && placed=$(node "$Q" front "$succ" </dev/null) && log "merged:$got -> RELEASED $placed"
     fi
   done <<EOF_PLAN
