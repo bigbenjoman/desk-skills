@@ -31,7 +31,7 @@ import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { isSha } from './ticket-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, layOrder, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps, unreadableFollowOn } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -1724,7 +1724,8 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
-    out.push({ key: t.key, label, tail: `${tail}${modelNote}` });
+    const followNote = t.follow_on_unreadable ? `  ${unreadableFollowOn(t.follow_on_unreadable.raw)}` : '';
+    out.push({ key: t.key, label, tail: `${tail}${modelNote}${followNote}` });
   }
   const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && (waitingOnMerge(q, t) || waitingOnPark(q, t)))).length;
   return { head, rows: out, parked };
