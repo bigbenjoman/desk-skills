@@ -295,8 +295,10 @@ function summary(v) {
     body = `${cost}${l.kept} kept, ${l.testing} still being tested${needsText ? `, and ${needsText}` : ''}.`;
   }
   const first = leverItems(v)[0];
+  // leverTable draws the decision panel only for an evaluated page's lever row whose ask has choices.
+  const panelled = first?.choices && evaluated(v) && (v.panels.board.levers ?? []).some((b) => b.lever === first.lever);
   const cta = !first ? '' : first.lever
-    ? `<a class="cta" href="#${decideId(first)}">Decide on ${esc(first.lever)}</a>`
+    ? `<a class="cta" href="#${panelled ? decideId(first) : 'lev-h'}">Decide on ${esc(first.lever)}</a>`
     : `<a class="cta" href="#lev-h">Review what needs you${first.repo ? ` in ${esc(first.repo)}` : ''}</a>`;
   return `<section aria-label="Summary" class="card summary"><p><b>${lead}</b> ${body}</p>${cta}</section>${notes(v.panels.status)}`;
 }

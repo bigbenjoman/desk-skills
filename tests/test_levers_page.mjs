@@ -609,6 +609,9 @@ const rowOf = (h, lever) => section(h, 'lev-h').split(`<tr data-lever="${lever}"
   t('DS-1042 AC4 not testing', row.includes('desk-skills: testing'), false);
   t('DS-1042 AC6 the progress cell waits on you since the trip', row.includes('<span class="wait tiny">Waiting on you since 26 Nov, 05:30</span>'), true);
   t('DS-1042 AC6 the summary button decides on the lever, linking its panel', hTrip.includes('<a class="cta" href="#decide-finder-model-desk-skills">Decide on finder-model</a>'), true);
+  const bare = structuredClone(tripped);
+  for (const i of bare.panels.waiting.items) delete i.choices;
+  t('DS-1042 with no panel to link (a view saved before choices), the summary button links the levers table', P.renderPage(bare).includes('<a class="cta" href="#lev-h">Decide on finder-model</a>'), true);
   t('DS-1042 no fixed paused text', hTrip.includes('Paused until you decide'), false);
   t('DS-1042 the lever rows are still one per lever', count(section(hTrip, 'lev-h'), /<tr data-lever=/g), 12);
 }
