@@ -90,7 +90,20 @@ t('configRowValues reads each declared row\'s items, its note left out', JSON.st
   '[{"section":"3","label":"git-push","items":["yes"]},{"section":"3b","label":"Preferred dev-server port","items":["3200"]},{"section":"4","label":"Required checks","items":["Lint","Unit tests"]}]');
 t('configRowValues reads a row of the person\'s own table by its heading and first cell', `${rv.length} ${rv[3].section} ${/asks for: Small diffs$/i.test(rv[3].label)} ${JSON.stringify(rv[3].items)}`,
   '4 4 true ["Keep diffs small"]');
-const ce = configEntries({ dir: CFG });
+const ledger = (rows) => ['## 3c. Rules', '', '### Rule ledger', '', '| Rule | List | Added |', '|---|---|---|', ...rows, ''].join('\n');
+const lv = configRowValues(ledger(['| `Bash(git push:*)` | allow | 2026-11-01 |', '| `Bash(git push:*)` | ask | 2026-11-02 |']));
+t('configRowValues labels a repeated row of the person\'s own table apart', JSON.stringify(lv.map((r) => [r.label, r.items[0]])),
+  '[["rule ledger: Bash(git push:*)","allow"],["rule ledger: Bash(git push:*) #2","ask"]]');
+const LG = join(T, 'ledger');
+mkdirSync(LG);
+const lcopy = (name, text, at) => { const p = join(LG, name); writeFileSync(p, text); utimesSync(p, at / 1000, at / 1000); };
+lcopy('mine.md.bak', ledger(['| `R` | allow | 1 |', '| `R` | ask | 1 |']), NOW - 3 * DAY);
+lcopy('mine.md', ledger(['| `R` | allow | 1 |', '| `R` | deny | 1 |']), NOW - 2 * DAY);
+lcopy('config.md', ledger(['| `R` | none | 1 |']), NOW - 1 * DAY);
+const le = configEntries({ path: join(LG, 'mine.md') });
+t('AC3: a repeated row\'s change is not hidden by the first; a config by another name reads its own backups only',
+  JSON.stringify(le.map((e) => [e.row, e.from[0], e.to[0]])), '[["§3c rule ledger: R #2","ask","deny"]]');
+const ce = configEntries({ path: join(CFG, 'config.md') });
 const entry = (row) => ce.find((e) => e.row === row || (row === 'ask' && /Small diffs$/.test(e.row)));
 t('AC3: one entry per changed row between consecutive copies', ce.length, 4);
 t('AC3: the entry names the row and its old and new value', JSON.stringify([entry('§3 git-push').from, entry('§3 git-push').to]), '[["ask"],["yes"]]');
@@ -98,8 +111,9 @@ t('AC3: dated by the later copy', entry('§3 git-push').at, iso(NOW - 3 * DAY));
 t('AC3: one item split in two is a change', JSON.stringify([entry('§4 Required checks').from, entry('§4 Required checks').to]), '[["Lint Unit tests"],["Lint","Unit tests"]]');
 t('AC3: a note alone is no change; the live file is compared too', `${JSON.stringify(entry('§3b Preferred dev-server port').to)} ${entry('§3b Preferred dev-server port').at === iso(NOW - 2 * DAY)}`, '["3200"] true');
 t('AC3: an edited review ask is a change', JSON.stringify([entry('ask')?.from, entry('ask')?.to]), '[["Keep diffs small"],["Keep diffs smaller"]]');
-t('AC3: a copy before the window gives no entry', configEntries({ dir: CFG, since: NOW - 2.5 * DAY }).length, 2);
-t('AC3: no config directory, no entries', configEntries({ dir: join(T, 'nope') }).length, 0);
+t('AC3: a copy before the window gives no entry', configEntries({ path: join(CFG, 'config.md'), since: NOW - 2.5 * DAY }).length, 2);
+t('AC3: no config directory, no entries', configEntries({ path: join(T, 'nope', 'config.md') }).length, 0);
+t('AC3: no config path, no entries', configEntries({ path: null }).length, 0);
 
 // ---- claude versions --------------------------------------------------------------------------------
 const rec = (d, v, ticket) => ({ at: iso(NOW - d * DAY), ticket, session: `s-${d}`, claude_version: v });
@@ -125,7 +139,7 @@ t('AC5: after: an audit with no findings line is not counted', `${after.audited}
 
 // ---- the whole log ----------------------------------------------------------------------------------
 const log = changeLog({
-  slug: 'o__r', now: NOW, days: 30, windowDays: 7, root: REPO, ref: 'main', pattern: 'DS-[0-9]+', configDir: CFG,
+  slug: 'o__r', now: NOW, days: 30, windowDays: 7, root: REPO, ref: 'main', pattern: 'DS-[0-9]+', configPath: join(CFG, 'config.md'),
   batches: [], records, tickets, audits,
 });
 const prs = log.entries.filter((e) => e.kind === 'pr');

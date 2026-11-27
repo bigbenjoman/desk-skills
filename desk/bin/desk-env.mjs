@@ -374,10 +374,20 @@ const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => h
 // Every row of a config file's text with its items, for comparing two copies of a config:
 // [{ section, label, items }]. A declared row's items are its value cell's as the parse reads them (a
 // trailing note left out); a row of a table of the person's own rows (the §3c ledger, the §4 review
-// asks) is labelled by its `###` heading and first cell, and its items are its other cells.
-export const configRowValues = (text) => tableLines(String(text)).rows.filter((r) => r.label).map((r) => (r.declared
-  ? { section: r.section, label: r.label, items: cellItems(r.cells[settingCol(r.header)] ?? '') }
-  : { section: r.section, label: r.sub ? `${r.sub}: ${r.label}` : r.label, items: r.cells.slice(1).map((c) => c.trim()) }));
+// asks) is labelled by its `###` heading and first cell, and its items are its other cells. Labels are
+// unique per section: a repeat (the §3c ledger holds one rule under two lists) is labelled `<label> #<n>`.
+export const configRowValues = (text) => {
+  const seen = new Map();
+  return tableLines(String(text)).rows.filter((r) => r.label).map((r) => {
+    const base = r.declared || !r.sub ? r.label : `${r.sub}: ${r.label}`;
+    const n = (seen.get(`${r.section}\0${base}`) ?? 0) + 1;
+    seen.set(`${r.section}\0${base}`, n);
+    const label = n === 1 ? base : `${base} #${n}`;
+    return r.declared
+      ? { section: r.section, label, items: cellItems(r.cells[settingCol(r.header)] ?? '') }
+      : { section: r.section, label, items: r.cells.slice(1).map((c) => c.trim()) };
+  });
+};
 
 // A config file's parse, by path, kept while its inode, size and modification time are unchanged:
 // desk-q reads many rows of every repo's config on each refresh. A missing file is not kept. Past

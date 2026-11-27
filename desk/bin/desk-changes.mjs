@@ -13,7 +13,7 @@
 //           landedPr), its ticket and title. A commit naming no PR, as a rebase merge, a revert or a
 //           direct push lands, is an entry too, with `pr` null and its subject as the title
 //   config  a row whose items differ between two consecutive copies of the repo's config, the backups
-//           beside it (config.md.bak*) and the live file in modification order: the row, its old and new
+//           beside it (<config>.bak*, the config desk-env reads, DESK_CONFIG included) and the live file in modification order: the row, its old and new
 //           items, and the later copy's modification time
 //   claude  the first worker start (phase0-report.mjs spawn records) on a claude version other than the
 //           one before it
@@ -23,7 +23,7 @@
 //
 // It only reads: git with --no-optional-locks, nothing fetched; the config backups; the batches' state.
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -112,13 +112,16 @@ function prEntries({ root, ref, since, pattern = null, git = runGit }) {
 }
 
 // ---- config rows ----------------------------------------------------------------------------------
-// Each row whose items differ between consecutive copies of the config in `dir` (config.md and every
-// config.md.bak* beside it, by modification time), dated by the later copy, from `since` on:
+// Each row whose items differ between consecutive copies of the config at `path` (the file and every
+// <its name>.bak* beside it, by modification time), dated by the later copy, from `since` on:
 // [{ kind: 'config', at, row, from, to, file }], `from` and `to` each the row's items. `from` is null for
 // a row the later copy added, `to` for one it dropped.
-export function configEntries({ dir, since = -Infinity }) {
+export function configEntries({ path, since = -Infinity }) {
+  if (!path) return [];
+  const dir = dirname(path);
+  const name = basename(path);
   let names = [];
-  try { names = readdirSync(dir).filter((f) => f === 'config.md' || f.startsWith('config.md.bak')); } catch { return []; }
+  try { names = readdirSync(dir).filter((f) => f === name || f.startsWith(`${name}.bak`)); } catch { return []; }
   const copies = names.map((f) => {
     const file = join(dir, f);
     try { return { file, mtime: statSync(file).mtimeMs, rows: E.configRowValues(readFileSync(file, 'utf8')) }; } catch { return null; }
@@ -190,7 +193,7 @@ const mergedTickets = (rows) => [...new Map(rows.filter((r) => r.merged_at && Nu
 export function changeLog({
   slug = E.repoSlug(), now = Date.now(), days = 30, windowDays = 7,
   root = E.repoRoot(), ref = `origin/${E.defaultBranch()}`, pattern = E.configValue('ticket-pattern'),
-  configDir = join(E.deskConfigRoot(), 'repos', slug), batches = allBatches(slug),
+  configPath = E.configPathOrNull(), batches = allBatches(slug),
   records = batches.flatMap((b) => spawnRecords(b.state)),
   tickets = perTicket({ slug, batches, since: 0, until: now, ci: false }).rows,
   audits = jsonlRows(auditFile(slug)).map((r) => r.rec), git = runGit,
@@ -200,7 +203,7 @@ export function changeLog({
   const pat = pattern && !E.isNone(pattern) ? pattern : null;
   const merged = mergedTickets(tickets);
   const entries = [
-    ...prEntries({ root, ref, since, pattern: pat, git }), ...configEntries({ dir: configDir, since }), ...claudeEntries({ records, since }),
+    ...prEntries({ root, ref, since, pattern: pat, git }), ...configEntries({ path: configPath, since }), ...claudeEntries({ records, since }),
   ].filter((e) => Date.parse(e.at) <= now).sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.kind.localeCompare(b.kind))
     .map((e) => withFigures(e, { tickets: merged, audits, windowMs }));
   return { v: VERSION, slug, since: new Date(since).toISOString(), until: new Date(now).toISOString(), window_days: windowDays, ref, entries };
