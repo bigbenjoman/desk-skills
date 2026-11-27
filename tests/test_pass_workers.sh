@@ -670,6 +670,7 @@ if [ "\$3" = preflight ]; then
   echo "[preflight] pass"; exit 0
 fi
 echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}\${AUTOPILOT_BUDGET_USD:+ budget=\$AUTOPILOT_BUDGET_USD}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
+[ -z "\${DESK_HANDOFF_PCT:-}" ] || echo "\$1 \$DESK_HANDOFF_PCT" >> "$T/pcts"
 EOF
 stub_claude '[{"sessionId": "live-1"}]'
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
@@ -683,12 +684,15 @@ check "DS-145 AC1 it keeps its session, branch and worktree, and counts the resu
 # K-1's resumed worker counts as live while K-2 is killed.
 q set K-1 session_id=live-1
 killed K-2 sess-k2
+# Its threshold was raised by a stageless handoff (#1539 AC2) before it was killed.
+q set K-2 handoff_pct=45
 # A fixture saved for K-2 while it was down, after its briefing was written.
 mkdir -p "$T/state-k/fixtures/K-2"; printf '{"k":2}' > "$T/state-k/fixtures/K-2/post.json"
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-553 AC1 a killed worker's fixtures are copied into its worktree on resume, and its resume prompt names the path" \
   '[ "$(cat "$T/wt/K-2/.desk-fixtures/K-2/post.json")" = "{\"k\":2}" ] && grep -qF "copied into your worktree at $T/wt/K-2/.desk-fixtures/K-2/ (untracked, and kept out of git status): post.json." "$T/resume-prompt-K-2"'
 check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
+check "#1539 AC2 a resumed session keeps the ticket's raised threshold" '[ "$(grep "^K-2 " "$T/pcts" | tail -1)" = "K-2 45" ] && ! grep -q "^K-1 " "$T/pcts"'
 q set K-2 state=done
 # K-1's resumed worker is killed again, once it has had both resumes the row allows. Its log was last
 # written by the resume's preflight line: set it back, or it reads as a worker the registry has not listed yet.
@@ -1103,6 +1107,7 @@ q set H-12 state=done
 # AC4: sessions that move a stage, or add a commit, before they hand off change nothing.
 handing H-13; midhand H-13 3
 midhand H-13 4
+check "#1539 AC4 a session that moved a stage, with no commit, is not stageless" '[ "$(field H-13 handoff_stuck)" = 0 ]'
 git -C "$T/wt/H-13" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m wip
 midhand H-13 4
 check "#1539 AC4 a session that moved a stage, then one that added a commit, raise nothing" '[ "$(field H-13 handoff_stuck)" = 0 ] && [ "$(field H-13 handoff_pct)" = null ] && ! grep -q "^H-13 " "$T/pcts" 2>/dev/null && ! echo "$out" | grep -q "threshold is raised"'

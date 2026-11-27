@@ -202,6 +202,7 @@ import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import { unbounded as unboundedRun } from './run-bounds.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
+import { quantile } from './quantile.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
@@ -1955,9 +1956,8 @@ export function startupShares(stateDir, root, worktrees) {
     by.get(window).push({ share: (100 * used) / window, at: Number(s.at) || 0 });
   }
   return [...by].sort((a, b) => a[0] - b[0]).map(([window, list]) => {
-    const last = list.sort((a, b) => b.at - a.at).slice(0, STARTUP_SESSIONS).map((x) => x.share).sort((a, b) => a - b);
-    const m = last.length >> 1;
-    return { window, n: last.length, median: last.length % 2 ? last[m] : (last[m - 1] + last[m]) / 2 };
+    const last = list.sort((a, b) => b.at - a.at).slice(0, STARTUP_SESSIONS).map((x) => x.share);
+    return { window, n: last.length, median: quantile(last, 0.5) };
   });
 }
 

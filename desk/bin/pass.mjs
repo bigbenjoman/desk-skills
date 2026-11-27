@@ -828,6 +828,10 @@ function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
 }
 // Mid-stage handoffs in a row at one stage before the ticket parks (handedOff).
 const MID_STAGE_REPEATS = 2;
+// The ticket's raised handoff threshold (handedOff's handoff_pct) for a worker's env, on every session
+// it runs after the raise: one spawned from its handoff and one resumed after it was stopped.
+const handoffPctEnv = (t) => (t.handoff_pct != null ? { DESK_HANDOFF_PCT: String(t.handoff_pct) } : {});
+
 function handedOff(t, said, { log, h, imgs, stopped }) {
   logDecisions(t, log, null);
   const stage = handoffStage(said);
@@ -3634,7 +3638,7 @@ async function resumeKilled(t) {
     return undefined;
   }
   const model = t.model && t.model !== 'default' ? t.model : '';
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir), ...handoffPctEnv(t) };
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) {
     if (preflightHitLimit(t, pre.cost, login)) report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
@@ -3960,8 +3964,7 @@ async function spawnHandoff(t, pick) {
   // requeue raises the same tier it would have.
   const tier = tierFor(t);
   const model = stage === '7' && models.text ? models.text : models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars,
-    ...(t.handoff_pct != null ? { DESK_HANDOFF_PCT: String(t.handoff_pct) } : {}) };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars, ...handoffPctEnv(t) };
   const fail = (why) => {
     markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
   };

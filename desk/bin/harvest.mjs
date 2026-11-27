@@ -92,6 +92,10 @@ export function markersIn(texts) {
 
 export const workerMarkers = (logText) => markersIn(readLog(logText).said);
 
+// Whether one parsed log or transcript event is an assistant message that marks a stage, in its text
+// or echoed at the start of a Bash command.
+export const marksStage = (d) => d?.type === 'assistant' && (d.message?.content ?? []).some((c) => markersIn([saidIn(c) ?? '']).some(([k, v]) => k === 'AUTOPILOT_STAGE' && v.trim()));
+
 // The last stage the worker said, through saidBy and markersIn as readLog's `said` is, so desk-q and
 // pass.mjs never disagree: `stage` is the marker's first word, as pass.mjs stores it ("4/9"),
 // `label` the whole marker ("4/9 verify"), `at` the time of the event that said it (or null).

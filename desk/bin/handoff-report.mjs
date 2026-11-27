@@ -65,6 +65,8 @@ import { closedBy } from './closing-keywords.mjs';
 import { FINISHED, STATES } from './queue-states.mjs';
 import { prOutcomes } from './pr-outcomes.mjs';
 import { WATCH_DAYS } from './post-merge.mjs';
+import { marksStage } from './harvest.mjs';
+import { hookState } from './handoff.mjs';
 
 // The queue states a ticket is still in progress in: neither finished nor parked.
 const IN_PROGRESS = STATES.filter((s) => !FINISHED.includes(s) && s !== 'parked');
@@ -121,8 +123,6 @@ const LARGE_WINDOW = 1_000_000;
 const DEFAULT_1M_SINCE = JSON.parse(readFileSync(new URL('./model-windows.json', import.meta.url), 'utf8')).default_1m_since;
 const NAMED = /\(repo-relative: (\.handoffs\/[^\s)]+\.md)\)/;
 const HANDOFF_FILE = /\.handoffs\/[A-Za-z0-9._-]+\.md/;
-// An autopilot worker's stage line in its own text, as desk-handoff.py reads it.
-const STAGE_LINE = /^[\s`>*#-]*AUTOPILOT_STAGE:/m;
 
 const inputOf = (r) => r.uncached + r.w5m + r.w1h + r.read;
 const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => (typeof x === 'string' ? x : x?.text ?? '')).join('\n') : '');
@@ -237,8 +237,8 @@ function sessionOf(file, text) {
   const work = { prs: [], pushed: [] };
   for (const { d, raw } of lines) {
     const content = Array.isArray(d.message?.content) ? d.message.content : [];
+    if (!worker && marksStage(d)) worker = true;
     for (const c of content) {
-      if (d.type === 'assistant' && c?.type === 'text' && STAGE_LINE.test(c.text ?? '')) worker = true;
       if (c?.type === 'tool_use' && c.id) {
         calls.add(c.id);
         if (c.name === 'Bash' && typeof c.input?.command === 'string') bash.set(c.id, c.input.command);
@@ -319,12 +319,6 @@ function stampedArm(state, s) {
   const window = s.peak > SMALL_WINDOW || default1m(state.model ?? s.model) || /\[1m\]/i.test(String(state.model ?? '')) ? LARGE_WINDOW : SMALL_WINDOW;
   const pct = window >= LARGE_WINDOW && typeof state.pct_1m === 'number' ? state.pct_1m : state.pct;
   return pct > 0 ? { pct, window } : null;
-}
-
-// The hook's per-session state for a transcript, or null.
-function hookState(dir, id) {
-  const safe = id.replace(/[^A-Za-z0-9_-]/g, '') || 'unknown';
-  try { return JSON.parse(readFileSync(join(dir, `${safe}.json`), 'utf8')); } catch { return null; }
 }
 
 // Claude Code's project folder name for a directory.

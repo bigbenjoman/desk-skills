@@ -278,13 +278,16 @@ const RAISE_POINTS = 25;
 const RAISE_CAP = 80;
 export const raisedThreshold = (ran) => Math.min(RAISE_CAP, ran + RAISE_POINTS);
 
-// The threshold a session's handoff hook stamped (<deskHome>/handoff/<session>.json `arm`), or null.
-export function sessionThreshold(deskHome, session) {
+// The handoff hook's per-session state (<dir>/<session>.json, dir being <deskHome>/handoff), or null.
+export function hookState(dir, session) {
   const safe = String(session ?? '').replace(/[^A-Za-z0-9_-]/g, '') || 'unknown';
-  try {
-    const pct = Number(JSON.parse(readFileSync(join(deskHome, 'handoff', `${safe}.json`), 'utf8')).arm?.pct);
-    return pct > 0 ? pct : null;
-  } catch { return null; }
+  try { return JSON.parse(readFileSync(join(dir, `${safe}.json`), 'utf8')); } catch { return null; }
+}
+
+// The threshold a session's handoff hook stamped (its state's `arm`), or null.
+export function sessionThreshold(deskHome, session) {
+  const pct = Number(hookState(join(deskHome, 'handoff'), session)?.arm?.pct);
+  return pct > 0 ? pct : null;
 }
 
 // A respawn after the worker's own park resumes at the stage that round reached, from Stage 3 on: the
