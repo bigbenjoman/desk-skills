@@ -100,6 +100,7 @@ const SIZING_RULES = Object.freeze({
   'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
   'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
   'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
+  'turbo-concurrency': { ok: wholeAtLeast(1), want: 'a whole number of turbo tasks at once, 1 or more' },
   ...ADMISSION_RULES,
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
@@ -427,6 +428,8 @@ export function propose(hw, r = RULES) {
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
     'how long the pre-push hook waits for the test lock before skipping a typecheck or suite; CI runs it anyway');
+  add('turbo-concurrency', 1,
+    'the --concurrency with-lock.sh gives a turbo run under the test lock: one task at a time, as each task is a suite or typecheck sized for a slot of its own');
   const testCap = rows.find((s) => s.key === 'test-cap').value;
   add('lock-admission', ADMISSION_FIXED['lock-admission'], 'off: the locks grant their floors only; shadow logs what headroom admission would grant above them; on grants it');
   add('light-lock-slots', 1, 'the light lock\'s floor: slots always granted');
@@ -451,6 +454,17 @@ export function sizingWarnings(rows, hw, r = RULES) {
   const { counted } = countedCores(hw, r);
   if (!Number.isFinite(workers) || workers <= 2 * counted) return [];
   return [`(\`test-lock-max\` ${v['test-lock-max']} + \`light-lock-max\` ${v['light-lock-max']}) x \`test-cap\` ${v['test-cap']} is ${workers} test workers at the ceilings, more than twice the ${counted} counted cores (efficiency cores at ${r.efficiencyCoreWeight})`];
+}
+
+// ---- days ------------------------------------------------------------------------------------
+// This machine's local date as YYYY-MM-DD.
+export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Whether `s` is a YYYY-MM-DD that names a real calendar day (not 2026-02-30).
+export function isRealDay(s) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s ?? ''));
+  if (!d) return false;
+  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
+  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]);
 }
 
 // ---- the file --------------------------------------------------------------------------------

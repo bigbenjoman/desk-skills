@@ -99,7 +99,7 @@ const prView = (n, rollup, more = {}) => ({ number: n, title: `fix(autopilot): P
 
 const { makeServer } = await import('../desk/bin/desk-ui.mjs');
 const PORT = await freePort();
-const server = makeServer({ p: PORT, log: () => {}, github: { gh, now: () => now } });
+const server = makeServer({ p: PORT, log: () => {}, pr: { gh, now: () => now } });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 const call = (method, path, opts) => callPort(PORT, method, path, opts);
 const ex = await call('POST', '/api/auth/exchange', { headers: { Origin: `http://127.0.0.1:${PORT}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: TOKEN }) });

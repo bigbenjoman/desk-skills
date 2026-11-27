@@ -1245,14 +1245,18 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
 } });
+// The last pass held F-2 and F-3 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
+const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
+mkdirSync(phiState, { recursive: true });
+writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), collisions: [{ key: 'F-2', with: ['F-1'], files: ['a.mjs'] }, { key: 'F-3', with: ['F-1'], files: ['a.mjs'] }] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
 const phi = strip(repoScreen(phr));
 t('a fix try held back by a collision waits for the running ticket, not the next free worker, in Ready',
-  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (collides), then a worker repairs it, try 1 of 2 true');
-t('a ticket held back by a collision says it collides', /F-3 +○ ready +waits for F-1 \(collides\)/.test(phi), true);
+  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (shared files), then a worker repairs it, try 1 of 2 true');
+t('a ticket held back by a collision says it shares files', /F-3 +○ ready +waits for F-1 \(shared files\)/.test(phi), true);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
-t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).includes('waits for F-1 (collides), then a worker repairs it'), true);
+t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).replace(/\n▌ /g, ' ').includes('waits for F-1 (shared files), then a worker repairs it'), true);
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.
@@ -1404,8 +1408,7 @@ t('DS-701 the "waiting behind" count is in the item', ['W-1', 'W-3', 'W-2'].map(
 t('DS-701 its question is the listed need, word for word', ji701['W-1']?.question, need657('W-1'));
 t('DS-701 a PRODUCTION BROKEN park is marked so', `${ji701['W-3']?.production_broken} ${ji701['W-1']?.production_broken}`, 'true false');
 t('DS-701 the item names its batch, key, kind and ticket, and its actions with the recommendation', JSON.stringify((({ id, batch, key, kind, ticket, actions }) => ({ id, batch, key, kind, ticket, first: actions[0] }))(ji701['W-1'])),
-  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null } }));
-t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
+  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null, needs_text: true } }));t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
 t('DS-701 without settling, it says so and settles nothing', `${j701.settled} ${j701.settled_lines.length} ${j701.v}`, 'false 0 1');
 t('DS-701 its queue carries its age', j701.inputs.queues.map((x) => `${x.batch} ${typeof x.age_s}`).join(), 'wait657 number');
 // A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its
@@ -2372,6 +2375,88 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${chiDrop.ok} ${/Put off/.test(bpScr())} ${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).offItems.length}`, 'true false 0');
   N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
   t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
+  const chiDone = N.record({ word: 'chi934', ticket: 'base-push', action: 'done' });
+  t('issue-1494 done on a put-off base-push approve, which has no done action, is refused naming what it takes and that drop closes it',
+    `${chiDone.ok} ${/ base-push: done is not an action for a put-off base-push item, so nothing was recorded\. It takes approve, and drop closes it\.$/.test(chiDone.line)} ${/Put off · 1\b/.test(bpScr())}`, 'false true true');
+}
+
+// An item put off with not-now is still settled by done, as a listed one is, and leaves Put off.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
+  put('omega1494', { port: 4494, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'W-1': merged(41, { follow_on: [{ step: 'check the a11y run passes on /calendar', row: null }] }),
+    'W-2': merged(42, { follow_on: [{ step: 'check the export opens in Excel', row: null }] }),
+  } });
+  const count = () => N.needsCount(loadRepos().find((r) => r.slug === 'acme__omega1494'));
+  N.record({ word: 'omega1494', ticket: 'follow:W-1', action: 'not-now' });
+  N.record({ word: 'omega1494', ticket: 'follow:W-2', action: 'not-now' });
+  t('issue-1494 both follow checks are put off', `${count().putOff} ${count().shown}`, '2 0');
+  const d1 = N.record({ word: 'omega1494', ticket: 'follow:W-1', action: 'done' });
+  t('issue-1494 AC1 done on a put-off follow check records it run, and it leaves Put off',
+    `${d1.ok} ${/^\S+ follow:W-1: recorded done, so it is off your list\. It leaves Put off \(.*not-now\.jsonl\)\.$/.test(d1.line)} ${typeof queueOf('omega1494').tickets['W-1'].follow_on_done} ${count().putOff} ${count().shown}`, 'true true string 1 0');
+  const d2 = N.record({ word: 'omega1494', ticket: 'W-2', action: 'done' });
+  t('issue-1494 AC1 done finds one by the ticket key its Put off row shows, as drop does',
+    `${d2.ok} ${typeof queueOf('omega1494').tickets['W-2'].follow_on_done} ${count().putOff}`, 'true string 0');
+  const never = N.record({ word: 'omega1494', ticket: 'follow:W-9', action: 'done' });
+  t('issue-1494 AC4 done on an item never recorded still records nothing, as before',
+    `${never.ok} ${never.line}`, 'false omega1494 follow:W-9: desk-q does not count it as needing you, so nothing was recorded.');
+
+  // A put-off ask: done takes it off, and drop and a pass settle it as they do a live one.
+  put('ask1494', { port: 4495 });
+  const standing = () => loadRepos(Date.now(), 'ask1494').find((r) => r.slug === 'acme__ask1494' && r.batch == null);
+  const off = () => N.collect({ word: 'ask1494' }).putOff;
+  for (const text of ['Send the Slack draft asking for PullBot on #3530 to #3534', 'Set the §3 row once #1461 merges', 'Tidy the old branch']) here('ask', 'ask1494', text);
+  for (const id of [1, 2, 3]) N.record({ word: 'ask1494', ticket: `ask:${id}`, action: 'not-now' });
+  t('issue-1494 three asks are put off', `${off()} ${N.needsCount(standing()).shown}`, '3 0');
+  const a1 = N.record({ word: 'ask1494', ticket: 'ask:1', action: 'done' });
+  t('issue-1494 AC1 done on a put-off ask takes it off the list, and it leaves Put off',
+    `${a1.ok} ${/^ask1494 ask:1: done, so it is off your list\. It leaves Put off/.test(a1.line)} ${off()}`, 'true true 2');
+  t('issue-1494 AC2 drop on a put-off ask takes it, and it leaves Put off', `${N.record({ word: 'ask1494', ticket: 'ask:3', action: 'drop' }).ok} ${off()}`, 'true 1');
+  const { addAsk, pruneAsks } = await import('../desk/bin/asks.mjs');
+  addAsk(standing().stateDir, 'Set the §3 row once #1461 merges', Date.now(), { until: ['W-1'] });
+  const pruned = pruneAsks(standing().stateDir, { known: (k) => k === 'W-1', finished: () => true });
+  t('issue-1494 AC3 a put-off ask whose tickets have merged is pruned as a live one is, and its leftover not-now entry leaves Put off at 0',
+    `${pruned.map((a) => a.id).join()} ${off()} ${/Put off/.test(strip(repoScreen(standing())))}`, '2 0 false');
+}
+
+// A put-off step's done records nothing, so it is dismissed to leave Put off.
+{
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, held_outside: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+  const input = { key: 'OPS-8', category: 'new', type: 'Task', summary: 'Record the webhook payload', labels: ['ben-input'] };
+  put('psi1494', { port: 4496, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-8': held('OPS-8') }, triage: { 'H-8': { blockers: [input] } } });
+  const psi = () => N.needsCount(loadRepos().find((r) => r.name === 'psi1494'));
+  N.record({ word: 'psi1494', ticket: 'step:OPS-8', action: 'not-now' });
+  const s = N.record({ word: 'psi1494', ticket: 'step:OPS-8', action: 'done' });
+  t('issue-1494 AC1 done on a put-off step is noted as a listed one is, and it leaves Put off',
+    `${s.ok} ${/: noted: the next pass that reads OPS-8 from Jira .* It leaves Put off \(/.test(s.line)} ${psi().putOff} ${psi().shown}`, 'true true 0 0');
+}
+
+// Done on a put-off batch-wide hold is answered as the listed one is, and it leaves Put off; a put-off
+// ticket row refuses done, naming what it takes, and drop closes it (issue-1494 decision of 2026-11-26).
+{
+  const stuck = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: null, frozen: 1, why: 'could not fetch feat/x from origin', path: '/wt/base-feat-x' };
+  put('rho1494', { port: 4497, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+  const rho = () => N.needsCount(loadRepos().find((r) => r.slug === 'acme__rho1494'));
+  N.record({ word: 'rho1494', ticket: 'base-sync', action: 'not-now' });
+  t('issue-1494 the base-sync hold is put off', `${rho().putOff} ${rho().shown} ${N.collect({ word: 'rho1494' }).putOff}`, '1 0 1');
+  const bs = N.record({ word: 'rho1494', ticket: 'base-sync', action: 'done' });
+  t('issue-1494 AC1 done on a put-off base-sync hold is noted as a listed one is, and it leaves Put off',
+    `${bs.ok} ${/^\S+ base-sync: noted: the next pass reads the base again.* It leaves Put off \(.*not-now\.jsonl\)\.$/.test(bs.line)} ${rho().putOff} ${rho().shown} ${N.collect({ word: 'rho1494' }).putOff}`, 'true true 0 0 0');
+
+  const busy = (k) => ({ state: 'triaged', lane: 'A', worktree_busy: { why: `its worktree /w/${k} has uncommitted changes (a.txt)`, at: minsAgo(30) } });
+  put('ups1494', { port: 4498, beat: 1, supervised: true, tickets: { 'U-1': busy('U-1'), 'U-2': busy('U-2') } });
+  const ups = () => N.needsCount(loadRepos().find((r) => r.slug === 'acme__ups1494'));
+  N.record({ word: 'ups1494', ticket: 'U-1', action: 'not-now' });
+  t('issue-1494 the worktree row is put off', `${ups().putOff} ${ups().shown}`, '1 1');
+  const wt = N.record({ word: 'ups1494', ticket: 'U-1', action: 'done' });
+  t('issue-1494 done on a put-off ticket row is refused, naming that drop closes it, and it stays put off',
+    `${wt.ok} ${wt.line} ${ups().putOff}`, 'false ups1494 U-1: done is not an action for a put-off worktree item, so nothing was recorded. Drop closes it. 1');
+  const wtDrop = N.record({ word: 'ups1494', ticket: 'U-1', action: 'drop' });
+  t('issue-1494 AC2 drop on a put-off ticket row closes it, and it leaves Put off', `${wtDrop.ok} ${ups().putOff}`, 'true 0');
+  const listed = N.record({ word: 'ups1494', ticket: 'U-2', action: 'done' });
+  const u2Entry = [...NN.readRegister(join(env.HOME, '.desk-autopilot', 'acme__ups1494')).entries.values()].some((x) => x.ticket === 'U-2');
+  t('issue-1494 a listed row\'s done is noted as before, says nothing about Put off, and writes nothing to the not-now register',
+    `${listed.ok} ${/: noted: the next pass that finds the worktree clean/.test(listed.line)} ${/put off/i.test(listed.line)} ${u2Entry}`, 'true true false false');
 }
 
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
@@ -2665,6 +2750,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     /^promotion PR #1001 \(feat\/VPL-842 into the default branch\) is red, failing flows-image and portal \(1\/3\); it is still failing flows-image, portal \(1\/3\) after 2 check tries; the last try parked: the Flows image is missing, so no more workers go to it\. /.test(pi?.need ?? ''), true);
   t('DS-786 AC3 it names the follow items waiting on it', (pi?.need ?? '').endsWith('The follow steps of P-1 and P-2 wait on it reaching the default branch'), true);
   t('DS-786 AC3 the follow items waiting on it stay held, so nothing waiting on it is listed above it', ci.map((i) => i.t.key).join(), 'promotion:1001');
+  t('DS-727 list --json gives a promotion item its promotion PR', N.listItems({ word: 'chi786', reads: null }).items.find((i) => i.key === 'promotion:1001')?.pr, 1001);
   t('DS-786 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi786')).shown, 1);
   const done786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'done' });
   t('DS-786 done records nothing: the next pass reads its checks again', `${done786.ok} ${queueOf('chi786').promotion.red.pr} ${items().length}`, 'true 1001 1');
@@ -3725,6 +3811,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const money = cli('ask', 'ask811', 'Upgrade the CI plan to the paid tier?', '--options', 'upgrade|stay', '--recommend', 'upgrade');
   t('#1366 a recommendation that spends money never applies by itself, and says so', money.out.includes('it never applies by itself: it is a money call'), true);
   t('#1366 a choice needs two one-word options, and a recommendation among them', `${cli('ask', 'ask811', 'x', '--options', 'merge').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|two words').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|hold', '--recommend', 'ship').code}`, '11 11 11');
+  cli('ask', 'ask811', 'Reject the vendor build, or keep it?', '--options', 'reject|keep');
+  const rk = N.listItems({ word: 'ask811', reads: null }).items.find((i) => i.question?.startsWith('Reject the vendor build'));
+  t('DS-727 an ask whose options are named like ticket actions needs no text with any of them', rk?.actions.map((a) => `${a.action}=${a.needs_text}`).join(), 'reject=false,keep=false,done=false,not-now=false');
   const a3 = cli('ask', 'ask811', 'Say whether to admit F-8', '--until', 'F-8, G-9');
   t('#1341 ask --until records the tickets it waits on, and says a pass drops it once they finish',
     `${a3.code} ${a3.out.includes('or a pass finds F-8, G-9 merged or done')} ${JSON.stringify(JSON.parse(readFileSync(join(standing.stateDir, 'asks.json'), 'utf8')).asks.find((a) => a.text === 'Say whether to admit F-8')?.until)}`,
@@ -4079,6 +4168,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-836 AC1 its need names the PR and that no ticket owns it, so nothing will merge it', s[0]?.need,
     'PR #77 ("fix(tests): steady the flaky upload spec") from fix/flaky-upload into main was opened by a desk session, and no ticket owns it, so nothing will merge it: review it, then merge or close it yourself');
   t('DS-836 AC1 it is aged from when the PR was opened, and offers done and not-now', `${s[0]?.since === Date.parse(rec.since)} ${s[0]?.actions.map((a) => a[0]).join()}`, 'true done,not-now');
+  t('DS-727 list --json gives a ticketless item its PR', N.listItems({ word: 'stray836', reads: null }).items.find((i) => i.key === 'ticketless:77')?.pr, 77);
   t('DS-836 AC1 desk-q\'s count lists it once', N.needsCount(loadRepos(Date.now(), 'stray836').find((r) => r.slug === 'acme__stray836' && r.batch == null)).items.filter((i) => i.item.kind === 'ticketless').length, 1);
   const done = N.record({ word: 'stray836', ticket: 'ticketless:77', action: 'done' });
   t('DS-836 done records nothing and says what clears it', `${done.ok} ${done.line} ${strays().length}`, 'true stray836 ticketless:77: noted: the next pass that finds PR #77 merged or closed drops this item; done records nothing. 1');

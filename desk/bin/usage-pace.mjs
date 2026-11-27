@@ -46,6 +46,14 @@ export function windowUse(w, now) {
   const reset = w.resetsAt * 1000 <= now;
   return { reset, pct: reset ? 0 : Math.round(w.utilization * 100) };
 }
+// The window a reading has full at `now`, before it resets, the one lifting last where both are:
+//   -> { type, resetsAt } (epoch seconds) | null. The pass's fallback switch and desk-q's limits share it.
+export function fullWindow(reading, now) {
+  const full = WINDOWS.filter((k) => !reading?.none?.includes(k) && reading?.[k]?.utilization >= 1 && reading[k].resetsAt * 1000 > now);
+  if (!full.length) return null;
+  const k = full.reduce((a, b) => (reading[b].resetsAt > reading[a].resetsAt ? b : a));
+  return { type: k, resetsAt: reading[k].resetsAt };
+}
 export function windowEvents(text) {
   const out = [];
   for (const line of String(text ?? '').split('\n')) {

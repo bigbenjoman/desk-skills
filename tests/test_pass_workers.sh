@@ -670,6 +670,7 @@ if [ "\$3" = preflight ]; then
   echo "[preflight] pass"; exit 0
 fi
 echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}\${AUTOPILOT_BUDGET_USD:+ budget=\$AUTOPILOT_BUDGET_USD}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
+[ -z "\${DESK_HANDOFF_PCT:-}" ] || echo "\$1 \$DESK_HANDOFF_PCT" >> "$T/pcts"
 EOF
 stub_claude '[{"sessionId": "live-1"}]'
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
@@ -683,12 +684,15 @@ check "DS-145 AC1 it keeps its session, branch and worktree, and counts the resu
 # K-1's resumed worker counts as live while K-2 is killed.
 q set K-1 session_id=live-1
 killed K-2 sess-k2
+# Its threshold was raised by a stageless handoff (#1539 AC2) before it was killed.
+q set K-2 handoff_pct=45
 # A fixture saved for K-2 while it was down, after its briefing was written.
 mkdir -p "$T/state-k/fixtures/K-2"; printf '{"k":2}' > "$T/state-k/fixtures/K-2/post.json"
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-553 AC1 a killed worker's fixtures are copied into its worktree on resume, and its resume prompt names the path" \
   '[ "$(cat "$T/wt/K-2/.desk-fixtures/K-2/post.json")" = "{\"k\":2}" ] && grep -qF "copied into your worktree at $T/wt/K-2/.desk-fixtures/K-2/ (untracked, and kept out of git status): post.json." "$T/resume-prompt-K-2"'
 check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
+check "#1539 AC2 a resumed session keeps the ticket's raised threshold" '[ "$(grep "^K-2 " "$T/pcts" | tail -1)" = "K-2 45" ] && ! grep -q "^K-1 " "$T/pcts"'
 q set K-2 state=done
 # K-1's resumed worker is killed again, once it has had both resumes the row allows. Its log was last
 # written by the resume's preflight line: set it back, or it reads as a worker the registry has not listed yet.
@@ -984,6 +988,7 @@ mkdir -p "$T/state-h/logs" "$T/state-h/answers" "$T/state-h/handoffs"; : > "$T/s
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
 echo "\$1 \$3 stage=\${AUTOPILOT_START_STAGE:-} branch=\${AUTOPILOT_BRANCH:-} brief=\${4:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
+[ -z "\${DESK_HANDOFF_PCT:-}" ] || echo "\$1 \$DESK_HANDOFF_PCT" >> "$T/pcts"
 EOF
 hlog(){ say "$2" > "$T/state-h/logs/$1.log"; result_event >> "$T/state-h/logs/$1.log"; }
 handing(){ git -C "$T/repo" worktree add -q -b "fix/$1" "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=old-$1" stage=4/9; }
@@ -1060,7 +1065,8 @@ check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(f
 # DS-1037 AC3: a worker that handed off partway through Stage 5 on context is followed by a fresh one
 # starting at Stage 5 from the briefing; a third such handoff in a row at that stage parks.
 midfile(){ node -e 'const [k, s = "5"] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: s, criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$@"; }
-handing H-10; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+# Its threshold was already raised once (#1539 AC2), so its stageless sessions park rather than raise.
+handing H-10; q set H-10 handoff_pct=55; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 AC3 a mid-stage handoff at Stage 5 is followed by a fresh session at Stage 5" 'echo "$out" | grep -qF "H-10 handed off partway through Stage 5 on context (31% used; handoff-threshold 30): queued for a fresh session from Stage 5" && [ "$(spawned_for H-10 | tail -1 | grep -o "stage=[^ ]*")" = stage=5 ] && [ "$(field H-10 state)" = "\"running\"" ]'
 check "DS-1037 AC3 its briefing says so and lists what is left of the stage" 'b=$(brief H-10); grep -qF "## Handoff: this session starts at Stage 5" <<< "$b" && grep -qF "handed off partway through Stage 5" <<< "$b" && grep -qF "handoff-threshold 30" <<< "$b" && grep -qF "### Left of Stage 5" <<< "$b" && grep -qxF -- "- capture the after screenshot" <<< "$b"'
@@ -1084,6 +1090,28 @@ hfile H-11 7 "typecheck: pass"; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 6/9 hygien
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 a stage-boundary handoff ends the streak" '[ "$(spawned_for H-11 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-11 handoff_mid)" = null ] && [ "$(field H-11 handoff_repeats)" = null ]'
 q set H-11 state=done
+
+# #1539 AC2: the second session in a row that starts at a stage and hands off partway through it with
+# no commit raises the ticket's threshold, from the one its hook stamped, for the sessions after it.
+# stamp <key> <pct>: the hook's state for the ticket's running session, with the threshold it ran on.
+stamp(){ mkdir -p "$T/desk/handoff"; printf '{"arm":{"pct":%s,"window":200000}}' "$2" > "$T/desk/handoff/$(field "$1" session_id | tr -d '"').json"; }
+midhand(){ midfile "$1" "$2"; hlog "$1" "$(printf 'AUTOPILOT_STAGE: %s/9 x\nAUTOPILOT_HANDOFF: %s' "$2" "$2")"; out=$(node "$B/pass.mjs" 2>&1); }
+handing H-12; midhand H-12 3
+check "#1539 AC2 a fresh session's handoff moved stages, so it is not stageless" '[ "$(field H-12 handoff_stuck)" = 0 ] && [ "$(field H-12 handoff_pct)" = null ]'
+stamp H-12 20; midhand H-12 3
+check "#1539 AC2 the first stageless session counts one, and raises nothing" '[ "$(field H-12 handoff_stuck)" = 1 ] && [ "$(field H-12 handoff_pct)" = null ] && ! grep -q "^H-12 " "$T/pcts" 2>/dev/null'
+stamp H-12 20; midhand H-12 3
+check "#1539 AC2 the second raises its threshold from the 20 it ran on to 45, logged, and spawns rather than parks" 'echo "$out" | grep -qF "its last 2 sessions handed off partway through Stage 3 without moving a stage or adding a commit, so its handoff threshold is raised from 20% to 45% for the sessions after this" && [ "$(field H-12 handoff_pct)" = 45 ] && [ "$(field H-12 state)" = "\"running\"" ]'
+check "#1539 AC2 the next session runs at 45" '[ "$(grep "^H-12 " "$T/pcts" | tail -1)" = "H-12 45" ]'
+q set H-12 state=done
+# AC4: sessions that move a stage, or add a commit, before they hand off change nothing.
+handing H-13; midhand H-13 3
+midhand H-13 4
+check "#1539 AC4 a session that moved a stage, with no commit, is not stageless" '[ "$(field H-13 handoff_stuck)" = 0 ]'
+git -C "$T/wt/H-13" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m wip
+midhand H-13 4
+check "#1539 AC4 a session that moved a stage, then one that added a commit, raise nothing" '[ "$(field H-13 handoff_stuck)" = 0 ] && [ "$(field H-13 handoff_pct)" = null ] && ! grep -q "^H-13 " "$T/pcts" 2>/dev/null && ! echo "$out" | grep -q "threshold is raised"'
+q set H-13 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"
@@ -1195,6 +1223,82 @@ respawn Q-4
 check "#1465 a restart whose resume file is for another branch starts at Stage 0 with the entries, and moves that file aside" 'spawned_for Q-4 | grep -q "stage= " && brief Q-4 | grep -qF "## New decisions since PR #64'"'"'s last review: this session starts at Stage 0" && brief Q-4 | grep -qF "do not resume from its resume file" && [ -f "$DESK_AUTOPILOT_STATE/resume/Q-4.json.old" ] && echo "$out" | grep -q "Q-4 .*restarted at Stage 0"'
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 for k in Q-1 Q-2 Q-3 Q-4; do q set "$k" state=done; done
+
+# ---- #1483: a GitHub issue's ticket file is refreshed from the issue before its worker spawns -------
+# With no tracker, issue-<n> is a GitHub issue. The gh stub answers each issue's updated time from
+# $T/issue-<n>.updated and its text from $T/issue-<n>.json, and logs every call.
+cp "$T/config.md" "$T/config.keep"
+printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `none` |\n' >> "$T/config.md"
+GH_CALLS="$T/gh-calls"; : > "$GH_CALLS"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$GH_CALLS"
+case "\$*" in
+  "issue view "*" --json updatedAt --jq .updatedAt") cat "$T/issue-\$3.updated" ;;
+  "issue view "*" --json title,body,comments,updatedAt") cat "$T/issue-\$3.json" ;;
+  *createdAt,reviews*) echo '{"createdAt":"2026-11-01T09:00:00Z","reviews":[]}' ;;
+esac
+exit 0
+EOF
+admitted(){ printf '# %s\n\nSource: GitHub issue acme/widgets#%s\n\nBadge on the card\n\n## Acceptance criteria\n- AC1: the badge shows on the card\n' "$1" "${1#issue-}" > "$T/state-h/tickets/$1.md"; touch -t 202611010000 "$T/state-h/tickets/$1.md"; }
+gh_issue(){ echo "$2" > "$T/issue-$1.updated"; jq -cn --arg u "$2" --arg b "$3" --arg c "${4:-}" '{title: "Badge on the card", body: $b, updatedAt: $u, comments: (if $c == "" then [] else [{author: {login: "ben"}, createdAt: $u, body: $c}] end)}' > "$T/issue-$1.json"; }
+same_body=$'## Acceptance criteria\n- AC1: the badge shows on the card'
+admitted issue-71; gh_issue 71 2026-11-20T10:00:00Z "$same_body" "Also: AC2 the badge shows on the list page."
+q add issue-71; q set issue-71 state=triaged lane=A branch=fix/issue-71
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 AC1 a fresh spawn refreshes the ticket file from an issue changed since admission" 'spawned_for issue-71 >/dev/null && grep -qF "Also: AC2 the badge shows on the list page." "$T/state-h/tickets/issue-71.md" && grep -qF "## Comments" "$T/state-h/tickets/issue-71.md"'
+check "#1483 AC1 the refresh is recorded on the queue and the spawn line" '[ "$(field issue-71 issue_read)" = "\"2026-11-20T10:00:00Z\"" ] && echo "$out" | grep -q "issue-71 .*ticket file refreshed from issue #71, updated 2026-11-20T10:00:00Z"'
+check "#1483 with no PR open, the refresh writes no Decisions entry" '! grep -q "^## Decisions" "$T/state-h/tickets/issue-71.md"'
+q set issue-71 state=done
+printf '# issue-72\n\nSource: GitHub issue acme/widgets#72\n\nBadge on the card\n\n%s\n' "$same_body" > "$T/state-h/tickets/issue-72.md"
+cp "$T/state-h/tickets/issue-72.md" "$T/issue-72.before"
+gh_issue 72 2026-11-01T10:00:00Z "$same_body"
+q add issue-72; q set issue-72 state=triaged lane=A branch=fix/issue-72
+: > "$GH_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 AC3 an issue unchanged since admission costs one updated-time read, and the file is left alone" 'spawned_for issue-72 >/dev/null && [ "$(grep -c "^issue view 72 " "$GH_CALLS")" = 1 ] && grep -q "^issue view 72 .*--json updatedAt --jq .updatedAt$" "$GH_CALLS" && diff -q "$T/issue-72.before" "$T/state-h/tickets/issue-72.md" >/dev/null && [ "$(field issue-72 issue_read)" = null ]'
+q set issue-72 state=done
+handing issue-73; hfile issue-73 7 "typecheck: pass"; q set issue-73 handoff_stage=7 result.pr=61; q park issue-73 "which reviewer?"
+admitted issue-73; gh_issue 73 2026-11-20T10:00:00Z $'## Acceptance criteria\n- AC1: the badge shows on the card and the list'
+respawn issue-73
+check "#1483 AC2 a criterion changed with a PR open writes a dated Decisions entry naming it" 'grep -qF "desk pass: issue #73 changed after PR #61 was opened" "$T/state-h/tickets/issue-73.md" && grep -qF "the badge shows on the card and the list" "$T/state-h/tickets/issue-73.md"'
+check "#1483 AC2 the handed-off worker restarts at Stage 3 to build and re-review it, not at Stage 7" 'spawned_for issue-73 | grep -q "stage=3 " && brief issue-73 | grep -qF "## New decisions since PR #61" && brief issue-73 | grep -qF "Build and re-review it before taking the PR as done" && echo "$out" | grep -q "issue-73 fresh session from Stage 3 .*refreshed from issue #73"'
+q set issue-73 state=done
+# A spawn that does not start after the refresh: the stub refuses a ticket named in $T/refuse-spawn,
+# and records each resume prompt in $T/resume-prompt-<key>.
+cp "$T/desk/bin/spawn-worker.sh" "$T/spawn-worker.h"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+if grep -qx "\$1" "$T/refuse-spawn"; then echo "no slot for \$1"; exit 1; fi
+printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"
+echo "\$1 \$3 stage=\${AUTOPILOT_START_STAGE:-} branch=\${AUTOPILOT_BRANCH:-} brief=\${4:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
+EOF
+echo issue-74 > "$T/refuse-spawn"
+admitted issue-74; gh_issue 74 2026-11-20T10:00:00Z "$same_body" "Also: AC2 the badge shows on the list page."
+q add issue-74; q set issue-74 state=triaged lane=A branch=fix/issue-74
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 a refresh whose spawn does not start keeps what it changed for the next spawn" '! spawned_for issue-74 && field issue-74 issue_refresh.what | grep -qF "new or edited comments: ben at 2026-11-20T10:00:00Z" && [ "$(field issue-74 issue_read)" = "\"2026-11-20T10:00:00Z\"" ]'
+: > "$T/refuse-spawn"; q requeue issue-74; : > "$GH_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 the next spawn, with the issue unchanged, delivers it and clears it" 'spawned_for issue-74 >/dev/null && [ "$(grep -c "^issue view 74 " "$GH_CALLS")" = 1 ] && echo "$out" | grep -q "issue-74 .*ticket file refreshed from issue #74 before a spawn that did not start: new or edited comments: ben" && [ "$(field issue-74 issue_refresh)" = null ]'
+q set issue-74 state=done
+# An unfinished fix try keeps its own task: its issue is not read, and the spawn line says so.
+q add issue-75; q set issue-75 state=triaged lane=A branch=fix/issue-75 'fix={"try":1,"of":2,"pr":65,"kind":"review","what":"a P1 review finding"}'
+admitted issue-75; gh_issue 75 2026-11-20T10:00:00Z $'## Acceptance criteria\n- AC1: the badge shows on the card and the list'
+cp "$T/state-h/tickets/issue-75.md" "$T/issue-75.before"
+: > "$GH_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 an unfinished fix try does not read the issue, and the spawn line says the next spawn checks it" '! grep -q "^issue view 75 " "$GH_CALLS" && diff -q "$T/issue-75.before" "$T/state-h/tickets/issue-75.md" >/dev/null && echo "$out" | grep -q "issue-75 .*its ticket file was not checked against issue #75: an unfinished fix try keeps its own task, and the next spawn checks it"'
+q set issue-75 state=done
+# A killed worker with a PR open, resumed after a criterion changed: its prompt carries the change, and
+# the delivery is recorded so its next handoff does not restart it at Stage 3 for that entry again.
+handing issue-76; q set issue-76 session_id=sess-76 port=47760 draft_pr=66
+say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-h/logs/issue-76.log"; touch -t 202601010000 "$T/state-h/logs/issue-76.log"
+admitted issue-76; gh_issue 76 2026-11-20T10:00:00Z $'## Acceptance criteria\n- AC1: the badge shows on the card and the list'
+out=$(DESK_BOOT_TIME=2026-06-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "#1483 a killed worker resumed after a criterion change is told of it in its resume prompt" 'echo "$out" | grep -q "issue-76 resumed after it was killed .*refreshed from issue #76" && grep -qF "was refreshed from its issue since you read it: acceptance criteria added or changed" "$T/resume-prompt-issue-76" && grep -qF "desk pass: issue #76 changed after PR #66 was opened" "$T/state-h/tickets/issue-76.md"'
+check "#1483 the resume records the delivery as decisions_seen and clears what it kept" 'field issue-76 decisions_seen | grep -qE "^\"20[0-9]{2}-" && [ "$(field issue-76 issue_refresh)" = null ]'
+q set issue-76 state=done
+mv "$T/spawn-worker.h" "$T/desk/bin/spawn-worker.sh"
+cp "$T/config.keep" "$T/config.md"
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 
 # ---- DS-742: a worker queue.mjs stop ended stays held until the person lets it start -------------
 all_done

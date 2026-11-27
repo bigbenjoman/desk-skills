@@ -22,6 +22,7 @@ import { promotionHolds } from '../gate.mjs';
 import { lookup, inputsHash } from '../not-now.mjs';
 import { urgentParks } from '../digest.mjs';
 import { batchScopeTotals } from '../scope-report.mjs';
+import { queueLine } from '../suite-wait.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const line = (l) => ({ type: 'line', line: l });
@@ -132,9 +133,10 @@ export function* decidePutOffRefresh(s) {
 //                           read clean, and the clash last logged: logged once for that pair of rows,
 //                           since workers run /desk-review in its place until /desk-setup settles it
 //   blocked                 blockedOf the pass's rows
-//   heldBack                [{ key, holds: [{ file, by, elsewhere, k }] }] the triaged tickets a running one's
-//                           file holds: `by` this batch's running keys, `elsewhere` [{ key, label }] those
-//                           running in the repo's other batches, each with its batch's label
+//   heldBack                [{ key, holds: [{ file, by, handoff, elsewhere, k }] }] the triaged tickets a
+//                           running or handed-off one's file holds: `by` this batch's running keys,
+//                           `handoff` its keys handed off between sessions, `elsewhere` [{ key, label,
+//                           handoff? }] those of the repo's other batches, each with its batch's label
 //   resumeRows              the pass's triaged rows as the held phase read them, each
 //                           { key, resume, resume_why, toResume, rebootWait }
 //   askedAgain              [{ key, question, now }] the put-off parks decidePutOffRefresh asked again,
@@ -166,8 +168,10 @@ export function decideReportLines(s) {
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
   const budgetText = (h) => {
-    const names = [...h.by, ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}`)];
-    return `${h.file} has ${names.length} running of its ${h.k}: ${names.join(', ')}`;
+    const off = (h.handoff ?? []).length + (h.elsewhere ?? []).filter((o) => o.handoff).length;
+    const names = [...h.by, ...(h.handoff ?? []).map((k) => `${k} (handed off)`),
+      ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}${o.handoff ? ' (handed off)' : ''}`)];
+    return `${h.file} has ${names.length} ${off ? 'running or handed off' : 'running'} of its ${h.k}: ${names.join(', ')}`;
   };
   if (s.heldBack.length) acts.push(out(`held back by a collision: ${s.heldBack.map((x) => `${x.key} (${x.holds.map(budgetText).join('; ')})`).join(', ')}`));
   const resumeWaits = s.resumeRows.filter((r) => r.toResume && !(r.resume === 'reboot' && r.rebootWait));
@@ -360,23 +364,91 @@ export function mergeGapLine(tickets, reported = []) {
 // cap. With a run waiting on a queue it is a stall, the gate's line. With none waiting on any, the room
 // went to this pass's own suite-bound starts (the cap is checked before the gate, so it held none of
 // these): a wait for the next pass, which names the workers running against the cap beside it, not a
-// stall. -> { line, stall }.
+// stall. -> { line, stall, hold }, `hold` as a pass record's structured hold (holdOf), cause test-lock.
 export function lockHeldLine({ gate, held, running, concurrency }) {
   if (!held.length || !gate) return null;
-  if (gate.queues?.some((q) => q.waiting > 0) ?? true) {
-    return { stall: true, line: `${gate.line}: holding new workers and resumes into Stage 4 (${held.join(', ')}), past the ${gate.room} this pass had room for` };
-  }
-  return { stall: false, line: `held for the next pass, not a stall (${held.join(', ')}): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; ${running} worker(s) running against the batch's cap of ${concurrency}` };
+  const stall = gate.queues?.some((q) => q.waiting > 0) ?? true;
+  // The queues the gate's line names (lockGate's `named`), each without the line heldText rebuilds.
+  const named = (gate.named ?? [gate]).map(({ line, queues, named: _, ...q }) => ({ ...q, holders: q.holders ?? [] }));
+  const first = named[0];
+  const hold = {
+    cause: 'test-lock', scope: 'machine',
+    numbers: { waiting: first.waiting, slots: first.slots, factor: first.factor, room: gate.room, stall, running, concurrency, queues: named },
+    holders: named.flatMap((q) => q.holders.map(({ repo, where, cmd, heldS, expectedS }) => ({ repo, where, cmd, heldS, expectedS }))),
+    tickets: [...held], action: null,
+  };
+  return { stall, line: heldText(hold), hold };
 }
 
-// Why nothing spawned while something could have: the first hold that applied this pass, or null.
-export function heldWhyOf(s) {
-  if (s.spawned || !s.eligible) return null;
-  return s.held ?? (s.baseHold ? `the batch base sync holds every spawn${s.baseLag ? `: ${s.baseLag}` : ''}`
-    : s.harmWhy ? s.harmWhy
-    : s.lowMemory ? `memory: ${s.availGB.toFixed(1)}G available, under the ${s.minAvailGB}G spawn gate`
-    : s.lockQueueHeldText ?? (s.machine.room <= 0 ? `the machine budget: ${s.machine.line}`
-    : s.repoUnlocked ? `the repo's shared cap: ${s.repoLine}`
-    : s.repo.room <= 0 ? `the repo's shared cap: ${s.repo.line}`
-    : s.concurrency <= 0 ? `the batch's worker count is ${s.concurrency}` : null));
+// Who an eligibility hold (pass/eligibility.mjs's `held`) is held by, from its words: [cause, scope].
+// A config row first: the pacing row's name has "usage" in it.
+const ELIGIBILITY_CAUSES = [
+  [/^config §/, 'config', 'repo'], [/^the maintenance window/, 'maintenance', 'machine'], [/^the batch budget/, 'budget', 'batch'],
+  [/^a failing health check/, 'health', 'repo'], [/usage|limit/i, 'usage', 'machine'],
+];
+// What the person runs for a hold they can clear, from an eligibility hold's words, or null.
+function eligibilityAction(text, bins) {
+  if (/^the batch budget/.test(text)) return { text: 'lift the batch budget (or set budget_usd to a higher figure in its place)', cmd: `node ${bins.queue} set-batch budget_usd=none` };
+  const ask = /^config §3 \S+ is "ask"$/.test(text);
+  if (ask) return { text: 'confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1', cmd: `AUTOPILOT_USER_APPROVED=1 node ${bins.pass}` };
+  if (/^config §/.test(text)) return { text: 'fix the config row with /desk-setup', cmd: '/desk-setup' };
+  return null;
+}
+
+// The hold that kept anything from spawning while something could have, as the pass record's `hold`,
+// or null: the first that applied this pass. Its fields:
+//   cause    test-lock, machine, repo-cap, base, memory, harm, collision, concurrency, or for an
+//            eligibility hold maintenance, usage, budget, health or config
+//   scope    machine, repo or batch: what the cause holds
+//   numbers  the figures it was read from, or null
+//   holders  the test lock's holders (test-lock only, else [])
+//   tickets  the tickets it kept waiting, where the pass names them, else []
+//   action   { text, cmd } where the person can clear it, else null
+//   detail   the line of another module's it quotes (the machine or repo budget's, the base lag, an
+//            eligibility hold's words), where heldText says it as it is
+// `s.heldBack` (keys) are the tickets a collision held; a collision is the hold only when no ticket was
+// eligible. The report says it in its own line (decideReportLines), and its `held` stays null as it
+// always was. `s.bins` { queue, pass } name the scripts an action runs.
+export function holdOf(s) {
+  if (s.spawned) return null;
+  if (!s.eligible) {
+    const back = s.heldBack ?? [];
+    return back.length ? { cause: 'collision', scope: 'batch', numbers: null, holders: [], tickets: [...back], action: null } : null;
+  }
+  const h = (cause, scope, more = {}) => ({ cause, scope, numbers: null, holders: [], tickets: [], action: null, ...more });
+  if (s.held) {
+    const [, cause, scope] = s.held === s.harmWhy ? [null, 'harm', 'machine'] : ELIGIBILITY_CAUSES.find(([re]) => re.test(s.held)) ?? [null, 'config', 'repo'];
+    return h(cause, scope, { action: eligibilityAction(s.held, s.bins ?? {}), detail: s.held });
+  }
+  if (s.baseHold) return h('base', 'batch', { detail: s.baseLag ?? null });
+  if (s.harmWhy) return h('harm', 'machine', { detail: s.harmWhy });
+  if (s.lowMemory) return h('memory', 'machine', { numbers: { availGB: s.availGB, minAvailGB: s.minAvailGB } });
+  if (s.lockHold) return s.lockHold;
+  if (s.machine.room <= 0) return h('machine', 'machine', { numbers: { room: s.machine.room }, detail: s.machine.line });
+  if (s.repoUnlocked) return h('repo-cap', 'repo', { numbers: { unlocked: true }, detail: s.repoLine });
+  if (s.repo.room <= 0) return h('repo-cap', 'repo', { numbers: { room: s.repo.room }, detail: s.repo.line });
+  if (s.concurrency <= 0) {
+    return h('concurrency', 'batch', { numbers: { concurrency: s.concurrency }, action: { text: 'set the batch\'s worker count above 0', cmd: `node ${s.bins?.queue ?? 'queue.mjs'} set-batch concurrency=1 concurrency_by=user` } });
+  }
+  return null;
+}
+
+// A hold (holdOf) as the pass record's `held` string, the report's and logs' words for it, or null
+// where there was none (a collision included: the report names it in its own line).
+export function heldText(hold) {
+  if (!hold) return null;
+  switch (hold.cause) {
+    case 'collision': return null;
+    case 'test-lock': {
+      const n = hold.numbers, tickets = hold.tickets.join(', ');
+      if (!n.stall) return `held for the next pass, not a stall (${tickets}): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; ${n.running} worker(s) running against the batch's cap of ${n.concurrency}`;
+      return `${n.queues.map(queueLine).join('; and ')}: holding new workers and resumes into Stage 4 (${tickets}), past the ${n.room} this pass had room for`;
+    }
+    case 'base': return `the batch base sync holds every spawn${hold.detail ? `: ${hold.detail}` : ''}`;
+    case 'memory': return `memory: ${hold.numbers.availGB.toFixed(1)}G available, under the ${hold.numbers.minAvailGB}G spawn gate`;
+    case 'machine': return `the machine budget: ${hold.detail}`;
+    case 'repo-cap': return `the repo's shared cap: ${hold.detail}`;
+    case 'concurrency': return `the batch's worker count is ${hold.numbers.concurrency}`;
+    default: return hold.detail;
+  }
 }

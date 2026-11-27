@@ -31,7 +31,8 @@ nowhere to push. The merged PR's tests are kept outside it (a test file the PR c
 its base version, as the ticket's worker found it) and copied in only after the run, then
 run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
 passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
-which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web
+which counts as neither. Each test command gets an hour from when it holds the test lock; the wait
+for the lock is not counted. Arms run on a worker's permission set for that repo with gh, Jira, the web
 and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded in that run's
 result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
 default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its
@@ -46,7 +47,10 @@ node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<e
   [--plans <file>] [--providers <file>]
 ```
 
-Keep the task set outside this repo. Its paths are relative to the file:
+Keep the task set outside this repo, under `~/.config/desk/bench/`, which `desk-disk` and
+`desk-cleanup` never remove. The frozen desk-skills set (the DS-535 PRs) is kept at
+`~/.config/desk/bench/ds-535/`, as `tasks.json` with its hidden tests beside it. Its paths are
+relative to the file:
 
 ```json
 {"tasks": [{"id": "ds-123", "repo": "owner/name", "base": "<full SHA>", "prompt": "<ticket text>",
@@ -62,8 +66,9 @@ probe on that login; for an arm on a GPT or Codex model, the signed-in Codex log
 It stops before the run, naming the account, when the bench has used its cap of points in this
 weekly window, when less than the reserve is left, or when the reading is missing, older than 30
 minutes or cannot be parsed. A missing reading is never read as zero. The whole rise in weekly use
-during a run, other work on that account included, is that run's `quota.points` in its
-`result.json`, and is kept per computer in `<usage dir>/bench-quota.jsonl`. The points are printed at
+during a run's session, other work on that account included, is that run's `quota.points` in its
+`result.json`; the reading is taken again once the session ends, before the hidden tests are scored,
+so a long wait for the test lock is not counted, and is kept per computer in `<usage dir>/bench-quota.jsonl`. The points are printed at
 every stop and in the report. Run it again once the window resets and it picks up at the first task
 and arm not yet scored. The cap and reserve are per computer, set as the machine profile's Sizing rows
 `bench-cap-points` and `bench-reserve-percent` (unset: 10 points and 25%), which `/desk-setup` asks
@@ -216,17 +221,18 @@ node ~/.claude/desk/bin/bench-arm1.mjs --tasks <tasks.json> --max-budget-usd <us
 ```
 
 **`bench-arm-pack.mjs`** asks whether a start-4b stage pack saves quota: the first `--limit` tasks
-(default 10) run as the baseline and as `pack-4b`, both on opus at medium effort, the second with the
+(default 10) run as the baseline and as `pack-4b`, both on one model (`--model`, default `opus`) at medium effort, the second with the
 start-4b pack appended to its system prompt, so it is in context from turn 0. The pack is the skill
 files a worker starting at Stage 4b reads, taken from the installed skills (`--skills`) and joined
 with every paragraph an earlier file already holds dropped. Each pack run keeps it as `system.md`,
 and its run key hashes it, so a changed skill file is a new run. The baseline arm keeps the name an
 earlier run gave it (`--baseline-arm`, default `opus`), so its stored results are reused rather than
-paid for again. No arm may read the skills folder. `bench-report.mjs` then puts the two side by side:
+paid for again. The model is part of a run's key, so give `--model` the model the stored runs named:
+the DS-535 baseline ran as `claude-opus-5-5`, which `opus` does not reuse. No arm may read the skills folder. `bench-report.mjs` then puts the two side by side:
 
 ```
 node ~/.claude/desk/bin/bench-arm-pack.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--out <dir>] [--timeout 1800] [--seed <n>] [--limit 10] [--baseline-arm opus] [--skills <dir>]
+  [--out <dir>] [--timeout 1800] [--seed <n>] [--limit 10] [--baseline-arm opus] [--model opus] [--skills <dir>]
 ```
 
 **`skill-ride.mjs`** measures what such a pack would replace. For each start stage, over the worker

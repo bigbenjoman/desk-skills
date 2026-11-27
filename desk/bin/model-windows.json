@@ -1,0 +1,4 @@
+{
+  "about": "The oldest version of each model family whose default window is 1M, with no [1m] (Claude Code's model configuration docs); an older version reaches 1M only through its [1m] variant. Read by hooks/desk-handoff.py (from <DESK_HOME>/bin) and desk/bin/handoff-report.mjs.",
+  "default_1m_since": { "fable": [0, 0], "sonnet": [5, 0], "haiku": [5, 5], "opus": [4, 7] }
+}

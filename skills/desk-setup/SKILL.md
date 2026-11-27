@@ -123,6 +123,9 @@ done. Both are here, read by every run that reaches them:
   machine's, propose the machine's figure in its place and say why: "the machine profile limits
   every repo to <machine> GB (memory less 8 for the OS), and a repo
   row may be lower but never higher". A figure at or below the machine's stays as it is.
+- **Worker memory weight**: propose the repo's measured peak per worker where a per-repo source
+  holds one. memlog is machine-wide, so never read it as a repo's. With none, propose `none` (the
+  flat share, 5 GB on a 15 GB, 3-worker machine), say so, and ask to confirm.
 
 **Then §3b**: every row the config template's §3b table holds
 (`~/.agents/skills/desk-setup/references/desk-config.template.md`), in the template's order, four
@@ -199,6 +202,10 @@ location: a path only, never the token.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
+- An `UNBOUND` line from `desk-env drift` names a §4 Unit tests or Typecheck item that starts Jest
+  with no worker cap or `turbo run` with no `--concurrency`, so one locked run can take the whole
+  machine. Offer the bounded form it prints in its place, whether or not the user asked to change the
+  row.
 - A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
   step 1's *Dev server* proposes it, whether or not the user asked to change the row. Each app a
   §4 Dev server item names with no §4 Test sign-in item (`desk-env drift --app <dir>` prints

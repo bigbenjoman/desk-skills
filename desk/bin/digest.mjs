@@ -28,7 +28,7 @@ import { jiraSearch, keySearch } from './jira-search.mjs';
 import { describeCond } from './clears-when.mjs';
 import { isHeld, heldBehindOf, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
-import { stalledPrs as stalledOf, STALL_FOR } from './desk-q-model.mjs';
+import { stalledPrs as stalledOf, STALL_FOR, newHoldPrs } from './desk-q-model.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
@@ -62,6 +62,13 @@ export function checkinTimes(raw) {
     return { ok: false, why: `config §3b "Check-in times" is "${raw}": want local HH:MM times, e.g. \`08:00, 17:00\`` };
   }
   return { ok: true, times: [...new Set(parts)].sort() };
+}
+// One repo's §3b Check-in times, or the default where its row is unset, unread or malformed.
+export function repoCheckinTimes(slug) {
+  let raw = null;
+  try { raw = [].concat(E.repoConfigValues(slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
+  const c = checkinTimes(raw);
+  return c.ok ? c.times : DEFAULT_TIMES;
 }
 
 // The latest check-in slot at or before `now`, as {id: 'YYYY-MM-DDTHH:MM', at: Date}, local time.
@@ -281,6 +288,8 @@ export const previousSlot = (times, slot) => (slot ? latestSlot(times, new Date(
 
 // One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
 const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
+// One repo's PRs a change pushed after they opened put under §4 Merge holds, as desk-q words them.
+const newHolds = (r) => newHoldPrs(readJson(r.queue, null));
 
 // The Levers page the digest's Levers section links.
 export const leversPageUrl = (dir = leversDir()) => `file://${join(dir, 'index.html')}`;
@@ -358,6 +367,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
   const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
+  const nh = groups.reduce((n, g) => n + (g.held?.length ?? 0), 0);
   const nw = groups.reduce((n, g) => n + (g.warnings?.length ?? 0), 0);
   const nwait = groups.reduce((n, g) => n + (g.waiting?.length ?? 0), 0);
   const npr = groups.filter((g) => g.promotion?.key).length;
@@ -371,11 +381,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nl = levers.length;
   const nlc = levers.filter((l) => l.slug).length;
   const nses = groups.reduce((n, g) => n + (g.sessions?.length ?? 0), 0);
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl && !nses && !nwait) {
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nh && !nw && !nl && !nses && !nwait) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nh ? `; ${nh} PR(s) that now need your merge` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -386,7 +396,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.waiting?.length || x.warnings?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.held?.length || x.waiting?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -435,6 +445,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     if (g.stalled?.length) {
       lines.push(`### Merging, no change for ${STALL_FOR} or more`, '');
       for (const s of g.stalled) lines.push(`- \`${s.ticket}\` ${s.url ? `[#${s.pr}](${s.url})` : `#${s.pr}`}: ${s.check} · no change for ${s.for}`);
+      lines.push('');
+    }
+    if (g.held?.length) {
+      lines.push('### Now needs your merge', '');
+      for (const h of g.held) lines.push(`- \`${h.ticket}\` ${h.url ? `[#${h.pr}](${h.url})` : `#${h.pr}`}: ${h.text}, changed after it opened under §4 Merge holds`);
       lines.push('');
     }
     if (g.waiting?.length) {
@@ -513,6 +528,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         promotion: promotionOf(r),
         jira,
         stalled: stalledPrs(r, now),
+        held: newHolds(r),
         waiting: waitingBehind(r, prev?.at).filter((w) => !done.has(w.ticket)),
         warnings: readWarnings(r.state).filter(inWindow),
       };

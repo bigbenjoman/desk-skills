@@ -80,7 +80,7 @@ day.
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
 | **Jira** | `jira_activity.py`: REST through `desk-jira api` once per in-scope repo whose §4 Tracker is `jira`, so it uses that repo's desk-jira credentials and never sees the token. Tracker `none`: skipped, and says so | `read-own-work` | Tickets raised (bulk batches grouped by label), status moves, reassignments, §4 Priority and other field changes, the user's comments, and what others did to their tickets the same day |
-| **GitHub** | `github_activity.py` via `gh` | `read-own-work` | PRs opened, merged, closed or pushed to, with review decision and failing checks for open ones; reviews given. Grouped by scope |
+| **GitHub** | `github_activity.py` via `gh` | `read-own-work` | PRs opened, merged, closed or pushed to, with review decision and failing checks for open ones; reviews given. Grouped by scope. Merged counts per repo, yours and everyone's |
 | **Claude Code** | `claude_activity.py` over `~/.claude/projects/*/*.jsonl`, every project | `read-transcripts` | The *why* and the story: what they were chasing, what got found, work that never became a PR |
 | **Calendar** | Google Calendar connector: events that day on their primary calendar | `read-calendar` | The candidate meetings (step 3) |
 | **Meeting notes** | Gmail connector: `from:gemini-notes@google.com after:<day> before:<day+1>` (dates as `YYYY/MM/DD`) | `read-calendar` | Decisions and actions from each meeting, and whether the notes record the user saying anything. Gemini's email has a Summary and Next steps. Open the linked Doc through the Drive connector only if the email is too thin |
@@ -89,7 +89,7 @@ day.
 **Permissions.** A source whose row is not `yes` is skipped (or asked about, for `ask`), and the
 draft says so under **Missing sources**. The collectors apply each repo's own row and print what
 they skipped: for an `ask` row, ask the user once, then re-run that collector with
-`--include <slug>`. With `read-slack-public` alone, use `slack_search_public` and search only
+the flag the note names. With `read-slack-public` alone, use `slack_search_public` and search only
 channels.
 
 **When the Claude summary isn't enough.** A session's `ended with` line is truncated. For the
@@ -163,6 +163,8 @@ For each item, settle:
   posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
   `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
   state stays as its source gave it.
+  **Read each ticket again as you write its bullet, with every PR naming its key, and the latest
+  deploy before any deploy claim**: `references/current-state.md` says how.
   **A setting, config row or other change that is not a PR is read from its source too**, before
   its line says when it was made, starts or takes effect: the config file (`desk-env get <id>`,
   and its git log for when it changed), the settings file, or the tracker. A session's narration of
@@ -220,6 +222,8 @@ short version:
   midnight is in the counts as well as the items. Compute each one from its source, with timestamps
   filtered on the window start (the collectors' `--since` output, or a `gh` or Jira query from that
   time), and name it under **Check before posting** with its query and window (step 5).
+- **A merged-PR count is the user's own** (the collector's `mine`); `references/style.md` says when
+  it may include others or say "more".
 - Lead each item with the problem in plain words, then the fix and its state.
   Use `(merged)`, `(in review)`, `(raised)`, `WIP`, `waiting on @Name`.
 - Name tickets by their key (`ABC-1891`) and PRs as `#1533`. Slack auto-links neither, so don't add
@@ -258,7 +262,7 @@ says, and give the path. Under it, briefly:
   was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
   narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
   read again when its line was written ("#1534's state is from the collectors, read earlier in the
-  run"). Each count or figure in the post, with the query and window behind it, so the user can
+  run"), each ticket or deploy claim no read settled. Each count or figure in the post, with the query and window behind it, so the user can
   check it ("27 merged: merged PRs since yesterday 19:02, from the GitHub collector"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".

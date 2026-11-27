@@ -16,7 +16,7 @@ for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) del
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });
 
-const { runTrips, recordWait, stepPattern } = await import('../desk/bin/levers-trips.mjs');
+const { runTrips, recordWait, stepPattern, runsStep } = await import('../desk/bin/levers-trips.mjs');
 const { append, read } = await import('../desk/bin/lever-log.mjs');
 const { assignPin, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
 const { leverOnFor } = await import('../desk/bin/lever-pin.mjs');
@@ -247,6 +247,38 @@ const s4b = repo(A4b);
 const cli = spawnSync(process.execPath, [fileURLToPath(new URL('../desk/bin/levers-trips.mjs', import.meta.url)), 'record-step', '--state', s4b, '--ticket', 'D-1', '--lever', 'memory', '--step', 'memory-digest.mjs', '--exit', '1', '--session', 's9'], { encoding: 'utf8' });
 run(A4b, queueOf(onTicket(A4b, 'D-1', 'memory')));
 t('AC4 a step error the spawn recorded in the run record trips too', [cli.status, stateIn(A4b, 'memory'), eventsOf(A4b, 'trip')[0]?.error], [0, 'reverted', 'memory-digest.mjs exited 1']);
+// ---- DS-1035: a worker's call counts as the step's only when the step is the whole call ------------------------
+{
+  // One ticket on `lever`'s arm whose log holds one Bash call `command` exiting with `text`.
+  const tripsOn = (slug, lever, command, text, runs = []) => {
+    const s = repo(slug);
+    writeFileSync(join(s, 'workers', 'K-1.runs.jsonl'), jsonl([{ at: at(-50), ticket: 'K-1', session: 'sk' }, ...runs]));
+    writeFileSync(join(s, 'logs', 'K-1.log'), jsonl([init('sk'), call('k1', 'Bash', { command }), result('k1', text)]));
+    run(slug, queueOf(onTicket(slug, 'K-1', lever)));
+    return [stateIn(slug, lever), eventsOf(slug, 'trip').map((e) => [e.reason_code, e.error])];
+  };
+  t('AC1 the DS-1012 compound command failing elsewhere does not trip finder-model', tripsOn('acme__ds1012', 'finder-model',
+    'desk-env tree-status; git rev-parse HEAD; desk-env model finder; desk-env get review-asks',
+    'Exit code 3\ndesk-env tree-status: fatal: not a git repository (or any of the parent directories): .git\nsonnet\nnone'), ['trial', []]);
+  // The ticket's line puts `;` straight after `finder`, which the old whole-command match never read as the
+  // step; these shapes it did (DS-1012's trip), so they are what fails if the fix is undone.
+  t('AC1 the same command split by newlines or && does not trip finder-model either', [
+    'desk-env tree-status\ngit rev-parse HEAD\ndesk-env model finder\ndesk-env get review-asks',
+    'desk-env tree-status && git rev-parse HEAD && desk-env model finder && desk-env get review-asks',
+  ].map((c, i) => tripsOn(`acme__ds1012shape${i}`, 'finder-model', c, 'Exit code 3\ndesk-env tree-status: fatal: not a git repository\nsonnet\nnone')), [['trial', []], ['trial', []]]);
+  t('AC2 desk-env model finder run on its own and exiting 3 trips finder-model', tripsOn('acme__finderalone', 'finder-model',
+    'cd /wt && desk-env model finder', 'Exit code 3\nno finder model'), ['reverted', [['own_step_error', 'desk-env model finder exited 3: no finder model']]]);
+  t('AC3 a lever_step record for finder-model with a non-zero exit still trips it', tripsOn('acme__finderrec', 'finder-model',
+    'desk-env tree-status; desk-env model finder', 'Exit code 3\nfatal',
+    [{ at: at(-40), ticket: 'K-1', session: 'sk', lever_step: { lever: 'finder-model', step: 'desk-env model finder', exit: 2, error: 'bad row' } }]), ['reverted', [['own_step_error', 'desk-env model finder exited 2: bad row']]]);
+  t('AC4 a compound command holding a desk-env lines call does not trip wrappers', tripsOn('acme__wrapcompound', 'wrappers',
+    'desk-env lines src/a.ts 1,20 && grep -n foo src/b.ts', 'Exit code 1\n1: a'), ['trial', []]);
+  const re = stepPattern('desk-env lines');
+  t('a lone call by path or with a redirection is the step; a pipe, a subshell or a mention is not', [
+    'desk-env lines a.ts 1,2 2>&1', '~/.claude/desk/bin/desk-env lines a.ts 1,2', 'desk-env lines "a;b.ts" 1,2', 'desk-env lines $(echo a.ts; true) 1,2',
+    'desk-env lines a.ts 1,2 | head', '(desk-env lines a.ts 1,2)', 'desk-env lines a.ts 1,2 &', 'echo desk-env lines a.ts', 'desk-env lines a.ts 1,2\ntrue',
+  ].map((c) => runsStep(re, c)), [true, true, true, true, false, false, false, false, false]);
+}
 t('the codex step is matched as a worker calls it', [stepPattern('desk-codex').test('node ~/.claude/desk/bin/desk-codex.mjs probe'), stepPattern('desk-codex').test('desk-codex finder x'), stepPattern('the preflight')], [true, true, null]);
 
 // ---- AC5: a second revert freezes the lever and raises one needs-you item -------------------------------------

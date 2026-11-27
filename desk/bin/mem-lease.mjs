@@ -5,35 +5,36 @@
 //           past the ceiling is granted and the lease log records the would-refuse;
 //   on      a pass starts no worker whose share does not fit under the ceiling beside what is
 //           already reserved.
-// A worker's share is the machine profile's memory-ceiling-gb divided by the machine profile's
-// autopilot-concurrency cap (the repo's own cap where the profile sets none), at least 1 GiB, so a
-// pool of reservations caps workers as the machine budget does. An interactive session reserves for a heavy run with `desk-env lease acquire mem <what for>
+// A worker's share is its repo's weight, config §3b "Worker memory weight (GB)" (borrow.mjs
+// workerWeight), or where the repo sets none the machine profile's memory-ceiling-gb divided by the
+// machine profile's autopilot-concurrency cap (the repo's own cap where the profile sets none), at
+// least 1 GiB, so a pool of reservations caps workers as the machine budget does. An interactive session reserves for a heavy run with `desk-env lease acquire mem <what for>
 // --units <GiB> --owner claude --ttl <seconds>`, and every pass counts it. The pass reserves under its
 // own pid with a short TTL, then hands the reservation to the worker's pid once the worker has
 // started, so it returns to the pool when the worker exits. With no memory-ceiling-gb nothing is reserved.
 import { capacities, kindMode, list, peek, tryAcquire } from './leases.mjs';
 import { PICK_TTL, handLeaseToWorker } from './port-lease.mjs';
-
-// A worker's share of `ceiling` GiB with a worker cap of `cap`: at least 1, null with no ceiling.
-const memShare = (ceiling, cap) => (ceiling > 0 ? Math.max(1, Math.floor(ceiling / Math.max(1, cap || 1))) : null);
+// A worker's share of `ceiling` GiB with a worker cap of `cap`, where its repo sets no weight: at least
+// 1, null with no ceiling.
+import { flatShare as memShare } from './borrow.mjs';
 
 const MOST_HOLDERS = 3;
 const holderOf = (l) => `${l.label} ${l.units}G (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
 const memReq = (key, units, ttl, label, pid) => ({ kind: 'mem', key: `worker ${key}`, units, ttl, label, pid });
 
 // The memory pool as a pass reads it. `cap` is the machine's worker cap (borrow.mjs machineCap), or
-// the repo's §3b "Autopilot worker concurrency" cap where the machine profile sets none;
-// with `take` false (a dry run) nothing is lapsed. A store that cannot be read, or a broker that fails
-// any other way (a lease directory it cannot lock), is `unreadable`, so the pass judges memory by the
-// legacy rules.
+// the repo's §3b "Autopilot worker concurrency" cap where the machine profile sets none; `weight` the
+// repo's workerWeight gb (borrow.mjs), which is the share where given; with `take` false (a dry run)
+// nothing is lapsed. A store that cannot be read, or a broker that fails any other way (a lease
+// directory it cannot lock), is `unreadable`, so the pass judges memory by the legacy rules.
 // -> { mode, ceiling, share, reserved, holders: [lease], unreadable } (ceiling null with none set;
 //    unreadable the error, with reserved and holders unset).
-export function memPool({ env, cap, take = true }) {
+export function memPool({ env, cap, weight = null, take = true }) {
   let mode;
   try { ({ mode } = kindMode('mem', env)); } catch (e) { return { mode: 'shadow', ceiling: null, share: null, unreadable: e.message }; }
   if (mode === 'off') return { mode, ceiling: null, share: null };
   const ceiling = capacities(env).mem;
-  const share = memShare(ceiling, cap);
+  const share = ceiling > 0 && weight != null ? weight : memShare(ceiling, cap);
   if (ceiling == null) return { mode, ceiling, share };
   let leases;
   try { leases = take ? list({ env }) : peek({ env }); } catch (e) { return { mode, ceiling, share, unreadable: e.message }; }

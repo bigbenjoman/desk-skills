@@ -69,7 +69,7 @@ export const leaseDir = () => expandHome(process.env.DESK_LEASE_DIR || join(HOME
 export const storeFile = (dir = leaseDir()) => join(dir, 'leases.json');
 export const logFile = (dir = leaseDir()) => join(dir, 'leases.log.jsonl');
 
-const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
+export const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
 // The heavy and light slot pools, each { floor, ceiling, current }, as admit-ledger.mjs poolRows gives
 // their floors and ceilings. With headroom admission on (the machine profile's lock-admission row),
 // the current size is the floor plus the runs admission let in above it that still run (the ledger,
@@ -669,19 +669,20 @@ export const RESET_COMMAND = 'desk-env lease reset --reason <why>';
 
 // The log as the screens read it: when it began (its first entry but a slot line with no lease, a
 // lock run's wait line, which with-lock.sh logs with every kind off, so it never starts the trial),
-// the latest trial restart, and each would-refuse entry, oldest first, as logged. A line that is not JSON is
-// skipped; a missing log is an empty one; a log that cannot be read throws LeaseStoreError.
+// the latest trial restart, each would-refuse entry and each locked run's memory peak (locked-run.mjs's
+// release line with peak_rss_gb), oldest first, as logged. A line that is not JSON is skipped; a
+// missing log is an empty one; a log that cannot be read throws LeaseStoreError.
 export function readLog({ dir = leaseDir() } = {}) {
   let raw;
   try { raw = readFileSync(logFile(dir), 'utf8'); } catch (e) {
-    if (e.code === 'ENOENT') return { first: null, restarted: null, clashes: [] };
+    if (e.code === 'ENOENT') return { first: null, restarted: null, clashes: [], peaks: [] };
     throw new LeaseStoreError(`the lease log ${logFile(dir)} is unreadable: ${e.message}`);
   }
   let first = null, restarted = null;
-  const clashes = [];
+  const clashes = [], peaks = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
-    const at = first == null || line.includes('"would-refuse"') || line.includes(`"${TRIAL_EVENT}"`);
+    const at = first == null || line.includes('"would-refuse"') || line.includes(`"${TRIAL_EVENT}"`) || line.includes('"peak_rss_gb"');
     if (!at) continue;
     let e;
     try { e = JSON.parse(line); } catch { continue; }
@@ -690,8 +691,9 @@ export function readLog({ dir = leaseDir() } = {}) {
     if (!(e.kind === 'slot' && e.id === undefined)) first ??= t;
     if (e.event === TRIAL_EVENT) restarted = Math.max(restarted ?? t, t);
     else if (e.event === 'would-refuse' && KINDS.includes(e.kind)) clashes.push(e);
+    else if (e.event === 'release' && typeof e.peak_rss_gb === 'number') peaks.push(e);
   }
-  return { first, restarted, clashes };
+  return { first, restarted, clashes, peaks };
 }
 
 // The trial: kinds in shadow grant what on would refuse and log each as a would-refuse, for TRIAL_DAYS

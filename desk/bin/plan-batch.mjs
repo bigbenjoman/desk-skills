@@ -516,6 +516,8 @@ for (const r of order) {
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
   // A step only the person can take is its own blocker ticket, not the ticket's lane.
   for (const s of Array.isArray(r.ben_steps) ? r.ben_steps : []) say(`  ! your step: ${s.step} — proposed blocker: ${s.blocker}`);
+  // A planned file under a §4 Merge holds path (triage.sh merge_holds): the driver leaves the PR to the person.
+  for (const h of Array.isArray(r.merge_holds) ? r.merge_holds : []) say(`  ! needs your merge: ${(h.files ?? []).join(', ')} — its PR touches \`${h.glob}\` (${h.why}), so the merge driver leaves the merge to you`);
   for (const f of lintBlocking(r)) say(`  ! lint (blocking): ${f.message}`);
   if (r.lint_error) say(`  ! lint did not run: ${r.lint_error}`);
   if (r.lane_original) say(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);

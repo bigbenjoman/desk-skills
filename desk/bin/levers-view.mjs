@@ -12,7 +12,8 @@
 // under ~/.desk-autopilot/<slug>/ its levers.jsonl, lever-evals.jsonl, audit.jsonl, levers-evidence/
 // (the per-ticket outcome rows each evaluation used), the newest phase0-baseline-*.txt, and in the
 // repo's state folder and each named batch's its supervisor.json, health.json and post-merge.jsonl;
-// plus the machine-wide ~/.desk-autopilot/levers/pooled-evals.jsonl. A line that does not parse makes
+// plus the machine-wide ~/.desk-autopilot/levers/pooled-evals.jsonl, and each repo's change log
+// (desk-changes.mjs: git on its primary checkout, its config backups). A line that does not parse makes
 // the panels that read its file `error`, naming the file and line, and the rest build.
 //
 // The honesty rules: no verdict below the minimum sample in the smaller arm; every effect carries its
@@ -22,18 +23,19 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, localDay, repoConfigValues, shownNames } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
+import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, isNone, leverRow, localDay, repoConfigValue, repoConfigValues, repoDirs, shownNames } from './desk-env.mjs';
+import { changeLog } from './desk-changes.mjs';
+import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
-import { spendsNeedsYou } from './lever-log.mjs';
+import { isStateChange, spendsNeedsYou } from './lever-log.mjs';
 import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
-import { excludedWhy } from './levers-evaluate.mjs';
+import { excludedWhy, priorRevertsOf, revertTarget } from './levers-evaluate.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -381,11 +383,51 @@ function mergePerLever(events, tz) {
   return out;
 }
 
+// A trip's own-step error as levers-trips.mjs writes it: "<step> exited <n>", then anything after a colon.
+const STEP_ERROR = /^(.+?) exited (\d+)(?::|$)/;
+const LEVER_OFF = Object.freeze(['reverted', 'frozen']);
+
+// What the person decides on lever needs-you item `e`, given the repo's log events `before` it and `all`
+// of them: the lever's state change that raised it where that turned the lever off (with the step and
+// exit of a failed own step), its evidence file relative to the repo's state folder `base`, how many
+// times desk has turned the lever off there and whether one more would freeze it, the sample a new test
+// starts towards, and each `levers decide` choice with its command. Empty for a lever the registry lacks.
+function decisionView({ e, before, all, repo, base }) {
+  const reg = REGISTRY[e.lever];
+  if (!reg) return {};
+  const last = before.filter((x) => isStateChange(x, e.lever)).at(-1);
+  const off = LEVER_OFF.includes(last?.to) ? last : null;
+  const step = off?.kind === 'trip' ? STEP_ERROR.exec(String(off.error ?? '')) : null;
+  const file = e.evidence_file ?? off?.evidence_file ?? null;
+  const reverts = priorRevertsOf(all, e.lever);
+  return {
+    reason_code: e.reason_code ?? null, ticket: e.ticket ?? off?.ticket ?? null,
+    turned_off: off ? { at: off.at, to: off.to } : null,
+    step: step ? { step: step[1], exit: Number(step[2]) } : null,
+    evidence: file ? { file: file.startsWith(base) ? file.slice(base.length) : file, line: e.evidence_line ?? off?.evidence_line ?? null } : null,
+    reverts, freezes_next: revertTarget(reverts) === 'frozen',
+    min: DECISION_RULE.min_per_arm[reg.layer] ?? null, baseline: isValued(reg) ? reg.baseline : null,
+    choices: decideChoices(e.lever).map((choice) => ({ choice, command: `levers decide ${repo} ${e.lever} ${choice}` })),
+  };
+}
+
+// Each lever's latest state change in a repo's log `rows`: lever -> event.
+function latestChanges(rows) {
+  const out = new Map();
+  for (const x of rows) {
+    if (!isStateChange(x) || Number.isNaN(Date.parse(x.at))) continue;
+    const had = out.get(x.lever);
+    if (!had || Date.parse(had.at) <= Date.parse(x.at)) out.set(x.lever, x);
+  }
+  return out;
+}
+
 const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
 // The view model for the inputs under `root` and the configs under `configRoot`, as of `now`.
-export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(), now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, generatedAt = Date.now() } = {}) {
+// `changeLogs`, given, stands in for reading each repo's change log: (repo) -> { log, error }.
+export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(), now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, generatedAt = Date.now(), changeLogs = null } = {}) {
   const configured = configuredRepos(configRoot);
   const names = shownNames(configured.map((r) => r.slug));
   const repos = configured.map((r, i) => readRepo({ ...r, root: configRoot, name: names[i] }, root));
@@ -449,7 +491,8 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
       if (e.kind !== 'needs_you') return;
       const spent = evs.slice(i + 1).some((x) => spendsNeedsYou(e, x));
       if (spent) return;
-      leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}` });
+      leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}`,
+        ...decisionView({ e, before: evs.slice(0, i), all: evs, repo: r.name, base: `${join(root, r.slug)}/` }) });
       if (e.reason_code === 'state_unreadable') unassignable = true;
     });
     // A log that cannot be opened, or stops at a line that does not parse, also stops an auto repo's
@@ -461,7 +504,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }
   const waiting = panel(waitingItems.length || leverItems.length ? 'ok' : 'empty', { count: waitingItems.length + leverItems.length, items: [...leverItems, ...waitingItems] }, errs(repos.map((r) => r.log)));
 
-  // P5 lever board.
+  // P5 lever board. A trip newer than a lever's latest evaluation sets its cell's state, since the
+  // evaluation's row still reads the state before it.
+  const changesBy = new Map(repos.map((r) => [r.slug, latestChanges(r.log.rows)]));
   const cells = Object.keys(REGISTRY).map((lever) => {
     const reg = REGISTRY[lever];
     const min = DECISION_RULE.min_per_arm[reg.layer];
@@ -491,8 +536,10 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         const { effect, cost, guardrails } = evalEvidence(e, min);
         const chip = {};
         for (const g of guardrails) chip[g.status] = (chip[g.status] ?? 0) + 1;
+        const last = changesBy.get(r.slug).get(lever);
+        const tripped = last?.kind === 'trip' && Date.parse(last.at) > Date.parse(e.at) ? last : null;
         return {
-          repo: r.name, state: e.state ?? null, as_of: e.at, stale: col.column === 'stale' || age(e.at, now, MAX_AGE_S.evals).stale,
+          repo: r.name, state: tripped ? tripped.to : e.state ?? null, ...(tripped ? { turned_off_at: tripped.at } : {}), as_of: e.at, stale: col.column === 'stale' || age(e.at, now, MAX_AGE_S.evals).stale,
           arm_share_7d: e.arm_share_7d ?? null,
           sample: { n, min: minN, max: e.max_n ?? DECISION_RULE.max_per_arm, on: e.n?.on ?? null, off: e.n?.off ?? null, pooled_on: e.n?.pooled_on ?? null, pooled_off: e.n?.pooled_off ?? null },
           effect, cost,
@@ -543,7 +590,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }));
   const changesAll = mergePerLever(changesRaw, tz).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
   const week = changesAll.filter((e) => Date.parse(e.at) >= weekAgo);
-  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
+  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll }, errs(repos.map((r) => r.log)));
 
   // P7 experiment overhead.
   const audits = repos.flatMap((r) => r.audit.rows.filter((a) => Date.parse(a.at) >= weekAgo).map((a) => ({ ...a, repo: r.name })));
@@ -609,7 +656,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
+    panels: { status, waiting, cost, guardrails, board, changes, change_log: changeLogPanel(repos, changeLogs ?? ((r) => readChangeLog(r, configRoot, now)), tz), overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
     line,
   };
 }
@@ -635,6 +682,40 @@ function armPanel(repos, latest, key) {
     repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e[key] && Object.keys(e[key]).length)
       .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, baseline: REGISTRY[e.lever]?.baseline ?? null, arms: e[key] }))),
   };
+}
+
+// One repo's change log (desk-changes.mjs) over the 30 days the trend charts show, read from its §2
+// Primary repo root against its own default branch, ticket key pattern and config. A repo with no root
+// configured has none to read; one whose read fails is an error naming the root. -> { log, error }
+function readChangeLog(r, configRoot, now) {
+  const { root } = repoDirs(r.slug, configRoot);
+  if (!root) return { log: null, error: null };
+  const value = (id) => { const v = repoConfigValue(r.slug, id, configRoot); return v && !isNone(v) ? v : null; };
+  try {
+    return { log: changeLog({ slug: r.slug, now, root, ref: `origin/${value('default-branch') ?? 'main'}`, pattern: value('ticket-pattern'), configPath: r.config }), error: null };
+  } catch (e) { return { log: null, error: { file: root, line: null, message: e.message } }; }
+}
+
+// Every repo's change log entries as one list, oldest first, each numbered from 1 in that order (the
+// number its line on the trend charts carries) and dated by its day in `tz` and how far through that day
+// it landed, for the charts to place it.
+function changeLogPanel(repos, read, tz) {
+  const errors = [];
+  const entries = [];
+  for (const r of repos) {
+    const { log, error } = read(r) ?? {};
+    if (error) errors.push(error);
+    for (const e of log?.entries ?? []) {
+      const ms = Date.parse(e.at);
+      if (Number.isNaN(ms)) continue;
+      const day = dayKey(ms, tz);
+      const [h, m] = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms)).split(':').map(Number);
+      entries.push({ ...e, repo: r.name, window_days: log.window_days ?? null, day, day_frac: round((h * 60 + m) / 1440, 4) });
+    }
+  }
+  entries.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : 0));
+  entries.forEach((e, i) => { e.n = i + 1; });
+  return panel(entries.length ? 'ok' : 'empty', { entries }, errors);
 }
 
 // Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos

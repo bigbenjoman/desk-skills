@@ -1,6 +1,7 @@
 // The screens the frame can open, in the sidebar's order, each with its ⌘ shortcut (screen-spec §2.3, §13).
 // A screen's sidebar item, shortcut and any button that opens it are drawn only once ROUTES holds it:
-// each screen's story adds its `id: Component` there.
+// each screen's story adds its `id: Component` there. A screen is given { path, go, snapshot, get }.
+import { Inbox } from './inbox.jsx';
 import { TicketPage } from './ticket.jsx';
 
 export const SCREENS = [
@@ -20,8 +21,9 @@ export const PAGES = [
   { id: 'ticket', path: '/t', label: 'Ticket', title: (path) => path.split('/')[3] ?? 'Ticket' },
 ];
 
-// Read when a screen draws, not as this module loads: the ticket page imports the frame, which imports this.
-export const ROUTES = { get ticket() { return TicketPage; } };
+// The ticket page is read when a screen draws, not as this module loads: it imports the frame, which
+// imports this.
+export const ROUTES = { inbox: Inbox, get ticket() { return TicketPage; } };
 
 // The screen `path` opens, among those `routes` holds, or null.
 export const screenAt = (path, routes) =>

@@ -49,20 +49,25 @@ const fullName = (slug) => slug.replace('__', '/');
 
 // The link rule (§1.6): ⌘-click, or the ↗ that follows the key on hover and focus, opens the ticket's
 // Jira page in the Mac's browser and leaves the window where it was. `browse` is the repo's
-// `jira_browse` from the server; with none the key is plain text. A plain click runs `open`, which
-// opens the ticket's page where there is one, and does nothing without it.
+// `jira_browse` from the server. A plain click runs `open`, which opens the ticket's page where there
+// is one, and does nothing without it; with neither the key is plain text.
 export function TicketLink({ ticket, browse, open = null }) {
-  const url = browse ? `${browse}${ticket}` : null;
-  if (!url && !open) return <span className="font-mono text-[.93em] font-medium">{ticket}</span>;
+  return <ExternalLink text={ticket} url={browse ? `${browse}${ticket}` : null} where="Jira" open={open} />;
+}
+
+// The same rule for any key, PR number or SHA: `url` is where it opens, `where` names the site in its
+// tooltip, and `open` is what a plain click does (none: nothing). With no url and no open it is plain text.
+export function ExternalLink({ text, url, where, open = null }) {
+  if (!url && !open) return <span className="font-mono text-[.93em] font-medium">{text}</span>;
   const click = (e) => {
     e.preventDefault();
     if (url && (e.metaKey || e.target.closest?.('[data-ext]'))) window.desk?.openExternal?.(url);
     else open?.();
   };
   return (
-    <a href={url ?? '#'} onClick={click} title={[open && `Open ${ticket}`, url && `⌘-click to open ${ticket} in Jira`].filter(Boolean).join(' · ')} style={noDrag}
+    <a href={url ?? '#'} onClick={click} title={[open && `Open ${text}`, url && `⌘-click to open ${text} in ${where}`].filter(Boolean).join(' · ')} style={noDrag}
       className="group inline-flex items-center gap-0.5 rounded-sm font-mono text-[.93em] font-medium text-foreground no-underline hover:underline hover:decoration-ring hover:underline-offset-3">
-      {ticket}
+      {text}
       {url && <span data-ext="" className="hidden group-hover:inline-block group-focus-visible:inline-block"><Icon name="arrow-up-right" size={12} /></span>}
     </a>
   );

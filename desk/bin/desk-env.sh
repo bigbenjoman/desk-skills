@@ -4,7 +4,8 @@
 #
 # Config parsing and the id -> config row map live in desk-env.mjs (one parser, one map); this
 # file wraps it and adds the portable shell helpers, so Linux, WSL and macOS differ in these two
-# files and nowhere else. Resolution order everywhere: environment variable -> config -> default.
+# files and nowhere else. Resolution order everywhere: environment variable -> config -> default,
+# where DESK_CONFIG_FILE's rows (desk-env.mjs configFileRows) are read before the repo's config.
 # Identity-shaped values (GitHub handle, Jira name, repo root) have no default and fail loudly.
 
 DESK_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +28,7 @@ desk_perm_fresh() { node "$DESK_ENV_MJS" perm "$1"; } # desk_perm, read from the
 # unchanged (the directory, HOME, and the variables in _desk_inputs); otherwise, and for an id it
 # lacks or a read that failed when it was taken, each read runs node as before. It is not exported: a child script takes its own.
 _desk_inputs() {
-  _DESK_INPUTS="${HOME:-}|${PWD:-}|${DESK_REPO_DIR:-}|${DESK_REPO_OVERRIDE:-}|${DESK_CONFIG:-}|${DESK_CONFIG_ROOT:-}|${DESK_MACHINE:-}|${DESK_BATCH:-}|${AUTOPILOT_BUDGET_USD:-}|${AUTOPILOT_BATCH_BUDGET_USD:-}"
+  _DESK_INPUTS="${HOME:-}|${PWD:-}|${DESK_REPO_DIR:-}|${DESK_REPO_OVERRIDE:-}|${DESK_CONFIG:-}|${DESK_CONFIG_ROOT:-}|${DESK_CONFIG_FILE:-}|${DESK_MACHINE:-}|${DESK_BATCH:-}|${AUTOPILOT_BUDGET_USD:-}|${AUTOPILOT_BATCH_BUDGET_USD:-}"
 }
 # desk_load_config: takes the snapshot, unless one under the same inputs is held. Never fails: without
 # one, every read runs node.

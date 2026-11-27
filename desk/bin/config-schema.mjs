@@ -48,6 +48,15 @@ export function testSigninOf(item) {
   return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(cmd) ? { dir, email: cmd } : null;
 }
 
+// A §4 Test sign-in permissions item, `<app dir>: <PERMISSION>[, <PERMISSION>…]` or the names alone for
+// the root: what the app's §4 Test sign-in user must hold in its Clerk `public_metadata.services`.
+// -> { dir, perms }, or null where a name is not letters, digits, `_`, `.` or `-`.
+export function signinPermissionsOf(item) {
+  const { dir, cmd } = parseCommandItem(item);
+  const perms = cmd.split(/\s*,\s*/);
+  return perms.every((p) => /^[A-Za-z0-9_.-]+$/.test(p)) ? { dir, perms } : null;
+}
+
 // A §4 Preview database item, `<step>: <command>`: one step of the recipe that gives a PR adding a
 // migration a database branch and preview of its own (preview-db.mjs). A command names the PR's
 // branch, its database branch and its number only as {branch}, {db} and {pr}; a shell `${…}` is its own.
@@ -280,12 +289,12 @@ export function spawnGateOf(row) {
 // §3b "Per-file collision budget": how many running tickets may name one file before a ticket naming
 // it waits. `<big> over <lines> lines, else <small>` gives a file longer than <lines> on the batch base
 // <big> places and any other <small>; a bare `<k>` gives every file k. `; serial: <glob>, ...` (or
-// `none`) keeps the files it names at 1. Unset (null) is `3 over 1000 lines, else 1; serial: none`. A
+// `none`) keeps the files it names at 1. Unset (null) is `3 over 1000 lines, else 2; serial: none`. A
 // row that does not read is 1 for every file, with `bad` saying so: a typo never loosens the guard. The
 // row is one code span: a cell of more than one is read whole and does not read, since its first span
 // alone would drop the serial list without a word.
 //   -> { big, lines, small, serial: [glob], bad: string | null }
-const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 1, serial: [] };
+const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 2, serial: [] };
 export function fileBudget(row) {
   if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
   const spans = [].concat(row);
@@ -514,6 +523,7 @@ export const TYPES = Object.freeze({
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
+  'signin-permissions': matching('`[<app dir>: ]<PERMISSION>[, <PERMISSION>…]`', (s) => signinPermissionsOf(s) != null, signinPermissionsOf),
   'preview-db': matching(`\`<step>: <command>\`, the step one of ${PREVIEW_DB_STEPS.join(', ')} and its placeholders only ${PREVIEW_DB_PLACEHOLDERS.map((n) => `{${n}}`).join(', ')}`,
     (s) => previewDbStepOf(s) != null, previewDbStepOf),
   'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
@@ -653,11 +663,12 @@ export const ROWS = Object.freeze([
   v('dev-port', '3b', 'Preferred dev-server port', 'port', '3000', dflt('3000')),
   v('concurrency', '3b', 'Autopilot worker concurrency', 'concurrency', '2 / 3', dflt('2 / 3', { machine: 'autopilot-concurrency' })),
   v('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)', 'gb', '16', { machine: 'memory-ceiling-gb' }),
+  v('worker-memory', '3b', 'Worker memory weight (GB)', 'whole-or-none', '2', dflt('none')),
   v('spawn-gate', '3b', 'Spawn gate (available memory)', 'spawn-gate', 'start work > 8 GiB · hold 4–8 · drop to 1 below 4', dflt('start work > 8 GiB · hold 4–8 · drop to 1 below 4')),
   v('harm-swap-growth', '3b', 'Swap growth that holds spawns (GB)', 'gb', '2', dflt('2')),
   v('harm-tmpfs', '3b', 'tmpfs /tmp size that holds spawns (GB)', 'gb', '2', dflt('2')),
   v('harm-vmmem', '3b', 'WSL VM share of its grant that holds spawns (%)', 'whole', '90', dflt('90')),
-  v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 1; serial: none', dflt('3 over 1000 lines, else 1; serial: none')),
+  v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 2; serial: none', dflt('3 over 1000 lines, else 2; serial: none')),
   v('test-cap', '3b', 'Test worker cap under the test lock', 'whole', '4', { machine: 'test-cap' }),
   v('light-lock-slots', '3b', 'Light lock slots', 'whole', '2', dflt('1', { machine: 'light-lock-slots' })),
   v('worker-budget', '3b', 'Autopilot per-worker budget (USD)', 'budget', '25', dflt('25')),
@@ -665,6 +676,7 @@ export const ROWS = Object.freeze([
   v('worker-models', '3b', 'Worker models', 'worker-models', 'standard=sonnet high=opus', dflt('default')),
   v('worker-effort', '3b', 'Worker effort', 'worker-effort', '0=medium 4b=high task=low', dflt('none')),
   v('worker-location', '3b', 'Worker location', 'worker-location', 'local', dflt('local')),
+  v('cloud-sessions', '3b', 'Cloud sessions at once', 'whole', '4', dflt('4')),
   v('batches-run-by', '3b', 'Batches run by', 'batches-run-by', 'supervisor', dflt('session')),
   v('borrow-idle', '3b', 'Borrow idle workers', 'on-off', 'off', dflt('off')),
   v('park-after', '3b', 'Park an unanswered question after (minutes)', 'whole', '15'),
@@ -758,6 +770,7 @@ export const ROWS = Object.freeze([
   l('pr-description-checks', '4', 'PR-description checks', 'command', ['node scripts/check-pr-body.mjs']),
   l('env-files', '4', 'Env files', 'text', ['frontend/.env.local', 'portal/.env.local']),
   l('test-signin', '4', 'Test sign-in', 'test-signin', ['dev-user@example.test', 'apps/portal: portal-dev@example.test']),
+  l('test-signin-permissions', '4', 'Test sign-in permissions', 'signin-permissions', ['apps/portal/apps/web: HELP_ARTICLES, ADMIN'], dflt(['none'])),
   // §4 Environments and services
   v('local-db', '4', 'Local database', 'text', 'postgres container voicepa-postgres-1'),
   l('db-url-var', '4', 'Database URL variable', 'text', ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']),

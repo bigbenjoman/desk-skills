@@ -39,12 +39,29 @@
 // with this computer's gh and cached for 60 s, or the last pass's copy when gh does not answer, its verdict
 // desk-q-model.mjs prVerdictJson's; GET …/<KEY>/pr/jobs/<id>/log is the last 40 lines of one of its checks' job logs.
 //
+// The Inbox: GET /api/inbox is needs-you.mjs list --json --no-settle, which writes nothing, with
+// `settled_at` (the last settling list's time), `github` (what the last check of GitHub found:
+// { ok } or { ok: false, reason: 'down' | 'signin', detail }) and `next_pass_at` / `next_checkin_at`.
+// ?settle=1 first checks GitHub, then, while it answers, runs the settling list: at most once a
+// minute, and a request while one runs gets that one's answer.
+//
 // First run: GET /api/setup is { installed, checkout, repos, found }: whether desk's commands are
 // installed, the checkout install.sh last ran from (~-relative), how many repos are configured, and,
 // while installed with none configured, the git repos directly under ~/studia ([{ name, path }]).
 //   POST /api/terminal {folder}   opens Terminal running /desk-setup in ~/studia/<folder>, through
 //                                 osascript with the folder as its one argument. Only a folder setup
 //                                 lists as found, and no other field: anything else is 400 and runs nothing.
+//
+// Conversations (desk-ui-sessions.mjs): a Claude conversation about a repo or one of its tickets, on the
+// repo's subscription, seeded with quoted text as data, never counted as a queue worker.
+//   POST /api/sessions {purpose, repo, ticket?, mode?, login?}   starts one: purpose park, ticket or blank,
+//        repo a slug, mode chat, login another subscription's email for this conversation only, taken
+//        only while the repo's own is at its limit (409 otherwise). Any other field (a prompt, flags, a
+//        command) is 400 and starts nothing. 429 when the repo's subscription is at its usage limit and
+//        no login is named, or at the broker's own limits.
+//   GET /api/sessions                      { items }: every conversation, open and ended
+//   POST /api/sessions/<id>/messages {text}  the person's next message; resumes one a restart ended
+//   DELETE /api/sessions/<id>               ends it; its transcript is kept
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -54,9 +71,12 @@ import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
+import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
 import { makePrReader } from './desk-ui-ticket.mjs';
 import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
-import { tilde } from './logins.mjs';
+import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
+import { loginOf } from './claude-logins.mjs';
+import { limitName, resetText } from './usage-limit.mjs';
 import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -129,12 +149,39 @@ function run(file, args, { cwd, env }, timeout = WRITE_TIMEOUT_MS) {
   });
 }
 
-function audit(route, argv, exit) {
+function audit(route, argv, exit, more = {}) {
   try {
     mkdirSync(logDir(), { recursive: true });
-    appendFileSync(auditFile(), `${JSON.stringify({ at: new Date().toISOString(), route, argv, exit })}\n`, { mode: 0o600 });
+    appendFileSync(auditFile(), `${JSON.stringify({ at: new Date().toISOString(), route, argv, exit, ...more })}\n`, { mode: 0o600 });
   } catch (e) { console.error(`desk-ui: audit: ${e.message}`); }
 }
+
+// ---- the Inbox -------------------------------------------------------------------------------
+
+const SETTLE_EVERY_MS = 60 * 1000;
+const PROBE_TIMEOUT_MS = 20 * 1000;
+// What a failed gh call says about GitHub: its sign-in gone, or GitHub not answering.
+export function githubState(stderr) {
+  const text = String(stderr ?? '');
+  if (/HTTP 401|Bad credentials|gh auth login|not logged in|token .*invalid/i.test(text)) return { ok: false, reason: 'signin', detail: null };
+  const http = /HTTP (\d{3})/.exec(text);
+  const line = text.trim().split('\n')[0].slice(0, 120);
+  return { ok: false, reason: 'down', detail: http ? `gh: HTTP ${http[1]}` : `gh: ${line || 'no answer'}` };
+}
+// The earliest next check-in across the repos, each at its own §3b Check-in times (the default where unset
+// or unread), as ms, or null.
+async function nextCheckinOf(slugs, now) {
+  const { repoCheckinTimes, DEFAULT_TIMES } = await import('./digest.mjs');
+  const { nextCheckin } = await import('./ask-defaults.mjs');
+  const ats = [...new Set(slugs)].map((s) => nextCheckin(repoCheckinTimes(s), new Date(now))).filter(Boolean).map(Number);
+  if (!slugs.length) ats.push(Number(nextCheckin(DEFAULT_TIMES, new Date(now))));
+  return ats.length ? Math.min(...ats) : null;
+}
+// One cheap GitHub read (rate_limit counts against no limit): { ok: true }, or githubState's answer.
+const probeGitHub = () => new Promise((resolve) => {
+  execFile('gh', ['api', 'rate_limit', '--silent'], { shell: false, timeout: PROBE_TIMEOUT_MS, encoding: 'utf8' },
+    (err, _out, stderr) => resolve(err ? githubState(stderr || err.message) : { ok: true }));
+});
 
 // ---- the app build ---------------------------------------------------------------------------
 
@@ -193,10 +240,31 @@ const openTerminal = (dir) => new Promise((resolve) => {
   execFile('osascript', terminalArgs(dir), { shell: false, timeout: 30_000 }, (err) => resolve(err ? (Number.isInteger(err.code) ? err.code : null) : 0));
 });
 
+// ---- conversations ---------------------------------------------------------------------------
+
+const START_FIELDS = new Set(['purpose', 'repo', 'ticket', 'mode', 'login']);
+const FOLDER_FIELDS = new Set(['folder']);
+const PURPOSES = new Set(['park', 'ticket', 'blank']);
+const EMAIL = /^[^\s@`]{1,128}@[^\s@`]{1,128}\.[^\s@`]{1,63}$/;
+const MAX_MESSAGE = 16000;
+const MAX_MESSAGE_BODY = 6 * MAX_MESSAGE + 1024;
+const sessionsFile = () => join(logDir(), 'sessions.json');
+const possessive = (name) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+
+// The quotes a conversation is seeded with: for a ticket desk parked, its park question as written.
+// -> [{ source, text }]
+function parkSeed({ ticket, batches }) {
+  if (!ticket) return [];
+  const t = batches.map((b) => b.q?.tickets?.[ticket]).find((x) => x?.state === 'parked' && typeof x.park?.question === 'string');
+  return t ? [{ source: 'desk park', text: t.park.question }] : [];
+}
+
 // `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
-// `terminal(dir)` opens Terminal for /api/terminal (openTerminal); the tests pass a stub.
-// `github` passes options to the PR reader (makePrReader): the tests' gh stub and clock.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = {} } = {}) {
+// `terminal(dir)` opens Terminal for /api/terminal (openTerminal), and `github()` checks GitHub before
+// the Inbox settles (probeGitHub); the tests pass stubs.
+// `chat` passes the conversations' options: `seed(about)` -> the quotes (parkSeed), `now`, `checkMs`.
+// `pr` passes options to the ticket page's PR reader (makePrReader): the tests' gh stub and clock.
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {}, pr = {} } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -206,7 +274,12 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   const boot = randomBytes(8).toString('hex');
   const feed = makeFeed(events);
   const clock = events.now ?? Date.now; // the feed's, which dates each model it reads
-  const prs = makePrReader(github);
+  const prs = makePrReader(pr);
+  const seed = chat.seed ?? parkSeed;
+  // A conversation's child runs in its repo's checkout on its subscription's login folder, with no
+  // API key, so it is billed to that subscription.
+  const broker = makeBroker({ file: sessionsFile(), now: chat.now, checkMs: chat.checkMs,
+    envOf: (e) => ({ ...loginEnv({ tool: 'claude', configDir: e.configDir }, E.otherRepoEnv()), DESK_REPO_DIR: e.cwd, DESK_REPO_ROOT: e.cwd }) });
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = Buffer.isBuffer(body) ? body : type.startsWith('application/json') ? JSON.stringify(body) : String(body);
@@ -312,11 +385,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   }
 
   async function write(req, res, path, kind, slugPart, keyPart) {
-    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return refuse(res, 415, 'content_type', 'JSON only.');
-    let body, slug, key;
-    try { body = JSON.parse(await readBody(req, MAX_WRITE_BODY)); slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); }
+    const body = await jsonOnly(req, res, '', null, MAX_WRITE_BODY);
+    if (!body) return;
+    let slug, key;
+    try { slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); }
     catch { return refuse(res, 400, 'body', 'Send the request as JSON.'); }
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return refuse(res, 400, 'body', 'Send the request as a JSON object.');
     if (!KEY.test(key)) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
     const { text } = body;
     if (text !== undefined && (typeof text !== 'string' || text.length > MAX_TEXT)) return refuse(res, 400, 'text', `The text must be a string of at most ${MAX_TEXT} characters.`);
@@ -384,19 +457,142 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
 
   // Terminal for one folder setup lists as found, sent as {folder: <its name>} and nothing else.
   async function openFolder(req, res, query) {
-    const no = (message) => refuse(res, 400, 'folder', message);
-    if (query) return no('Send only the folder, in the body.');
-    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return refuse(res, 415, 'content_type', 'JSON only.');
-    let body;
-    try { body = JSON.parse(await readBody(req)); } catch { return refuse(res, 400, 'body', 'Send {"folder": "<name>"} as JSON.'); }
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).join() !== 'folder') return no('Send only {"folder": "<name>"}.');
+    const body = await jsonOnly(req, res, query, FOLDER_FIELDS);
+    if (!body) return;
     const repo = typeof body.folder === 'string' && FOLDER.test(body.folder) ? firstRun().find((r) => r.name === body.folder) : null;
-    if (!repo) return no('That is not one of the git repos under ~/studia.');
+    if (!repo) return refuse(res, 400, 'folder', 'That is not one of the git repos under ~/studia.');
     const exit = await terminal(repo.path);
     audit('/api/terminal', ['osascript', '<desk-setup>', tilde(repo.path)], exit);
     if (exit === 0) return send(res, 200, { opened: repo.name });
     console.error(`desk-ui: terminal: osascript exited ${exit} for ${tilde(repo.path)}`);
     return refuse(res, 500, 'terminal', "Terminal didn't open. See the server log.");
+  }
+
+  // needs-you's list as data, from a child so its reads stall no other request; `settle` runs the
+  // settling list, which records what has shipped.
+  async function needsYouList(settle) {
+    const listed = await run(join(HERE, 'needs-you.mjs'), ['list', '--json', ...(settle ? [] : ['--no-settle'])], { env: E.otherRepoEnv() }, READ_TIMEOUT_MS);
+    if (listed.exit !== 0) throw new Error(`needs-you list exited ${listed.exit}: ${listed.stderr.trim().slice(0, 300)}`);
+    return JSON.parse(listed.stdout);
+  }
+  const inboxState = { settling: null, settledAt: null, lastSettle: -Infinity, github: null };
+  // The settling list only once GitHub answers, as its reads of GitHub fail silently.
+  function settleInbox() {
+    inboxState.settling ??= (async () => {
+      const gh = await github();
+      inboxState.github = gh;
+      if (!gh.ok) return needsYouList(false);
+      inboxState.lastSettle = clock();
+      const list = await needsYouList(true);
+      inboxState.settledAt = list.generated_at;
+      return list;
+    })().finally(() => { inboxState.settling = null; });
+    return inboxState.settling;
+  }
+  async function inbox(res, query) {
+    try {
+      const want = query.get('settle') === '1';
+      const list = inboxState.settling ? await inboxState.settling
+        : want && clock() - inboxState.lastSettle >= SETTLE_EVERY_MS ? await settleInbox() : await needsYouList(false);
+      const { all } = await loadAll();
+      const now = clock();
+      const passes = all.filter((r) => r.live && Number.isFinite(Number(r.next)) && Number(r.next) > now).map((r) => Number(r.next));
+      const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
+      return send(res, 200, { ...list, settled_at: inboxState.settledAt, github: inboxState.github,
+        next_pass_at: iso(passes.length ? Math.min(...passes) : null), next_checkin_at: iso(await nextCheckinOf(all.map((r) => r.slug), now)) });
+    } catch (e) { console.error(`desk-ui: inbox: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+  }
+
+  // A JSON object body with no query, holding only the fields `allowed` names (any, with `allowed`
+  // null): -> the object, or null once refused.
+  async function jsonOnly(req, res, query, allowed, max = MAX_BODY) {
+    if (query) { refuse(res, 400, 'fields', 'Send the request in the body, with no query.'); return null; }
+    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) { refuse(res, 415, 'content_type', 'JSON only.'); return null; }
+    let body;
+    try { body = JSON.parse(await readBody(req, max)); } catch { refuse(res, 400, 'body', 'Send the request as JSON.'); return null; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) { refuse(res, 400, 'body', 'Send the request as a JSON object.'); return null; }
+    const extra = allowed ? Object.keys(body).filter((k) => !allowed.has(k)) : [];
+    if (extra.length) { refuse(res, 400, 'fields', `This takes only ${[...allowed].join(', ')}: nothing else is read, so nothing was started.`); return null; }
+    return body;
+  }
+
+  // `login`'s usage limit as the Usage screen reads it (a batch's hold, or a full window), as the reason
+  // nothing starts on it, or null.
+  const heldReason = (Q, all, login, who) => {
+    const h = Q.loginLimit(all, login, clock());
+    return h ? `${who} is at ${limitName(h.type)}${h.at != null ? ` until ${resetText(h.at)}` : ''}` : null;
+  };
+
+  // POST /api/sessions: what the conversation is about, checked; the subscription it runs on; then the broker.
+  async function startConversation(req, res, query) {
+    const body = await jsonOnly(req, res, query, START_FIELDS);
+    if (!body) return;
+    const { purpose, repo: slug, ticket, mode, login: other } = body;
+    if (!PURPOSES.has(purpose)) return refuse(res, 400, 'purpose', 'purpose is park, ticket or blank.');
+    if (mode !== undefined && mode !== 'chat') return refuse(res, 400, 'mode', 'mode is chat.');
+    if (purpose === 'blank' ? ticket !== undefined : (typeof ticket !== 'string' || !KEY.test(ticket))) {
+      return refuse(res, 400, 'ticket', purpose === 'blank' ? 'A blank conversation names no ticket.' : 'ticket is a ticket key.');
+    }
+    if (other !== undefined && (typeof other !== 'string' || !EMAIL.test(other))) return refuse(res, 400, 'login', 'login is the email of one of this computer\'s subscriptions.');
+    let Q, all, at, batches;
+    try {
+      const loaded = await loadAll();
+      ({ Q, all } = loaded);
+      batches = typeof slug === 'string' ? all.filter((r) => r.slug === slug) : [];
+      if (!batches.length) return refuse(res, 400, 'repo', 'That is not a configured repo.');
+      try { at = loaded.Q.checkoutOf(batches.find((r) => r.batch == null) ?? batches[0], 'talk about it'); } catch (e) { return refuse(res, 409, 'checkout', e.message); }
+    } catch (e) { console.error(`desk-ui: sessions: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+    const name = (batches.find((r) => r.batch == null) ?? batches[0]).repo;
+
+    // The repo's own subscription (§3b Subscription), as its workers start on it; with no subscriptions
+    // file and the row at default, the login the server itself runs as.
+    const subs = readSubscriptions(E.subscriptionsPath());
+    const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
+    const sub = repoSubscription(subs, { value: E.repoConfigValue(slug, 'subscription'), source: 'row' });
+    const mine = !subs.exists && sub.source === 'default' ? own : sub.login;
+    // Signed out is fixed by signing in, not by another subscription (screen-spec 8.3), so it refuses
+    // whatever the request names. Another subscription only once the repo's own is at its limit.
+    if (!mine) return refuse(res, 409, 'subscription', `${possessive(name)} subscription, ${sub.email ?? 'the default'}, is not signed in to any login here, so nothing started. Sign it in, then try again.`);
+    const mineHeld = heldReason(Q, all, mine, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
+    let login, email;
+    if (other === undefined) {
+      if (mineHeld) return refuse(res, 429, 'usage_limit', `${mineHeld}, so nothing started. Name another subscription for this conversation to start it there.`);
+      login = mine; email = sub.email ?? null;
+    } else {
+      const o = repoSubscription(subs, { value: other, source: 'request' });
+      if (!o.login) return refuse(res, 400, 'login', `${other} is not one of this computer's subscriptions.`);
+      if (!mineHeld) return refuse(res, 409, 'subscription', `${possessive(name)} own subscription has room, so a conversation runs on it: another is named only once it is at its limit. Nothing started.`);
+      const held = heldReason(Q, all, o.login, o.email);
+      if (held) return refuse(res, 429, 'usage_limit', `${held}, so nothing started.`);
+      login = o.login; email = o.email;
+    }
+
+    let quotes;
+    try { quotes = await seed({ slug, repo: name, ticket, purpose, batches }); } catch (e) { console.error(`desk-ui: sessions: seed: ${e.message}`); quotes = []; }
+    const started = await broker.start({ purpose, slug, repo: name, ticket, subscription: email, configDir: login.configDir ?? null, cwd: at.cwd,
+      seed: seedPrompt({ repo: name, ticket, purpose }, Array.isArray(quotes) ? quotes : []) });
+    if (started.refuse) return refuse(res, ...started.refuse);
+    const e = started.entry;
+    audit('/api/sessions', ['claude', ...shownArgs(e)], started.error ? null : 'started',
+      { purpose, repo: slug, ticket: ticket ?? null, subscription: email, id: e.id });
+    if (started.error) { console.error(`desk-ui: sessions: claude did not start: ${started.error.message}`); return refuse(res, 500, 'start', 'Claude did not start. See the server log.'); }
+    return send(res, 201, { id: e.id, sessionId: e.sessionId, subscription: email, cwd: tilde(e.cwd), state: e.state });
+  }
+
+  async function sessionRoute(req, res, method, id, sub, query) {
+    if (!SESSION_ID.test(id) || !broker.find(id)) return refuse(res, 404, 'not_found', 'No such conversation.');
+    if (sub === 'messages') {
+      if (method !== 'POST') return refuse(res, 405, 'method', 'POST only.');
+      const body = await jsonOnly(req, res, query, new Set(['text']), MAX_MESSAGE_BODY);
+      if (!body) return;
+      if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > MAX_MESSAGE) return refuse(res, 400, 'text', `A message is text of at most ${MAX_MESSAGE} characters.`);
+      const [status, out] = await broker.send(id, body.text);
+      return send(res, status, out);
+    }
+    if (sub !== undefined) return refuse(res, 404, 'not_found', 'No such route.');
+    if (method !== 'DELETE') return refuse(res, 405, 'method', 'DELETE only.');
+    broker.end(id);
+    return send(res, 200, { id, state: 'ended' });
   }
 
   async function handle(req, res) {
@@ -437,12 +633,20 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       const w = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)\/(record|answer)$/);
       if (w) return method === 'POST' ? write(req, res, path, w[3], w[1], w[2]) : refuse(res, 405, 'method', 'POST only.');
       if (path === '/api/terminal') return method === 'POST' ? openFolder(req, res, query) : refuse(res, 405, 'method', 'POST only.');
+      if (path === '/api/sessions') {
+        if (method === 'POST') return startConversation(req, res, query);
+        if (method === 'GET') return send(res, 200, { items: broker.list() });
+        return refuse(res, 405, 'method', 'GET or POST only.');
+      }
+      const c = path.match(/^\/api\/sessions\/([^/]+)(?:\/([^/]+))?$/);
+      if (c) return sessionRoute(req, res, method, c[1], c[2], query);
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
       const tk = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)(?:\/(pr)(?:\/jobs\/(\d{1,20})\/log)?)?$/);
       if (tk) return ticketRead(res, tk[1], tk[2], tk[3], tk[4]);
       if (path === '/api/setup') {
         try { return send(res, 200, setup()); } catch (e) { console.error(`desk-ui: setup: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }
+      if (path === '/api/inbox') return inbox(res, new URLSearchParams(query));
       if (path === '/api/snapshot') {
         try { return send(res, 200, await snapshot()); } catch (e) { console.error(`desk-ui: snapshot: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }
@@ -479,10 +683,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     log(`${new Date().toISOString()} UPGRADE ${String(req.url ?? '').split('?')[0].slice(0, 200)} ${status.slice(0, 3)}`);
     socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\nX-Desk-Boot: ${boot}\r\n\r\n`);
   });
-  server.on('close', () => feed.stop());
+  server.on('close', () => { feed.stop(); broker.stop(); });
   server.headersTimeout = 10_000;
   server.requestTimeout = 10_000;
   server.feed = feed;
+  server.sessions = broker;
   return server;
 }
 
@@ -509,7 +714,7 @@ async function serve() {
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
   // Open change streams never end by themselves, so they are ended (each closes its connection), while
   // a write in flight is let finish, so its command's result is answered and audited.
-  const stop = () => { server.feed.stop(); server.close(() => process.exit(0)); };
+  const stop = () => { server.feed.stop(); server.sessions.stop(); server.close(() => process.exit(0)); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

@@ -468,6 +468,233 @@ const runNamed = { ...named, 'tests/run.sh': '#!/usr/bin/env bash\ndesk-env one'
 const runMap = buildMap(Object.keys(runNamed), (p) => runNamed[p]);
 t('DS-999 a function a command tests/run.sh runs reaches is full', decide(N('desk/bin/desk-env.mjs', cliEnv, cliEnv.replace('function forCmd() {\n  return ', 'function forCmd() {\n  return -1 + 1 + ')), runMap, { byName: true }).reason,
   'desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: tests/run.sh, shared by every suite, may run `desk-env one`');
+// DS-1002: with byName, an edit to named functions of any other desk/bin/ .mjs module runs the suites
+// claiming it that reach those names; anything narrow() cannot follow runs every suite claiming it, as
+// CI does. A made-up desk-q.mjs: rows() through a helper, keys() alone, wide() used through a namespace
+// import, boot() run on load, and draw() run only as a command, which q-run.sh launches.
+const hubQ = `import { lock } from './lock.mjs';
+import { fileURLToPath } from 'node:url';
+function fmt(a) {
+  return String(a);
+}
+export function rows(a) {
+  return fmt(a);
+}
+export function keys(a) {
+  return [a];
+}
+export function wide() {
+  return 1;
+}
+export function boot() {
+  return lock;
+}
+const STARTED = boot();
+function draw() {
+  return 'q';
+}
+const isMain = (() => {
+  try { return process.argv[1] === fileURLToPath(import.meta.url); } catch { return false; }
+})();
+if (isMain) console.log(draw());
+`;
+const hub = {
+  ...tree,
+  'desk/bin/desk-q.mjs': hubQ,
+  'desk/bin/needs.mjs': "import { rows } from './desk-q.mjs';\nexport const need = () => rows(1);",
+  'desk/bin/pass.mjs': "import { keys } from './desk-q.mjs';\nexport const run = () => keys(1);",
+  'desk/bin/ns.mjs': "import * as Q from './desk-q.mjs';\nexport const nsUse = () => Q.wide();",
+  'desk/bin/with-lock.sh': '#!/usr/bin/env bash\nexec "$@"',
+  'tests/test_needs.mjs': "// suite: needs\nimport { need } from '../desk/bin/needs.mjs';",
+  'tests/test_pass.mjs': "// suite: pass\nimport { run } from '../desk/bin/pass.mjs';",
+  'tests/test_ns.mjs': "// suite: ns\nimport { nsUse } from '../desk/bin/ns.mjs';",
+  'tests/test_q.mjs': "// suite: q\nimport { rows } from '../desk/bin/desk-q.mjs';",
+  'tests/test_lock.sh': '# suite: lock\n"$SRC/desk/bin/with-lock.sh" true',
+  'desk/bin/q-run.sh': '#!/usr/bin/env bash\nnode "$B/desk-q.mjs" "$@"',
+  'tests/test_cli.sh': '# suite: cli\n"$SRC/desk/bin/q-run.sh"',
+};
+delete hub['tests/test_drive.sh'];
+const hmap = buildMap(Object.keys(hub), (p) => hub[p]);
+// The made-up repo with these files changed.
+const hubWith = (over) => { const h = { ...hub, ...over }; return buildMap(Object.keys(h), (p) => h[p]); };
+const Q = (after) => [{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(hubQ, after) }];
+const hscope = (ch, map = hmap, opts = { l3Direct: true, byName: true }) => { const d = decide(ch, map, opts); return `${d.scope}: ${d.suites.join(' ')}`; };
+const everyClaimer = `some: ${['test_lint.sh', ...hmap.claims.get('desk/bin/desk-q.mjs')].sort().join(' ')}`;
+const keysEdit = hubQ.replace('return [a];', 'return [a, a];');
+t('DS-1002 the made-up desk-q.mjs is claimed by every suite importing it or a script that does', everyClaimer, 'some: test_cli.sh test_lint.sh test_needs.mjs test_ns.mjs test_pass.mjs test_q.mjs');
+t('DS-1002 a function only the module\'s command line runs runs the suites claiming a script launching it', hscope(Q(hubQ.replace("return 'q';", "return 'r';"))), 'some: test_cli.sh test_lint.sh');
+t('DS-1002 but with an else, or a negated test, that code runs on import too, and every suite reaching the module runs', [
+  hubQ.replace('if (isMain) console.log(draw());', 'if (isMain) console.log(draw()); else draw();'),
+  hubQ.replace('if (isMain) console.log(draw());', 'if (isMain) {\n  if (process.argv[2]) console.log(1);\n  else console.log(draw());\n} else draw();'),
+  hubQ.replace('process.argv[1] === fileURLToPath', 'process.argv[1] !== fileURLToPath'),
+].map((q) => hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(q, q.replace("return 'q';", "return 'r';")) }], hubWith({ 'desk/bin/desk-q.mjs': q })) === everyClaimer), [true, true, true]);
+const blockQ = hubQ.replace('if (isMain) console.log(draw());', 'if (isMain) {\n  if (process.argv[2]) console.log(1);\n  else console.log(draw());\n}');
+t('DS-1002 an else inside the command line\'s own block keeps it command-only', hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(blockQ, blockQ.replace("return 'q';", "return 'r';")) }], hubWith({ 'desk/bin/desk-q.mjs': blockQ })), 'some: test_cli.sh test_lint.sh');
+t('DS-1002 AC1 an edit to one exported function runs only the suites loading the module and naming it', hscope(Q(keysEdit)), 'some: test_lint.sh test_pass.mjs');
+t('DS-1002 AC1 the reason says it was narrowed on that name', [decide(Q(keysEdit), hmap, { byName: true }).reason.endsWith(', narrowed on the changed names in desk/bin/desk-q.mjs: keys'), decide(Q(keysEdit), hmap, { byName: true }).narrowed], [true, ['desk/bin/desk-q.mjs: keys']]);
+t('DS-1002 AC1 a helper runs the suites naming what calls it, directly or through a script', hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;'))), 'some: test_lint.sh test_needs.mjs test_q.mjs');
+t('DS-1002 AC2 an edited top-level statement that runs on load runs every suite reaching the module', [hscope(Q(hubQ.replace('const STARTED = boot();', 'const STARTED = boot() || 1;'))), hscope(Q(hubQ.replace('return lock;', 'return lock + 0;')))], [everyClaimer, everyClaimer]);
+t('DS-1002 AC2 and the reason says why it was not narrowed', decide(Q(hubQ.replace('return lock;', 'return lock + 0;')), hmap, { byName: true }).reason.endsWith('not narrowed by name in desk/bin/desk-q.mjs (desk/bin/desk-q.mjs runs one at load: const STARTED = boot(); (boot))'), true);
+t('DS-1002 AC3 a removed or renamed export runs every suite reaching the module', [hscope(Q(hubQ.replace('export function keys(a) {\n  return [a];\n}\n', ''))), hscope(Q(hubQ.replace('function keys(', 'function keyList(')))], [everyClaimer, everyClaimer]);
+t('DS-1002 AC4 a function a script uses through a namespace import runs every suite reaching the module', [hscope(Q(hubQ.replace('return 1;', 'return 2;'))), decide(Q(hubQ.replace('return 1;', 'return 2;')), hmap, { byName: true }).reason.includes('desk/bin/ns.mjs uses wide through the whole of desk/bin/desk-q.mjs')], [everyClaimer, true]);
+// `IMP` stands for a dynamic import in ns.mjs, so this suite's own text holds none that loads() reads.
+const ns = (src) => hscope(Q(keysEdit), hubWith({ 'desk/bin/ns.mjs': src.replaceAll('IMP', `${'imp'}ort(`) }));
+t('DS-1002 AC4 so does any edit while a script passes the whole module on', ns("import * as Q from './desk-q.mjs';\nexport const nsUse = () => use(Q);"), everyClaimer);
+t('DS-1002 AC4 a namespace import read only by members the change does not reach does not stop the narrowing', hscope(Q(keysEdit)), 'some: test_lint.sh test_pass.mjs');
+t('DS-1002 AC4 an import() bound whole and read by member, or destructured, is followed like an import', [
+  ns("const Q = await IMP'./desk-q.mjs');\nexport const nsUse = () => Q.wide();"),
+  ns("const { keys } = await IMP'./desk-q.mjs');\nexport const nsUse = () => keys(2);"),
+], ['some: test_lint.sh test_pass.mjs', 'some: test_lint.sh test_ns.mjs test_pass.mjs']);
+t('DS-1002 AC4 the edited function used through a default import or a member of import(), an import() used any other way, or export * from the module, runs every suite reaching it', [
+  ns("import Q from './desk-q.mjs';\nexport const nsUse = () => Q.keys(2);"),
+  ns("export const nsUse = async () => (await IMP'./desk-q.mjs')).keys(2);"),
+  ns("export const nsUse = () => IMP'./desk-q.mjs').then((m) => m.wide());"),
+  ns("export * from './desk-q.mjs';"),
+], [everyClaimer, everyClaimer, everyClaimer, everyClaimer]);
+const quoted = `${hubQ.replace('export function rows(a) {\n', "export function rows(a) {\n  // unlike keys(), and not 'keys'\n")}const NOTE = ['keys', (n) => \`keys of \${n}\`];\n`;
+t('DS-1002 a name only in a comment, a quoted string or a template\'s text reaches nothing', hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(quoted, quoted.replace('return [a];', 'return [a, a];')) }], hubWith({ 'desk/bin/desk-q.mjs': quoted })), 'some: test_lint.sh test_pass.mjs');
+t('DS-1002 a suite taking the module whole and passing it on runs itself, as nothing loads a suite', hscope(Q(keysEdit), hubWith({ 'tests/test_q.mjs': "// suite: q\nimport * as Q from '../desk/bin/desk-q.mjs';\nscreen(Q);" })), 'some: test_lint.sh test_pass.mjs test_q.mjs');
+t('DS-1002 AC5 without byName (CI) the AC1 edit runs every suite reaching the module', [hscope(Q(keysEdit), hmap, { l3Direct: true }), hscope(Q(keysEdit), hmap, {})], [everyClaimer, everyClaimer]);
+t('DS-1002 AC6 a shell script under desk/bin/ scopes as before', [hscope(M('desk/bin/with-lock.sh')), hscope(M('desk/bin/with-lock.sh'), hmap, {})], ['some: test_lint.sh test_lock.sh', 'some: test_lint.sh test_lock.sh']);
+t('DS-1002 a suite naming the module other than in an import (reading its text) still runs', hscope(Q(keysEdit), hubWith({ 'tests/test_q_text.mjs': "// suite: q text\nconst src = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');" })), 'some: test_lint.sh test_pass.mjs test_q_text.mjs');
+t('DS-1002 a comment-only change runs nothing but the always set', hscope(Q(hubQ.replace('function fmt', '// formats\nfunction fmt'))), 'some: test_lint.sh');
+// The made-up desk-q.mjs with rows() (or the command line) written another way, and an edit to fmt()
+// (or draw()) on it.
+const rowsAs = (body) => hubQ.replace('export function rows(a) {\n  return fmt(a);\n}', `export function rows(a) {\n  ${body}\n}`);
+const onQ = (q, from, to) => hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(q, q.replace(from, to)) }], hubWith({ 'desk/bin/desk-q.mjs': q }));
+const fmtEdit = (q) => onQ(q, 'return String(a);', 'return `${a}`;');
+const drawEdit = (q) => onQ(q, "return 'q';", "return 'r';");
+t('DS-1002 a function reaching the edited one through a spread, a nested template or after a regex holding // still reaches it', [
+  rowsAs('return [...fmt(a)];'),
+  rowsAs('return `${a ? `y` : fmt(a)}`;'),
+  rowsAs('return /^https?:\\/\\//.test(a) && fmt(a);'),
+  rowsAs('if (a) /\'/.test(a) && fmt(a);\n  return a;'),
+  rowsAs('if (a) /"/.test(a) && fmt("y");\n  return a;'),
+  // A member call named like a condition's keyword (`.with(`): the `/` after its `)` divides.
+  rowsAs("return [a.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [new (class { #with(x) { return x; } m(x) { return this.#with(x) / 2 + '/'; } })().m(a), fmt(a) + ''];"),
+  // A number's trailing point (`1.`) is no member access: the `if` after it is a condition.
+  rowsAs('const n = a + 1.\n  if (a) /"/.test(a) && fmt("y");\n  return n;'),
+  // After an exponent or hex literal the point is a member access: `with` there is a property.
+  rowsAs("return [1e3.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [0x1F.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [1e+3.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [1.5e-3.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [1n.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [.5.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [a ? .5 : 1, [...a].with(a) / 2 + '/', fmt(a) + ''];"),
+].map(fmtEdit), Array(15).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
+const isMainQ = (guard, cond) => hubQ.replace(/const isMain = \(\(\) => \{[\s\S]*?\}\)\(\);\nif \(isMain\)/, `const isMain = ${guard};\nif (${cond})`);
+t('DS-1002 a guard function called as `if (isMain())` keeps the command line command-only; one tested uncalled, or a launch test an || or a ternary can turn, does not', [
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain')) === everyClaimer,
+  drawEdit(isMainQ('process.argv[1] === fileURLToPath(import.meta.url) || !!process.env.Q', 'isMain')) === everyClaimer,
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url) ? false : true', 'isMain()')) === everyClaimer,
+  // `?.0` is a ternary before a decimal, not an optional chain; `?.process` is one.
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)?.0:1', 'isMain()')) === everyClaimer,
+  drawEdit(isMainQ('() => globalThis?.process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
+], ['some: test_cli.sh test_lint.sh', true, true, true, true, 'some: test_cli.sh test_lint.sh']);
+// desk-q.mjs's own dispatch: `if (isMain && argv[2] === 'x') { … } else if (isMain) { … }`.
+const chainQ = (chain) => hubQ.replace('if (isMain) console.log(draw());', chain);
+t('DS-1002 an else-if chain each of whose conditions is the guard, alone or first in an &&, keeps the command line command-only; one an || or a , can turn, or a final else, does not', [
+  drawEdit(chainQ("if (isMain && process.argv[2] === 'rollback') {\n  console.log(1);\n} else if (isMain) {\n  console.log(draw());\n}")),
+  drawEdit(chainQ("if (isMain && process.argv[2] === 'a)') {\n  console.log(draw());\n}")),
+  drawEdit(chainQ("if (isMain && process.argv[2] === 'x') {\n  console.log(1);\n} else if (isMain) {\n  console.log(draw());\n} else {\n  draw();\n}")) === everyClaimer,
+  drawEdit(chainQ("if (isMain && process.argv[2] || true) {\n  console.log(draw());\n}")) === everyClaimer,
+  drawEdit(chainQ("if (isMain && (0, 1), true) {\n  console.log(draw());\n}")) === everyClaimer,
+  drawEdit(chainQ("if (isMain) {\n  console.log(1);\n} else if (process.argv[2]) {\n  console.log(draw());\n}")) === everyClaimer,
+  drawEdit(chainQ("if (!isMain && 1) {\n  console.log(draw());\n}")) === everyClaimer,
+  // A launch test written in the condition itself, which names import.meta.
+  drawEdit(chainQ('if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  console.log(draw());\n}')),
+  drawEdit(chainQ('if (process.argv[1] !== fileURLToPath(import.meta.url)) {\n  console.log(draw());\n}')) === everyClaimer,
+], ['some: test_cli.sh test_lint.sh', 'some: test_cli.sh test_lint.sh', true, true, true, true, true, 'some: test_cli.sh test_lint.sh', true]);
+// A launch test calling one of the module's own functions, which runs on import whatever the block does.
+const entryQ = `${chainQ('if (process.argv[1] === entryPath(import.meta.url)) {\n  console.log(draw());\n}')}function entryPath(u) {\n  return fileURLToPath(u);\n}\n`;
+t('DS-1002 a function a guard\'s condition calls runs on load, so an edit to it runs every suite reaching the module; the block stays command-only', [
+  onQ(entryQ, 'return fileURLToPath(u);', 'return fileURLToPath(u) + "";') === everyClaimer,
+  decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(entryQ, entryQ.replace('return fileURLToPath(u);', 'return fileURLToPath(u) + "";')) }], hubWith({ 'desk/bin/desk-q.mjs': entryQ }), { byName: true }).reason.includes('runs one at load: if (process.argv[1] === entryPath(import.meta.url)) { (entryPath)'),
+  drawEdit(entryQ),
+], [true, true, 'some: test_cli.sh test_lint.sh']);
+t('DS-1002 an unbraced guard\'s body is one expression on its line: a second statement after it, after a line break, or after a loop or block body, runs on load', [
+  drawEdit(chainQ('if (isMain) console.log(1); draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) console.log(1)\n  draw()')) === everyClaimer,
+  drawEdit(chainQ("if (isMain) console.log(draw(), ';');")),
+  drawEdit(chainQ('if (isMain) for (const a of [1]) { console.log(a); } draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) while (false) { console.log(1); } draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) /* CLI */ {} +draw();')) === everyClaimer,
+  // A line comment ends at a CR or U+2028 as at a line feed, so the body after it is the statement there.
+  drawEdit(chainQ('if (isMain) // c\rconsole.log(1);\n  draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) // CLI   {}\n  draw();')) === everyClaimer,
+  // A load-time call after a comment's CR, U+2028 or U+2029, before the next LF.
+  drawEdit(chainQ('if (isMain) { } // c\rdraw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) // CLI   {} +draw();')) === everyClaimer,
+  drawEdit(chainQ('if (isMain) { } // c draw();')) === everyClaimer,
+  drawEdit(chainQ('console.log(1); // note draw();')) === everyClaimer,
+  drawEdit(chainQ('// x\rdraw();')) === everyClaimer,
+  // A `//` after a terminator inside a string or template is no comment: the call after it runs on load.
+  drawEdit(chainQ("console.log('a // ', draw());")) === everyClaimer,
+  drawEdit(chainQ('console.log(`a\r// ${draw()}`);')) === everyClaimer,
+], [true, true, 'some: test_cli.sh test_lint.sh', true, true, true, true, true, true, true, true, true, true, true, true]);
+// A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
+// and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
+const triWith = (imp) => hubWith({
+  'desk/bin/q-tri.sh': `#!/usr/bin/env bash\nnode "$B/pass.mjs"\nnode --input-type=module - "$B" <<'JS'\nimport { join } from 'node:path';\n${imp}\nJS`,
+  'tests/test_tri.sh': '# suite: tri\n"$SRC/desk/bin/q-tri.sh"',
+});
+const fmtOn = (map, opts) => hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;')), map, opts);
+// Every suite claiming desk-q.mjs on this map: the scope without by-name narrowing.
+const everyOn = (map) => fmtOn(map, { l3Direct: true });
+const triWhole = triWith("const Q = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(Q.rows(1));");
+const thenRead = triWith("import(process.argv[2] + '/desk-q.mjs').then((m) => console.log(m.rows(1)));");
+const helperWhole = triWith("const load = (f) => import(join(process.argv[2], f));\nconst Q = await load('desk-q.mjs');\nconsole.log(Q.rows(1));");
+t('DS-1002 a shell script\'s embedded code importing a reached name runs its suites; one importing another name, beside an unrelated import() helper, does not; one taking the module whole runs every suite claiming it (AC4)', [
+  fmtOn(triWith("const { rows } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rows(1));")),
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(keys(1));")),
+  fmtOn(triWhole) === everyOn(triWhole), fmtOn(thenRead) === everyOn(thenRead), fmtOn(helperWhole) === everyOn(helperWhole),
+  // Through an import helper: the names its result is destructured into count, as an import's do.
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { rows } = await load('desk-q.mjs');\nconsole.log(rows(1));")),
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await load('desk-q.mjs');\nconsole.log(keys(1));")),
+], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', true, true, true,
+  'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs']);
+// A rest element (`...rest`) in a destructured import() or import helper takes every name not listed.
+const restImp = triWith("const { keys, ...rest } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rest.rows(1));");
+const restHelper = triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys, ...rest } = await load('desk-q.mjs');\nconsole.log(rest.rows(1));");
+t('DS-1002 a destructured import() or import helper with a rest element takes the module whole (AC4)', [
+  ns("const { rows, ...rest } = await IMP'./desk-q.mjs');\nexport const nsUse = () => rest.keys(2);"),
+  hscope(Q(keysEdit), hubWith({ 'tests/test_q.mjs': `// suite: q\nconst { rows, ...rest } = await ${'imp'}ort('../desk/bin/desk-q.mjs');\nrest.keys(1);` })),
+  fmtOn(restImp) === everyOn(restImp), fmtOn(restHelper) === everyOn(restHelper),
+], [everyClaimer, 'some: test_lint.sh test_pass.mjs test_q.mjs', true, true]);
+// `import (`, with a space, is the same call.
+const restSpaced = triWith(`const { keys, ...rest } = await ${'imp'}ort (join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rest.rows(1));`);
+t('DS-1002 an import() written with a space before its parenthesis is read as one', [
+  ns(`const { rows, ...rest } = await ${'imp'}ort ('./desk-q.mjs');\nexport const nsUse = () => rest.keys(2);`),
+  ns(`const { keys } = await ${'imp'}ort ('./desk-q.mjs');\nexport const nsUse = () => keys(2);`),
+  fmtOn(restSpaced) === everyOn(restSpaced),
+], [everyClaimer, 'some: test_lint.sh test_ns.mjs test_pass.mjs', true]);
+t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
+// On this repo: an edit to desk-q.mjs's interactive, the screen its command line starts. (Its
+// checkFlags moved to desk-q-model.mjs with DS-954, a module desk-ui takes whole by import(), so an
+// edit there is not narrowed.) Its command line reaches most of the module, and bin/desk-q, which
+// launches it, is claimed through install.sh by most suites, so this narrows to few fewer suites than CI's.
+const deskQ = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');
+const screenEdit = deskQ.replace('  let scope = word;\n', '  let scope = word ?? null;\n');
+const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(deskQ, screenEdit) }], real, opts);
+const [qCi, qLocal] = [realQ({}), realQ({ byName: true })];
+t('DS-1002 AC1 on the real desk-q.mjs: an edit to interactive narrows on it, runs the suite driving desk-q\'s command line, and no suite CI would not',
+  [screenEdit !== deskQ, qLocal.narrowed, qLocal.suites.includes('test_desk_q.mjs'), qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: interactive'], true, []]);
+// On this repo: triage.sh's embedded node code imports usageLimit from usage-limit.mjs, which loads()
+// does not read (a script's shell lines only), so the suite running triage.sh still runs on an edit to it.
+const limitSrc = readFileSync(join(R, 'desk/bin/usage-limit.mjs'), 'utf8');
+const limitEdit = limitSrc.replace('export function usageLimit(text) {\n  const limits = [];', 'export function usageLimit(text) {\n  const limits = [].slice();');
+const limitScope = (opts) => decide([{ status: 'M', path: 'desk/bin/usage-limit.mjs', names: changedNames(limitSrc, limitEdit) }], real, opts);
+t('DS-1002 on the real usage-limit.mjs: an edit to usageLimit, which triage.sh imports in embedded code, runs test_triage.sh',
+  [limitEdit !== limitSrc, limitScope({}).suites.includes('test_triage.sh'), limitScope({ byName: true }).suites.includes('test_triage.sh'), limitScope({ byName: true }).narrowed], [true, true, true, ['desk/bin/usage-limit.mjs: usageLimit']]);
+// And decisions.mjs's ticketCalls, which triage.sh takes through its `load('decisions.mjs')` helper.
+const callsSrc = readFileSync(join(R, 'desk/bin/decisions.mjs'), 'utf8');
+const callsEdit = callsSrc.replace('const over = new Map(overrides.filter(', 'const over = new Map([].concat(overrides).filter(');
+const callsScope = decide([{ status: 'M', path: 'desk/bin/decisions.mjs', names: changedNames(callsSrc, callsEdit) }], real, { byName: true });
+t('DS-1002 on the real decisions.mjs: an edit to ticketCalls, which triage.sh takes through an import helper, runs test_triage.sh',
+  [callsEdit !== callsSrc, callsScope.suites.includes('test_triage.sh'), callsScope.narrowed], [true, true, ['desk/bin/decisions.mjs: ticketCalls']]);
 // DS-1003 AC1: a frozen literal constant no load-time code reaches narrows to the suites naming it.
 const frozenEnv = cliEnv.replace('export function alone() {', "export const KINDS = Object.freeze(['a', 'b']);\nexport function alone() {");
 const frozenNamed = { ...named, 'desk/bin/desk-env.mjs': frozenEnv, 'tests/test_kinds.mjs': "// suite: kinds\nimport { KINDS } from '../desk/bin/desk-env.mjs';" };
@@ -498,6 +725,8 @@ try {
   g('checkout', '-qb', 'work');
   writeFileSync(join(W, 'desk/bin/tool.mjs'), 'export const a = 2;\n');
   const wmap = repoMap(W);
+  const wch = changesAgainst(W, 'main');
+  t('DS-1002 the worktree\'s change to a desk/bin/ module carries its changed names, and narrows on them', [wch.find((c) => c.path === 'desk/bin/tool.mjs')?.names, decide(wch, wmap, { byName: true }).narrowed], [{ names: ['a'] }, ['desk/bin/tool.mjs: a']]);
   const scopeWith = (...files) => {
     for (const f of files) { mkdirSync(dirname(join(W, f)), { recursive: true }); writeFileSync(join(W, f), '{}'); }
     const d = decide(changesAgainst(W, 'main'), wmap);

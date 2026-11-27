@@ -584,11 +584,18 @@ export DESK_AUTOPILOT_WORKER=1
 export DESK_WORKER_LOG="$LOG"
 # Where hooks/desk-handoff.py's worker mode has the worker write its handoff briefing, once its context
 # passes the handoff threshold partway through a stage. A task worker (a fix or base try, AUTOPILOT_TASK,
-# or one resumed with AUTOPILOT_NO_HANDOFF) never hands off, so its hook stays off.
+# or one resumed with AUTOPILOT_NO_HANDOFF) never hands off, so its hook stays off. DESK_START_STAGE
+# is the stage a fresh session starts at (AUTOPILOT_START_STAGE): the hook's stage until the worker
+# prints a stage line, since one started partway through a stage may print none before the next.
 if [ -z "${AUTOPILOT_TASK:-}" ] && [ -z "${AUTOPILOT_NO_HANDOFF:-}" ]; then
   export DESK_HANDOFF_FILE="$STATE/handoffs/$TICKET.json"
+  if [ -z "${AUTOPILOT_RESUME:-}" ] && [ -n "${AUTOPILOT_START_STAGE:-}" ]; then
+    export DESK_START_STAGE="$AUTOPILOT_START_STAGE"
+  else
+    unset DESK_START_STAGE
+  fi
 else
-  unset DESK_HANDOFF_FILE
+  unset DESK_HANDOFF_FILE DESK_START_STAGE
 fi
 # Caches on disk, in the repo's cache folder (desk-env paths), never a tmpfs /tmp: the Node compile
 # cache here, and with-lock.sh gives each test run a temporary folder there with the Jest cache in it.
