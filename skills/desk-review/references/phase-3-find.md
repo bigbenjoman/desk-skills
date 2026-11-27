@@ -31,7 +31,7 @@ the diff's included. They make the results file's `rests_on` (the core's *The ve
 Every Claude finder's prompt, the simplicity finder's included, then carries the paragraph under
 *Tracing a server-set value* (below), word for word; codex's brief carries it too.
 
-**Learned checks.** `review-bar.learned.md`, at the path `node ~/.claude/desk/bin/review-misses.mjs`
+**Learned checks.** `review-bar.learned.md`, at the path `node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/desk/bin/review-misses.mjs"`
 prints first (the repo's state, never a batch's `DESK_STATE`), holds
 checks learned from what the outside gate reviewer found after desk's clean verdict on merged PRs:
 one line per kind of miss seen on two PRs or more, each citing those PRs. Where it exists, every
@@ -74,7 +74,7 @@ After it, the brief carries the *Tracing a server-set value* paragraph (below), 
 Then one plain command, alongside the Claude finders:
 
 ```bash
-node ~/.claude/desk/bin/codex-exec.mjs review 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS, then its FILES READ line.'
+node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/desk/bin/codex-exec.mjs" review 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS, then its FILES READ line.'
 ```
 
 It runs `codex exec --sandbox read-only --skip-git-repo-check` with stdin closed and ends the call,

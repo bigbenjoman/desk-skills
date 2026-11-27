@@ -29,7 +29,7 @@ and the mechanism stated flat. Codex reads the file itself; never paste a diff o
 Independent calls may run in parallel.
 
 ```bash
-node ~/.claude/desk/bin/codex-exec.mjs review 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
+node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/desk/bin/codex-exec.mjs" review 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
 ```
 
 - **It is `codex exec --sandbox read-only --skip-git-repo-check`, ended at a timeout.** Stdin is

@@ -62,7 +62,7 @@ inside its worktree, everything goes in the body, written to `desk-review.md` at
 after the finders are done, and removed afterwards with `git clean -f desk-review.md`:
 
 ```bash
-node ~/.claude/desk/bin/review-post.mjs <n> --repo <owner>/<repo> --body-file desk-review.md
+node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/desk/bin/review-post.mjs" <n> --repo <owner>/<repo> --body-file desk-review.md
 ```
 
 It posts from §4 Review account (`desk-env get review-account`, its login before the colon), or §1
