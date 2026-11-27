@@ -31,7 +31,7 @@ import { openCache } from './read-cache.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
-import { conflictsPath, readConflicts, recordConflicts, conflictTimes, recentCount } from './conflict-record.mjs';
+import { conflictsPath, recordConflicts, recentCount } from './conflict-record.mjs';
 import * as FB from './file-budget.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
@@ -2471,19 +2471,11 @@ const budgetUnread = [];
 let budgetSlug = null;
 try { budgetSlug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
 const countElsewhere = (queues) => {
-  elsewhereRunning.length = 0;
-  budgetUnread.length = 0;
-  for (const o of budgetSlug == null ? [] : queues) {
-    if (o.slug !== budgetSlug) continue;
-    if (o.error) { budgetUnread.push(o.error); continue; }
-    const triageDir = join(E.batchPaths(budgetSlug, o.batch).state, 'triage');
-    for (const t of Object.values(o.q.tickets ?? {})) {
-      if (t?.state !== 'running' || !t.key || reviewOnlyTry(t)) continue;
-      let rec = null;
-      try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
-      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
-    }
-  }
+  const { elsewhere, unread } = FB.elsewhereRunning(queues, {
+    slug: budgetSlug, appendOnly: budgetAppendOnly, triageDir: (batch) => join(E.batchPaths(budgetSlug, batch).state, 'triage'),
+  });
+  elsewhereRunning.splice(0, Infinity, ...elsewhere);
+  budgetUnread.splice(0, Infinity, ...unread);
 };
 countElsewhere(otherQueues({ self: QUEUE_FILE }));
 // A file's length on the batch base (file-budget.mjs lineCounter, its counts kept in line-counts.json).
@@ -2492,16 +2484,15 @@ const baseLines = FB.lineCounter({ main: MAIN, cacheFile: join(STATE, 'line-coun
 let treesAt = 0;
 const linesOnBase = (f) => {
   if (treesAt !== refsMoved) { treesAt = refsMoved; baseLines.clear(); }
-  const base = E.batchBase() ?? DEFAULT_BRANCH;
-  return baseLines.lines(f, [`origin/${base}`, base]);
+  return baseLines.lines(f, E.batchBase() ?? DEFAULT_BRANCH);
 };
 const placeOpts = { budget: FILE_BUDGET, serial: budgetSerial, lines: linesOnBase };
 const configuredPlaces = (f) => FB.configuredPlaces(f, placeOpts);
 // A file whose merge-time conflicts rise runs fewer places than configured (conflict-record.mjs),
 // from the record every batch of this repo shares. A record that does not read lowers nothing.
 const CONFLICTS_FILE = conflictsPath(STATE);
-const conflictRecord = readConflicts(CONFLICTS_FILE);
-const conflictsBy = conflictRecord.bad ? new Map() : conflictTimes(conflictRecord.entries);
+const conflictRecord = FB.conflictsOf(STATE);
+const conflictsBy = conflictRecord.by;
 const PASS_MS = Date.parse(PASS_AT);
 // Records a merge-time conflict's files for `what` (a PR, or a base sync) -> a line for the report
 // when nothing could be recorded, else null. A dry run records nothing.

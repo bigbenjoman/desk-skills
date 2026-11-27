@@ -4,8 +4,10 @@
 // the two never disagree.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
-import { loweredBy } from './conflict-record.mjs';
+import { conflictsPath, conflictTimes, loweredBy, readConflicts } from './conflict-record.mjs';
+import { reviewOnlyTry } from './pass/shared.mjs';
 
 // The files a triage record names, less those an append-only glob (RegExps) covers, which are only
 // added to and have no limit.
@@ -25,6 +27,34 @@ export const placesFor = (f, { conflictsBy = new Map(), now = Date.now(), ...opt
   const k = configuredPlaces(f, opts);
   return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, now) : k;
 };
+
+// The tickets running in repo `slug`'s other batches, which fill places too: `elsewhere`, each as
+// { key, batch, files } from its batch's queue (`queues`, borrow.mjs otherQueues) and its triage record
+// in `triageDir(batch)`, and `unread`, the error of each queue that does not read and so counts nothing.
+// A review try fills no place, and a ticket with no triage record names no file.
+export function elsewhereRunning(queues, { slug, appendOnly = [], triageDir }) {
+  const elsewhere = [];
+  const unread = [];
+  for (const o of slug == null ? [] : queues) {
+    if (o.slug !== slug) continue;
+    if (o.error) { unread.push(o.error); continue; }
+    const dir = triageDir(o.batch);
+    for (const t of Object.values(o.q?.tickets ?? {})) {
+      if (t?.state !== 'running' || !t.key || reviewOnlyTry(t)) continue;
+      let rec = null;
+      try { rec = JSON.parse(readFileSync(join(dir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
+      elsewhere.push({ key: t.key, batch: o.batch, files: scopeFiles(rec, appendOnly) });
+    }
+  }
+  return { elsewhere, unread };
+}
+
+// The repo's conflict record in state directory `stateDir`: `by`, file -> [ms] for placesFor's
+// `conflictsBy`, and `bad`, set where the record does not read, which then lowers nothing.
+export function conflictsOf(stateDir) {
+  const record = readConflicts(conflictsPath(stateDir));
+  return { bad: record.bad, by: record.bad ? new Map() : conflictTimes(record.entries) };
+}
 
 // Each of `files` (ticket `key`'s) at its budget, as { file, k, by, elsewhere }: `running` is this
 // batch's running tickets that fill places, [{ key, files }]; `elsewhere` the repo's other batches',
@@ -82,9 +112,10 @@ export function lineCounter({ main, cacheFile = null, write = false }) {
     return n;
   };
   return {
-    // The file's length on the first of `refs` that has it.
-    lines(f, refs) {
-      const id = `${refs.join('\0')}\0${f}`;
+    // The file's length on base branch `base`: origin's copy, else the local branch.
+    lines(f, base) {
+      const refs = [`origin/${base}`, base];
+      const id = `${base}\0${f}`;
       if (!counts.has(id)) {
         let n = 0;
         for (const ref of refs) {

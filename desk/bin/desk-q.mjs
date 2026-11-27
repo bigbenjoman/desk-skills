@@ -56,7 +56,6 @@ import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, batchLabel, idlePass, lastBeat, liveBeat, loopFrom, machineCap, otherQueues, stoppedAt } from './borrow.mjs';
 import * as FB from './file-budget.mjs';
-import { conflictTimes, conflictsPath, readConflicts } from './conflict-record.mjs';
 import { appendOnlyFrom } from './scope-report.mjs';
 import { reviewOnlyTry } from './pass/shared.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
@@ -224,6 +223,14 @@ export function personStepOf(at, slug) {
   };
 }
 
+// Batch `r`'s base, which the pass sends a conflict's fix try against and counts files' lengths on: the
+// batch's own, else the repo's default, else main.
+function baseOf(r) {
+  let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
+  if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
+  return base || 'main';
+}
+
 // Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
 // merged, running now or started by a supervisor running its passes. The supervisor starts it only
 // where config §3, or the batch's approval, lets it merge (mergeGrant), so without that grant only a
@@ -238,9 +245,6 @@ function holdContext(r) {
   const finished = (key) => rowStage(r.stateDir, r.q.tickets[key], r.last).done === true;
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
   const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
-  // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
-  let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
-  if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
   // What green means here, as the pass's fix tries read it (config §4 Required and Advisory checks).
   const list = (id) => { try { const v = repoConfigValues(r.slug, id); return v && !isNone(v) ? v : []; } catch { return []; } };
   // The merge driver reruns a red check only where §3 ci-rerun is yes, and a fix try waits for those reruns.
@@ -258,7 +262,7 @@ function holdContext(r) {
   // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
   // relaying its merge lines), not on the person. `mergeHolds`: §4 Merge holds names a path, and only the
   // driver records a PR's hold (merge_blocked), so with none running the words say a hold makes it theirs.
-  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: baseOf(r), required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -3310,17 +3314,14 @@ function budgetOf(r) {
   const budget = fileBudget(spans ?? null);
   const running = Object.values(r.q.tickets ?? {}).filter((t) => t?.state === 'running' && t.key)
     .map((t) => ({ key: t.key, files: reviewOnlyTry(t) ? [] : FB.scopeFiles(triageOf(r, t.key), appendOnly) }));
-  const elsewhere = otherQueues({ self: r.queuePath }).filter((o) => o.slug === r.slug && !o.error).flatMap((o) =>
-    Object.values(o.q.tickets ?? {}).filter((t) => t?.state === 'running' && t.key && !reviewOnlyTry(t))
-      .map((t) => ({ key: t.key, batch: o.batch, files: FB.scopeFiles(readTriageRecord(batchPaths(r.slug, o.batch).state, t.key), appendOnly) })));
-  let base = typeof r.q.base === 'string' ? r.q.base.trim() : '';
-  if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* unreadable reads as main */ } }
-  base ||= 'main';
+  const { elsewhere } = FB.elsewhereRunning(otherQueues({ self: r.queuePath }), {
+    slug: r.slug, appendOnly, triageDir: (batch) => join(batchPaths(r.slug, batch).state, 'triage'),
+  });
+  const base = baseOf(r);
   const root = repoDirs(r.slug).root;
   const counter = root ? FB.lineCounter({ main: root, cacheFile: join(r.stateDir, 'line-counts.json') }) : null;
-  const record = readConflicts(conflictsPath(r.stateDir));
-  const opts = { budget, serial: budget.serial.map(globToRegExp), lines: (f) => counter?.lines(f, [`origin/${base}`, base]) ?? 0,
-    conflictsBy: record.bad ? new Map() : conflictTimes(record.entries) };
+  const opts = { budget, serial: budget.serial.map(globToRegExp), lines: (f) => counter?.lines(f, base) ?? 0,
+    conflictsBy: FB.conflictsOf(r.stateDir).by };
   const b = { appendOnly, running, elsewhere, places: (f) => FB.placesFor(f, { ...opts, now: Date.now() }) };
   budgetRead.set(r, b);
   return b;
