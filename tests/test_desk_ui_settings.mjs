@@ -23,6 +23,8 @@ const CONFIG = join(T, 'config');
 Object.assign(process.env, { HOME, DESK_HOME, DESK_CONFIG_ROOT: CONFIG, DESK_MACHINE: join(T, 'machine.md'),
   DESK_SUBSCRIPTIONS: join(T, 'subscriptions.md'), DESK_MAINT_DIR: join(T, 'maint') });
 for (const d of [HOME, DESK_HOME, join(CONFIG, 'repos')]) mkdirSync(d, { recursive: true });
+// The login this test runs under is not one of the test's subscriptions.
+delete process.env.CLAUDE_CONFIG_DIR;
 const TOKEN = ['tok', 'e5'.repeat(30)].join('');
 writeFileSync(join(CONFIG, 'ui-token'), `${TOKEN}\n`, { mode: 0o600 });
 

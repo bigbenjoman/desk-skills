@@ -242,8 +242,8 @@ describe('the server restarting after an update', () => {
     await act(async () => {});
     s.fire('server', { app: META.app, installed: 'newer', restartRequired: true, restarting: true });
     w.down();
-    await act(async () => { s.error(); await new Promise((r) => setTimeout(r, 0)); });
-    const banner = document.querySelector('[data-banner="restarting"]');
+    await act(async () => { s.error(); });
+    const banner = await vi.waitFor(() => { const b = document.querySelector('[data-banner="restarting"]'); if (!b) throw new Error('no banner yet'); return b; }, { timeout: 2000, interval: 5 });
     expect(banner.textContent).toContain("Desk's server is restarting after an update. Reconnecting… You're looking at the copy from 10:12.");
     expect(screen.queryByText("Desk can't reach its local server")).toBeNull();
     w.up();
