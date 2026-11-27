@@ -192,4 +192,6 @@ Decisions entry dated after PR #<n>'s last review`). The spawn records the time 
 session's own handoff to 4b, and a requeue after a session that found every entry met and pushed
 nothing, do not restart again. A round whose worktree or resume file is refused starts at Stage 0
 with the entries instead. An unfinished fix try keeps its own task, and a PR gh cannot read is said in
-the report and resumes as before.
+the report and resumes as before. For a GitHub issue (`issue-<n>`), the spawn first refreshes the
+ticket file from the issue when its updated time is after the last read, and a criterion or comment
+change with the PR open is written in as such an entry (`refreshed from issue #<n>` on the spawn line).
