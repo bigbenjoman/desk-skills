@@ -30,7 +30,7 @@ import { prReads } from './pr-reads.mjs';
 import { openCache } from './read-cache.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
-import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom, isTestFile } from './scope-report.mjs';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
@@ -2491,13 +2491,13 @@ const runningKeys = new Set(running.map((r) => r.key));
 // The per-file budget (config §3b, desk-env fileBudget): a ticket waits while any file its triage record
 // names is already named by as many running tickets as that file's places. Worked out now, from the
 // triage records of the tickets running now, so a ticket that has finished holds nothing. A file
-// §4 Append-only paths covers is only added to, and has no limit.
+// §4 Append-only paths covers is only added to, and has no limit; nor has a test file.
 const FILE_BUDGET = E.fileBudget();
 const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
 const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
 const scopeFiles = (rec) => {
   const files = rec?.files_in_scope;
-  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f)));
+  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !isTestFile(f) && !budgetAppendOnly.some((re) => re.test(f)));
 };
 const scopeOf = new Map();
 const budgetFiles = (key) => {

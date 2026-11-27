@@ -39,11 +39,16 @@ export function appendOnlyGlobs(items) {
 export function appendOnlyFrom(read) {
   try { return appendOnlyGlobs(read()); } catch (e) { return { globs: [], bad: `${APPEND_ONLY_ROW}: ${e.message}` }; }
 }
-// The files both lists name that no append-only glob covers: what two tickets collide on.
+// A test file is added to as an append-only one is: two tickets' new cases rarely conflict, and the
+// conflict-fix worker settles those that do. Neither counts as a collision nor fills a file's places.
+const TEST_RES = TEST_GLOBS.map(globToRegExp);
+export const isTestFile = (f) => TEST_RES.some((re) => re.test(String(f).replace(/^\.\//, '')));
+
+// The files both lists name that no test glob or append-only glob covers: what two tickets collide on.
 export function sharedFiles(a, b, globs = []) {
   const mine = new Set(a ?? []);
   const res = globs.map(globToRegExp);
-  return [...new Set(b ?? [])].filter((f) => mine.has(f) && !res.some((re) => re.test(String(f).replace(/^\.\//, ''))));
+  return [...new Set(b ?? [])].filter((f) => mine.has(f) && !isTestFile(f) && !res.some((re) => re.test(String(f).replace(/^\.\//, ''))));
 }
 
 // The changed files no scope entry, test glob or incidental glob covers, in diff order.

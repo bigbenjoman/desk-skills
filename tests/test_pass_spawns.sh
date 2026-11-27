@@ -1420,15 +1420,15 @@ spawned(){ grep -qx "$1" "$T/fb-spawns"; }
 
 fbq fba ''
 fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
-fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts
+fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts; fbt FB-9 triaged src/edge.ts
 fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC1 with no budget row, three ready tickets naming a file over 1,000 lines on the base all start" \
   'spawned FB-1 && spawned FB-2 && spawned FB-3'
 check "DS-755 AC2 a fourth naming it does not start, and the report names the file and the three running" \
   '! spawned FB-4 && [ "$(field FB-4 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-4 (src/big.ts has 3 running of its 3: FB-1, FB-2, FB-3)"'
-check "DS-755 AC3 AC9 of two naming a 1,000-line file, the first in queue order starts and the other waits" \
-  'spawned FB-5 && ! spawned FB-6 && echo "$out" | grep -qF "FB-6 (src/edge.ts has 1 running of its 1: FB-5)"'
+check "DS-755 AC3 AC9 DS-1032 AC3 of three naming a 1,000-line file, the first two in queue order start and the third waits" \
+  'spawned FB-5 && spawned FB-6 && ! spawned FB-9 && echo "$out" | grep -qF "FB-9 (src/edge.ts has 2 running of its 2: FB-5, FB-6)"'
 check "DS-755 AC5 a ticket naming two files, one at its budget, does not start" '! spawned FB-7 && [ "$(field FB-7 state)" = "\"triaged\"" ]'
 check "DS-755 AC7 an admission-time collides_with naming a running ticket that shares no file in the triage records holds nothing" 'spawned FB-8'
 check "DS-755 the metrics line names each held ticket's files at their budget and the running tickets filling them" \
@@ -1443,6 +1443,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC2 with three already running that name the file, a fourth does not start, and the report names them" \
   '! spawned FB-14 && echo "$out" | grep -qF "FB-14 (src/big.ts has 3 running of its 3: FB-11, FB-12, FB-13)"'
 check "DS-755 AC3 AC7 once the first has stopped running, the other starts: a done ticket its collides_with names holds nothing" 'spawned FB-16'
+
+# A test file takes no place, under a row of 1 too; a shared non-test file still holds.
+fbq fbt '1'
+fbt FB-61 triaged tests/test_prompts.py src/c.test.ts; fbt FB-62 triaged tests/test_prompts.py src/c.test.ts; fbt FB-63 triaged tests/test_prompts.py src/c.test.ts
+fbt FB-64 triaged tests/test_prompts.py src/solo.ts; fbt FB-65 triaged tests/test_prompts.py src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1032 AC2 a test file takes no place: three ready tickets whose only shared files are test files all start" \
+  'spawned FB-61 && spawned FB-62 && spawned FB-63 && ! echo "$out" | grep "^held back by a collision:" | grep -qE "FB-6[123] \("'
+check "DS-1032 AC2 negative control: tickets also sharing a non-test file are held on that file alone" \
+  'spawned FB-64 && ! spawned FB-65 && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-65 (src/solo.ts has 1 running of its 1: FB-64)"'
 
 fbq fbc '3 over 1000 lines, else 1; serial: src/hot.ts, docs/*.md'
 fbt FB-21 triaged src/hot.ts; fbt FB-22 triaged src/hot.ts; fbt FB-23 triaged src/big.ts; fbt FB-24 triaged src/big.ts
