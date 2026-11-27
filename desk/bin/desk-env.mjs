@@ -2637,6 +2637,11 @@ function checkSections(cmd, names, extra = []) {
   if (bad.length) throw new GetJsonUsage(`${cmd}: unknown section ${bad.map((s) => `"${s}"`).join(', ')} (known: ${[...extra, ...SECTIONS].join(', ')})`);
   return want;
 }
+// A GetJsonUsage naming each id the schema does not declare.
+function checkIds(cmd, ids) {
+  const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
+  if (unknown.length) throw new GetJsonUsage(`${cmd}: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
+}
 function getJson(args) {
   const ids = [], named = [];
   let where = false;
@@ -2648,8 +2653,7 @@ function getJson(args) {
   }
   if (!ids.length && !named.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
   const sections = checkSections('desk-env get --json', named);
-  const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
-  if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
+  checkIds('desk-env get --json', ids);
   const parsed = parseConfig();
   // With no repo config, DESK_CONFIG_FILE's rows (a cloud session) still answer, as get and list do;
   // a row it lacks reads as unset, and a §3 permission, never taken from it, as `no`.
@@ -2666,14 +2670,8 @@ function getJson(args) {
 // `show --rows <id>...`: the named rows as `get --json` reads them, one line each, for a skill that
 // uses a handful of rows rather than whole sections: `§<section> <label> (<id>) = <value>`, a list's
 // items joined by ` · `. An unset row says `UNSET`, with what its reader takes instead where it takes
-// something, so the skill can name it.
-function checkRowIds(ids) {
-  if (!ids.length) throw new GetJsonUsage('usage: desk-env.mjs show --rows <id>...');
-  const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
-  if (unknown.length) throw new GetJsonUsage(`desk-env show --rows: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
-}
-export function showRows(ids) {
-  checkRowIds(ids);
+// something, so the skill can name it. The CLI has checked the ids (checkIds) before the config.
+function showRows(ids) {
   return Object.entries(getJson(ids).rows).map(([id, r]) => {
     const shown = r.kind === 'list' && r.items?.length ? r.items.join(' · ') : r.value;
     const value = r.set ? shown : `UNSET${shown == null ? '' : ` (reads as ${shown})`}`;
@@ -2751,12 +2749,12 @@ if (isMain) {
         const ids = args[0] === '--rows' ? args.slice(1) : null;
         let want;
         try {
-          if (ids) checkRowIds(ids);
+          if (ids?.length === 0) throw new GetJsonUsage('usage: desk-env.mjs show --rows <id>...');
+          if (ids) checkIds('desk-env show --rows', ids);
           else want = checkSections('desk-env show', args, ['rules']);
         } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
-        if (!ids) { console.log(configRows(readFileSync(p, 'utf8'), want)); break; }
-        try { console.log(showRows(ids)); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
+        console.log(ids ? showRows(ids) : configRows(readFileSync(p, 'utf8'), want));
         break;
       }
       case 'list':

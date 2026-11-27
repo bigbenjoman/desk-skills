@@ -27,14 +27,15 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 the rows this skill uses, one line each (never the `CONFIG` file whole, nor whole sections):
 
 ```bash
-desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers required-checks branch-protection slack-channels
+desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
 ```
 
 A row printed as `UNSET` (a `TODO`, or missing from the file) is named to the user with
 `/desk-setup`; an unset §3 row is a `no`.
 §1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
-§4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
-**§4 Check-out destination** says where the draft goes:
+§4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who (and who has
+left, never to be asked), §5 Messages to colleagues, AI attribution and Repo instructions bind the
+draft as they bind any message, and **§4 Check-out destination** says where the draft goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
