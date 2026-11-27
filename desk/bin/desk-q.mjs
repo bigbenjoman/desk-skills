@@ -47,7 +47,8 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud, toHandoff } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
+import { modeLine as personModeLine } from './person-use.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -3770,6 +3771,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []),
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r, now),
+    ...personHead(r),
     ...passHead(r, now),
     ...stagesHead(r),
     ...stuckHead(r, now),
@@ -3843,6 +3845,13 @@ const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', m
 export function stateKey(ks, width) {
   return keyLine(keyLabels(ks).map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
 }
+
+// The person is using this computer (person-use.mjs), as the last pass of any of the repo's batches
+// recorded it: the local cap it dropped to, and cloud first.
+const personHead = (r) => {
+  const p = (r.batches ?? [r]).map((b) => b.q?.person_use).find((x) => x?.on);
+  return p ? [`${personModeLine(p.floor ?? 1)}${p.since ? ` · since ${p.since.slice(11, 16)}` : ''}`] : [];
+};
 
 export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
@@ -4154,6 +4163,10 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     try { merge = recordedMerge(t) ?? mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
     if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
   }
+  // Where it started and why (the pass's placeAtStart), or, for a cloud-able ticket not yet started,
+  // that it is placed when it starts.
+  if (t.start_place?.where) field('Place', [[t.start_place.where === 'cloud' ? 'cloud' : 'this computer', null], [` · ${t.start_place.why}`, DIM]]);
+  else if (cloudAble(t) && t.state !== 'running') field('Place', [['cloud-able', null], [' · placed when it starts: the cloud while it has room', DIM]]);
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]
