@@ -104,11 +104,13 @@ const STATE_W = 13;
 const pad = (s, n) => { s = String(s ?? ''); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
 const rpad = (s, n) => { s = String(s ?? ''); return ' '.repeat(Math.max(0, n - s.length)) + s; };
 const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
+// A cell `n` columns wide: one too long is cut with …, a space before the next column.
+const cutPad = (s, n) => pad(cut(s, n - 1), n);
 // A TICKET or EPIC column fits the longest key shown plus a space, and is never narrower than 10.
 const keyW = (keys) => Math.max(10, ...keys.map((k) => String(k).length + 1));
 // A REPO column of every repo's views: a longer name is cut with an ellipsis, a space before the next column.
 const REPO_W = 12;
-const repoCell = (name) => pad(cut(name, REPO_W - 1), REPO_W);
+const repoCell = (name) => cutPad(name, REPO_W);
 const ago = (ms) => (ms == null ? 'never' : ms < 60000 ? 'just now' : `${since(ms)} ago`);
 // A span as `since` writes it, with a zero second unit dropped: "2h 5m", "3h", "1d 1h".
 const span = (ms) => since(ms).replace(/ 0[mh]$/, '');
@@ -1526,7 +1528,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   const rows = [];
   if (byEpic) {
     for (const { r, F, e, d, opens = r.id } of epics) {
-      const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
+      const name = [[`  ${cutPad(epicShort(e), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
       const open = { kind: 'epic', slug: opens, epic: e.key };
       if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [width == null ? epicWhy(r, F, e, checkin) : cut(epicWhy(r, F, e, checkin), Math.max(1, width - EP_LEAD)), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
@@ -1536,7 +1538,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
   // By epic, a ticket is led by its title and has no TITLE column.
-  const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  ', kw));
+  const tlead = (i) => (byEpic ? [[`    ${cutPad(tt(summaryOf(i)) || i.x.t.key, 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  ', kw));
   const tail = (i) => (byEpic ? [] : [title(i)]);
   // One repo's batches are one list in ship order; every repo's view groups by batch.
   for (const r of slug ? [null] : [...new Set(s.items.map((i) => i.r))]) {
@@ -3372,7 +3374,7 @@ function checkLines(r, t, now, plain) {
       : c.status === 'completed' ? (c.conclusion === 'success' ? ['✓', GOOD, `passed${s && e ? ` in ${took(e - s)}` : ''}`, DIM] : ['·', DIM, c.conclusion ?? 'done', DIM])
         : c.runner ? ['●', null, `running${age}`, null]
           : s != null && now - s >= NO_RUNNER_MS ? ['◌', WARN, `queued${age}, no runner yet`, WARN] : ['◌', null, `queued${age}`, null];
-    return segRow(null, [[`${lead}${pad(glyph, 3)}`, gk], [pad(cut(c.name, 25), 26), null], [what, wk]], null);
+    return segRow(null, [[`${lead}${pad(glyph, 3)}`, gk], [cutPad(c.name, 26), null], [what, wk]], null);
   });
   if (!lines.length) lines.push(segLine([[`${lead}no checks reported yet`, DIM]]));
   const read = `${lead}checked by the last pass, ${ago(now - Date.parse(ps.at))} · `;
@@ -3488,20 +3490,61 @@ function fitSegs(segs, max, w) {
 // WHAT IT NEEDS takes NEED_W while the title keeps TITLE_MIN; narrower than that, the title is cut
 // first, then the reason, down to NEED_MIN ("waits for a worker (12 of 12 busy)").
 const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
-// The columns before TITLE on a ticket row, less WHAT IT NEEDS, with TICKET at its narrowest and no WAITING.
-const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
+// STARTS and SHIPS at their widest, and the `#` column with the indent and gap around it.
+const STARTS_W = 13, SHIPS_W = 14, POS_W = 2 + 4 + 2;
+// A key of up to KEY_KEEP characters ("issue-1484", "DS-10461") is never cut: only a longer one (a
+// base-repair key) gives way, down to the width the others need (keyW).
+const KEY_KEEP = 11;
+// A column fitted to its heading and its longest cell, with the gap after it.
+const fitW = (head, cells, max) => Math.min(max, Math.max(head.length, ...cells.map((s) => String(s ?? '').length)) + 2);
 // WAITING, between STATE and WHAT IT NEEDS, holds how long a row has sat in Merging, Needs you or Put
 // off, so STARTS holds only a start. It fits the longest such time shown, and is left out when none is.
 const WAIT_HEAD = 'WAITING';
-const waitW = (spans) => (spans.some(Boolean) ? Math.max(WAIT_HEAD.length, ...spans.map((s) => s.length)) + 2 : 0);
-// The repo Queue's widths: TICKET (`kw`), WAITING (`ww`), WHAT IT NEEDS (`nw`) and TITLE (`tw`).
-function queueWidths(width, keys, spans) {
-  const kw = keyW(keys), ww = waitW(spans), lead = ROW_LEAD + (kw - 10) + ww;
-  const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - lead - TITLE_MIN));
-  return { kw, ww, nw, tw: width == null ? 60 : Math.max(1, width - lead - nw) };
+const waitW = (spans) => (spans.some(Boolean) ? fitW(WAIT_HEAD, spans, Infinity) : 0);
+// A date in its short form, how a tight Queue keeps STARTS rather than dropping it: a same-day time
+// without its "today" ("today 21:30" is "21:30", "▲today 21:30" is "▲21:30"), and a date without its
+// year ("4 Jan 2027" is "4 Jan").
+const TODAY_AT = new RegExp(`^(${OVERDUE}?)today `), YEAR_ON = /^(\S*\d{1,2} [A-Z][a-z]{2}) \d{4}$/;
+const shortWhen = (s) => String(s ?? '').replace(TODAY_AT, '$1').replace(YEAR_ON, '$1');
+// The repo Queue's widths: TICKET (`kw`), WAITING (`ww`), WHAT IT NEEDS (`nw`), STARTS (`sw`), SHIPS
+// (`hw`) and TITLE (`tw`), 0 for a column left out, and `short` where dates take their short form
+// (shortWhen). `starts` and `ships` are the cells those columns show. Narrower than every column at its
+// widest, it gives way in turn: WHAT IT NEEDS narrows to NEED_MIN, STARTS and SHIPS to their longest
+// cells, then a key too long for the room left is cut with … (never under the width a key of KEY_KEEP or fewer shown needs), then TITLE goes, then
+// WAITING, then dates take their short form, then STARTS narrows to its heading, a longer cell cut
+// with …, then STARTS goes, then SHIPS. Narrower still, the row is cut at a whole column (cutRuns),
+// so WHAT IT NEEDS goes last.
+function queueWidths(width, keys, spans, { starts, ships }) {
+  const full = keyW(keys), wait = waitW(spans);
+  if (width == null) return { kw: full, ww: wait, nw: NEED_W, sw: STARTS_W, hw: SHIPS_W, tw: 60, short: false };
+  const sFit = (short) => fitW('STARTS', short ? starts.map(shortWhen) : starts, STARTS_W);
+  // SHIPS ends a row with no TITLE, so it then takes no gap after it.
+  const hFit = (short, title) => fitW('SHIPS', short ? ships.map(shortWhen) : ships, SHIPS_W) - (title ? 0 : 2);
+  // The narrowest TICKET a cut key may take: never under what the keys of up to KEY_KEEP characters need.
+  const keep = keyW(keys.filter((k) => String(k).length <= KEY_KEEP));
+  // STARTS in the room a row with short dates and the narrowest TICKET leaves it, never under its heading.
+  const sRoom = Math.max('STARTS'.length + 2, Math.min(sFit(true), width - (POS_W + keep + STATE_W + NEED_MIN + hFit(true))));
+  // Each layout: whether the key may be cut, WAITING, STARTS and SHIPS (0 leaves one out), whether TITLE shows, and `short`.
+  const L = (cutKey, ww, sw, hw, title, short = false) => ({ cutKey, ww, sw, hw, title, short });
+  const steps = [L(false, wait, STARTS_W, SHIPS_W, true), L(false, wait, sFit(), hFit(false, true), true), L(true, wait, sFit(), hFit(false, true), true),
+    L(true, wait, sFit(), hFit(), false), L(true, 0, sFit(), hFit(), false), L(true, 0, sFit(true), hFit(true), false, true),
+    L(true, 0, sRoom, hFit(true), false, true), L(true, 0, 0, hFit(true), false, true), L(true, 0, 0, 0, false, true)];
+  // The row's width less TICKET, with WHAT IT NEEDS at NEED_MIN and TITLE at TITLE_MIN.
+  const rest = (s) => POS_W + STATE_W + s.ww + NEED_MIN + s.sw + s.hw + (s.title ? TITLE_MIN : 0);
+  const keyOf = (s) => (s.cutKey ? Math.max(keep, Math.min(full, width - rest(s))) : full);
+  const s = steps.find((x) => rest(x) + keyOf(x) <= width) ?? steps.at(-1);
+  const kw = keyOf(s), fixed = rest(s) - NEED_MIN + kw;
+  const nw = Math.max(NEED_MIN, Math.min(NEED_W, width - fixed));
+  return { kw, ww: s.ww, nw, sw: s.sw, hw: s.hw, tw: s.title ? Math.max(1, width - fixed + TITLE_MIN - nw) : 0, short: s.short };
 }
+// The cells after WHAT IT NEEDS, each left out where its width is 0. A start too long for STARTS is cut with ….
+const tailCells = ({ sw, hw, tw, short }, start, ship, title) => {
+  const at = short ? shortWhen : String;
+  return [...(sw ? [[[cutPad(at(start), sw), null]]] : []), ...(hw ? [[[pad(at(ship), hw), null]]] : []), ...(tw ? [[[cut(title, tw), null]]] : [])];
+};
 // Narrower than its narrowest row, a Queue row and its heading are cut at a whole column (cutRuns).
-const queueHead = ({ kw, ww, nw }, width = null) => bold(cutLine([`  ${rpad('#', 4)}  ${pad('TICKET', kw)}`, pad('STATE', STATE_W), ww ? pad(WAIT_HEAD, ww) : '', pad('WHAT IT NEEDS', nw), pad('STARTS', 13), pad('SHIPS', 14), 'TITLE'], width));
+const queueHead = ({ kw, ww, nw, sw, hw, tw }, width = null) => bold(cutLine([`  ${rpad('#', 4)}  ${pad('TICKET', kw)}`, pad('STATE', STATE_W), ww ? pad(WAIT_HEAD, ww) : '', pad('WHAT IT NEEDS', nw),
+  ...(sw ? [pad('STARTS', sw)] : []), ...(hw ? [tw ? pad('SHIPS', hw) : 'SHIPS'] : []), ...(tw ? ['TITLE'] : [])], width));
 // A repo's Queue in groups, each in queue order: what autopilot is moving first, then what needs the user.
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
@@ -3514,15 +3557,15 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // it names none. TICKET is the ticket the item is about (itemKey), the key a drop of a put-off item takes.
 // How long an item has waited, for WAITING, or ''.
 const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
-const itemRowOf = (r, k, { now, kw, ww, nw, tw, width = null }) => ({ r: b, t, item }) => {
+const itemRowOf = (r, k, { now, kw, ww, nw, sw, hw, tw, width = null }) => ({ r: b, t, item }) => {
   const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
   const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
   const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
   return segRow(null, cutRuns([
-    [[`  ${rpad('-', 4)}  ${pad(itemKey(t, item), kw)}`, null]], [[pad(LABEL[k], STATE_W), STATE_SGR[k]]],
+    [[`  ${rpad('-', 4)}  ${cutPad(itemKey(t, item), kw)}`, null]], [[pad(LABEL[k], STATE_W), STATE_SGR[k]]],
     ...(ww ? [[[pad(itemWait(item, now), ww), null]]] : []),
     fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
-    [[pad('—', 13), null]], [[pad('—', 14), null]], [[cut(what, tw), null]],
+    ...tailCells({ sw, hw, tw }, '—', '—', what),
   ], width), null);
 };
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
@@ -3532,10 +3575,11 @@ const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging
 // no id, which the selection steps over. `title` leads with the place and time, as the interactive
 // screen's breadcrumb does.
 // The repo's merge time by stage (merge-stages.mjs), one line once a merged PR has its stages read.
+// A line of runs, so a screen narrower than it cuts it with … rather than wrapping it.
 function stagesHead(r) {
   if (!r.stateDir) return [];
   const line = MS.stagesLine(MS.summary(MS.readStages(repoStateOf(r.stateDir))));
-  return line ? [line] : [];
+  return line ? [segLine([[line, null]])] : [];
 }
 // The repo's time parked by cause this week (stuck-time.mjs), one line once a ticket has sat stuck in it.
 function stuckHead(r, now) {
@@ -3555,7 +3599,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
     if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
     const all = groups.flatMap(([, , xs]) => xs);
-    const w = queueWidths(width, all.map(({ t, item }) => itemKey(t, item)), all.map(({ item }) => itemWait(item, now)));
+    const w = queueWidths(width, all.map(({ t, item }) => itemKey(t, item)), all.map(({ item }) => itemWait(item, now)), { starts: ['—'], ships: ['—'] });
     const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, ...w, width }))]);
     return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', queueHead(w, width)],
       rows, foot: ['', ...stateKey(groups.map(([, k]) => k), width)] };
@@ -3576,8 +3620,11 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),
   ];
-  // Wrapped to the terminal, so how to resume passes is never cut.
-  const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
+  // Wrapped to the terminal, so how to resume passes is never cut. A line of runs breaks at its bars,
+  // and a part still wider than the terminal (a merge driver's last logged line, the merge time by
+  // stage) ends in … at the width.
+  const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width)
+    : barWrap(s, width).map((l) => (l.line.length > width ? segLine(fitSegs(l.segs, width, 0)) : l))));
   const rows0 = [...r.rows, ...r.prs];
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r: of(x), x });
@@ -3594,24 +3641,27 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   // amber or red by that age.
   const wait = (x) => { const g = ageOf(x, now); return g == null ? '' : span(g); };
   const its = [...items, ...offItems];
-  const { kw, ww, nw, tw } = queueWidths(width, [...list.map((x) => x.t.key), ...its.map(({ t, item }) => itemKey(t, item))], [...list.map(wait), ...its.map(({ item }) => itemWait(item, now))]);
-  fit.push('', queueHead({ kw, ww, nw }, width));
   // A ticket with a PR open has started and has no ship date of its own.
   const starts = (x) => { const a = afterPrs(of(x), x); return x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
+  const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
+  const dash = its.length ? ['—'] : [];
+  const w = queueWidths(width, [...list.map((x) => x.t.key), ...its.map(({ t, item }) => itemKey(t, item))], [...list.map(wait), ...its.map(({ item }) => itemWait(item, now))],
+    { starts: [...list.map(starts), ...dash], ships: [...list.map(ships), ...dash] });
+  const { kw, ww, nw } = w;
+  fit.push('', queueHead(w, width));
   const waitSgr = (x) => {
     const g = of(x).live && groupOf(x.k) === 'merging' ? ageOf(x, now) : null;
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
-  const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
   const row = (x) => segRow(x.t.key, cutRuns([
-    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
+    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
     ...(ww ? [[[pad(wait(x), ww), waitSgr(x)]]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
     fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
-    [[pad(starts(x), 13), null]], [[pad(ships(x), 14), null]], [[cut(tt(summary(x)), tw), null]],
+    ...tailCells(w, starts(x), ships(x), tt(summary(x))),
   ], width), { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
-  const itemRow = (k) => itemRowOf(r, k, { now, kw, ww, nw, tw, width });
+  const itemRow = (k) => itemRowOf(r, k, { now, ...w, width });
   const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);
