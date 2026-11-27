@@ -8,14 +8,16 @@ in the repo.
 
 Worker location `cloud` needs a working Claude Code cloud environment for this repo, and claude.ai
 has no API to create or edit one. So this step writes what the person pastes, then checks what they
-made. **The row is written as `cloud` only once `$CE smoke` exits 0.** Until then it stays at what it
+made. **The row is written as `cloud` only once the cloud smoke exits 0.** Until then it stays at what it
 held (`local` for a new config), and you say so.
 
 1. **The setup script.** Run `$CE script --write`. It writes `$CREDS/cloud-setup.sh` (this repo's config
    folder, from `desk-env where`) and prints it. It finds the checkout by search, installs
    the toolchain pins directly (not through mise), runs the lockfile's install, the ORM client
    generate step, Playwright's browsers, and points Docker at `mirror.gcr.io` before pulling the
-   compose images, each only where the repo has its marker. Show the script, then say:
+   compose images, each only where the repo has its marker. A `.tool-versions` pin for any tool
+   but node, bun and python gets a step saying it is not installed: name each one, so the person
+   adds its install above the block. Show the script, then say:
    - paste it into the environment's **Setup script** field, in claude.ai/code's environment
      settings, on the account this repo's Subscription row names (`desk-env subscription`);
    - **one environment should serve every desk repo**: `claude --cloud` starts in the last-used
@@ -30,7 +32,7 @@ held (`local` for a new config), and you say so.
    Subscription login, so a first-run prompt (allowing environment variables) is answered now, not
    by a background start that nothing answers. Where it prints a command to run instead, ask the
    person to run it in their own terminal and answer what it asks, then go on.
-4. **The smoke.** Run `$CE smoke` (`desk cloud-smoke`) once the person says the environment is
+4. **The smoke.** Run `node ~/.claude/desk/bin/cloud-smoke.mjs` in the repo once the person says the environment is
    saved. It starts a smoke session under the same login that checks the environment, toolchain,
    services, migrate and seed, the dev server, one unit test and one signed-in browser test, as this
    config's §4 rows name them, and reads its results from a scratch branch it then deletes. Show

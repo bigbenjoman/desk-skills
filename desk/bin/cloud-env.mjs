@@ -8,9 +8,9 @@
 //                                    (never values) the dev server and tests read
 //   cloud-env.mjs first-start        the first `claude --cloud` start, under the repo's Subscription login
 //   cloud-env.mjs smoke [--timeout <minutes>]
-//                                    `desk cloud-smoke`: a smoke session under that login, its results read
-//                                    from a scratch branch that is then deleted; exit 0 only when every
-//                                    check passed
+//                                    the cloud smoke, also `node ~/.claude/desk/bin/cloud-smoke.mjs`: a
+//                                    smoke session under that login, its results read from a scratch
+//                                    branch that is then deleted; exit 0 only when every check passed
 //
 // The script is repo-agnostic: one environment serves every desk repo (`claude --cloud` reuses the
 // last-used environment, not one matched to the repo), so each repo's part is a block between guard
@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { lockfileManager } from './test-scope.mjs';
 
 export const REGISTRY_MIRROR = 'https://mirror.gcr.io';
 export const SMOKE_FILE = '.desk-cloud-smoke.json';
@@ -60,20 +61,26 @@ export function versionOf(s) {
 }
 
 // What the setup script installs for the checkout at `root`:
-//   { toolchain: [{ tool, version, from }], pm: { name, lock, install, exec } | null,
+//   { toolchain: [{ tool, version, from }], other: [{ tool, version, from }] (pins it does not install),
+//     pm: { name, lock, install, exec } | null,
 //     python: [{ dir, lock, install }], prisma: [dir], playwright: [dir], compose: [file] }
 export function detect(root) {
   const dirs = dirsOf(root);
   const pkgs = dirs.map((d) => ({ dir: d, pkg: readJson(join(root, d, 'package.json')) })).filter((p) => p.pkg);
   const rootPkg = readJson(join(root, 'package.json'));
   const toolchain = [];
+  const other = [];
   const pin = (tool, version, from) => { if (version && !toolchain.some((t) => t.tool === tool)) toolchain.push({ tool, version, from }); };
 
-  // .tool-versions first, then the single-tool files, then package.json.
+  // .tool-versions first, then the single-tool files, then package.json. A pin for any other tool
+  // (go, ruby, terraform …) is kept in `other`: the script names it as not installed, and the smoke
+  // checks it, rather than dropping it.
   for (const line of (readText(join(root, '.tool-versions')) ?? '').split('\n')) {
     const [name, ver] = line.replace(/#.*/, '').trim().split(/\s+/);
+    if (!name) continue;
     const tool = { nodejs: 'node', node: 'node', bun: 'bun', python: 'python' }[name];
     if (tool) pin(tool, versionOf(ver), '.tool-versions');
+    else if (!other.some((t) => t.tool === name)) other.push({ tool: name, version: ver ?? '', from: '.tool-versions' });
   }
   for (const f of ['.nvmrc', '.node-version']) pin('node', versionOf(readText(join(root, f))), f);
   pin('python', versionOf(readText(join(root, '.python-version'))), '.python-version');
@@ -82,16 +89,17 @@ export function detect(root) {
   const [pmName, pmVer] = String(rootPkg?.packageManager ?? '').split('@');
   if (pmName === 'bun') pin('bun', versionOf(pmVer), 'package.json packageManager');
 
-  // The package manager, from the root lockfile.
-  let pm = null;
-  const has = (f) => existsSync(join(root, f));
+  // The package manager, from the root lockfile (test-scope.mjs owns which lockfile wins).
   const corepack = rootPkg?.packageManager ? `corepack enable && corepack prepare ${rootPkg.packageManager} --activate && ` : 'corepack enable && ';
-  if (has('pnpm-lock.yaml')) pm = { name: 'pnpm', lock: 'pnpm-lock.yaml', install: `${corepack}pnpm install --frozen-lockfile`, exec: 'pnpm exec' };
-  else if (has('bun.lock') || has('bun.lockb')) pm = { name: 'bun', lock: has('bun.lock') ? 'bun.lock' : 'bun.lockb', install: 'bun install --frozen-lockfile', exec: 'bunx' };
-  else if (has('yarn.lock')) {
-    const classic = !pmVer || pmName !== 'yarn' || /^1\./.test(pmVer);
-    pm = { name: 'yarn', lock: 'yarn.lock', install: `${corepack}yarn install ${classic ? '--frozen-lockfile' : '--immutable'}`, exec: 'yarn' };
-  } else if (has('package-lock.json')) pm = { name: 'npm', lock: 'package-lock.json', install: 'npm ci', exec: 'npx' };
+  const classic = !pmVer || pmName !== 'yarn' || /^1\./.test(pmVer);
+  const how = {
+    pnpm: { install: `${corepack}pnpm install --frozen-lockfile`, exec: 'pnpm exec' },
+    bun: { install: 'bun install --frozen-lockfile', exec: 'bunx' },
+    yarn: { install: `${corepack}yarn install ${classic ? '--frozen-lockfile' : '--immutable'}`, exec: 'yarn' },
+    npm: { install: 'npm ci', exec: 'npx' },
+  };
+  const found = lockfileManager(root);
+  const pm = found ? { ...found, ...how[found.name] } : null;
   if (pm?.name === 'bun' && !toolchain.some((t) => t.tool === 'bun')) pin('bun', 'latest', pm.lock);
 
   // Python projects, wherever their lockfile is.
@@ -108,7 +116,7 @@ export function detect(root) {
   const playwright = pkgs.filter((p) => '@playwright/test' in deps(p.pkg) || 'playwright' in deps(p.pkg)).map((p) => p.dir);
   const compose = dirs.filter((d) => d.split('/').length <= 2 || d === '.')
     .flatMap((d) => COMPOSE.filter((f) => existsSync(join(root, d, f))).map((f) => (d === '.' ? f : `${d}/${f}`)));
-  return { toolchain, pm, python, prisma, playwright, compose };
+  return { toolchain, other, pm, python, prisma, playwright, compose };
 }
 
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -129,6 +137,9 @@ function installOf({ tool, version }) {
 // The steps for what detect() found, in the order they run: [{ what, cmd }].
 export function stepsOf(d) {
   const steps = d.toolchain.map((t) => ({ what: `${t.tool} ${t.version} (${t.from})`, cmd: installOf(t) }));
+  for (const t of d.other ?? []) {
+    steps.push({ what: `${t.tool} ${t.version} (${t.from}): not installed`, cmd: `echo ${q(`desk setup: ${t.tool} ${t.version} is pinned in ${t.from} but not installed: desk installs node, bun and python pins only. Add an install for it above this repo's block.`)} >&2` });
+  }
   if (d.python.length && !d.toolchain.some((t) => t.tool === 'python')) {
     steps.push({ what: 'uv', cmd: 'command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh' });
   }
@@ -197,7 +208,8 @@ export function setupScript(root, ghRepo) {
 }
 
 // ---- hosts and variable names ----------------------------------------------------------------------
-const LOCAL = /^(localhost|127\.|0\.0\.0\.0|\[?::1\]?|host\.docker\.internal$|.*\.local$|.*\.localhost$)/;
+// Whole-name matches only: `localhost.example.com` and `127.example.com` are real hosts to allow.
+const LOCAL = /^(?:localhost|0\.0\.0\.0|\[?::1\]?|host\.docker\.internal|127(?:\.\d{1,3}){3}|.+\.local|.+\.localhost)$/;
 
 // The env files to read: §4 Env files' items, then the usual names beside each package.json and at root.
 export function envFilesOf(root, rowItems = []) {
@@ -244,8 +256,6 @@ export function envHosts(texts) {
 }
 
 // ---- the smoke session --------------------------------------------------------------------------
-export const SMOKE_CHECKS = ['environment', 'toolchain', 'services', 'migrate', 'seed', 'dev-server', 'unit-test', 'browser-test'];
-
 // The checks to ask for, each with what the session is to do, from the config rows (null or [] where a
 // row is unset or `none`) and the detected toolchain. A check whose row is unset is not asked.
 //   rows: { services, migrate, seed, dev, unit, e2e, signin } -> [{ name, how }]
@@ -335,54 +345,65 @@ async function main(cmd, args) {
     console.log(`VARS ${names.length ? names.join(' ') : '(none)'}`);
     return 0;
   }
-  if (cmd === 'first-start' || cmd === 'smoke') {
-    const { E, ghRepo, root } = await repoContext();
+  if (cmd === 'first-start') {
+    const { E, ghRepo } = await repoContext();
     const { env, who, configDir } = await loginEnv(E);
     const W = await import('./cloud-worker.mjs');
-    if (cmd === 'first-start') {
-      const prompt = `desk-setup's first cloud start for ${ghRepo}: reply "ok" and stop. Change nothing.`;
-      const name = `${ghRepo.split('/').pop()}-desk-first-start`;
-      console.log(`starting claude --cloud as ${who}`);
-      if (process.stdin.isTTY) return spawnSync('claude', ['--cloud', prompt, '--name', name], { stdio: 'inherit', env }).status ?? 1;
-      const got = W.startCloud(prompt, { env, name });
-      if (got.error) {
-        console.log(`the start did not finish: ${got.error}`);
-        console.log(`run it in your own terminal and answer what it asks:\n  ${configDir ? `CLAUDE_CONFIG_DIR=${q(configDir)} ` : ''}claude --cloud ${q(prompt)}`);
-        return 1;
-      }
-      console.log(`started: ${got.url}`);
-      return 0;
+    const prompt = `desk-setup's first cloud start for ${ghRepo}: reply "ok" and stop. Change nothing.`;
+    const name = `${ghRepo.split('/').pop()}-desk-first-start`;
+    console.log(`starting claude --cloud as ${who}`);
+    if (process.stdin.isTTY) return spawnSync('claude', ['--cloud', prompt, '--name', name], { stdio: 'inherit', env }).status ?? 1;
+    const got = W.startCloud(prompt, { env, name });
+    if (got.error) {
+      console.log(`the start did not finish: ${got.error}`);
+      console.log(`run it in your own terminal and answer what it asks:\n  ${configDir ? `CLAUDE_CONFIG_DIR=${q(configDir)} ` : ''}claude --cloud ${q(prompt)}`);
+      return 1;
     }
-    const at = args.indexOf('--timeout');
-    const minutes = at >= 0 ? Number(args[at + 1]) : 45;
-    const base = (() => { try { return E.configValue('default-branch'); } catch { return null; } })() ?? 'main';
-    const branch = `desk/cloud-smoke-${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}`;
-    const checks = smokeChecks({
-      services: rowValues(E, 'local-services'), migrate: rowValues(E, 'db-migrate-cmd'), seed: rowValues(E, 'seed-cmd'),
-      dev: rowValues(E, 'dev-cmd'), unit: rowValues(E, 'test-cmd'), e2e: rowValues(E, 'e2e-cmd'), signin: rowValues(E, 'test-signin'),
-    }, detect(root).toolchain);
-    const got = W.startCloud(smokePrompt({ repo: ghRepo, base, branch, checks }), { env, name: `${ghRepo.split('/').pop()}-desk-cloud-smoke` });
-    if (got.error) { console.log(`FAIL the smoke session did not start: ${got.error}`); return 1; }
-    console.log(`smoke session ${got.url}, as ${who}; waiting up to ${minutes} min for ${branch}`);
-    const git = (...a) => spawnSync('git', a, { cwd: root, encoding: 'utf8' });
-    const until = Date.now() + minutes * 60_000;
-    while (!git('ls-remote', '--heads', 'origin', branch).stdout.trim()) {
-      if (Date.now() > until) { console.log(`FAIL no ${branch} on origin after ${minutes} min: see ${got.url}`); return 1; }
-      spawnSync('sleep', ['20']);
-    }
-    const fetched = git('fetch', '--quiet', 'origin', branch);
-    const text = fetched.status === 0 ? git('show', `FETCH_HEAD:${SMOKE_FILE}`).stdout : '';
-    const del = git('push', '--quiet', 'origin', '--delete', branch);
-    if (del.status !== 0) console.log(`could not delete ${branch} on origin: ${del.stderr.trim()}`);
-    const v = smokeVerdict(text || 'null', checks.map((c) => c.name));
-    for (const l of v.lines) console.log(l);
-    console.log(v.ok ? 'cloud smoke passed' : `cloud smoke failed: see ${got.url}`);
-    return v.ok ? 0 : 1;
+    console.log(`started: ${got.url}`);
+    return 0;
   }
+  if (cmd === 'smoke') return runSmoke(args);
   console.error('usage: cloud-env.mjs script [--write] | hosts | first-start | smoke [--timeout <minutes>]');
   return 2;
 }
 
+// The cloud smoke (cloud-smoke.mjs, or `cloud-env.mjs smoke`): a smoke session under the repo's
+// Subscription login, its results read from a scratch branch that is then deleted. -> exit code, 0
+// only when every check passed.
+export async function runSmoke(args = []) {
+  const { E, ghRepo, root } = await repoContext();
+  const { env, who } = await loginEnv(E);
+  const W = await import('./cloud-worker.mjs');
+  const at = args.indexOf('--timeout');
+  const minutes = at >= 0 ? Number(args[at + 1]) : 45;
+  const base = (() => { try { return E.configValue('default-branch'); } catch { return null; } })() ?? 'main';
+  const branch = `desk/cloud-smoke-${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}`;
+  const d = detect(root);
+  const checks = smokeChecks({
+    services: rowValues(E, 'local-services'), migrate: rowValues(E, 'db-migrate-cmd'), seed: rowValues(E, 'seed-cmd'),
+    dev: rowValues(E, 'dev-cmd'), unit: rowValues(E, 'test-cmd'), e2e: rowValues(E, 'e2e-cmd'), signin: rowValues(E, 'test-signin'),
+  }, [...d.toolchain, ...d.other]);
+  const got = W.startCloud(smokePrompt({ repo: ghRepo, base, branch, checks }), { env, name: `${ghRepo.split('/').pop()}-desk-cloud-smoke` });
+  if (got.error) { console.log(`FAIL the smoke session did not start: ${got.error}`); return 1; }
+  console.log(`smoke session ${got.url}, as ${who}; waiting up to ${minutes} min for ${branch}`);
+  const git = (...a) => spawnSync('git', a, { cwd: root, encoding: 'utf8' });
+  const until = Date.now() + minutes * 60_000;
+  while (!git('ls-remote', '--heads', 'origin', branch).stdout.trim()) {
+    if (Date.now() > until) { console.log(`FAIL no ${branch} on origin after ${minutes} min: see ${got.url}`); return 1; }
+    spawnSync('sleep', ['20']);
+  }
+  const fetched = git('fetch', '--quiet', 'origin', branch);
+  const text = fetched.status === 0 ? git('show', `FETCH_HEAD:${SMOKE_FILE}`).stdout : '';
+  const del = git('push', '--quiet', 'origin', '--delete', branch);
+  if (del.status !== 0) console.log(`could not delete ${branch} on origin: ${del.stderr.trim()}`);
+  const v = smokeVerdict(text || 'null', checks.map((c) => c.name));
+  for (const l of v.lines) console.log(l);
+  console.log(v.ok ? 'cloud smoke passed' : `cloud smoke failed: see ${got.url}`);
+  return v.ok ? 0 : 1;
+}
+
+export const runMain = (fn) => fn().then((c) => process.exit(c), (e) => { console.error(e.message); process.exit(1); });
+
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
-  main(process.argv[2], process.argv.slice(3)).then((c) => process.exit(c), (e) => { console.error(e.message); process.exit(1); });
+  runMain(() => main(process.argv[2], process.argv.slice(3)));
 }
