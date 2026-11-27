@@ -205,7 +205,7 @@ fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(
 cmp "$T/stamp1" "$T/stamp3"
 check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
-# #1567 the memory a held pass read (its hold's numbers.availGB) is the machine's, which no two runs share.
+# The memory a held pass read (its hold's numbers.availGB) is the machine's, which no two runs share.
 fieldtree mem1 'hold: { cause: "memory", numbers: { availGB: 2.9478759765625, minAvailGB: 4 } }' 'A-1 running'
 fieldtree mem2 'hold: { cause: "memory", numbers: { availGB: 2.910675048828125, minAvailGB: 4 } }' 'A-1 running'
 cmp "$T/mem1" "$T/mem2"
