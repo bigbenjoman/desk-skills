@@ -860,7 +860,7 @@ for k in 23 24; do
   git -C "$T/wt/W-$k" fetch -q origin "fix/W-$k"; [ "$k" = 23 ] && git -C "$T/wt/W-$k" reset -q --hard FETCH_HEAD~1
   echo d > "$T/wt/W-$k/d.txt"; git -C "$T/wt/W-$k" add d.txt
   trailer=(); [ "$k" = 23 ] && trailer=(-m 'Co-Authored-By: Claude <noreply@anthropic.com>')
-  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" commit -q -m d "${trailer[@]}"
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" commit -q -m d ${trailer[@]+"${trailer[@]}"}
   GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" cherry-pick FETCH_HEAD >/dev/null
   q set "W-$k" "pass_rewrite={\"sha\":\"$(git --git-dir="$T/wb-origin.git" rev-parse "refs/heads/fix/W-$k")\",\"branch\":\"fix/W-$k\",\"base\":\"base-W-$k\",\"author\":{\"name\":\"t\",\"email\":\"t@example.com\"},\"strip\":true}"
 done
