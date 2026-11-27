@@ -1350,23 +1350,24 @@ const stem = (p) => String(p).split('/').pop().replace(/\.[^.]*$/, '');
 const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
 // Beyond those lines, every path the failed log names (log_paths, pass.mjs withErrors, read past the first
 // few error lines) is matched against each changed file, added, renamed or edited alike: the same repo path
-// (one ending in the other, two segments at least), or the same file name where its stem is not GENERIC. A
-// path the failure itself names (on an error line, or an annotation's) also counts under a changed file's
-// own folder, as a suite's file sits beside the module it tests, or a repo-wide check names the folder's
-// files. Only the file's own folder, not its ancestors: `tests/` or `src/` would make every suite related.
+// (one ending in the other, two segments at least), or the same file name, a generic one too. A path the
+// failure itself names (on an error line, or an annotation's) also counts under a changed file's own folder,
+// as a suite's file sits beside the module it tests, or a repo-wide check names the folder's files. Only
+// the file's own folder, not its ancestors, so a change in `desk/bin/` does not make all of `desk/` related;
+// a file directly in `tests/` has `tests/` as its own folder, so any failing suite there is related.
 const base = (p) => p.split('/').pop();
 const samePath = (p, ch) => p === ch || p.endsWith(`/${ch}`) || (p.includes('/') && ch.endsWith(`/${p}`));
-const sameName = (p, ch) => base(p) === base(ch) && stem(ch).length >= 2 && !GENERIC.has(stem(ch).toLowerCase());
-// The folder as the repo names it, and less leading folders while two segments are left.
-const dirTails = (dir) => { const s = dir.split('/'); return [dir, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; };
+const sameName = (p, ch) => base(p) === base(ch);
+// A path as the repo names it, and less leading folders while two segments are left.
+const pathTails = (p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; };
 const underDir = (p, ch) => {
   const dir = ch.includes('/') ? ch.slice(0, ch.lastIndexOf('/')) : '';
-  return !!dir && dirTails(dir).some((d) => p.startsWith(`${d}/`) || p.includes(`/${d}/`));
+  return !!dir && pathTails(dir).some((d) => p.startsWith(`${d}/`) || p.includes(`/${d}/`));
 };
 function namesChanged(c, changed) {
   const lines = errorLines(c);
   const text = [...lines, ...(c?.error_paths ?? [])];
-  const tails = changed.flatMap((p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; });
+  const tails = changed.flatMap(pathTails);
   const names = [...new Set(changed.map(stem))].filter((n) => n.length >= 4 && !GENERIC.has(n.toLowerCase())).map(wordIn);
   if (text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)))) return true;
   const failing = [...pathsIn(lines.join('\n')), ...(c?.error_paths ?? []), ...(c?.log_fail_paths ?? [])];
