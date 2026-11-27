@@ -365,7 +365,11 @@ function requeue(q, key, { handedBack = false } = {}) {
     // resume on its own login, and stop finds nothing to end. The person sends it to a fresh worker on
     // whichever login the next spawn picks, its worktree committed first as stop commits it.
     if (!p && pausedGone(t)) {
-      if (passRunning()) throw new Error(`${key} is paused at a usage limit with no worker process, but a pass is running now and may resume it: requeue it again once the pass has finished`);
+      // The pass lock, held until this process exits (after the save), so no pass starts meanwhile and
+      // resumes the old session over this requeue. Never waited for under the queue lock, which a pass
+      // may be waiting on: a pass running now refuses it. One that ran this requeue itself holds it.
+      const holder = tryLockFile(join(stateDir(), 'orchestrator.lock'), { by: `queue.mjs requeue ${key}` });
+      if (holder !== true && holder !== process.ppid) throw new Error(`${key} is paused at a usage limit with no worker process, but a pass is running now and may resume it: requeue it again once the pass has finished`);
       pausedWip = commitStopped(t.worktree ?? join(worktreesDir(), key), key, t.branch, 'its worker, paused at a usage limit, was gone and queue.mjs requeue sent it to a new one');
     } else if (!p && t.usage_paused && t.session_id && t.location !== 'cloud') {
       throw new Error(`${key} is paused at a usage limit, but its worker is still live (a process runs its session ${t.session_id}, or none could be checked): stop it first (queue.mjs stop ${key}), or it gets a second one`);
@@ -454,7 +458,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (p?.notes.length) appendNotes(p.notes, stateDir());
   save(q);
   if (pausedWip?.error) process.exitCode = EXIT.SHOW_PERSON;
-  const wip = !pausedWip ? '' : `; its worker, paused at a usage limit, was gone: its work so far is ${pausedWip.sha ? `committed as ${pausedWip.sha.slice(0, 12)} on ${pausedWip.branch}` : pausedWip.nothing ? `nothing to commit (${pausedWip.nothing})` : `not committed: ${pausedWip.error}`}, and a new worker starts on whichever login the next spawn picks`;
+  const wip = !pausedWip ? '' : `; its worker, paused at a usage limit, was gone: its work so far is ${keptText(pausedWip)}, and a new worker starts on whichever login the next spawn picks`;
   return `${key} requeued: ${placed}${wip}${harvested}${repointed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
@@ -559,6 +563,9 @@ function commitStopped(wt, key, branch, why = 'queue.mjs stop ended its worker')
   }
 }
 
+// What commitStopped's result `c` kept, for the line that reports it.
+const keptText = (c) => (c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`);
+
 function stop(key) {
   claimPassLock(key);
   // Read without the queue lock, as every reader does; it is taken only for the write, so ending the
@@ -586,7 +593,7 @@ function stop(key) {
   const wt = t.worktree ?? join(worktreesDir(), key);
   const c = commitStopped(wt, key, t.branch);
   const at = new Date().toISOString();
-  const kept = c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`;
+  const kept = keptText(c);
   const stage = lastStage(round)?.stage ?? t.stage ?? null;
   // The worker is gone and no pass can start, so the hold must land: wait for the queue lock as long as
   // its holder lives (dir-lock clears a dead one's).

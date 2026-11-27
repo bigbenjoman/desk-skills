@@ -196,6 +196,19 @@ check "DS-1056 AC1: its worktree work is committed on its branch first"         
 # (pass.mjs startsFresh) on the login that pass picks (repoLogin), not the limited one.
 fresh_u1=$(node --input-type=module -e 'import { toResume, toHandoff } from "'"$B"'/pass/shared.mjs"; import { readFileSync } from "node:fs"; const t = JSON.parse(readFileSync(process.argv[1], "utf8")).tickets["U-1"]; console.log(JSON.stringify([toResume(t), !!toHandoff(t), t.session_id, t.login_move ?? null, t.resume]))' "$DESK_QUEUE")
 check "DS-1056 AC4: the next pass starts it fresh, on the login it picks" '[ "$fresh_u1" = "[false,false,null,null,null]" ]'
+# It holds the pass lock from before the commit until it has saved, so a pass started meanwhile refuses
+# rather than resuming the old session over the requeue. A git that waits at the commit gives the pass
+# its moment; the lock is let go once the requeue is done.
+running U-4; q set U-4 "$PAUSED"; echo "wip" > "$T/wt/U-4/w.txt"
+mkdir -p "$T/slowgit"; real_git=$(command -v git)
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = commit ] && { : > "%s/slowgit/at-commit"; sleep 2; }; done\nexec "%s" "$@"\n' "$T" "$real_git" > "$T/slowgit/git"; chmod +x "$T/slowgit/git"
+PATH="$T/slowgit:$PATH" node "$B/queue.mjs" requeue U-4 > "$T/U-4.out" 2>&1 & requeuer=$!
+for _ in $(seq 1 60); do [ -e "$T/slowgit/at-commit" ] && break; sleep 0.05; done
+held=no; grep -q 'queue.mjs requeue U-4' "$T/state/orchestrator.lock" 2>/dev/null && held=yes
+pout=$(DESK_REPO_ROOT="$T/repo" node "$B/pass.mjs" 2>&1); prc=$?
+wait "$requeuer"; rc=$?; out=$(cat "$T/U-4.out")
+check "DS-1056 a pass started while it commits refuses, naming the requeue" '[ $held = yes ] && [ $prc -ne 0 ] && [[ "$pout" == *"queue.mjs requeue U-4"* ]]'
+check "DS-1056 and the requeue lands, then lets the pass lock go"         '[ $rc -eq 0 ] && [ "$(f U-4 state)" = "\"triaged\"" ] && [ "$(f U-4 resume)" = null ] && [ ! -e "$T/state/orchestrator.lock" ]'
 # Paused at a limit but its process still runs: refused as any live worker is.
 running U-2; q set U-2 "$PAUSED"; worker U-2
 echo "x" > "$T/wt/U-2/x.txt"
