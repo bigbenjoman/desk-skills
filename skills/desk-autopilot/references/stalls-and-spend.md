@@ -117,6 +117,9 @@ prompt carrying the ticket's text, and the session pushes a branch and opens a d
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
 left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+Cloud starts have their own limit, §3b "Cloud sessions at once" (unset is 4): a cloud session takes
+no local slot and is not counted in the repo or machine cap or the memory pool, so it starts beside the
+local workers; pacing, the usage limit and maintenance still hold it.
 Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
 kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to

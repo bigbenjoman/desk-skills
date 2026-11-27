@@ -162,6 +162,18 @@ t('DS-305 borrowing reads a named batch\'s heartbeat from its own state director
 named('acme__b', 'Y-1', '{ not json');
 t('DS-305 an unreadable named batch\'s queue is named and counted at its repo\'s cap', /acme\/b batch Y-1's queue cannot be read \(.*batches\/Y-1\/queue\.json is not valid JSON.*\), so it counts at its cap of 4 workers/.test(budget(queuePath('acme__a'), 1)), true);
 
+// #1564 AC1: a ticket running in a cloud session holds nothing on this computer, so the machine budget
+// leaves it out; one back on a local worker for its PR (cloudPrHere) counts again.
+fresh();
+repo('acme__a', { share: 2, running: 1 });
+named('acme__b', 'C-1', JSON.stringify({ tickets: {
+  'C-2': { key: 'C-2', state: 'running', location: 'cloud', cloud: { started: minsAgo(5) } },
+  'C-3': { key: 'C-3', state: 'running', location: 'cloud', cloud: { started: minsAgo(5) } },
+  'C-4': { key: 'C-4', state: 'running', location: 'cloud', result: { pr: 9 } },
+  'C-5': { key: 'C-5', state: 'running' },
+} }));
+t('#1564 AC1 the machine budget counts the local workers only, not the cloud sessions', budget(queuePath('acme__a'), 1), 'machine budget: 3 of the machine\'s 10 worker(s) running across every repo');
+
 // A repo's batches share its §3b cap. A named batch of `slug` with `running` and `ready` tickets and
 // a heartbeat `beat` minutes old in its own state directory, planning its next pass in `next` minutes.
 function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next, last } = {}) {

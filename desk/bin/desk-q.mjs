@@ -46,7 +46,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
+import { runsInCloud } from './pass/shared.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -943,8 +944,12 @@ export const sessionStalled = (r) => r.last != null && r.run?.by === 'session' &
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
 // A batch's base conflict fix holds a worker while it runs: the pass counts it against both caps.
 const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b), 0) : r.q?.base_fix?.running ? 1 : 0);
-// The workers a repo or batch has running: its running tickets and its base conflict fix.
-const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
+// A repo's or batch's running tickets in a cloud session: each holds no worker slot here, only one of
+// §3b "Cloud sessions at once".
+const cloudRunning = (r) => (r.rows ? [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'running' && runsInCloud(x.t)).length : 0);
+// The workers a repo or batch has running on this computer: its running tickets but those in a cloud
+// session, and its base conflict fix.
+const workersRunning = (r) => (r.rows ? count(r, 'running') - cloudRunning(r) : 0) + baseFixes(r);
 // Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 // A scoped load's other batches (loadRepos `others`) count too.
@@ -3293,7 +3298,10 @@ function barWrap(line, width) {
 const DRIVER_LAST_W = 100;
 function countsLine(r, now = Date.now()) {
   const segs = [needsYou(needsCount(r).shown)];
-  for (const k of SHOWN.filter((g) => g !== 'needs')) if (count(r, k)) segs.push(['  ', null], [`${LABEL[k][0]} ${count(r, k)} ${k}`, STATE_SGR[k]]);
+  // Running tickets in a cloud session are told apart from the local ones: they take no local slot.
+  const cloud = cloudRunning(r);
+  const text = (k) => (k === 'running' && cloud ? `${LABEL[k][0]} ${count(r, k) - cloud} local · ☁ ${cloud} cloud` : `${LABEL[k][0]} ${count(r, k)} ${k}`);
+  for (const k of SHOWN.filter((g) => g !== 'needs')) if (count(r, k)) segs.push(['  ', null], [text(k), STATE_SGR[k]]);
   const drivers = (r.batches ?? [r]).map((b) => driverUp(b, now)).filter(Boolean).flatMap(({ b, up, last }) => [BAR,
     [`▸ ${r.batches && b.batch ? `${b.batch} ` : ''}merge driver up`, STATE_SGR.merging], ...(up == null ? [] : [[` ${since(up)}`, BOLD]]),
     [' · last: ', GREY], [last == null ? 'nothing logged yet' : cut(last, DRIVER_LAST_W), null]]);
@@ -3304,6 +3312,17 @@ function countsLine(r, now = Date.now()) {
 // running ticket it collides with, which the pass never starts it beside ("held back by a collision"),
 // or the machine cap, which every repo's workers share.
 function startWait(r, t) {
+  // A ticket that starts in a cloud session waits only on §3b "Cloud sessions at once", never on a
+  // worker or machine slot. A resume or handoff of one runs here, so it waits as a local ticket does.
+  // (pass/eligibility.mjs toResume and toHandoff, which import this module, so are not imported here.)
+  const resumes = ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(t.resume) || t.handoff === 'pending';
+  if (runsInCloud(t) && !resumes) {
+    let limit;
+    try { limit = cloudSessions(repoConfigValue(r.slug, 'cloud-sessions')); } catch { limit = cloudSessions(null); }
+    if (limit.bad) return `waits for config §3b "Cloud sessions at once" to read as a whole number`;
+    const busy = cloudRunning(r);
+    return busy >= limit.n ? `waits for a cloud session (${busy} of ${limit.n} busy)` : null;
+  }
   if (r.workers === 0) return 'workers set to 0';
   const busy = workersRunning(r);
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
