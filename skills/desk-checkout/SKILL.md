@@ -23,18 +23,23 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read `desk-env show rules 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
-which slug was looked up and offer `/desk-setup`.
-§1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
-§4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
-**§4 Check-out destination** says where the draft goes:
+`EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`. Otherwise read
+only these rows, never the `CONFIG` file:
+
+```bash
+desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own read-others slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
+```
+
+Name any row printed `UNSET` (a `TODO`, or missing) and offer `/desk-setup`; an unset §3 row is a
+`no`. §3 says which sources you may read, §4 People who's who (never ask a former member), §5 binds
+the draft as any message, and **§4 Check-out destination** says where it goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
-| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as §5 says. **Never sent** |
+| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as step 5 says. **Never sent** |
 | a file path | Written to that file (a directory gets `<YYYY-MM-DD>.md` inside it). If the file already exists, show what is there and ask before replacing or appending |
 | `none` | Printed and copied. Nothing is written anywhere |
-| `TODO` or missing | Ask where it goes, print it meanwhile, and offer `/desk-setup` |
+| `UNSET` | Ask where it goes and print it meanwhile |
 
 Then read `references/style.md` before drafting.
 
@@ -75,9 +80,8 @@ python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; py
 `references/sources.md` covers the newer collectors: `worklog_activity.py`,
 `claude_activity.py --window-turns`, issues in `github_activity.py`.
 
-`claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself, and nor does the one that drafted an earlier check-out that
-day.
+`claude_activity.py` cuts each session off where it loads this skill, so neither the drafting
+session nor one that drafted an earlier check-out that day reports itself.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
@@ -101,13 +105,9 @@ is usually there: the root cause, the status or the drafted announcement. Skip i
 small sessions.
 
 **Connectors.** They're deferred tools, so search with a required term: `+gmail`, `+calendar`,
-`+slack` (e.g. `ToolSearch "+slack search"`). A role is missing when no returned tool name
-contains that term. Unrelated hits (WebSearch, Atlassian) never stand in.
-When a role is missing, run `perl -e 'alarm 90; exec @ARGV' claude mcp list`.
-If it shows the connector as `✔ Connected`, it was connected after this session started, and
-the fix is a **new session**: reconnecting won't help. Otherwise the fix is to enable it at
-claude.ai → Settings → Connectors. Either way, carry on and **name it under the draft** with
-its fix. With no calendar, leave out meeting lines: never guess them.
+`+slack`. A role with no tool name containing its term is missing: `references/connectors.md` says
+how to find the fix, and the draft names it. With no calendar, leave out meeting lines: never
+guess them.
 
 If a script fails, report its error line and carry on. A missing Jira
 credential means `desk-jira` isn't set up for that repo yet (`desk-jira where` shows the paths;
