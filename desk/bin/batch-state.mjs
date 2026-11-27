@@ -65,6 +65,14 @@ export const slotWaitWords = (heldBy) => `waiting for a slot (held by ${heldBy.j
 // What holds the slots a pending handoff waits for, as the last pass recorded on its handoff wait
 // (pass/deadlines.mjs), or null where none holds it.
 export const slotHeldBy = (t) => (t?.state === 'triaged' && t.handoff === 'pending' && t.waits?.handoff?.held_by?.length ? t.waits.handoff.held_by : null);
+// The words for a pending handoff a running ticket's files hold back, `collision` being
+// [{ file, with: [the tickets holding it] }]: the pass report and desk-q both say it in these words.
+export const collisionWaitWords = (collision) => `held by collision on ${collision.map((c) => `${c.file} with ${c.with.join(', ')}`).join('; ')}`;
+// The collision a pending handoff waits on, as the last pass recorded on its handoff wait, or null.
+export const collisionHeldBy = (t) => (t?.state === 'triaged' && t.handoff === 'pending' && t.waits?.handoff?.collision?.length ? t.waits.handoff.collision : null);
+// What a pending handoff waits on with nothing for the person to do, in those words: full slots or a
+// collision, or null where neither holds it.
+export const handoffWaitText = (t) => (slotHeldBy(t) ? slotWaitWords(slotHeldBy(t)) : collisionHeldBy(t) ? collisionWaitWords(collisionHeldBy(t)) : null);
 
 // merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it: only
 // its current PR merging counts (merge-driver.sh release_chain, queue.mjs requeue's own holds). Whether t,

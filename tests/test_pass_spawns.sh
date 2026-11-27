@@ -1687,6 +1687,36 @@ q set RK-147 state=done; : > "$T/fb-spawns"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-575 AC1 the last starts once the second stops" 'spawned RK-181'
 
+# ---- #1515: a ticket handed off between sessions keeps its files' places against new tickets, and
+# a handoff a running ticket's files hold back is said as that collision, not a deadline stall.
+# hot <KEY> <files...>: a ticket handed off to Stage 4b, with its worktree, branch and briefing.
+hot(){ k=$1; shift; fbt "$k" triaged "$@"; git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q set "$k" lane=A "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; }
+fbq hoa '1'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"; q set-batch concurrency=1
+fbt HO-0 running src/solo.ts; q set HO-0 session_id=live-1
+hot HO-1 src/big.ts; fbt HO-2 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1515 AC1 AC2 a new ticket naming a file a handed-off ticket names does not start, and the report names the handoff holding it" \
+  '! spawned HO-2 && [ "$(field HO-2 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-2 (src/big.ts has 1 running or handed off of its 1: HO-1 (handed off))"'
+check "#1515 the metrics line names the handoff among those filling the file" \
+  'tail -n 1 "$T/state-hoa/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"HO-2\")) == [{\"key\":\"HO-2\",\"with\":[\"HO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+q set HO-0 state=done; : > "$T/fb-spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1515 AC3 when the slot frees, the handed-off ticket takes it and the new ticket naming its file still waits" \
+  'spawned HO-1 && ! spawned HO-2 && [ "$(field HO-1 state)" = "\"running\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-2 (src/big.ts has 1 running of its 1: HO-1)"'
+
+fbq hob '1'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+fbt HO-5 running src/edge.ts; q set HO-5 session_id=live-2
+hot HO-6 src/edge.ts
+q set HO-6 'waits={"handoff":{"since":"2026-01-01T00:00:00.000Z","deadline":"2026-01-01T00:15:00.000Z","escalate_to":"requeue","stage":"4b"}}'
+hot HO-7 src/hot.ts; hot HO-8 src/hot.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1515 AC4 a handoff a running ticket's files hold back past its deadline is said as held by that collision, not as a deadline stall" \
+  '! spawned HO-6 && echo "$out" | grep -qF "HO-6: held by collision on src/edge.ts with HO-5 — its Stage 4b session starts once that ticket stops running" && ! echo "$out" | grep -qF "HO-6: HANDOFF NOT STARTED"'
+check "#1515 AC4 its handoff wait records the collision and no deadline, for desk-q to read" \
+  '[ "$(field HO-6 waits.handoff | jq -c "[.collision, .deadline, .escalated]")" = "[[{\"file\":\"src/edge.ts\",\"with\":[\"HO-5\"]}],null,null]" ]'
+check "#1515 two handoffs naming one file do not hold each other: the first in queue order starts and the other waits behind it" \
+  'spawned HO-7 && ! spawned HO-8 && echo "$out" | grep -qF "HO-8: held by collision on src/hot.ts with HO-7"'
+
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
 # the first line of big.ts (1,200 lines, so 3 places unlowered). The fake gh answers PRs from $T/fx.
