@@ -719,7 +719,8 @@ t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics',
 
 // ---- Long keys and short, in every view at 60, 80 and 120 columns. Each ticket row keeps a
 // space between its key and its state, every row's state starts in one column (the STATE heading's, where
-// the view has one), a row's title is whole or cut with an ellipsis, and every row and heading fits
+// the view has one), a row's title is whole, cut with an ellipsis or (where a Queue drops TITLE) not
+// shown at all, and every row and heading fits
 // the width. A repo name longer than its column is cut with an ellipsis too.
 const MIXED = ['issue-1484', 'SV-12', 'issue-1480', 'SV-7', 'issue-1479'];
 repo('mixed-up-repo', 4870, {
@@ -742,7 +743,11 @@ repo('mixed-up-repo', 4870, {
       rows: rows.filter(mixedRow).length,
       apart: rows.every((l, i) => l[at[i] - 1] === ' '),
       aligned: new Set([...at, ...(head ? [head.indexOf('STATE')] : [])]).size === 1,
-      cut: rows.filter(mixedRow).every((l) => /(title|…)$/.test(l)),
+      // A Queue narrower than every column drops TITLE whole (DS-1046 AC3): its heading has no TITLE,
+      // and no row shows any of its title, which starts with the row's own key.
+      cut: head && !/\sTITLE$/.test(head.trimEnd())
+        ? rows.filter(mixedRow).every((l) => { const k = MIXED.find((x) => new RegExp(`^[ ›]*\\S+ +${x} `).test(l)); return l.split(k).length === 2 && !/title$/.test(l); })
+        : rows.filter(mixedRow).every((l) => /(title|…)$/.test(l)),
       fits: [...rows, ...ls.filter((l) => /\bSTARTS\b/.test(l))].every((l) => [...l].length <= width),
     };
   };

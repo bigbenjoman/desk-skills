@@ -3492,6 +3492,9 @@ function fitSegs(segs, max, w) {
 const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
 // STARTS and SHIPS at their widest, and the `#` column with the indent and gap around it.
 const STARTS_W = 13, SHIPS_W = 14, POS_W = 2 + 4 + 2;
+// A key of up to KEY_KEEP characters ("issue-1484", "DS-10461") is never cut: only a longer one (a
+// base-repair key) gives way, down to the width the others need (keyW).
+const KEY_KEEP = 11;
 // A column fitted to its heading and its longest cell, with the gap after it.
 const fitW = (head, cells, max) => Math.min(max, Math.max(head.length, ...cells.map((s) => String(s ?? '').length)) + 2);
 // WAITING, between STATE and WHAT IT NEEDS, holds how long a row has sat in Merging, Needs you or Put
@@ -3507,7 +3510,7 @@ const shortWhen = (s) => String(s ?? '').replace(TODAY_AT, '$1').replace(YEAR_ON
 // (`hw`) and TITLE (`tw`), 0 for a column left out, and `short` where dates take their short form
 // (shortWhen). `starts` and `ships` are the cells those columns show. Narrower than every column at its
 // widest, it gives way in turn: WHAT IT NEEDS narrows to NEED_MIN, STARTS and SHIPS to their longest
-// cells, then a key too long for the room left is cut with … (never under 10), then TITLE goes, then
+// cells, then a key too long for the room left is cut with … (never under the width a key of KEY_KEEP or fewer shown needs), then TITLE goes, then
 // WAITING, then dates take their short form, then STARTS narrows to its heading, a longer cell cut
 // with …, then STARTS goes, then SHIPS. Narrower still, the row is cut at a whole column (cutRuns),
 // so WHAT IT NEEDS goes last.
@@ -3526,7 +3529,8 @@ function queueWidths(width, keys, spans, { starts, ships }) {
     L(true, 0, sRoom, hFit(true), false, true), L(true, 0, 0, hFit(true), false, true), L(true, 0, 0, 0, false, true)];
   // The row's width less TICKET, with WHAT IT NEEDS at NEED_MIN and TITLE at TITLE_MIN.
   const rest = (s) => POS_W + STATE_W + s.ww + NEED_MIN + s.sw + s.hw + (s.title ? TITLE_MIN : 0);
-  const keyOf = (s) => (s.cutKey ? Math.max(10, Math.min(full, width - rest(s))) : full);
+  const keep = keyW(keys.filter((k) => String(k).length <= KEY_KEEP));
+  const keyOf = (s) => (s.cutKey ? Math.max(keep, Math.min(full, width - rest(s))) : full);
   const s = steps.find((x) => rest(x) + keyOf(x) <= width) ?? steps.at(-1);
   const kw = keyOf(s), fixed = rest(s) - NEED_MIN + kw;
   const nw = Math.max(NEED_MIN, Math.min(NEED_W, width - fixed));
