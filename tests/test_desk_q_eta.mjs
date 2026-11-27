@@ -398,17 +398,21 @@ t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+● runn
 t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
 // issue-1543 AC5: a ready row the last pass held behind running tickets on a shared file's budget names
 // them, not a worker, and one from another batch (B-9) too. A collision recorded with no pass hold
-// (B-4 with B-2: the file still had a place) holds nothing, nor a holder no longer running (B-6).
+// (B-4 with B-2: the file still had a place) holds nothing, nor a holder no longer running (B-6). A
+// handoff of this batch waiting for its next session (B-8) still holds (pass.mjs budgetHolds).
 repo('shared', 4640, { ...between, tickets: { ...between.tickets, 'B-3': { state: 'triaged', collides_with: 'B-1' }, 'B-4': { state: 'triaged', collides_with: 'B-2' },
-  'B-5': { state: 'triaged' }, 'B-6': { state: 'triaged' } }, sizes: { ...between.sizes, 'B-5': 'M', 'B-6': 'M' }, pass: FIXED - 2 * MIN, next: FIXED + 5 * MIN });
+  'B-5': { state: 'triaged' }, 'B-6': { state: 'triaged' }, 'B-7': { state: 'triaged' }, 'B-8': { state: 'triaged', handoff: 'pending' } },
+  sizes: { ...between.sizes, 'B-5': 'M', 'B-6': 'M', 'B-7': 'M', 'B-8': 'M' }, pass: FIXED - 2 * MIN, next: FIXED + 5 * MIN });
 writeFileSync(join(stateOf('shared'), 'passes.jsonl'), [
   { at: new Date(FIXED - 30 * MIN).toISOString(), collisions: [{ key: 'B-4', with: ['B-2'], files: ['a.mjs'] }] },
-  { at: new Date(FIXED - 2 * MIN).toISOString(), collisions: [{ key: 'B-3', with: ['B-1', 'B-9'], files: ['a.mjs'] }, { key: 'B-5', with: ['B-6'], files: ['b.mjs'] }] },
+  { at: new Date(FIXED - 2 * MIN).toISOString(), collisions: [{ key: 'B-3', with: ['B-1', 'B-9'], files: ['a.mjs'] }, { key: 'B-5', with: ['B-6'], files: ['b.mjs'] },
+    { key: 'B-7', with: ['B-8'], files: ['c.mjs'] }] },
 ].map((l) => `${JSON.stringify(l)}\n`).join(''));
 const shared = Q.repoScreen(repoAt('shared'), { now: FIXED, width: 200 });
 t('issue-1543 AC5: a ready row the last pass held on shared files names its holders while every worker is busy', /\sB-3\s+○ ready\s+waits for B-1, B-9 \(shared files\)\s/.test(bRow(shared, 'B-3')) || bRow(shared, 'B-3'), true);
 t('issue-1543 AC5: a collision the last pass did not hold on still waits for a worker', /\sB-4\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-4')) || bRow(shared, 'B-4'), true);
 t('issue-1543 AC5: a holder no longer running holds nothing', /\sB-5\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-5')) || bRow(shared, 'B-5'), true);
+t('issue-1543 AC5: a handoff of this batch waiting for its next session is named as a holder', /\sB-7\s+○ ready\s+waits for B-8 \(shared files\)\s/.test(bRow(shared, 'B-7')) || bRow(shared, 'B-7'), true);
 repo('sharedRoomy', 4650, { ...between, workers: 3, tickets: { ...between.tickets, 'B-4': { state: 'triaged', collides_with: 'B-2' } }, pass: FIXED - 2 * MIN });
 t('issue-1543 AC5: with a free slot and no pass hold, a colliding ready row starts at the next pass', /\sB-4\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('sharedRoomy'), { now: FIXED, width: 200 }), 'B-4')), true);
 repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
