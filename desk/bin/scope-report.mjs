@@ -54,8 +54,8 @@ export function sharedFiles(a, b, globs = []) {
 // The changed files no scope entry, test glob or incidental glob covers, in diff order.
 export function outOfScope(changed, inScope, incidental) {
   const scope = (inScope ?? []).map((s) => String(s).trim().replace(/^\.\//, '')).filter(Boolean);
-  const res = [...TEST_GLOBS, ...incidental].map(globToRegExp);
-  const covered = (f) => scope.some((s) => (s.endsWith('/') ? f.startsWith(s) : f === s)) || res.some((re) => re.test(f));
+  const res = incidental.map(globToRegExp);
+  const covered = (f) => scope.some((s) => (s.endsWith('/') ? f.startsWith(s) : f === s)) || isTestFile(f) || res.some((re) => re.test(f));
   return [...new Set(changed)].filter((f) => f && !covered(f));
 }
 

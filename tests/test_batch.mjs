@@ -668,7 +668,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const bad = planned('messages and the locales', ['AO-1', 'AO-2']);
   t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
 
-  // DS-1032 AC1: a file the test globs cover is no collision, with no Append-only paths row.
+  // A file the test globs cover is no collision, with no Append-only paths row.
   aoRec('TF-1', ['tests/test_agent/test_prompts.py', 'src/a.test.ts', 'src/one.ts']);
   aoRec('TF-2', ['tests/test_agent/test_prompts.py', 'src/a.test.ts', 'src/two.ts']);
   aoRec('TF-3', ['tests/test_agent/test_prompts.py', 'src/one.ts']);
