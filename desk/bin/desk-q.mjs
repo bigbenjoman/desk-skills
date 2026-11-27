@@ -47,7 +47,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff } from './pass/shared.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -60,6 +60,7 @@ import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
+import { metricsPath } from './pass-metrics.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
@@ -96,7 +97,8 @@ const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 
 const groupOf = (k) => GROUP_OF[k] ?? k;
 // A reason key draws as its group: the same glyph, word and colour (STATE_SGR), unless it has a word of its own.
 const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] ??= m[groupOf(k)]; return m; };
-const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing' });
+// Every label desk-q can draw, by state key; exported for the test that each one shown has key text.
+export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -839,9 +841,27 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.done = rows.length - r.rows.length - r.prs.length;
   r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
   r.triaging = triagingKeys(stateDir, r.q, now);
+  r.passHolds = passHolds(stateDir);
   r.run = r.q ? whoRuns(r) : null;
   r.stall = r.q ? stallOf(r, now) : null;
   return r;
+}
+
+// The tickets the last pass held back on a shared file's budget, { key: [keys holding it] }, running or
+// handed off, from the collisions its line in passes.jsonl records (pass.mjs budgetHolds): a collision
+// recorded on a ticket holds nothing until those tickets fill a file's places. None with no line to read.
+const PASS_TAIL = 64 * 1024;
+function passHolds(stateDir) {
+  let lines;
+  try { lines = tailText(metricsPath(stateDir), PASS_TAIL).split('\n').filter((l) => l.trim()); } catch { return {}; }
+  // The last line is whole unless a pass is writing it now, so a torn one falls back to the one before.
+  for (const l of lines.slice(-2).reverse()) {
+    try {
+      const rec = JSON.parse(l);
+      return Object.fromEntries((rec.collisions ?? []).filter((c) => c?.key && Array.isArray(c.with)).map((c) => [c.key, c.with]));
+    } catch { /* a torn line */ }
+  }
+  return {};
 }
 
 // Whether the batch is not yet finished: a ticket not done, or a PR not merged.
@@ -1467,8 +1487,19 @@ function keyLine(entries, width, more = []) {
   }
   return [...out, ...more.map((s) => [['      ', null], [s, GREY]])].map(segLine);
 }
-// Each shown state's glyph and word in its colour.
-const statesKey = (ks) => ks.flatMap((k, i) => [...(i ? [['  ', null]] : []), [LABEL[k], STATE_SGR[k] ?? null]]);
+// A reason key with a label of its own ("◑ finishing"), which a key names apart from its group's.
+const ownLabel = (k) => LABEL[k] !== LABEL[groupOf(k)];
+// The labels rows of these states show, as keys, in the order the Queue groups them: a group's own
+// label where a row draws it, then each label of its own a row draws; one no row shows is left out.
+function keyLabels(ks) {
+  const on = new Set(ks);
+  return [...shownOf(ks), ...(on.has(PUT_OFF) ? [PUT_OFF] : [])].flatMap((g) => {
+    const of = [...on].filter((k) => groupOf(k) === g);
+    return [...(of.some((k) => !ownLabel(k)) ? [g] : []), ...of.filter(ownLabel)];
+  });
+}
+// The Timeline's and Days' key: each label on screen in its colour.
+const statesKey = (ks) => keyLabels(ks).flatMap((k, i) => [...(i ? [['  ', null]] : []), [LABEL[k], STATE_SGR[k] ?? null]]);
 // A bar's could-run-to part, and its swatch: a dimmer shade of the bar's own colour on screen; with no
 // colour to tell them apart, as in plain output and under NO_COLOR, ░.
 const lateOf = (sgr) => (sgr == null || sgr === BOLD ? FAINT : `2;${sgr}`);
@@ -1596,19 +1627,20 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
   // One key line: each bar part's swatch in its colour, the check-in rails, then each shown state.
-  const shown = shownOf(items.map((i) => i.x.k));
+  const ks = items.map((i) => i.x.k);
+  const shown = shownOf(ks);
   const late = (sgr) => (solid ? ['█', lateOf(sgr)] : ['░', sgr]);
   const rail = [['┆', DIM], [' check-ins 08:00 and 17:00', null]];
   const dates = 'within a week: day and time; beyond a week, the date';
   if (!s.items.length) foot.push('', 'Nothing unfinished here.');
   else if (byEpic) {
     foot.push('', ...keyLine([[['█', BOLD], [' first child starts to last child ships  ', null], late(BOLD), [' could run to', null]], [['n/m children done', null]],
-      [['█', STATE_SGR.waiting], [' provisional epic', null]], rail, ...(shown.length ? [statesKey(shown)] : [])], width, [`enter on an epic shows its tickets · ${dates}`]));
+      [['█', STATE_SGR.waiting], [' provisional epic', null]], rail, ...(shown.length ? [statesKey(ks)] : [])], width, [`enter on an epic shows its tickets · ${dates}`]));
   } else {
     const sgr = STATE_SGR[shown.find((k) => STATE_SGR[k]) ?? 'running'];
     const overdue = dated.some((i) => pastFirst(i.F, i.x.t.key, now)) ? [[[OVERDUE, null], [` ${OVERDUE_KEY}`, null]]] : [];
     const runTo = dated.some((i) => i.F.calib) ? ' could run to (fitted to past merges)' : ' could run to (1 run in 5 is later)';
-    foot.push('', ...keyLine([[['█', sgr], [' starts to ships  ', null], late(sgr), [runTo, null]], rail, ...overdue, ...(shown.length ? [statesKey(shown)] : [])], width, [dates]));
+    foot.push('', ...keyLine([[['█', sgr], [' starts to ships  ', null], late(sgr), [runTo, null]], rail, ...overdue, ...(shown.length ? [statesKey(ks)] : [])], width, [dates]));
   }
   return { head, rows, foot };
 }
@@ -1658,9 +1690,8 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
-  const shown = shownOf(s.items.map((i) => i.x.k));
   const overdue = s.items.some((i) => i.e && pastFirst(i.F, i.x.t.key, now)) ? [[[OVERDUE, null], [` ${OVERDUE_KEY}`, null]]] : [];
-  foot.push('', ...(s.items.length ? keyLine([statesKey(shown), ...overdue, [['grouped by ship date: day by day for a week, then week by week', GREY]]], width) : ['Nothing unfinished here.']));
+  foot.push('', ...(s.items.length ? keyLine([statesKey(s.items.map((i) => i.x.k)), ...overdue, [['grouped by ship date: day by day for a week, then week by week', GREY]]], width) : ['Nothing unfinished here.']));
   return { head, rows, foot };
 }
 
@@ -3373,14 +3404,21 @@ function countsLine(r, now = Date.now()) {
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY], ...drivers]);
 }
 
-// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a
-// running ticket it collides with, which the pass never starts it beside ("held back by a collision"),
-// or the machine cap, which every repo's workers share.
+// What holds a ready ticket back from the next free worker, or null: the tickets the last pass held it
+// behind on a shared file's budget (passHolds), running or handed off and waiting for their next
+// session, whose hold outlasts a free worker, its batch's worker slots, or the machine cap, which every
+// repo's workers share. A holder this batch has since moved on from holds nothing; one from another
+// batch stays named until the next pass.
+const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
 function startWait(r, t) {
-  // A ticket that starts in a cloud session waits only on §3b "Cloud sessions at once", never on a
+  const clash = (r.passHolds?.[t.key] ?? []).filter((k) => stillHolds(r.q?.tickets?.[k]));
+  const held = clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
+  // A ticket that starts in a cloud session waits on shared files, which the pass holds a cloud start
+  // behind too (spawn-loop's file-budget step), then only on §3b "Cloud sessions at once", never on a
   // worker or machine slot, counted over every batch of its repo (loadRepos repoCloud). A resume or
   // handoff of one runs here, so it waits as a local ticket does.
   if (startsInCloud(t)) {
+    if (held) return held;
     let limit;
     try { limit = cloudSessions(repoConfigValue(r.slug, 'cloud-sessions')); } catch { limit = cloudSessions(null); }
     if (limit.bad) return `waits for config §3b "Cloud sessions at once" to read as a whole number`;
@@ -3388,10 +3426,9 @@ function startWait(r, t) {
     return busy >= limit.n ? `waits for a cloud session (${busy} of ${limit.n} busy)` : null;
   }
   if (r.workers === 0) return 'workers set to 0';
+  if (held) return held;
   const busy = workersRunning(r);
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
-  const clash = String(t.collides_with ?? '').split('|').filter((c) => r.q.tickets?.[c]?.state === 'running');
-  if (clash.length) return `waits for ${clash.join(', ')} (collides)`;
   // Every repo's workers count against the machine cap, so a batch with free slots can still wait. A
   // batch with no passes waits for those first, which readyWhy says.
   const m = r.machine;
@@ -3769,10 +3806,13 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
 
 // What each shown state means, for the key line under a Queue.
 const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', merging: 'merges by itself once green', waiting: 'moves by itself',
-  needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes' };
-// The key line: each state on screen in its colour, its meaning grey. Narrower than the line, it
-// breaks between states, each further line indented under the first.
-const stateKey = (ks, width) => keyLine([...shownOf(ks), ...(ks.includes(PUT_OFF) ? [PUT_OFF] : [])].map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
+  needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes',
+  finishing: 'worker done, the next pass records it' };
+// The key line: each label on screen (keyLabels) in its colour, its meaning grey. Narrower than the
+// line, it breaks between labels, each further line indented under the first.
+export function stateKey(ks, width) {
+  return keyLine(keyLabels(ks).map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
+}
 
 export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
