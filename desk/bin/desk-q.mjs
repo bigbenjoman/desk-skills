@@ -59,6 +59,7 @@ import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
+import { metricsPath } from './pass-metrics.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
@@ -847,7 +848,7 @@ function loadBatch(c, repoName, batch, limits, now) {
 const PASS_TAIL = 64 * 1024;
 function passHolds(stateDir) {
   let lines;
-  try { lines = tailText(join(stateDir, 'passes.jsonl'), PASS_TAIL).split('\n').filter((l) => l.trim()); } catch { return {}; }
+  try { lines = tailText(metricsPath(stateDir), PASS_TAIL).split('\n').filter((l) => l.trim()); } catch { return {}; }
   // The last line is whole unless a pass is writing it now, so a torn one falls back to the one before.
   for (const l of lines.slice(-2).reverse()) {
     try {
@@ -1619,7 +1620,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   // One key line: each bar part's swatch in its colour, the check-in rails, then each shown state.
   const ks = items.map((i) => i.x.k);
   const shown = shownOf(ks);
-  const late =(sgr) => (solid ? ['█', lateOf(sgr)] : ['░', sgr]);
+  const late = (sgr) => (solid ? ['█', lateOf(sgr)] : ['░', sgr]);
   const rail = [['┆', DIM], [' check-ins 08:00 and 17:00', null]];
   const dates = 'within a week: day and time; beyond a week, the date';
   if (!s.items.length) foot.push('', 'Nothing unfinished here.');
