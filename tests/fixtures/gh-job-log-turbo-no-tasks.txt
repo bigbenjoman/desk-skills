@@ -1,0 +1,17 @@
+2026-11-26T18:21:04.1180342Z ##[group]Run pnpm turbo run test --affected
+2026-11-26T18:21:04.1181107Z pnpm turbo run test --affected
+2026-11-26T18:21:04.1213290Z shell: /usr/bin/bash -e {0}
+2026-11-26T18:21:04.1213851Z ##[endgroup]
+2026-11-26T18:21:05.0406418Z turbo 2.3.3
+2026-11-26T18:21:05.0407132Z
+2026-11-26T18:21:05.6630716Z • Packages in scope:
+2026-11-26T18:21:05.6631492Z • Running test in 0 packages
+2026-11-26T18:21:05.6632011Z • Remote caching disabled
+2026-11-26T18:21:05.6643950Z
+2026-11-26T18:21:05.6644653Z No tasks were executed as part of this run.
+2026-11-26T18:21:05.6645020Z
+2026-11-26T18:21:05.6645481Z  Tasks:    0 successful, 0 total
+2026-11-26T18:21:05.6646018Z Cached:    0 cached, 0 total
+2026-11-26T18:21:05.6646440Z   Time:    622ms
+2026-11-26T18:21:05.6646750Z
+2026-11-26T18:21:05.7036772Z Post job cleanup.

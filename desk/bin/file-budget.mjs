@@ -8,12 +8,13 @@ import { join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { conflictsPath, conflictTimes, loweredBy, readConflicts } from './conflict-record.mjs';
 import { reviewOnlyTry } from './pass/shared.mjs';
+import { isTestFile } from './scope-report.mjs';
 
-// The files a triage record names, less those an append-only glob (RegExps) covers, which are only
-// added to and have no limit.
+// The files a triage record names, less test files and those an append-only glob (RegExps) covers,
+// which are only added to and have no limit.
 export const scopeFiles = (rec, appendOnly = []) => {
   const files = rec?.files_in_scope;
-  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !appendOnly.some((re) => re.test(f)));
+  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !isTestFile(f) && !appendOnly.some((re) => re.test(f)));
 };
 
 // A file's configured places: 1 for a file a serial glob (RegExps) covers, else the budget's big or

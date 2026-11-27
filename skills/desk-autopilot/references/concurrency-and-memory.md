@@ -109,10 +109,12 @@ off, and the line says why. Borrowed workers are not a reason to lower the count
 the batch's own number as it is.
 
 **Tickets that name one file share it up to a per-file budget**, config §3b "Per-file collision
-budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 1; serial: none`: up to
+budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 2; serial: none`: up to
 three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
-once, one for any other file, and one for any file the `serial:` globs name, whatever its length. A
-bare `1` restores one at a time everywhere. A pass works the budget out at spawn time from the triage
+once, two for any other file, and one for any file the `serial:` globs name, whatever its length. A
+bare `1` restores one at a time everywhere. A file the test globs cover (`*.test.*`, `*.spec.*`,
+`test/`, `tests/`) has no limit and, like a §4 Append-only path, is no collision when a batch is
+planned: tickets add cases to it, and the conflict-fix worker settles the rare conflict. A pass works the budget out at spawn time from the triage
 records of the tickets running then in every batch of the repo, its own and the others, so a
 finished ticket holds nothing, and a ready ticket with any file at its budget waits, in queue order.
 The report's `held back by a collision:` line names each such file and the running tickets filling
