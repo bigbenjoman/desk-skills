@@ -74,7 +74,8 @@ compaction; DESK_HANDOFF_MIN_GROWTH overrides it), and partway through a stage a
 one, the stage a fresh session was started at, DESK_START_STAGE), inject once: commit, write the handoff briefing with `handoff.mjs write
 --stage <stage> --left …`, print `AUTOPILOT_HANDOFF: <stage>` and end the turn; pass.mjs then starts
 a fresh worker at that stage from the briefing. Stop blocks once while DESK_HANDOFF_FILE is unwritten
-since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
+since. A worker whose own text has printed `AUTOPILOT_DONE:` has finished: neither event hands it
+off. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
 on a compaction, makes the next crossing a new one.
 
 Any other worker (a fix or base try: AUTOPILOT_TASK, or no DESK_HANDOFF_FILE) never hands off, and
@@ -571,6 +572,7 @@ RESUME_STAGES = ("3", "4", "4b", "5", "6", "7", "8", "9")
 # starts by echoing the stage.
 STAGE_LINE = re.compile(r"^[\s`>*#-]*AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b", re.I | re.M)
 ECHO_STAGE = re.compile(r"""^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b""", re.I)
+DONE_LINE = re.compile(r"^[\s`>*#-]*AUTOPILOT_DONE:", re.M)
 
 
 def worker_file():
@@ -664,6 +666,27 @@ def worker_stage(transcript):
     return start if start in RESUME_STAGES else None
 
 
+def said_done(transcript):
+    """Whether the worker's own text has printed an `AUTOPILOT_DONE:` line: it has finished."""
+    try:
+        lines = transcript_lines(transcript)
+    except Exception:
+        return False
+    for raw in lines:
+        if b"AUTOPILOT_DONE" not in raw:
+            continue
+        try:
+            e = json.loads(raw)
+        except Exception:
+            continue
+        if e.get("type") != "assistant" or e.get("isSidechain"):
+            continue
+        for c in (e.get("message") or {}).get("content") or []:
+            if isinstance(c, dict) and c.get("type") == "text" and DONE_LINE.search(c.get("text") or ""):
+                return True
+    return False
+
+
 def on_worker_context(event, data, session, root, path):
     state = load_state(session)
     if state.get("fired_at"):
@@ -687,7 +710,8 @@ def on_worker_context(event, data, session, root, path):
     grown = used - state["base_used"] >= min_growth()
     stage = worker_stage(transcript) if pct and now >= pct and grown else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
-    if stage not in RESUME_STAGES:
+    # A worker that has printed AUTOPILOT_DONE has finished: a handoff now would undo it.
+    if stage not in RESUME_STAGES or said_done(transcript):
         save_state(session, state)
         return
     state.update(fired_at=time.time(), stage=stage, worker_file=path)
@@ -722,6 +746,8 @@ def on_worker_stop(data, session, path):
     if not fired or state.get("blocked"):
         return
     if os.path.exists(path) and os.path.getmtime(path) >= fired - 1:
+        return
+    if said_done(data.get("transcript_path") or ""):
         return
     state["blocked"] = True
     save_state(session, state)

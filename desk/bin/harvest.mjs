@@ -129,7 +129,8 @@ export function tailText(path, bytes, size = statSync(path).size) {
 }
 
 // Whether the worker said it finished, read as lastStage reads stages: an AUTOPILOT_DONE marker.
-function saidDone(logText) {
+// pass.mjs's respawn guard and desk-q's stalled handoff read the whole log through it.
+export function saidDone(logText) {
   for (const line of logText.split('\n')) {
     if (!line.includes('AUTOPILOT_DONE')) continue;
     let d;

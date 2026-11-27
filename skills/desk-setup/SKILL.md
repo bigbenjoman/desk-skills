@@ -96,6 +96,7 @@ for it**, and only that one; the sections it names moved there word for word.
 | 1, this computer: the machine profile, the bench's cap and reserve, how the §3b rows fall back to it, this computer's subscriptions, and which one runs this repo | *This computer*, *Subscriptions on this computer*, *This repo's subscription* | `references/step-1-this-computer.md` |
 | 1, once §4 Pre-push checks is confirmed and is not `none`: committing the hook and setting `core.hooksPath` | *The pre-push hook* | `references/step-1-pre-push-hook.md` |
 | 1, once §4 Local review command is `/desk-review`: committing the CI gate | *The desk gate workflow* | `references/step-1-desk-gate.md` |
+| 1, at Worker location `cloud` | *Cloud environment* | `references/step-1-cloud-env.md` |
 | 2. The permission interview: how to ask the §3 rows, the autopilot warning, the consistency checks and what is not on offer | *2. The permission interview* | `references/step-2-interview.md` |
 | 3. The connector checklist | *3. Connector checklist* | `references/step-3-connectors.md` |
 | 4. Harness permissions: the deny-only plan, the allow plan, auto-mode entries, and `$H` and `REPO_RULES` for a revoke | *4. Harness permissions* | `references/step-4-harness.md` |
@@ -170,7 +171,7 @@ offer `soft` (Recommended: a lower priority starts first only where a higher los
 `strict` and `off`. For worker location,
 Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
 Claude Code cloud session, whose tokens and cost are not reported, so its cost cannot be compared
-with local.
+with local. At `cloud`, run the trust check (`references/step-1-this-computer.md`, *Cloud trust*) and *Cloud environment*.
 
 **Phase 0 levers are not asked.** A new config gets `none` (every lever off). On a re-run keep what
 the row holds, never turning a lever on or off for the user, and run `desk-env levers`: say its `on:`

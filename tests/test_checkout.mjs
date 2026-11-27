@@ -459,6 +459,16 @@ t('jira: the search is limited to the project', calls.some((l) => decodeURICompo
 // At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
 // went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
+// issue-1533: the config step reads only the rows the skill uses, by id, and the read stays small
+// against the shipped template, whose rows carry the help text a section read printed.
+{
+  const read = /^desk-env show --rows ([a-z0-9 -]+)$/m.exec(skill);
+  t('issue-1533 AC1 the config step reads named rows, not sections', !!read && !/desk-env show rules/.test(skill), true);
+  const run = spawnSync('node', [join(REPO, 'desk', 'bin', 'desk-env.mjs'), 'show', '--rows', ...(read?.[1].split(' ') ?? [])],
+    { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(REPO, 'desk-config.md'), DESK_MACHINE: join(R, 'no-machine.md'), HOME } });
+  t('issue-1533 AC1 every id it names reads', run.status, 0);
+  t('issue-1533 AC1 the read prints under 5 KB', Buffer.byteLength(run.stdout) < 5000, true);  t('issue-1533 AC2 an unset row is named as unset', /^§4 Check-out destination \(checkout-destination\) = UNSET$/m.test(run.stdout), true);
+}
 has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
@@ -480,6 +490,10 @@ has('#1471 style: never a ticket as the user last left it', style, 'Don\'t descr
 has('#1471 style: never from the next deploy unread', style, 'Don\'t write "from the next deploy" without reading the latest production deploy.');
 lacks('style: the day is no longer added just for posting late', style, 'with the day when posting late or for another day');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
+has('#1535 the previous check-out is found before any collector runs', skill, 'ended: find that one before any collector runs.**');
+lacks('#1535 the collectors are never run blind, then again', skill, 'Run the collectors again');
+has('#1535 step 2 runs each collector once, with that window', skill, 'python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W');
+has('#1535 with no previous check-out, the fallback still runs each collector once', skill, 'leave both flags out to cover the whole day, and say so. Each collector runs once');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');

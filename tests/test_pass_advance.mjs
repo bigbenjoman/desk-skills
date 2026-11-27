@@ -393,6 +393,8 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
 t('a DONE after a PARK has finished', j(logMarkers('AUTOPILOT_PARK: q\nAUTOPILOT_DONE: pr=1', {})), j({ done: 'pr=1', reboots: 0 }));
 t('a PARK after a DONE is a park', j(logMarkers('AUTOPILOT_DONE: pr=1\nAUTOPILOT_PARK: q', {})), j({ park: 'q', reboots: 0 }));
 t('a handoff last is a handoff', j(logMarkers('AUTOPILOT_PARK: q\nAUTOPILOT_HANDOFF: 7', {})), j({ handoff: '7', reboots: 0 }));
+t('a handoff after a DONE naming its PR has finished', j(logMarkers('AUTOPILOT_DONE: pr=1568 jira=none\nAUTOPILOT_HANDOFF: 7', {})), j({ done: 'pr=1568 jira=none', reboots: 0 }));
+t('a handoff after a DONE with no PR is a handoff', j(logMarkers('AUTOPILOT_DONE: jira=none\nAUTOPILOT_HANDOFF: 7', {})), j({ handoff: '7', reboots: 0 }));
 t('a reboot stop already acted on is spent', j(logMarkers('AUTOPILOT_REBOOT: patch', { reboot_stops: 1 })), j({ reboots: 1 }));
 t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ reboot: 'patch', reboots: 1 }));
 

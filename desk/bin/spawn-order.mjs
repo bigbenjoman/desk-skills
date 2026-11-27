@@ -47,16 +47,20 @@ export const chainName = (f) => {
 // queue's. A ticket gates the other unstarted tickets that share a file with it, and every ticket blocked
 // by it or by one of those, through any chain of blocker links. A running ticket shares files too, but
 // no unstarted ticket holds it: the per-file budget holds the unstarted one at spawn instead.
+// `cloud(ticket)` is whether it starts in a cloud session (pass/shared.mjs startsInCloud): the cloud
+// tickets and the local ones are sorted as two lists, each laid over the places its own kind holds now,
+// so neither kind's order waits on the other's slots. Gates and shared files are still counted across
+// both, so a cloud ticket and a local one sharing a file stay sequenced by the per-file budget.
 // -> { order: those tickets' keys in their new order, gates, moved: [{ key, why }] for each that overtook
 //    another, changed }
 export const unstarted = (t) => ['queued', 'triaged', 'parked'].includes(t.state) && !t.spawned_at;
 // A ticket the re-sort may move: unstarted, and nobody placed it.
 export const resortable = (t) => unstarted(t) && !t.placed;
 // With `rank(key)` (priorityRank: lower is higher priority) and `priority` strict or soft, a higher
-// priority starts first, before SPAWN_ORDER_RULE: the per-person constraint on the throughput order
-// (§3b "Queue order: priority"). At `off`, or without `rank`, priority is not read.
+// priority starts first within each kind's list, before SPAWN_ORDER_RULE: the per-person constraint on
+// the throughput order (§3b "Queue order: priority"). At `off`, or without `rank`, priority is not read.
 // `rank` is inherited through blocker links (inheritedRank) before it is read.
-export function resortQueue(tickets, { scope, fileCount, rank: own = null, priority = 'off' }) {
+export function resortQueue(tickets, { scope, fileCount, cloud = () => false, rank: own = null, priority = 'off' }) {
   const rank = own && inheritedRank(tickets, own);
   const open = tickets.filter(unstarted);
   const movable = open.filter(resortable);
@@ -75,12 +79,18 @@ export function resortQueue(tickets, { scope, fileCount, rank: own = null, prior
   const ranked = rank && priority !== 'off';
   const rankOf = (k) => (ranked ? rank(k) : 0);
   const throughput = bySpawnOrder(gates, (r) => fileCount(r.ticket), (r) => was.get(r.ticket));
-  const sorted = movable.map((t) => ({ ticket: t.key })).sort((a, b) => rankOf(a.ticket) - rankOf(b.ticket) || throughput(a, b));
-  const order = blockersFirst(sorted.map((r) => r.ticket), (k) => blockersOf(byKey[k]).filter((p) => was.has(p)));
+  const kind = new Map(movable.map((t) => [t.key, !!cloud(t)]));
+  const sortKind = (c) => {
+    const list = movable.filter((t) => kind.get(t.key) === c).map((t) => ({ ticket: t.key }));
+    const sorted = list.sort((a, b) => rankOf(a.ticket) - rankOf(b.ticket) || throughput(a, b));
+    return blockersFirst(sorted.map((r) => r.ticket), (k) => blockersOf(byKey[k]).filter((p) => kind.get(p) === c));
+  };
+  const lists = { true: sortKind(true), false: sortKind(false) };
+  const order = movable.map((t) => lists[kind.get(t.key)].shift());
   const now = new Map(order.map((k, i) => [k, i]));
   const moved = [];
   for (const k of order) {
-    const passed = order.filter((o) => was.get(o) < was.get(k) && now.get(o) > now.get(k));
+    const passed = order.filter((o) => kind.get(o) === kind.get(k) && was.get(o) < was.get(k) && now.get(o) > now.get(k));
     if (!passed.length) continue;
     const tie = passed.find((o) => gates[o] === gates[k] && shared(k, o).length);
     const why = passed.some((o) => rankOf(o) > rankOf(k)) ? 'higher priority' : tie ? `clears ${chainName(shared(k, tie)[0])} chain` : gates[k] > 0 ? `gates ${gates[k]}` : 'fills an idle slot';
