@@ -1234,6 +1234,10 @@ t('issue-1418 AC1 a worker still in its last stage is running', wrapRow('W-3').s
 // issue-1543 AC1 and AC3: the key explains ◑ finishing, and leaves out · waiting, which no row shows.
 t('issue-1543 AC1 the key has an entry for ◑ finishing, and none for a label no row shows', wrapOut.filter((l) => l.startsWith('key ')).join('\n'),
   'key   ● running: holds a worker │ ◑ finishing: worker done, the next pass records it');
+// issue-1543 AC2: the Timeline's and Days' keys name ◑ finishing too, and no · waiting.
+// --plain ships is the ships list, so the Timeline is drawn without it.
+const finKey = (view) => { const o = WR.run(...(view === 'days' ? ['--plain'] : []), view, 'wrap').out.replace(ANSI, ''); return `${/◑ finishing/.test(o.slice(o.lastIndexOf('● running')))} ${/· waiting/.test(o)}`; };
+t('issue-1543 AC2 the Timeline and Days keys name ◑ finishing, and leave out · waiting', `${finKey('ships')} / ${finKey('days')}`, 'true false / true false');
 t('issue-1418 AC1 only the running one counts as a held worker', wrapOut.find((l) => /workers \d+ of \d+/.test(l))?.match(/workers \d+ of \d+/)?.[0], 'workers 1 of 3');
 // The render time, and the minute either side of it the run may have crossed.
 const renderTimes = [-1, 0, 1].map((m) => whenAt(wrapAt + m * 60000, wrapAt));
@@ -1533,9 +1537,9 @@ t('DS-217 AC10 at 80 columns the key line breaks between states, never past the 
 const keyLines = (ks, w) => Q.stateKey(ks, w).map((l) => l.line.replace(ANSI, ''));
 const keyText = (ks, w) => keyLines(ks, w).join('\n');
 t('issue-1543 AC2 every label a row can show is explained in the key',
-  Object.keys(Q.LABELS).filter((k) => k !== 'done').filter((k) => !keyText([k]).split(/ │ |\n/).some((e) => { const s = e.replace(/^key {3}/, ''); return s.startsWith(`${Q.LABELS[k]}: `) && !/: (undefined|null)?$/.test(s); })).join(), '');
+  Object.keys(Q.LABEL).filter((k) => k !== 'done').filter((k) => !keyText([k]).split(/ │ |\n/).some((e) => { const s = e.replace(/^key {3}/, ''); return s.startsWith(`${Q.LABEL[k]}: `) && !/: (undefined|null)?$/.test(s); })).join(), '');
 t('issue-1543 AC3 a label no row shows is left out: a finishing row alone draws no · waiting', /· waiting/.test(keyText(['finishing'])), false);
-const allKs = Object.keys(Q.LABELS).filter((k) => k !== 'done');
+const allKs = Object.keys(Q.LABEL).filter((k) => k !== 'done');
 // Only an entry wider than the line on its own (◇ put off at 60) runs past it, alone on its line.
 t('issue-1543 AC4 (#1504) at 60, 80 and 120 columns the key wraps at whole entries, never past the width',
   [60, 80, 120].map((w) => {

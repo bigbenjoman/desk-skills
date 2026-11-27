@@ -1245,6 +1245,10 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
 } });
+// The last pass held F-2 and F-3 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
+const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
+mkdirSync(phiState, { recursive: true });
+writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), collisions: [{ key: 'F-2', with: ['F-1'], files: ['a.mjs'] }, { key: 'F-3', with: ['F-1'], files: ['a.mjs'] }] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
 const phi = strip(repoScreen(phr));

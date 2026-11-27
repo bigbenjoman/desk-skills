@@ -396,15 +396,21 @@ t('DS-185 AC3 (DS-188 AC6, DS-215 AC5): the header says passes stopped, when, wh
 t('DS-185 AC3: an overdue next pass is named', /^■ stopped · 40m {2}last pass 18:11, next was due 18:36 │ /.test(overdue.split('\n')[2]), true);
 t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+● running\s+stage 0\/9 as of 18:29\s/.test(bRow(waiting, 'B-2')), true);
 t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
-// issue-1543 AC5: a ready row held by tickets it shares files with names them, not a worker: a running
-// one (recorded on the ready ticket), and a ready one above it in the spawn order (recorded on the
-// later ticket only). One below it, or outside the queue, holds nothing.
-repo('shared', 4640, { ...between, tickets: { ...between.tickets, 'B-3': { state: 'triaged', collides_with: 'B-1' }, 'B-5': { state: 'triaged', collides_with: 'B-4|B-9' } },
-  sizes: { ...between.sizes, 'B-5': 'M' }, pass: FIXED - 2 * MIN, next: FIXED + 5 * MIN });
+// issue-1543 AC5: a ready row the last pass held behind running tickets on a shared file's budget names
+// them, not a worker, and one from another batch (B-9) too. A collision recorded with no pass hold
+// (B-4 with B-2: the file still had a place) holds nothing, nor a holder no longer running (B-6).
+repo('shared', 4640, { ...between, tickets: { ...between.tickets, 'B-3': { state: 'triaged', collides_with: 'B-1' }, 'B-4': { state: 'triaged', collides_with: 'B-2' },
+  'B-5': { state: 'triaged' }, 'B-6': { state: 'triaged' } }, sizes: { ...between.sizes, 'B-5': 'M', 'B-6': 'M' }, pass: FIXED - 2 * MIN, next: FIXED + 5 * MIN });
+writeFileSync(join(stateOf('shared'), 'passes.jsonl'), [
+  { at: new Date(FIXED - 30 * MIN).toISOString(), collisions: [{ key: 'B-4', with: ['B-2'], files: ['a.mjs'] }] },
+  { at: new Date(FIXED - 2 * MIN).toISOString(), collisions: [{ key: 'B-3', with: ['B-1', 'B-9'], files: ['a.mjs'] }, { key: 'B-5', with: ['B-6'], files: ['b.mjs'] }] },
+].map((l) => `${JSON.stringify(l)}\n`).join(''));
 const shared = Q.repoScreen(repoAt('shared'), { now: FIXED, width: 200 });
-t('issue-1543 AC5: a ready row colliding with a running ticket names it while every worker is busy', /\sB-3\s+○ ready\s+waits for B-1 \(shared files\)\s/.test(bRow(shared, 'B-3')) || bRow(shared, 'B-3'), true);
-t('issue-1543 AC5: a ready row colliding with a ready one above it names that one', /\sB-5\s+○ ready\s+waits for B-4 \(shared files\)\s/.test(bRow(shared, 'B-5')) || bRow(shared, 'B-5'), true);
-t('issue-1543 AC5: the one above, which collides only with a later ticket, still waits for a worker', /\sB-4\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-4')) || bRow(shared, 'B-4'), true);
+t('issue-1543 AC5: a ready row the last pass held on shared files names its holders while every worker is busy', /\sB-3\s+○ ready\s+waits for B-1, B-9 \(shared files\)\s/.test(bRow(shared, 'B-3')) || bRow(shared, 'B-3'), true);
+t('issue-1543 AC5: a collision the last pass did not hold on still waits for a worker', /\sB-4\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-4')) || bRow(shared, 'B-4'), true);
+t('issue-1543 AC5: a holder no longer running holds nothing', /\sB-5\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-5')) || bRow(shared, 'B-5'), true);
+repo('sharedRoomy', 4650, { ...between, workers: 3, tickets: { ...between.tickets, 'B-4': { state: 'triaged', collides_with: 'B-2' } }, pass: FIXED - 2 * MIN });
+t('issue-1543 AC5: with a free slot and no pass hold, a colliding ready row starts at the next pass', /\sB-4\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('sharedRoomy'), { now: FIXED, width: 200 }), 'B-4')), true);
 repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
 t('DS-185 AC5: with a free slot, a ready row starts at the next pass', /\sB-3\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('roomy'), { now: FIXED, width: 200 }), 'B-3')), true);
 // #1581: a running cloud session's row names the account it started under; back for a local try, it does not.
