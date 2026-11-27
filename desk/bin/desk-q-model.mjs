@@ -4480,6 +4480,16 @@ function subscriptionEmail(slug) {
   try { return repoSubscription(readSubscriptions(subscriptionsPath()), { value: repoConfigValue(slug, 'subscription'), source: 'row' }).email ?? null; } catch { return null; }
 }
 const isoOrNull = (t) => (t == null ? null : isoOf(t));
+// When ticket `t`'s PR #`pr` merged, or null. merged_at keeps a first PR's merge once a ticket is requeued,
+// so it is not read for a later PR: the merge driver's record (queue.mjs merged) names the PR it merged
+// before a pass refreshes that PR's status, and that status (`ps`, prStatusOf) decides after. merged_at
+// alone is read only where neither names a PR.
+function mergedAtOf(t, pr, ps) {
+  if (pr != null && t.merge?.pr === pr) return t.merge.at ?? t.merged_at ?? null;
+  const own = t.merge?.pr == null;
+  if (ps) return ps.state === 'MERGED' ? ps.merged_at ?? (own ? t.merged_at ?? null : null) : null;
+  return t.pr_status == null && own ? t.merged_at ?? null : null;
+}
 
 // What the desk app's ticket page reads (desk-ui GET /api/repos/<slug>/tickets/<KEY>): the facts its
 // state line, Overview tab and PR & CI tab are drawn from, each as the queue and the last pass hold it.
@@ -4514,8 +4524,7 @@ export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {
     fix: f ? { try: f.try ?? null, of: f.of ?? null } : null,
     stuck: stuck ? { why: stuck.why } : null,
     failed_why: k === 'failed' ? failedWhy(t) : null,
-    // As mergeOf reads it: merged_at keeps a first PR's merge once a ticket is requeued, so the PR's own status decides.
-    merged_at: isoOrNull(ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? null : null) : t.pr_status == null ? t.merged_at ?? null : null), merged_by: t.merge?.by ?? null,
+    merged_at: isoOrNull(mergedAtOf(t, prN, ps)), merged_by: t.merge?.by ?? null,
     pr: prN != null ? { number: prN, url: ps ? prUrl(r, t) : `https://github.com/${gh}/pull/${prN}`, state: ps?.state ?? null, draft: ps?.isDraft === true,
       head: ps?.head ?? null, at: isoOrNull(ps?.at), need: ps && prRow(t) ? segText(prNeed(r.q, t, r.ctx, now).segs) : null, hold: parseHoldNote(t.merge_blocked)?.why ?? null } : null,
     passes: { live: !!r.live, last: isoOrNull(r.last), next: isoOrNull(r.next), merges: !!r.ctx?.merges, workers: r.workers ?? null },

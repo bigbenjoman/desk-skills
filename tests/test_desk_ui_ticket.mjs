@@ -53,6 +53,10 @@ const QUEUE = { version: 1, batch: 'w', concurrency: 2, tickets: {
   'DS-569': { key: 'DS-569', state: 'done', merged_at: at(8, 0), result: { pr: 655 }, pr_status: recorded(655, REQUIRED.map(passed), { state: 'MERGED', merged_at: at(9, 30) }) },
   // Its first PR merged, and the status recorded is that PR's, not its open replacement #656's.
   'DS-570': { key: 'DS-570', state: 'done', merged_at: at(8, 0), result: { pr: 656 }, pr_status: recorded(600, REQUIRED.map(passed), { state: 'MERGED', merged_at: at(8, 0) }) },
+  // The merge driver merged replacement PR #657 at 09:45, and no pass has refreshed its OPEN status yet.
+  'DS-571': { key: 'DS-571', state: 'done', merged_at: at(8, 0), merge: { pr: 657, at: at(9, 45) }, result: { pr: 657 }, pr_status: recorded(657, REQUIRED.map(passed)) },
+  // Its first PR #601 merged, and its replacement #658 has no status recorded yet.
+  'DS-572': { key: 'DS-572', state: 'done', merged_at: at(8, 0), merge: { pr: 601, at: at(8, 0) }, result: { pr: 658 } },
 } };
 const QUEUE_FILE = join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json');
 writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
@@ -126,6 +130,8 @@ t('AC5 the verdict reads ready to merge, then when the merge driver merges it', 
 // ---- a replacement PR's merge time is its own, not the first PR's
 t('a replacement PR that merged reads its own merge time', (await get(api('DS-569'))).body.merged_at, at(9, 30));
 t('a ticket whose recorded status is an earlier PR\'s reads no merge time for its own', (await get(api('DS-570'))).body.merged_at, null);
+t('a merge the merge driver recorded reads before a pass refreshes the PR\'s status', (await get(api('DS-571'))).body.merged_at, at(9, 45));
+t('a replacement PR with no status yet does not read the first PR\'s merge time', (await get(api('DS-572'))).body.merged_at, null);
 t('the ticket page carries the worker count', typeof tk.passes.workers, 'number');
 
 // ---- AC6: one failed, 13 passed: the failed row first, each with its job link
