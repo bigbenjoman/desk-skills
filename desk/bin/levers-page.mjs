@@ -1061,15 +1061,19 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .fold-intro{padding:12px 16px 4px}
 .empty{padding:12px 0;border-top:1px solid #F0F1F3;font-size:14px}
 .how{display:flex;flex-direction:column;gap:6px;padding:0 4px}.how h2{font-size:14px}.how p{max-width:820px;line-height:1.55}
+@media (max-width:960px){
+[id]{scroll-margin-top:76px}
+.shell{display:block}
+.side{position:sticky;top:0;z-index:5;margin:-32px -24px 24px;padding:12px 24px;background:#F9FAFB;border-bottom:1px solid #E5E7EB;overflow-x:auto}
+.side-h{display:none}
+.side ul{flex-direction:row;flex-wrap:nowrap;gap:8px}
+.side a{padding:0 14px;border:1px solid #D1D5DB;border-radius:999px;background:#FFFFFF;white-space:nowrap}
+}
 @media (max-width:640px){
 .page{padding:24px 16px 48px}.wrap,#page-body{gap:24px}
 .top{flex-direction:column;align-items:flex-start;gap:6px}.top p{font-size:14px;line-height:1.45}
-[id]{scroll-margin-top:76px}
-.shell{display:block}
-.side{position:sticky;top:0;z-index:5;margin:-24px -16px 20px;padding:12px 16px;background:#F9FAFB;border-bottom:1px solid #E5E7EB;overflow-x:auto}
-.side-h{display:none}
-.side ul{flex-direction:row;flex-wrap:nowrap;gap:8px}
-.side a{min-height:44px;padding:0 14px;border:1px solid #D1D5DB;border-radius:999px;background:#FFFFFF;white-space:nowrap}
+.side{margin:-24px -16px 20px;padding:12px 16px}
+.side a{min-height:44px}
 .chips{flex-wrap:nowrap;overflow-x:auto}.chips button{min-height:44px;white-space:nowrap}
 .needs-box{padding:14px 16px}.needs-q{font-size:15px}
 .change-log{grid-template-columns:1fr;gap:3px}
