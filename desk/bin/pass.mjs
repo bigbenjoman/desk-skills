@@ -47,7 +47,7 @@ import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { defaultFull, fallbackCall } from './fallback-login.mjs';
-import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
+import { checkLogin, cloudStartCommand, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -3466,16 +3466,18 @@ function leaseToWorker(key, port, spawnOut) {
 }
 
 const loginVars = (dir) => (dir === OWN_LOGIN.configDir ? {} : { AUTOPILOT_LOGIN_DIR: dir ?? '' });
-// The login a new session starts on, the repo's subscription, as { login, vars, row, line }: the
-// variables its spawn takes, its queue field and its report text. Null, with the stall said once, when
+// The login a new session starts on, the repo's subscription, as { login, email, vars, row, line }: its
+// account where known, the variables its spawn takes, its queue field and its report text. Null, with the stall said once, when
 // the subscription names no login here, or one set off, or its login is signed out: nothing falls back
 // to another.
 // A login that could not be checked goes on to its preflight, which says what is wrong with it.
+// A cloud session (`fallback: false`) never starts on the fallback: the repo's cloud environment lives
+// in its subscription's account.
 let REPO_CHECK = null;
 let noLoginWhy = null;
-function repoLogin() {
-  if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
-  if (ON_FALLBACK) {
+function repoLogin({ fallback = true } = {}) {
+  if (INHERITS) return { login: OWN_LOGIN, email: OWN_LOGIN.account ?? null, vars: {}, row: 'login=null', line: '' };
+  if (ON_FALLBACK && fallback) {
     const login = FALLBACK_LOGIN;
     const refused = refusedOf(login);
     if (refused) {
@@ -3483,7 +3485,7 @@ function repoLogin() {
       return null;
     }
     const email = login.account ?? FALLBACK_CHECK?.email?.toLowerCase() ?? null;
-    return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email, fallback: true })}`, line: ` login=${login.name} (fallback)` };
+    return { login, email, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email, fallback: true })}`, line: ` login=${login.name} (fallback)` };
   }
   const login = REPO_SUB.login;
   if (!login && REPO_SUB.off) {
@@ -3511,7 +3513,7 @@ function repoLogin() {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) failed its health check, ${refused}, so nothing new starts for this repo; it never falls back to another`);
     return null;
   }
-  return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email })}`, line: ` login=${login.name}` };
+  return { login, email, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email })}`, line: ` login=${login.name}` };
 }
 // The email a checkLogin answer is signed in to, lower-cased, or null when signed out or unread.
 function liveEmail(check) { return check.state === 'signed in' ? check.email?.toLowerCase() ?? null : null; }
@@ -3870,7 +3872,9 @@ function decisionsRestart(t, { resumable = true } = {}) {
 // Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
 // A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, with no worktree,
 // preflight or local worker. The session reads nothing from this computer, the tracker included, so
-// its prompt carries the ticket's text. A start that fails parks with the CLI's error: it is never
+// its prompt carries the ticket's text. It starts on the login a local worker would (repoLogin, never
+// the fallback), named in the spawn line and kept in `cloud.login`. A start that fails parks with the
+// CLI's error, and one that does not answer with the one-time command to run on that login: it is never
 // run locally instead without asking.
 function cloudTicketText(key) {
   if (E.ticketKind(key).kind !== 'tracker') return readFileSync(join(STATE, 'tickets', `${key}.md`), 'utf8');
@@ -3906,7 +3910,7 @@ function cloudRules() {
     noAttribution: E.attributionForbidden(E.configValue('ai-attribution')),
   };
 }
-function spawnCloud(t) {
+function spawnCloud(t, pick) {
   const park = (why) => {
     const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
       `or run it on this computer with queue.mjs set ${t.key} location=null, then queue.mjs requeue ${t.key}`;
@@ -3931,16 +3935,20 @@ function spawnCloud(t) {
   if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null'],
     'no cloud session was started')) return;
   const name = cloudName(GH_REPO, t.key);
-  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules() }), { name });
+  const { login, email } = pick;
+  const who = email ? `${email} (login ${login.name})` : `login ${login.name}`;
+  // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
+  const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules() }), { name, env });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
-    park(s.error);
+    park(s.timedOut ? `claude --cloud on ${who} gave ${s.error}. A first cloud start on a login asks whether the session may use the environment's variables, and nothing answers that in the background: run this once in a terminal and answer it: ${cloudStartCommand(login)}` : s.error);
     return;
   }
-  q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started })}`, ...fixStarted(t));
+  q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started, login: { name: login.name, email } })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   refreshDelivered(t, refreshed);
-  report.spawned.push(`${t.key} in a cloud session: ${s.url}${refreshed.line}`);
+  report.spawned.push(`${t.key} in a cloud session on ${who}: ${s.url}${refreshed.line}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
@@ -4462,7 +4470,7 @@ const SPAWN_HANDLERS = {
     try { return { ok: true, up: DRY ? UQ.inFlight(UQ.readUploadQueue(), QUEUE_FILE, a.key) : UQ.claimForSpawn(QUEUE_FILE, a.key) }; } catch (e) { return { ok: false, why: e.message }; }
   },
   'read-repos': () => (readRepoFailures ??= refreshReadRepos()),
-  login: () => repoLogin(),
+  login: (a) => repoLogin({ fallback: !a.cloud }),
   'take-slot': () => { attempts += 1; },
   setup: (a, s) => setUpWorktree(s.t),
   'remote-hung': (a) => { markRemoteHung(a.why); },
@@ -4529,7 +4537,7 @@ for (const t of spawnable) {
     continue;
   }
   if (verdict.how === 'cloud') {
-    spawnCloud(t);
+    spawnCloud(t, verdict.pick);
     continue;
   }
   const { setup: { wt, kept, renamed, out: setup } } = verdict;

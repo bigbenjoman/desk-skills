@@ -3364,11 +3364,12 @@ const FINISHING_TEXT = 'worker finished, next pass records it';
 
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from. A worker started on the
-// fallback login (fallback-login.mjs) says which.
+// fallback login (fallback-login.mjs) says which, and a cloud session the account it started under.
 function runningStage(r, x) {
   const { st } = x;
   const p = x.t?.usage_paused;
-  const on = x.t?.login?.fallback ? ` · on fallback ${x.t.login.email ?? x.t.login.name}` : '';
+  const cl = x.t?.stage === 'cloud' ? x.t.cloud?.login : null;
+  const on = x.t?.login?.fallback ? ` · on fallback ${x.t.login.email ?? x.t.login.name}` : cl ? ` · on ${cl.email ?? `login ${cl.name}`}` : '';
   if (p) return `paused on ${limitName(p.type)}${p.resets_at != null ? ` until ${resetsWhen(p.resets_at)}` : ''}, then resumes by itself${on}`;
   if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}${on}`;
   return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}${on}`;

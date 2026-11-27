@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (124 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -133,9 +133,11 @@ export DESK_QUEUE="$T/queue-cl.json" DESK_AUTOPILOT_STATE="$T/state-cl"
 mkdir -p "$T/state-cl/logs" "$T/state-cl/tickets"
 cat > "$T/stub/claude" <<EOF
 #!/bin/sh
+[ "\$1" = auth ] && { printf '{"loggedIn":true,"email":"%s@example.com"}\n' "\$(basename "\${CLAUDE_CONFIG_DIR:-default}")"; exit 0; }
 if [ "\$1" = --cloud ]; then
   printf '%s' "\$2" > "$T/cloud-prompt"
   printf '%s|%s\n' "\$3" "\$4" > "$T/cloud-name"
+  printf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "$T/cloud-login"
   [ -e "$T/cloud-fail" ] && { cat "$S/fixtures/cloud/print-refused.txt" >&2; exit 1; }
   # This test script holds the queue lock from the session's start, so the pass's writes after it are refused.
   if [ -e "$T/lock-after-cloud" ]; then mkdir "\$DESK_QUEUE.lock"; echo $$ > "\$DESK_QUEUE.lock/pid"; fi
@@ -162,7 +164,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field CW-1 state)" = "\"running\"" ] && [ "$(field CW-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
 check "the cloud session is named <repo>-ticket-<KEY>, and the name is kept with it" '[ "$(cat "$T/cloud-name")" = "--name|widgets-ticket-CW-1" ] && [ "$(field CW-1 cloud.name)" = "\"widgets-ticket-CW-1\"" ]'
 check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q "AC1: it saves" "$T/cloud-prompt" && grep -q "feat/CW-1" "$T/cloud-prompt"'
-check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
+check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session on login [a-z]*: https://claude.ai/code/"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field CW-1 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
 # The session opens its PR 40 minutes after it started, on a branch of its own.
@@ -281,6 +283,15 @@ printf '%s\n' '{"body":"Done.","commits":[{"oid":"1234567abc","messageHeadline":
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC5 a cloud PR with a commit by another author parks the ticket, naming the commit and its author" '[ "$(field CW-7 state)" = "\"parked\"" ] && [ "$(field CW-7 result)" = null ] && field CW-7 park.question | grep -qF "commit 1234567 authored as claude[bot] <bot@users.noreply.github.com>, not t <t@example.com>"'
 rm -f "$T/cloud-view.json" "$T/cloud-prs.json"
+# #1581: the repo's subscription is login b, not the pass's own ~/.claude: the cloud session starts on b,
+# as a local worker would, and the spawn line and the ticket's cloud record name it.
+mkdir -p "$HOME/.claude-logins/b"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `unused` |\n| `claude` | `b` | `~/.claude-logins/b` | `default` |\n' > "$T/subs-cl.md"
+cloud_ticket CW-12; rm -f "$T/cloud-login"
+out=$(env -u CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS="$T/subs-cl.md" node "$B/pass.mjs" 2>&1)
+check "#1581 AC1 AC4 a cloud ticket starts under the repo's subscription's folder, not the pass's login" '[ "$(cat "$T/cloud-login" 2>/dev/null)" = "$HOME/.claude-logins/b" ] && [ "$(field CW-12 state)" = "\"running\"" ]'
+check "#1581 AC2 the spawn line names the account, and the ticket keeps it for desk-q" 'echo "$out" | grep -qF "CW-12 in a cloud session on b@example.com (login b): https://claude.ai/code/" && [ "$(field CW-12 cloud.login.email)" = "\"b@example.com\"" ]'
+q set CW-12 state=done; rm -rf "$HOME/.claude-logins/b"
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
 # queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked
@@ -337,7 +348,7 @@ check "DS-752 AC5 a cloud ticket whose state=running write is refused starts no 
   '[ ! -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"triaged\"" ] && [ "$(field RR-4 cloud)" = null ] && echo "$out" | grep -q "RR-4: queue write refused, not recorded, so no cloud session was started"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 AC6 with the write recorded, the cloud session starts and is recorded running" \
-  '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session: https://claude.ai/code/"'
+  '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session on login [a-z]*: https://claude.ai/code/"'
 q set RR-4 state=done
 # The running write is recorded but the session's, after it started, is refused: the ticket keeps the
 # time it started, so later passes still watch for its PR rather than skip a running ticket with no log.
