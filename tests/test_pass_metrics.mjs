@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES, parseSetupSteps, setupMedians, setupMediansText, repoStates } from '../desk/bin/pass-metrics.mjs';
 import { checkin } from '../desk/bin/digest.mjs';
+import { archivePath } from '../desk/bin/queue-store.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -63,7 +64,14 @@ writeFileSync(queue, JSON.stringify({ batch: 'b', tickets: { 'F-3': { key: 'F-3'
 const d4 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T17:05:00'), dir: join(root, 'digest-f'), list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
 const page4 = readFileSync(d4.page, 'utf8');
 t('issue-1549 AC2 the digest lists an unreadable follow-on under Warnings', page4.slice(page4.indexOf('### Warnings')).includes('F-3: follow-on unreadable: {"x": 1}'), true);
+// A ticket whose PR merged before the check-in has moved to the archive, and is listed still.
 writeFileSync(queue, JSON.stringify({ batch: 'b', tickets: {} }));
+const archive = archivePath(queue);
+writeFileSync(archive, JSON.stringify({ tickets: { 'F-4': { key: 'F-4', state: 'done', merged_at: '2026-11-17T13:00:00.000Z', follow_on_unreadable: { raw: '{}', error: 'not a JSON array', at: '2026-11-17T12:00:00.000Z' } } } }));
+const d5 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T17:05:00'), dir: join(root, 'digest-g'), list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
+const page5 = readFileSync(d5.page, 'utf8');
+t('issue-1549 AC2 and so is one on a ticket archived before the check-in', page5.slice(page5.indexOf('### Warnings')).includes('F-4: follow-on unreadable: {}'), true);
+rmSync(archive);
 // DS-698: setup-worktree.sh's steps line, and a repo's medians per step over its new worktrees.
 t('DS-698 AC1 the steps line reads as seconds per step', JSON.stringify(parseSetupSteps('[setup-worktree] done\n[setup-worktree] steps=config:1,checkout:3,install:40\n[setup-worktree] worktree=/w')), '{"config":1,"checkout":3,"install":40}');
 t('DS-698 output with no steps line reads as null', parseSetupSteps('[setup-worktree] worktree=/w'), null);

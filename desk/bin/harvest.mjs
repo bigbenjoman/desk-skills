@@ -250,7 +250,8 @@ export function prBodyIn(texts) {
 // before any said=, which runs to the line's end. -> { steps, error, repaired, raw }: steps [] with no
 // follow_on=, and with an error naming why where one is there but does not read. A bare word or a
 // comma-separated list of them in place of the array is kept as one step per name with no row,
-// `repaired` saying so; `raw` is the field as written wherever there is one.
+// `repaired` saying so; an empty field or a word for nothing (`none`, `null`, `n/a`, `-`) keeps no step,
+// `repaired` saying that; `raw` is the field as written wherever there is one.
 export const FOLLOW_ON_MAX = 500;
 // What a step waits on before needs-you lists it: the merge (the default, kept as no `after`), its merge
 // commit on the default branch (`main`), or on config §4 "Promotion ref" (`production`).
@@ -258,10 +259,15 @@ const FOLLOW_GATES = ['merge', 'main', 'production'];
 const gateOf = (after) => (after == null || after === 'merge' ? {} : { after });
 const unquote = (x) => x.trim().replace(/^(["'`])(.*)\1$/s, '$2').trim();
 // The names a field that is not an array lists, or null where it is not plain names (a JSON object, say).
+// Each name may carry its own quotes (`"a", "b"`), or the whole list one pair (`"a, b"`).
 const namesIn = (raw) => {
-  const names = unquote(raw).split(',').map(unquote).filter(Boolean);
-  return names.length && names.every((n) => !/[[\]{}"]/.test(n)) ? names : null;
+  const plain = (x) => {
+    const names = x.split(',').map(unquote).filter(Boolean);
+    return names.length && names.every((n) => !/[[\]{}"'`]/.test(n)) ? names : null;
+  };
+  return plain(raw) ?? plain(unquote(raw));
 };
+const NOTHING = /^(none|null|n\/a|-)?$/i;
 export function followOnIn(done) {
   const s = String(done ?? '');
   const at = s.search(/\bfollow_on=/);
@@ -277,6 +283,7 @@ export function followOnIn(done) {
   if (!rest.startsWith('[')) {
     // A plain field runs to the next ` <name>=` (said= and the rest) or the line's end.
     const raw = rest.split(/\s+[a-z_]+=/)[0].trim();
+    if (NOTHING.test(unquote(raw))) return { steps: [], error: null, repaired: `${JSON.stringify(raw)} names no step, read as none`, raw };
     const names = namesIn(raw);
     if (!names) return fail('not a JSON array', raw);
     const steps = names.map((n) => ({ step: n.slice(0, FOLLOW_ON_MAX), row: null }));
@@ -332,7 +339,8 @@ if (isMain && process.argv[2] === '--check-done') {
   // since a field the pass has to repair or cannot read loses each step's row and gate. Exit 0 or 1.
   const line = process.argv.slice(3).join(' ');
   const f = followOnIn(line);
-  const why = f.error ?? (f.repaired ? `follow_on= is ${f.repaired}; write it as the JSON array` : null);
+  const why = f.error ?? (!f.repaired ? null : f.steps.length ? `follow_on= is ${f.repaired}; write it as the JSON array`
+    : `follow_on= ${f.repaired}; with no steps leave follow_on= out, else write it as the JSON array`);
   if (why) { console.error(`${why}: follow_on=[{"step": "<one line>", "row": "<§3 key or null>"}]`); process.exit(1); }
   console.log(f.steps.length ? `reads as ${f.steps.length} follow-on step(s)` : 'no follow_on=');
   process.exit(0);

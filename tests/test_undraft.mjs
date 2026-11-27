@@ -473,6 +473,11 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('issue-1549 AC1 a comma-separated list is kept as one step a name, with a repair',
     `${JSON.stringify(list.steps)} ${!!list.repaired}`, '[{"step":"a","row":null},{"step":"b","row":null}] true');
   t('issue-1549 AC1 a bare word stops at the next field', followOnIn('pr=1 follow_on=peak-check jira=none').steps[0]?.step, 'peak-check');
+  for (const field of ['"a", "b"', "'a', 'b'", "'a, b'", 'a,b'])
+    t(`issue-1549 AC1 the list ${field} is kept as one step a name`, JSON.stringify(followOnIn(`pr=1 follow_on=${field} said=x`).steps), '[{"step":"a","row":null},{"step":"b","row":null}]');
+  for (const field of ['none', 'null', '"none"', 'N/A', '-', ''])
+    t(`issue-1549 AC1 follow_on=${field} keeps no step and reads as none, repaired`,
+      ((f) => `${f.steps.length} ${f.error} ${!!f.repaired}`)(followOnIn(`pr=1 follow_on=${field} said=x`)), '0 null true');
   const obj = followOnIn('pr=1 follow_on={} said=x');
   t('issue-1549 AC2 an object keeps nothing, with its raw text to report',
     `${obj.steps.length} ${obj.repaired} ${obj.raw} ${unreadableFollowOn(obj.raw)}`, '0 null {} follow-on unreadable: {}');
@@ -488,6 +493,8 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('issue-1549 AC4 and an object', check('AUTOPILOT_DONE: pr=1 follow_on={} said=x').startsWith('1 not a JSON array: follow_on=['), true);
   t('issue-1549 AC4 the array passes', check('AUTOPILOT_DONE: pr=1 jira=none follow_on=[{"step": "run x", "row": null}] said=y'), '0 reads as 1 follow-on step(s)');
   t('issue-1549 AC4 no follow_on= passes', check('AUTOPILOT_DONE: pr=1 jira=none'), '0 no follow_on=');
+  t('issue-1549 AC4 follow_on=none is rejected, saying to leave it out',
+    check('AUTOPILOT_DONE: pr=1 jira=none follow_on=none').startsWith('1 follow_on= "none" names no step, read as none; with no steps leave follow_on= out'), true);
   t('DS-785 AC1 a step whose "after" is production keeps that gate',
     fo('pr=1 follow_on=[{"step": "open Osteopaths in the production portal", "row": null, "after": "production"}, {"step": "call staging", "row": null, "after": "main"}]'),
     JSON.stringify({ steps: [{ step: 'open Osteopaths in the production portal', row: null, after: 'production' }, { step: 'call staging', row: null, after: 'main' }], error: null }));
