@@ -17,7 +17,7 @@ import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPo
 import { runsInCloud, startsInCloud, toHandoff } from './pass/shared.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
-import { attachArchive, owesReopen } from './queue-store.mjs';
+import { attachArchive, mergedPrs, owesReopen } from './queue-store.mjs';
 import { PRODUCTION_BROKEN } from './promotion.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -25,12 +25,13 @@ import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+import { spawnStarts } from './worker-cost.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { metricsPath } from './pass-metrics.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
+import { FAILED, evaluateGate, requiredPasses, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, wquantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
@@ -514,8 +515,8 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
       : passed === checks.length ? (passed === 1 ? '1 check passed' : `all ${passed} checks passed`)
         : `${passed} check${passed === 1 ? '' : 's'} passed`;
     const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
-    if (ctx.merges) return merging(all, [' · merges at the next pass', null]);
-    return ctx.batchMerges ? { ...merging(all, [` · ${batchMergesText(ctx)}`, null]), byBatch: true } : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
+    if (ctx.merges) return { ...merging(all, [' · merges at the next pass', null]), green: true };
+    return ctx.batchMerges ? { ...merging(all, [` · ${batchMergesText(ctx)}`, null]), byBatch: true, green: true } : { ...needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]), green: true };
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
   return ctx.merges || ctx.batchMerges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
@@ -3887,6 +3888,10 @@ const RAIL = '▌ ';
 export const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
 const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 
+// With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it. A
+// stuck ticket waits on tickets outside the batch, which resuming does not move.
+const stoppedBy = (r, k, t, h) => !r.live && k !== 'stuck' && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t));
+
 // What a ticket page leads with: whether it moves without the user and, if not, what would. `lead`
 // introduces `cmds`, the commands that move it, each drawn alone on its own line so it copies whole.
 function moveOf(r, row, k, t, h, now) {
@@ -3918,8 +3923,7 @@ function moveOf(r, row, k, t, h, now) {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
-  // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t))) {
+  if (stoppedBy(r, k, t, h)) {
     const why = h ? h.text : clearsPark(t) ? clearsText(t) : slotWait(t) ? slotWaitText(t) : '';
     const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
@@ -4052,7 +4056,7 @@ function mergeOf(r, t, events) {
   if (pr == null) return null;
   // The PR's own repo where its status names one (a ticket done on a PR in another repo), else this one.
   const ps = prStatusOf(t);
-  const repo = String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? r.slug.replace('__', '/');
+  const repo = prRepoOf(r, ps);
   const e = latestMerge(events, { repo, pr });
   if (e?.event === 'merged') return { text: mergedLine(pr, e.by, e), warn: false };
   if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
@@ -4676,6 +4680,106 @@ export function ticketJson(r, key, { now = Date.now() } = {}) {
   const t = x?.t ?? r.q?.tickets?.[key] ?? null;
   const ticket = { key, repo: r.name, state: x?.k ?? t?.state ?? null, group: x ? groupOf(x.k) : null, pos: x?.pos ?? null, lane: t?.lane ?? null, stage: t?.stage ?? null, pr: t?.result?.pr ?? null };
   return envelope('ticket', now, { queues: queueAges([r], now) }, { ticket }, ticketParts(r, key, { now }));
+}
+
+// The last start in a worker's log (worker-cost.mjs spawnStarts): the model and effort its session started on, or null.
+function spawnOf(file) {
+  try { return spawnStarts(readFileSync(file, 'utf8')).at(-1) ?? null; } catch { return null; }
+}
+// The repo a ticket's PR is in: the one its status names (a ticket done on a PR in another repo), else
+// the repo's §0 GitHub repo, else its slug's.
+const prRepoOf = (r, ps) => String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1]
+  ?? (() => { try { const v = repoConfigValue(r.slug, 'gh-repo'); return v && !isNone(v) ? v : null; } catch { return null; } })()
+  ?? r.slug.replace('__', '/');
+
+// The PR & CI tab's verdict on ticket `key`'s PR as GitHub has it now, `ps` shaped as the pass records
+// pr_status (pass.mjs readPrStatus), read as prNeed reads the last pass's copy: { tone, text }.
+export function prVerdictJson(r, key, ps, { now = Date.now() } = {}) {
+  const t0 = r.q.tickets[key], ctx = r.ctx ?? NOBODY;
+  if (ps.state === 'MERGED') {
+    const at = Date.parse(ps.merged_at ?? t0.merged_at ?? '');
+    return { tone: 'done', text: `Merged${Number.isFinite(at) ? ` ${clock(at)}` : ''}${t0.merge?.by ? ` by ${t0.merge.by}` : ''}.` };
+  }
+  const red = [...new Set(evaluateGate(ps.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] }).failing.map((c) => c.name))];
+  const f = fixOn(t0);
+  if (red.length && f && t0.state === 'running') return { tone: 'warn', text: `Blocked: ${andList(red)} ${red.length === 1 ? 'is' : 'are'} red. Fix try ${f.try} of ${f.of} is running.` };
+  // prNeed reads the status the last pass recorded on a done ticket, so it is handed this read as that.
+  const pr = t0.result?.pr ?? t0.fix?.pr ?? null;
+  const need = prNeed(r.q, { ...t0, state: 'done', result: { ...t0.result, pr }, pr_status: { ...ps, pr } }, ctx, now);
+  if (!need.green) {
+    const tone = need.k === 'needs' ? 'person' : need.segs.some(([, c]) => c === FAIL || c === WARN) ? 'warn' : 'info';
+    return { tone, text: sentence(segText(need.segs).replaceAll(' · ', ', ')) };
+  }
+  const req = ctx.required ?? [];
+  const n = (ps.checks ?? []).filter((c) => (!req.length || req.includes(c.name)) && requiredPasses(c)).length;
+  const which = `${n === 1 ? 'the 1' : `all ${n}`} ${req.length ? 'required ' : ''}check${n === 1 ? '' : 's'} green`;
+  if (['REVIEW_REQUIRED', 'CHANGES_REQUESTED'].includes(ps.reviewDecision)) return { tone: 'warn', text: `Waiting for review: ${which}, and it needs an approving review.` };
+  const when = need.k === 'needs' ? ' It waits for you to merge it.' : need.byBatch ? ` It ${batchMergesText(ctx)}.`
+    : r.live && r.next != null ? ` The merge driver merges it at the next pass (${clock(r.next)}).` : ' The merge driver merges it once passes resume.';
+  return { tone: 'ok', text: `Ready to merge: ${which}${ps.reviewDecision === 'APPROVED' ? ' and approved' : ''}.${when}` };
+}
+// The email a repo's new workers start on (its §3 Subscription row, `default` the computer's), or null.
+function subscriptionEmail(slug) {
+  try { return repoSubscription(readSubscriptions(subscriptionsPath()), { value: repoConfigValue(slug, 'subscription'), source: 'row' }).email ?? null; } catch { return null; }
+}
+const isoOrNull = (t) => (t == null ? null : isoOf(t));
+// When ticket `t`'s PR #`pr` merged, or null. merged_at keeps a first PR's merge once a ticket is requeued,
+// so it is not read for a later PR. The PR's own status (`ps`, prStatusOf) gives GitHub's time once a pass
+// has read it merged; before that, the merge driver's record (queue.mjs merged) of that PR, whose time can be
+// the driver's clock. merged_at alone is read only where no merge record and no kept merged PR
+// (merged_pr, mergedPrs) names another PR.
+function mergedAtOf(t, pr, ps) {
+  if (ps?.state === 'MERGED' && ps.merged_at) return ps.merged_at;
+  if (pr != null && t.merge?.pr != null && Number(t.merge.pr) === Number(pr)) return t.merge.at ?? t.merged_at ?? null;
+  const kept = mergedPrs(t).map((x) => x.pr);
+  const own = t.merge?.pr == null && (!kept.length || kept.includes(Number(pr)));
+  if (ps) return ps.state === 'MERGED' && own ? t.merged_at ?? null : null;
+  return t.pr_status == null && own ? t.merged_at ?? null : null;
+}
+
+// What the desk app's ticket page reads (desk-ui GET /api/repos/<slug>/tickets/<KEY>): the facts its
+// state line, Overview tab and PR & CI tab are drawn from, each as the queue and the last pass hold it.
+// null where batch `r` has no ticket `key`.
+export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {}) {
+  const t = r.q?.tickets?.[key];
+  if (!t) return null;
+  const x = r.rows.find((y) => y.t.key === key) ?? r.prs.find((y) => y.t.key === key) ?? null;
+  const k = x?.k ?? shownState(r.q, t, r.ctx);
+  const tr = triageOf(r, key) ?? {};
+  const h = holdShown(r.q, t, r.ctx);
+  // A ticket on a fix try is running again on the PR it opened, which the last pass recorded only while it was done.
+  const prN = t.result?.pr ?? t.fix?.pr ?? null;
+  const ps = prN != null ? prStatusOf(t) : null;
+  const stageOf = (row) => (row?.st?.label ? { label: row.st.label, at: isoOrNull(row.st.at) } : null);
+  const rowOf = (b) => r.rows.find((y) => y.t.key === b) ?? r.prs.find((y) => y.t.key === b) ?? null;
+  const behind = unmergedBlockers(r.q, t).map((b) => ({ key: b, state: r.q.tickets[b] ? shownState(r.q, r.q.tickets[b], r.ctx) : null, stage: stageOf(rowOf(b))?.label ?? r.q.tickets[b]?.stage ?? null }));
+  const f = fixOn(t);
+  const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
+  const port = portLeaseOf(r, key, now);
+  const spawn = spawnOf(logPath(r, key));
+  const gh = prRepoOf(r, ps);
+  const field = ([label, segs]) => ({ label, text: segText(segs.slice(0, 1)), note: segText(segs.slice(1)).trim() || null });
+  return {
+    key, repo: r.repo ?? r.name, gh_repo: gh, jira_browse: jiraBrowseOf(r.slug),
+    state: k, group: groupOf(k), type: t.type ?? tr.type ?? null, size: tr.size ?? null, lane: laneOf(t, tr),
+    pos: x?.pos ?? null, places: r.places ?? null, title: tr.summary ?? null,
+    stage: k === 'running' ? stageOf(x) : null,
+    question: t.state === 'parked' ? t.park?.question ?? null : null, open_questions: t.open_questions ?? 0,
+    hold: h ? { text: h.text } : null, stopped: stoppedBy(r, k, t, heldAsks(t) ? null : h), behind, wait: ['ready', 'queued'].includes(k) ? startWait(r, t) : null,
+    collides: keysOf(t.collides_with),
+    fix: f ? { try: f.try ?? null, of: f.of ?? null } : null,
+    stuck: stuck ? { why: stuck.why } : null,
+    failed_why: k === 'failed' ? failedWhy(t) : null,
+    merged_at: isoOrNull(mergedAtOf(t, prN, ps)), merged_by: t.merge?.by ?? null,
+    pr: prN != null ? { number: prN, url: ps ? prUrl(r, t) : `https://github.com/${gh}/pull/${prN}`, state: ps?.state ?? null, draft: ps?.isDraft === true,
+      head: ps?.head ?? null, at: isoOrNull(ps?.at), need: ps && prRow(t) ? segText(prNeed(r.q, t, r.ctx, now).segs) : null, hold: parseHoldNote(t.merge_blocked)?.why ?? null } : null,
+    passes: { live: !!r.live, last: isoOrNull(r.last), next: isoOrNull(r.next), merges: !!r.ctx?.merges, workers: r.workers ?? null },
+    schedule: x && !x.pr ? timingFields(r, forecastOf(r, { now, checkin }), x, h, now).map(field) : [],
+    lane_reason: tr.lane_reason ?? null, files: tr.files_in_scope ?? [],
+    blocks: r.rows.filter((y) => y.t.key !== key && blockersOf(y.t).includes(key)).map((y) => y.t.key),
+    worker: { branch: t.branch ?? tr.branch ?? null, worktree: t.worktree ?? null, port: port ? String(port.key) : t.port ?? null,
+      subscription: subscriptionEmail(r.slug), model: spawn?.model ?? null, effort: spawn?.effort ?? null, session_id: t.session_id ?? null, log: logPath(r, key) },
+  };
 }
 
 // Every Claude and Codex login on this computer, as the Usage view lists them.

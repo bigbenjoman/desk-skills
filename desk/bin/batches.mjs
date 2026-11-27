@@ -59,13 +59,18 @@ export function repoTickets(slug, batches = allBatches(slug)) {
   });
 }
 
+// Each `b` of `read` ([{ b, q }], a batch and its queue) whose queue holds `key`: those holding it live,
+// else those holding it archived.
+export function holdersOf(read, key) {
+  const live = read.filter(({ q }) => q.tickets && Object.hasOwn(q.tickets, key));
+  return (live.length ? live : read.filter(({ q }) => q.tickets?.[key])).map(({ b }) => b);
+}
+
 // The batch whose queue holds `key`: its entry from listBatches, or null when none does. A key in two
 // batches is a broken invariant, and refused naming both rather than picking one.
 // A batch holding it live wins over one holding it archived (queue-store.mjs), done there before.
 export function batchHolding(key, slug = E.repoSlug()) {
-  const read = listBatches(slug).filter((b) => existsSync(b.queue)).map((b) => ({ b, q: readQueue(b.queue) }));
-  const live = read.filter(({ q }) => q.tickets && Object.hasOwn(q.tickets, key));
-  const holding = (live.length ? live : read.filter(({ q }) => q.tickets?.[key])).map(({ b }) => b);
+  const holding = holdersOf(listBatches(slug).filter((b) => existsSync(b.queue)).map((b) => ({ b, q: readQueue(b.queue) })), key);
   if (holding.length > 1) {
     throw new E.DeskConfigError(`desk: ${key} is in more than one batch (${holding.map(label).join(', ')}). A ticket belongs to one batch; remove it from the others.`);
   }

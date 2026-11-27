@@ -171,6 +171,13 @@ export function latestPerCheck(checks) {
   return [...keep, ...best.values()];
 }
 
+// gh writes a time GitHub has not set as the zero time, 0001-01-01.
+export const ghTime = (s) => (s && !String(s).startsWith('0001-') ? s : null);
+// A PR's statusCheckRollup as its pr_status keeps the checks (pass.mjs readPrStatus): the latest run of each.
+export const statusChecks = (rollup) => latestPerCheck(normaliseRollup(rollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion,
+  started: ghTime(c.startedAt), completed: ghTime(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null, jobId: c.jobId ?? null,
+  ...(c.runId == null && c.description ? { description: c.description.slice(0, 300) } : {}) }));
+
 // Every check finished, at least one was skipped and the rest passed: on a draft, that is CI that
 // does not run there (a workflow that skips drafts), not a check to fix. Undrafting it runs them.
 export function skippedOnly(allChecks) {

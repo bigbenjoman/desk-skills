@@ -39,6 +39,11 @@
 // must list for the repo; for answer it is a ticket key.
 // DESK_UI_TEST_BIN names the folder those commands run from, read only under a test HOME.
 //
+// The ticket page: GET /api/repos/<slug>/tickets/<KEY> is desk-q-model.mjs ticketPageJson, from the batch
+// of <slug> holding the ticket. GET …/<KEY>/pr is its PR as GitHub has it now (desk-ui-ticket.mjs), read
+// with this computer's gh and cached for 60 s, or the last pass's copy when gh does not answer, its verdict
+// desk-q-model.mjs prVerdictJson's; GET …/<KEY>/pr/jobs/<id>/log is the last 40 lines of one of its checks' job logs.
+//
 // The Inbox: GET /api/inbox is needs-you.mjs list --json --no-settle, which writes nothing, with
 // `settled_at` (the last settling list's time), `github` (what the last check of GitHub found:
 // { ok } or { ok: false, reason: 'down' | 'signin', detail }), `next_pass_at` / `next_checkin_at`, and
@@ -74,6 +79,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
 import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
+import { makePrReader } from './desk-ui-ticket.mjs';
 import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
@@ -273,7 +279,8 @@ function parkSeed({ ticket, batches }) {
 // `terminal(dir)` opens Terminal for /api/terminal (openTerminal), and `github()` checks GitHub before
 // the Inbox settles (probeGitHub); the tests pass stubs.
 // `chat` passes the conversations' options: `seed(about)` -> the quotes (parkSeed), `now`, `checkMs`.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {} } = {}) {
+// `pr` passes options to the ticket page's PR reader (makePrReader): the tests' gh stub and clock.
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {}, pr = {} } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -283,6 +290,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   const boot = randomBytes(8).toString('hex');
   const feed = makeFeed(events);
   const clock = events.now ?? Date.now; // the feed's, which dates each model it reads
+  const prs = makePrReader(pr);
   const seed = chat.seed ?? parkSeed;
   // A conversation's child runs in its repo's checkout on its subscription's login folder, with no
   // API key, so it is billed to that subscription.
@@ -452,6 +460,41 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     } catch (e) { console.error(`desk-ui: ${kind}: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
     if (done.refuse) return refuse(res, ...done.refuse);
     return send(res, STATUS[done.ran.exit] ?? 500, done.ran);
+  }
+
+  // A repo's required, advisory and known flaky checks (§4), by name, as the PR & CI tab labels them.
+  async function checkKinds(slug) {
+    const G = await import('./gate.mjs');
+    const list = (id) => { try { return (E.repoConfigValues(slug, id) ?? []).filter((v) => !E.isNone(v)); } catch { return []; } };
+    return { required: list('required-checks'), advisory: list('advisory-checks'), flaky: G.parseFlaky(list('flaky-checks')).flaky.map((f) => f.name) };
+  }
+
+  // The ticket page's reads: the ticket, its PR, or one of its PR's job logs (`sub`, `job`).
+  async function ticketRead(res, slugPart, keyPart, sub, job) {
+    let slug, key;
+    try { slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); } catch { return refuse(res, 400, 'ticket', 'That is not a ticket key.'); }
+    // Any id a queue admits (desk-env.mjs SAFE_ID), a lowercase base-red- one included.
+    if (!E.SAFE_ID.test(key) || key.includes('..')) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
+    let t, recorded, verdict;
+    try {
+      const { Q, all } = await loadAll();
+      const batches = all.filter((r) => r.slug === slug);
+      if (!batches.length) return refuse(res, 404, 'repo', 'That is not a configured repo.');
+      const { holdersOf } = await import('./batches.mjs');
+      const held = holdersOf(batches.map((b) => ({ b, q: b.q ?? {} })), key);
+      if (held.length > 1) return refuse(res, 409, 'ticket', `${key} is in more than one batch of ${batches[0].repo}.`);
+      const r = held[0];
+      t = r ? Q.ticketPageJson(r, key, { now: Date.now() }) : null;
+      if (!t) return refuse(res, 404, 'ticket', `${key} is in no batch of ${batches[0].repo}.`);
+      const { prStatusOf } = await import('./batch-state.mjs');
+      const q = r.q.tickets[key];
+      // A ticket on a fix try keeps the copy the pass recorded while it was done.
+      recorded = t.pr && q.pr_status?.pr === t.pr.number ? (prStatusOf(q) ?? q.pr_status) : null;
+      verdict = (ps) => Q.prVerdictJson(r, key, ps, { now: Date.now() });
+    } catch (e) { console.error(`desk-ui: ticket: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+    if (!sub) return send(res, 200, t);
+    const out = job === undefined ? await prs.pr(t, await checkKinds(slug), recorded, verdict) : await prs.log(t, job, recorded);
+    return send(res, out.status, out.body);
   }
 
   // Terminal for one folder setup lists as found, sent as {folder: <its name>} and nothing else.
@@ -643,6 +686,8 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       const c = path.match(/^\/api\/sessions\/([^/]+)(?:\/([^/]+))?$/);
       if (c) return sessionRoute(req, res, method, c[1], c[2], query);
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
+      const tk = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)(?:\/(pr)(?:\/jobs\/(\d{1,20})\/log)?)?$/);
+      if (tk) return ticketRead(res, tk[1], tk[2], tk[3], tk[4]);
       if (path === '/api/setup') {
         try { return send(res, 200, setup()); } catch (e) { console.error(`desk-ui: setup: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }

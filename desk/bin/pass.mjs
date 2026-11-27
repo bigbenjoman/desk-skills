@@ -56,7 +56,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn, isBot } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, ghTime, statusChecks, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn, isBot } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
@@ -5252,9 +5252,8 @@ function readPrStatus(n) {
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
-  // gh writes a time GitHub has not set as the zero time, 0001-01-01.
-  const time = (s) => (s && !s.startsWith('0001-') ? s : null);
-  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null, jobId: c.jobId ?? null, ...(c.runId == null && c.description ? { description: c.description.slice(0, 300) } : {}) }));
+  const time = ghTime;
+  const checks = statusChecks(v.statusCheckRollup);
   const headCommit = (v.commits ?? []).find((c) => c?.oid && c.oid === v.headRefOid);
   // Who approved this head: `latestReviews` carries no commit, so `reviews` is read.
   const approvals = [...new Set((v.reviews ?? []).filter((r) => r?.state === 'APPROVED' && r.commit?.oid === v.headRefOid).map((r) => r.author?.login).filter(Boolean))].sort();

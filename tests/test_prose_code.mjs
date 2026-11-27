@@ -11,7 +11,7 @@
 // covers: desk/bin/stitch-boards.mjs desk/bin/undraft.mjs desk/bin/review-plain.mjs desk/bin/upload-batches.mjs desk/bin/upload-log.mjs desk/bin/upload-queue.mjs desk/bin/usage-limit.mjs desk/bin/usage-pace.mjs desk/bin/usage-probe.mjs desk/bin/worker-cost.mjs
 // covers: desk/bin/preview-db.mjs desk/bin/own-pr.mjs desk/bin/migration-renames.mjs desk/bin/untracked.mjs desk/bin/pass/pr-status.mjs desk/bin/ticket-fill.mjs desk/bin/ticket-lint.mjs desk/bin/ask-ledger.mjs desk/bin/cache-report.mjs desk/bin/subscription-use.mjs
 // covers: desk/bin/claims.mjs desk/bin/release-watch.mjs desk/bin/loop-tick.mjs desk/bin/ps-rows.mjs
-// covers: desk/bin/desk-q-server.mjs desk/bin/desk-ui.mjs desk/bin/desk-ui-events.mjs
+// covers: desk/bin/desk-q-server.mjs desk/bin/desk-ui.mjs desk/bin/desk-ui-events.mjs desk/bin/desk-ui-ticket.mjs
 // covers: desk/bin/desk-changes.mjs desk/bin/levers-audit.mjs desk/bin/levers-trips.mjs
 // The covers lines name every module the check imports, directly or through another (checked below),
 // so a change to any of them runs this suite.

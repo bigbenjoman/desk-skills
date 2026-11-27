@@ -126,7 +126,7 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
-import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
+import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup, ghTime } from './gate.mjs';
 import { HOME, SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
@@ -2494,7 +2494,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     const { v, err, repo } = readPr(pr, ',body');
     if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not marked done and stays on your list.`);
     if (v.state === 'MERGED') {
-      const at = v.mergedAt && !String(v.mergedAt).startsWith('0001-') ? v.mergedAt : new Date(now).toISOString();
+      const at = ghTime(v.mergedAt) ?? new Date(now).toISOString();
       const m = queueCmd(r, ['set', ticket, 'pr_status.state=MERGED', `pr_status.merged_at=${at}`]);
       if (!m.ok) return say(false, `GitHub shows PR #${pr} merged, but recording it was refused: ${m.out}`);
       return say(true, `GitHub shows PR #${pr} merged, so it is off your list.`);
@@ -2559,7 +2559,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // (pr_status and merged_at), so no pass reads its number as one of this repo's PRs and the tickets
   // held behind it are released as behind any merge.
   const elsewhereDone = ({ repo, pr, mergedAt }) => {
-    const at = mergedAt && !String(mergedAt).startsWith('0001-') ? new Date(mergedAt).toISOString() : new Date(now).toISOString();
+    const at = new Date(ghTime(mergedAt) ?? now).toISOString();
     const how = `you said done; PR #${pr} merged in ${repo}${mergedAt ? ` at ${utc(at)}` : ''}`;
     const status = { pr, state: 'MERGED', merged_at: at, url: `https://github.com/${repo}/pull/${pr}` };
     const m = queueCmd(r, [...shippedSet(x.t, how, pr, at), `pr_status=${JSON.stringify(status)}`]);
