@@ -20,7 +20,7 @@ out"). Every fix is one command, run alone, measured before and after.
 - **Stops it coming back:** run throwaway containers with `--rm`, or remove them with
   `docker rm -v`. A script that removes its container on purpose with plain `docker rm -f`
   still leaks one volume per run, because images such as `postgres` declare a data volume.
-  Seen 2026-11-27: two test-database scripts did this (a pytest harness and a `test-like-ci.sh`),
+  Seen 2026-11-27: two test-database scripts did this (a pytest harness and a CI-parity shell script),
   and they were the 3,745 volumes. Find the script from the leftover containers' names.
 
 ## docker-build-cache
