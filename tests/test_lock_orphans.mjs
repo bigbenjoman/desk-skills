@@ -1,7 +1,7 @@
 // suite: lock orphans (a test lock holder whose caller is gone is named, reclaimed past its grace, and ended by with-lock.sh's caller watch)
 // layer: L2
 // covers: desk/bin/lock-orphans.mjs desk/bin/lock-caller-watch.mjs desk/bin/with-lock.sh
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -143,6 +143,25 @@ try {
   const runs = new Set([...(pids ?? []).slice(0, 1), ok.pid].map(String));
   const ours = (r) => { const w = r.args.split(/\s+/); const i = w.findIndex((x) => x.endsWith('/lock-caller-watch.mjs')); return i >= 0 && runs.has(w[i + 1]); };
   t('no caller watch of this test\'s runs is left once they end', await until(() => !(readRows() ?? []).some(ours), 5000), true);
+  // Issue #1636: the watch outlives its run by up to a poll, and works from /, never the run's
+  // directory: a process working in a worktree holds it from a spawn (pass.mjs busyWorktree), so a
+  // pass's own spec run in a child's worktree kept the next pass from spawning there.
+  const W = scratch('lock-caller-wt-');
+  try {
+    const slow = { ...env, DESK_CALLER_WATCH_MS: '10000' };
+    const ran = spawnSync('bash', [script, 'test', '--', 'sh', '-c', 'sleep 1'], { cwd: W, env: slow, encoding: 'utf8' });
+    const watchOf = (r) => { const w = r.args.split(/\s+/); const i = w.findIndex((x) => x.endsWith('/lock-caller-watch.mjs')); return i >= 0 && w[i + 1] === String(ran.pid); };
+    const watch = (readRows() ?? []).find(watchOf);
+    // Its working directory: Linux's /proc, else lsof.
+    const cwdOf = (pid) => {
+      try { return readlinkSync(`/proc/${pid}/cwd`); } catch { /* not Linux */ }
+      return (spawnSync('lsof', ['-n', '-w', '-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' }).stdout ?? '').split('\n').find((l) => l[0] === 'n')?.slice(1) ?? null;
+    };
+    const cwd = watch ? cwdOf(watch.pid) : null;
+    t('#1636 a run\'s caller watch is still up just after the run ends', [ran.status, !!watch], [0, true]);
+    t('#1636 and it does not work in the run\'s directory', cwd, '/');
+    if (watch) { try { process.kill(watch.pid, 'SIGKILL'); } catch { /* gone */ } }
+  } finally { rmSync(W, { recursive: true, force: true }); }
   if (existsSync(L)) rmSync(L, { recursive: true, force: true });
 } finally { rmSync(L, { recursive: true, force: true }); }
 
