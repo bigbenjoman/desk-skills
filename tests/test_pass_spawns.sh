@@ -200,7 +200,7 @@ check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming th
 # issue-1569: where §5 forbids AI attribution, the session is told so, and its PR is read for it before
 # the ticket is done: found, the pass removes it where config §3 lets it, and otherwise parks naming it
 # and the row, on the PR's branch.
-{ cat "$T/config.md"; printf '\n## 5. Conventions\n| Field | Value |\n|---|---|\n| AI attribution | `forbidden` |\n'; } > "$T/config-ai.md"
+{ cat "$T/config.md"; printf '\n## 5. Conventions\n| Field | Value |\n|---|---|\n| AI attribution | `forbidden` |\n\n## 1. Identity\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n'; } > "$T/config-ai.md"
 cloud_ticket CW-6
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC1 with attribution forbidden, the cloud prompt rules it out" '[ "$(field CW-6 state)" = "\"running\"" ] && grep -q "No AI attribution anywhere" "$T/cloud-prompt" && grep -q "Co-Authored-By" "$T/cloud-prompt"'
@@ -210,14 +210,14 @@ echo 'not json' > "$T/cloud-view.json"
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC2 a PR whose commits cannot be read leaves the ticket running, said quietly" '[ "$(field CW-6 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-6: cloud session .* opened PR #61, whose commits, body and comments could not be read"'
 : > "$T/gh-calls"
-printf '%s\n' '{"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"abcdef1234","messageHeadline":"feat: CW-6 save","messageBody":"Co-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+printf '%s\n' '{"author":{"login":"me"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"abcdef1234","messageHeadline":"feat: CW-6 save","messageBody":"Co-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC2 a cloud PR carrying attribution the pass may not remove parks the ticket, naming what was found" '[ "$(field CW-6 state)" = "\"parked\"" ] && field CW-6 park.question | grep -q "cloud PR #61 breaks this repo.s commit and PR rules" && field CW-6 park.question | grep -q "Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1" && field CW-6 park.question | grep -q "Generated with Claude Code.* footer in the PR body" && ! field CW-6 park.question | grep -q "authored as"'
 check "issue-1569 AC2 and naming each config §3 row that keeps the pass from removing it" 'field CW-6 park.question | grep -q "The pass may not remove it: config §3 git-force-with-lease is \"[a-z]*\" and pr-edit is \"[a-z]*\"" && ! grep -qE "pr edit 61 |-X DELETE |-f body=" "$T/gh-calls"'
 check "issue-1569 AC2 it is not recorded done, and a requeue works its PR's branch locally" '[ "$(field CW-6 result)" = null ] && [ "$(field CW-6 branch)" = "\"claude/cw-6-abc\"" ] && [ "$(field CW-6 cloud.pr_at)" != null ]'
 # With git-force-with-lease and pr-edit granted, the pass removes it itself: a real branch on a bare
 # origin, two commits authored as Claude with its trailers, and a body and two comments carrying it.
-node -e 'const fs = require("fs"); const [i, o] = process.argv.slice(1); fs.writeFileSync(o, fs.readFileSync(i, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `git-force-with-lease` | Force-push with a lease | `ask` | `yes` |\n| `pr-edit` | Edit PRs | `ask` | `yes` |") + "\n## 1. Identity\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n")' "$T/config-ai.md" "$T/config-ai-ok.md"
+node -e 'const fs = require("fs"); const [i, o] = process.argv.slice(1); fs.writeFileSync(o, fs.readFileSync(i, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `git-force-with-lease` | Force-push with a lease | `ask` | `yes` |\n| `pr-edit` | Edit PRs | `ask` | `yes` |"))' "$T/config-ai.md" "$T/config-ai-ok.md"
 git init -q --bare "$T/origin.git"; git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
 git clone -q -b main "$T/origin.git" "$T/cw8"; git -C "$T/cw8" checkout -q -b claude/cw-8-abc
 echo one > "$T/cw8/one.txt"; git -C "$T/cw8" add one.txt
@@ -257,8 +257,15 @@ node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.str
 printf '%s\n' '{"baseRefName":"main","headRefName":"pat/cw-10","author":{"login":"pat"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"ccccccc333","messageHeadline":"feat: CW-10","messageBody":"","authors":[{"name":"Pat","email":"pat@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
 : > "$T/gh-calls"
 out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
-check "issue-1569 a title-matched PR on another branch, opened by someone else, parks and is neither rewritten nor edited" '[ "$(field CW-10 state)" = "\"parked\"" ] && field CW-10 park.question | grep -q "The pass will not rewrite or edit it: it was found by the key in its title, is on pat/cw-10, not feat/CW-10, and was opened by pat, not §1 GitHub handle me" && ! grep -qE "pr edit 65 |-X DELETE |-f body=" "$T/gh-calls"'
+check "issue-1569 a title-matched PR on another branch, opened by someone else, parks and is neither rewritten nor edited" '[ "$(field CW-10 state)" = "\"parked\"" ] && field CW-10 park.question | grep -q "The pass will not rewrite or edit it: it is on pat/cw-10, not feat/CW-10, and was opened by pat, not me" && ! grep -qE "pr edit 65 |-X DELETE |-f body=" "$T/gh-calls"'
 check "issue-1569 and the ticket keeps its own branch, so a requeue never works the other PR's" '[ "$(field CW-10 branch)" = "\"feat/CW-10\"" ] && field CW-10 park.question | grep -q "a requeue of CW-10 works feat/CW-10 locally"'
+# The same where config §3 would not let the pass remove it anyway: whose PR it is is read first.
+cloud_ticket CW-11
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 66, title: "feat(w): CW-11 save", url: "u", headRefName: "pat/cw-11", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-11 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"baseRefName":"main","headRefName":"pat/cw-11","author":{"login":"pat"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[],"comments":[]}' > "$T/cloud-view.json"
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 a teammate's PR keeps the ticket on its own branch where config §3 grants neither row too" '[ "$(field CW-11 state)" = "\"parked\"" ] && [ "$(field CW-11 branch)" = "\"feat/CW-11\"" ] && field CW-11 park.question | grep -q "The pass will not rewrite or edit it: it is on pat/cw-11" && ! field CW-11 park.question | grep -q "may not remove it"'
 git -C "$T/repo" remote remove origin; rm -rf "$T/cw8" "$T/origin.git"
 # AC5: whatever §5 says, a commit authored as anyone but the repo's author parks the ticket, naming it.
 rm -f "$T/cloud-prompt"; cloud_ticket CW-7

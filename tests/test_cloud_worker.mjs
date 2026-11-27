@@ -146,6 +146,9 @@ t('issue-1569 AC2 stripAttribution of nothing but attribution is empty', stripAt
   // A git whose diff finds the trees differ: the rewrite is refused, never pushed.
   const differs = (args, o) => { if (args[0] === 'diff') throw new Error('trees differ'); return git(args, o); };
   t('issue-1569 AC2 a rewrite whose tree differs is refused', rewriteCommits(differs, { head: old, base: 'main', author: ada }).error, `the rewrite of ${old.slice(0, 7)} would change its tree`);
+  const kept = rewriteCommits(git, { head: old, base: 'main', author: ada, strip: false });
+  const keptLog = kept.head ? run(['log', '--format=%an <%ae>|%B', 'main..' + kept.head]) : '';
+  t('issue-1569 AC5 where §5 allows attribution, a rewrite for the author alone keeps the trailers', keptLog.includes('Co-Authored-By: Claude') && keptLog.includes('Claude-Session:') && keptLog.includes('Ada Lovelace <ada@example.com>|'), true);
   t('issue-1569 AC2 a head with nothing the base lacks is refused', /has no commits that main lacks/.test(rewriteCommits(git, { head: run(['rev-parse', 'main']).trim(), base: 'main', author: ada }).error ?? ''), true);
 }
 

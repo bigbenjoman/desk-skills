@@ -1079,6 +1079,17 @@ function advanceCloud(t) {
 // commit carries a mark or another author. -> { did: [what it did] }, { wait } for a later pass to try
 // again, or { park, did } naming why it stopped and what it had done by then.
 function scrubCloudPr(t, pr, view, { forbidden, author }) {
+  // Whose PR it is comes first, so no park of someone else's PR puts the ticket on their branch. It is
+  // the session's where desk's own login (§1 GitHub handle or §4 Review account) opened it, wherever its
+  // branch: a cloud session names its own. On the branch the session was told to use, it is the
+  // session's too, unless a person other than desk's login opened it.
+  const head = view.headRefName || pr.headRefName;
+  const opener = String(view.author?.login ?? '');
+  const bot = !opener || view.author?.is_bot === true || /\[bot\]$/i.test(opener);
+  if (!loginIn(opener, conflictHandle) && !(head === t.branch && (bot || !conflictHandle))) {
+    const logins = conflictHandle ? String(conflictHandle).split(',').map((x) => x.trim()).join(' or ') : 'the §1 GitHub handle, which is unset';
+    return { foreign: true, park: `the pass will not rewrite or edit it: it is on ${head}${head === t.branch ? '' : `, not ${t.branch ?? 'the branch the session was given'}`}, and was opened by ${opener || 'an account not read'}, not ${logins}` };
+  }
   const marked = (o) => forbidden && attributionFound(o).length > 0;
   const commits = marked({ commits: view.commits }) || authorMismatches(view, author).length > 0;
   const body = marked({ body: view.body });
@@ -1086,19 +1097,10 @@ function scrubCloudPr(t, pr, view, { forbidden, author }) {
   const rows = [...(commits ? ['git-force-with-lease'] : []), ...(body || comments.length ? ['pr-edit'] : [])].filter((k) => E.permission(k) !== 'yes');
   if (rows.length) return { park: `the pass may not remove it: config §3 ${rows.map((k) => `${E.permissionKey(k)} is "${E.permission(k)}"`).join(' and ')}` };
   if (commits && !author) return { park: 'its commits need rewriting as the repo identity, and neither §1 Git author nor the repo\'s git user.name and user.email is set' };
-  // A PR found only by the key in its title may be someone else's: it is rewritten only on the branch the
-  // session was told to use, or where §1 GitHub handle opened it.
-  const head = view.headRefName || pr.headRefName;
-  let handle = null;
-  try { handle = E.githubHandle() || null; } catch { handle = null; }
-  const opener = String(view.author?.login ?? '');
-  if (head !== t.branch && !(handle && opener.toLowerCase() === handle.toLowerCase())) {
-    return { foreign: true, park: `the pass will not rewrite or edit it: it was found by the key in its title, is on ${head}, not ${t.branch ?? 'the branch the session was given'}, and was opened by ${opener || 'someone unread'}, not ${handle ? `§1 GitHub handle ${handle}` : 'the §1 GitHub handle, which is unset'}` };
-  }
   if (DRY) return { wait: 'this is a dry run' };
   const did = [];
   if (commits) {
-    const r = rewriteCloudCommits(t, view.headRefName || pr.headRefName, view.baseRefName || DEFAULT_BRANCH, author);
+    const r = rewriteCloudCommits(t, head, view.baseRefName || DEFAULT_BRANCH, author, forbidden);
     if (!r.did) return r;
     did.push(r.did);
   }
@@ -1125,7 +1127,7 @@ function scrubCloudPr(t, pr, view, { forbidden, author }) {
 // rewriteCommits: same tree, checked by git diff) and force-pushes them with a lease on the head it fetched.
 // A lease refused (the branch moved meanwhile) is tried once more from a new fetch. -> { did }, { wait }
 // or { park }. The refs it fetches into are its own, deleted after.
-function rewriteCloudCommits(t, head, base, author) {
+function rewriteCloudCommits(t, head, base, author, strip) {
   const ref = `refs/desk/cloud/${t.key.replace(/[^\w.-]/g, '-')}`;
   const git = (args, { env, input } = {}) => execGit('git', ['-C', MAIN, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...(env ? { env } : {}), input: input ?? '' });
   try {
@@ -1135,7 +1137,7 @@ function rewriteCloudCommits(t, head, base, author) {
       const old = shOut('git', ['-C', MAIN, 'rev-parse', ref]);
       if (!old.ok) return { wait: `the pass could not read the ${head} it fetched (${lastLine(old.out)})` };
       let r;
-      try { r = rewriteCommits(git, { head: old.out, base: `${ref}-base`, author }); }
+      try { r = rewriteCommits(git, { head: old.out, base: `${ref}-base`, author, strip }); }
       catch (e) { r = { error: `the rewrite of ${head} failed (${lastLine(`${e.stderr ?? ''}` || e.message)})` }; }
       if (r.error) return { park: r.error };
       const slot = previewSlot(t, head);

@@ -106,16 +106,17 @@ export function stripAttribution(text) {
 }
 
 // Rewrites the commits on `head` that `base` lacks, oldest first, as `author`, each message through
-// stripAttribution: each keeps its own tree and dates, on its rewritten parents. `git(args, { env, input })`
-// runs git in the repo and returns its stdout, throwing on failure. -> { head, n } once `git diff` finds
-// the new head's tree the old one's, else { error }.
-export function rewriteCommits(git, { head, base, author }) {
+// stripAttribution where `strip` (§5 forbids attribution): each keeps its own tree and dates, on its
+// rewritten parents. `git(args, { env, input })` runs git in the repo and returns its stdout, throwing on
+// failure. -> { head, n } once `git diff` finds the new head's tree the old one's, else { error }.
+export function rewriteCommits(git, { head, base, author, strip = true }) {
   const shas = git(['rev-list', '--reverse', '--topo-order', head, '--not', base]).split('\n').map((s) => s.trim()).filter(Boolean);
   if (!shas.length) return { error: `${head.slice(0, 7)} has no commits that ${base} lacks` };
   const done = new Map();
   for (const sha of shas) {
     const [tree, parents = '', aDate, cDate] = git(['log', '-1', '--format=%T%n%P%n%aI%n%cI', sha]).split('\n');
-    const msg = stripAttribution(git(['log', '-1', '--format=%B', sha]));
+    const body = git(['log', '-1', '--format=%B', sha]);
+    const msg = strip ? stripAttribution(body) : body.replace(/\n+$/, '');
     if (!msg.trim()) return { error: `commit ${sha.slice(0, 7)}'s message is nothing but attribution` };
     const env = { ...process.env, GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, GIT_AUTHOR_DATE: aDate,
       GIT_COMMITTER_NAME: author.name, GIT_COMMITTER_EMAIL: author.email, GIT_COMMITTER_DATE: cDate };
