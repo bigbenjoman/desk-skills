@@ -411,6 +411,27 @@ export function declaredRows(text) {
   return { rows: rows.filter((r) => r.declared).map(({ section, label }) => ({ section, label })), tables: [...tables.values()] };
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
+// Every row of a config file's text with its items, for comparing two copies of a config:
+// [{ section, label, items }]. A declared row's items are its value cell's as the parse reads them (a
+// trailing note left out); a row of a table of the person's own rows (the §3c ledger, the §4 review
+// asks) is labelled by its `###` heading and first cell, and its items are its other cells. In a table
+// with a List column (the §3c ledger, which holds one rule under each list it is in: harness-rules.py)
+// a row is its first cell and its list, `<label> [<list>]`, so dropping one list's row leaves the
+// other's label as it was. Labels are unique per section: a repeat beyond that is `<label> #<n>`.
+export const configRowValues = (text) => {
+  const seen = new Map();
+  return tableLines(String(text)).rows.filter((r) => r.label).map((r) => {
+    const list = r.declared ? -1 : r.header.indexOf('list');
+    const own = list > 0 ? `${r.label} [${(r.cells[list] ?? '').replace(/`/g, '').trim()}]` : r.label;
+    const base = r.declared || !r.sub ? own : `${r.sub}: ${own}`;
+    const n = (seen.get(`${r.section}\0${base}`) ?? 0) + 1;
+    seen.set(`${r.section}\0${base}`, n);
+    const label = n === 1 ? base : `${base} #${n}`;
+    return r.declared
+      ? { section: r.section, label, items: cellItems(r.cells[settingCol(r.header)] ?? '') }
+      : { section: r.section, label, items: r.cells.slice(1).map((c) => c.trim()) };
+  });
+};
 
 // A config file's parse, by path, kept while its inode, size and modification time are unchanged:
 // desk-q reads many rows of every repo's config on each refresh. A missing file is not kept. Past
