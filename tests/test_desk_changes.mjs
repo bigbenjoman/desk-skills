@@ -90,19 +90,19 @@ t('configRowValues reads each declared row\'s items, its note left out', JSON.st
   '[{"section":"3","label":"git-push","items":["yes"]},{"section":"3b","label":"Preferred dev-server port","items":["3200"]},{"section":"4","label":"Required checks","items":["Lint","Unit tests"]}]');
 t('configRowValues reads a row of the person\'s own table by its heading and first cell', `${rv.length} ${rv[3].section} ${/asks for: Small diffs$/i.test(rv[3].label)} ${JSON.stringify(rv[3].items)}`,
   '4 4 true ["Keep diffs small"]');
-const ledger = (rows) => ['## 3c. Rules', '', '### Rule ledger', '', '| Rule | List | Added |', '|---|---|---|', ...rows, ''].join('\n');
-const lv = configRowValues(ledger(['| `Bash(git push:*)` | allow | 2026-11-01 |', '| `Bash(git push:*)` | ask | 2026-11-02 |']));
-t('configRowValues labels a repeated row of the person\'s own table apart', JSON.stringify(lv.map((r) => [r.label, r.items[0]])),
-  '[["rule ledger: Bash(git push:*)","allow"],["rule ledger: Bash(git push:*) #2","ask"]]');
+const ledger = (rows) => ['## 3c. Rules', '', '### Rule ledger', '', '| Rule | List | Owning rows | Added |', '|---|---|---|---|', ...rows, ''].join('\n');
+const lv = configRowValues(ledger(['| `Bash(git push:*)` | allow | git-push | 1 |', '| `Bash(git push:*)` | `ask` | git-push | 2 |', '| `Bash(git push:*)` | ask | x | 3 |']));
+t('configRowValues labels a ledger row by its rule and list, and a repeat beyond that apart', JSON.stringify(lv.map((r) => [r.label, r.items[2]])),
+  '[["rule ledger: Bash(git push:*) [allow]","1"],["rule ledger: Bash(git push:*) [ask]","2"],["rule ledger: Bash(git push:*) [ask] #2","3"]]');
 const LG = join(T, 'ledger');
 mkdirSync(LG);
 const lcopy = (name, text, at) => { const p = join(LG, name); writeFileSync(p, text); utimesSync(p, at / 1000, at / 1000); };
-lcopy('mine.md.bak', ledger(['| `R` | allow | 1 |', '| `R` | ask | 1 |']), NOW - 3 * DAY);
-lcopy('mine.md', ledger(['| `R` | allow | 1 |', '| `R` | deny | 1 |']), NOW - 2 * DAY);
-lcopy('config.md', ledger(['| `R` | none | 1 |']), NOW - 1 * DAY);
+lcopy('mine.md.bak', ledger(['| `R` | allow | a | 1 |', '| `R` | ask | b | 1 |']), NOW - 3 * DAY);
+lcopy('mine.md', ledger(['| `R` | ask | b, c | 1 |']), NOW - 2 * DAY);
+lcopy('config.md', ledger(['| `R` | deny | d | 1 |']), NOW - 1 * DAY);
 const le = configEntries({ path: join(LG, 'mine.md') });
-t('AC3: a repeated row\'s change is not hidden by the first; a config by another name reads its own backups only',
-  JSON.stringify(le.map((e) => [e.row, e.from[0], e.to[0]])), '[["§3c rule ledger: R #2","ask","deny"]]');
+t('AC3: dropping a rule from one list is that change alone; a config by another name reads its own backups only',
+  JSON.stringify(le.map((e) => [e.row, e.from?.[1] ?? null, e.to?.[1] ?? null])), '[["§3c rule ledger: R [allow]","a",null],["§3c rule ledger: R [ask]","b","b, c"]]');
 const ce = configEntries({ path: join(CFG, 'config.md') });
 const entry = (row) => ce.find((e) => e.row === row || (row === 'ask' && /Small diffs$/.test(e.row)));
 t('AC3: one entry per changed row between consecutive copies', ce.length, 4);
