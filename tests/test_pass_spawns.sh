@@ -146,6 +146,7 @@ EOF
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 [ "\$1 \$2" = "pr list" ] && [ -e "$T/cloud-prs.json" ] && cat "$T/cloud-prs.json"
+[ "\$1" = api ] && [ -e "$T/cloud-push" ] && case "\$2" in */branches/*) cat "$T/cloud-push" ;; esac
 exit 0
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
@@ -160,6 +161,17 @@ check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q 
 check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field CW-1 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
+# issue-1553 AC2: a session with no PR and no push past its ETA (its saved first estimate) plus the
+# margin is reported possibly stuck, with its session URL; a push inside the margin keeps it quiet.
+cl_was=$(field CW-1 cloud)
+q set CW-1 "cloud=$(node -e 'const c = JSON.parse(process.argv[1]); c.started = new Date(Date.now() - 6 * 3600e3).toISOString(); console.log(JSON.stringify(c))' "$cl_was")"
+node -e 'const h = 3600e3, n = Date.now(), i = (t) => new Date(t).toISOString(); console.log(JSON.stringify({ key: "CW-1", at: i(n - 6 * h), starts: i(n - 6 * h), ships: i(n - 3 * h), could_run_to: i(n - 2 * h), model: 2 }))' > "$T/state-cl/eta.jsonl"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1553 AC2 no push past its ETA plus margin: reported possibly stuck, with its session URL" 'echo "$out" | grep -F "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" | grep -F "possibly stuck" | grep -qF "nothing pushed to feat/CW-1, past its ETA (" && [ "$(field CW-1 state)" = "\"running\"" ]'
+node -e 'console.log(new Date(Date.now() - 30 * 60e3).toISOString())' > "$T/cloud-push"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1553 AC2 a push to its branch inside the margin keeps it from possibly stuck" '! echo "$out" | grep -q "CW-1: .*possibly stuck" && echo "$out" | grep -q "CW-1: cloud session .*, no PR yet"'
+rm -f "$T/cloud-push" "$T/state-cl/eta.jsonl"; q set CW-1 "cloud=$cl_was"
 # The session opens its PR 40 minutes after it started, on a branch of its own.
 node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 31, title: "feat(w): CW-1 save", url: "u", headRefName: "claude/cw-1-abc", createdAt: new Date(s + 2400e3).toISOString() }]))' "$(field CW-1 cloud.started)" > "$T/cloud-prs.json"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -167,7 +179,7 @@ check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1
 check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: review read from the PR: .*; PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
 check "its tracker steps are the pass's to make, and with no tracker there are none" 'echo "$out" | grep -F "CW-1: review read from the PR: " | grep -qF "; PR #31 from cloud session" &&echo "$out" | grep -qF "its tracker steps are made by the pass" && [ "$(field CW-1 tracker_steps)" = "\"none\"" ]'
 all_done; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
+check "DS-124 AC2 issue-1553 AC1 the batch report shows its cost as cost unknown (cloud), never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -qF "cost unknown (cloud)" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
 cloud_ticket CW-2; : > "$T/cloud-fail"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'

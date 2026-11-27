@@ -132,6 +132,32 @@ export function findCloudPr(prs, { key, branch, since }) {
 // A cloud session's display name: one per ticket, as a local worker's (spawn-worker.sh).
 export const cloudName = (ghRepo, key) => `${String(ghRepo ?? '').split('/').pop()}-ticket-${key}`;
 
+// A cloud ticket's cost, wherever it is shown: Claude Code reports no tokens or cost for a cloud
+// session, and no OpenTelemetry collector is set up to read them (issue-1553, decided 2026-11-26), so
+// it is named unknown with its session URL beside it, never left out and never $0.
+export const CLOUD_COST_UNKNOWN = 'cost unknown (cloud)';
+export const CLOUD_COST_WHY = 'Claude Code reports no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one, so its cost is unknown: its session URL is beside it.';
+
+// A cloud session that may be stuck: no PR yet, past its ETA plus CLOUD_STALL_MARGIN_MS, and no push
+// to its branch within that margin. `ships` is the ticket's saved first estimate (desk-q-eta.mjs
+// eta.jsonl), or null with none, when the ETA is CLOUD_ETA_FALLBACK_MS from its start. `lastPush` is
+// when its branch's head commit was made, or null with no branch on origin (or none read yet: a
+// caller reads it only once this says stuck without it, as a push can only make it less so).
+//   -> null, or { due, last, from } with `due` the ETA plus margin (ms), `last` the later of the start
+//      and the push (ms), `from` 'estimate' or 'fallback'
+export const CLOUD_STALL_MARGIN_MS = 2 * 3_600_000;
+export const CLOUD_ETA_FALLBACK_MS = 24 * 3_600_000;
+export function cloudStall({ started, ships = null, lastPush = null, now = Date.now(), margin = CLOUD_STALL_MARGIN_MS, fallback = CLOUD_ETA_FALLBACK_MS }) {
+  const from = Date.parse(started ?? '');
+  if (!Number.isFinite(from)) return null;
+  const eta = Date.parse(ships ?? '');
+  const due = (Number.isFinite(eta) ? eta : from + fallback) + margin;
+  const pushed = Date.parse(lastPush ?? '');
+  const last = Number.isFinite(pushed) && pushed > from ? pushed : from;
+  if (now <= due || now - last <= margin) return null;
+  return { due, last, from: Number.isFinite(eta) ? 'estimate' : 'fallback' };
+}
+
 // Session start to PR, in ms, or null while there is no PR.
 export const cloudWall = (cloud) => {
   const ms = Date.parse(cloud?.pr_at ?? '') - Date.parse(cloud?.started ?? '');

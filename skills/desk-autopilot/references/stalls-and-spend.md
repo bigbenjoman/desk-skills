@@ -120,7 +120,15 @@ left for you. A start that fails parks with the CLI's error and is never run loc
 Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
 kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
-PR, and its tokens and cost as "not reported for cloud".
+PR, and its tokens as "unknown (cloud)" and its cost as "cost unknown (cloud)". Claude Code reports
+no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one. desk-q's
+Costs view (and `--json costs`) lists each queued cloud ticket the same way, with its session URL.
+Its Timeline and By-day views date a cloud ticket with the local ones and put `cloud ·` before its
+title. A cloud session with no PR, past the ticket's ETA plus 2 hours with no push to its branch in
+those 2 hours, is reported **possibly stuck** with its session URL. Its ETA is its saved first
+estimate (`eta.jsonl`), or 24 hours from its start when it has none. A cloud spawn is held by weekly
+usage pacing like a local one. Since a cloud session writes no usage reading here, a held pass
+still makes its probe call while only cloud workers run.
 The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR
 merges: nothing here can archive it. So the batch's finished cloud sessions are one desk-needs-you
 item, naming each with its URL, which the person archives by hand; its done records them so none is

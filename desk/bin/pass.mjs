@@ -35,7 +35,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, CLOUD_NO_EFFORT, CLOUD_COST_UNKNOWN, CLOUD_STALL_MARGIN_MS, CLOUD_ETA_FALLBACK_MS } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -46,7 +46,7 @@ import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
-import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, readEstimates, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond, commitOnBranch } from './clears-when.mjs';
@@ -954,14 +954,32 @@ function advanceCloud(t) {
   };
   const pr = findCloudPr([...read(['--head', t.branch ?? '']), ...read(['--search', `${t.key} in:title`])], { key: t.key, branch: t.branch, since: c.started });
   if (!pr) {
-    report.quiet.push(`${t.key}: cloud session ${where}, no PR yet (${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started)`);
+    const since = `${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started`;
+    const stuck = cloudStuck(t, c);
+    if (stuck) report.stalled.push(`${t.key}: cloud session ${where} possibly stuck — no PR, and ${stuck}. Open the session to see; to start it again: queue.mjs requeue ${t.key}`);
+    else report.quiet.push(`${t.key}: cloud session ${where}, no PR yet (${since})`);
     return;
   }
   const cloud = { ...c, pr_at: pr.createdAt };
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
-  report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
+  report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
+}
+
+// Whether a cloud session with no PR may be stuck (cloud-worker.mjs cloudStall): past the ticket's ETA,
+// its saved first estimate (eta.jsonl) or a day from its start with none, plus a margin, with no push to
+// its branch in that margin. The branch is read from GitHub only once the ETA has passed. -> why, or null
+function cloudStuck(t, c) {
+  let ships = null;
+  try { ships = readEstimates(STATE).get(t.key)?.ships ?? null; } catch { /* no estimate: the fallback ETA */ }
+  if (!cloudStall({ started: c.started, ships })) return null;
+  const head = t.branch ? sh('gh', ['api', `repos/${GH_REPO}/branches/${encodeURIComponent(t.branch)}`, '--jq', '.commit.commit.committer.date'], { tolerant: true }) : '';
+  const lastPush = /^\d{4}-\d\d-\d\dT/.test(head) ? head : null;
+  const s = cloudStall({ started: c.started, ships, lastPush });
+  if (!s) return null;
+  const eta = s.from === 'estimate' ? `its ETA (${new Date(Date.parse(ships)).toISOString()})` : `${wallTime(CLOUD_ETA_FALLBACK_MS)} from its start, as it has no ETA`;
+  return `${lastPush ? `no push to ${t.branch} since ${lastPush}` : `nothing pushed to ${t.branch ?? 'its branch'}`}, past ${eta} plus ${wallTime(CLOUD_STALL_MARGIN_MS)}`;
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -2283,7 +2301,7 @@ let paceProbeFailed = null;
 // A plan whose newest event names no 7-day window (READING.none) has nothing a probe could read.
 const noReading = !READING.seven_day && !READING.none?.includes('seven_day') && !PACE.bad && !/pacing off/.test(PACE.line)
   && noReadingProbeDue({ dir: usageDir(), login: PACE_LOGIN });
-if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() }))) {
+if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.filter((r) => !runsInCloud(r)).length, reading: READING, now: Date.now() }))) {
   const p = probeOnce(PACE_LOGIN);
   if (p.ok) {
     READING = paceReading();

@@ -845,6 +845,26 @@ t('#1487 AC3: so does its ticket page', field(Q.ticketScreen(repoAt('behind'), '
   `Ships     ▲${when(behindF.T['O-1'].likely, FIXED)} overdue: first estimate Mon 19 Oct 16:51, re-forecast from now could run to ${when(behindF.T['O-1'].late, FIXED)} (1 run in 5 is later)`);
 t('#1487 AC3: and the Timeline\'s key says what the mark means', Q.timelineScreen(Q.loadRepos(FIXED), 'acme__behind', { now: FIXED }).includes('▲ overdue: its first estimate passed, re-forecast from now'), true);
 
+// ---- issue-1553 AC3: cloud tickets on the forecast and on Costs ----------------
+// A cloud ticket is dated with the local ones and marked cloud before its title; Costs lists it as
+// cost unknown (cloud) with its session URL, and leaves the local one off that list.
+repo('cloudy', 4790, {
+  tickets: { 'CL-1': { state: 'running', stage: '3/9', location: 'cloud', cloud: { session: 'session_9', url: 'https://claude.ai/code/session_9', started: new Date(FIXED - HOUR).toISOString() } }, 'CL-2': { state: 'triaged' } },
+  sizes: { 'CL-1': 'M', 'CL-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+const cloudyTl = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__cloudy', { now: FIXED }).split('\n');
+const cloudyDays = Q.daysScreen(Q.loadRepos(FIXED), 'acme__cloudy', { now: FIXED }).split('\n');
+const cloudRow = (lines, k) => lines.find((l) => new RegExp(`\\s${k}\\s`).test(l)) ?? '';
+t('issue-1553 AC3 the timeline dates the cloud ticket and marks it cloud; the local one is not marked',
+  [cloudRow(cloudyTl, 'CL-1').includes('cloud · CL-1 title'), cloudRow(cloudyTl, 'CL-2').includes('CL-2 title'), cloudRow(cloudyTl, 'CL-2').includes('cloud ·')], [true, true, false]);
+t('issue-1553 AC3 so does the by-day view', [cloudRow(cloudyDays, 'CL-1').includes('cloud · CL-1 title'), cloudRow(cloudyDays, 'CL-2').includes('cloud ·')], [true, false]);
+const cloudyCosts = Q.costsScreen(Q.loadRepos(FIXED), { now: FIXED, costs: { exists: false, entries: [] }, cache: {}, use: null, subs: { logins: [] }, pinUsage: true }).split('\n');
+t('issue-1553 AC3 Costs lists the cloud ticket as cost unknown (cloud) with its session URL', /CL-1\s+cost unknown \(cloud\)\s+https:\/\/claude\.ai\/code\/session_9$/.test(cloudRow(cloudyCosts, 'CL-1')), true);
+t('issue-1553 AC3 and says why, leaving the local ticket off it', [cloudyCosts.some((l) => l.includes('Claude Code reports no tokens or cost for a cloud session')), cloudRow(cloudyCosts, 'CL-2')], [true, '']);
+const cloudyJson = JSON.parse(JSON.stringify(Q.costsJson(Q.loadRepos(FIXED), {}, { now: FIXED, costs: { exists: false, entries: [] }, cache: {} })));
+t('issue-1553 AC3 desk-q --json costs carries it too', JSON.stringify((cloudyJson.data?.cloud ?? cloudyJson.cloud ?? []).find((x) => x.key === 'CL-1')),
+  JSON.stringify({ repo: 'cloudy', key: 'CL-1', cost: null, why: 'cost unknown (cloud)', url: 'https://claude.ai/code/session_9' }));
+
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');

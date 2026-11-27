@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, CLOUD_NO_EFFORT, CLOUD_STALL_MARGIN_MS, CLOUD_ETA_FALLBACK_MS } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { scratch } from './scratch.mjs';
@@ -110,10 +110,11 @@ const row = ticketCost(S, cloudTicket);
 t('AC2 a cloud ticket has a report row with no log', row?.cloud?.url, started.url);
 const table = costTable([row, ticketCost(S, { key: 'K-2', location: 'cloud', cloud: { started: since, url: 'u2' } })]).split('\n');
 const k1 = table.find((l) => l.startsWith('  K-1 ')) ?? '';
-t('AC2 its tokens and cost read "not reported for cloud", never $0', (k1.match(/not reported for cloud/g) ?? []).length >= 3 && !/\$0\.00/.test(k1), true);
+t('AC2 its tokens read "unknown (cloud)", never $0', (k1.match(/unknown \(cloud\)/g) ?? []).length >= 3 && !/\$0\.00/.test(k1), true);
+t('issue-1553 AC1 its cost reads "cost unknown (cloud)", its session URL under it', k1.includes('cost unknown (cloud)'), true);
 t('AC2 its wall time is session start to PR', k1.includes('40m 00s'), true);
 t('AC2 its session URL is under its row', table.some((l) => l.trim() === `cloud session: ${started.url}`), true);
-t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
+t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost unknown (cloud)'), true);
 t('AC2 one with no PR yet has no wall time', (table.find((l) => l.startsWith('  K-2 ')) ?? '').includes('no PR yet'), true);
 t('AC2 the total leaves cloud workers out and says so', table.at(-2).includes('2 cloud worker(s) not counted') || table.at(-1).includes('2 cloud worker(s) not counted'), true);
 
@@ -125,17 +126,30 @@ const both = ticketCost(S, { key: 'K-3', location: 'cloud', cloud: { started: si
 t('a cloud ticket with a local review run counts both runs, its usage the local one\'s', `${both?.runs} ${both?.usage?.cost} ${both?.cloud?.url}`, '2 2.5 u3');
 const bothTable = costTable([both]).split('\n');
 t('its row shows the local cost and its cloud session stays under it, with no cost', (bothTable.find((l) => l.startsWith('  K-3 ')) ?? '').includes('$2.50')
-  && bothTable.some((l) => l.trim() === 'cloud session: u3') && bothTable.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
+  && bothTable.some((l) => l.trim() === 'cloud session: u3') && bothTable.some((l) => l.trim() === 'session: start 0, model default, effort default: cost unknown (cloud)'), true);
 t('the total counts its local run and says the cloud session is left out', bothTable.at(-1).includes('1 cloud worker(s) counted for their local review runs only'), true);
 writeFileSync(join(S, 'logs', 'K-4.log'), `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'killed' }] } })}\n`);
 const cut = costTable([ticketCost(S, { key: 'K-4', location: 'cloud', cloud: { started: since, url: 'u4' } })]).split('\n');
 const k4 = cut.find((l) => l.startsWith('  K-4 ')) ?? '';
-t('a cloud row whose local review run has no result event reads unknown, counted as unknown', `${k4.includes('unknown')} ${k4.includes('not reported for cloud')} ${cut.at(-1).includes('1 unknown worker(s) not counted')}`, 'true false true');
+t('a cloud row whose local review run has no result event reads unknown, counted as unknown', `${k4.includes('unknown')} ${k4.includes('(cloud)')} ${cut.at(-1).includes('1 unknown worker(s) not counted')}`, 'true false true');
 writeFileSync(join(S, 'logs', 'K-5.log'), preflightLine({ usd: 0.4, turns: 2 }));
 const pre = costTable([ticketCost(S, { key: 'K-5', location: 'cloud', cloud: { started: since, url: 'u5' } })]).split('\n');
 t('a cloud row with only a local preflight shows that cost, and the notes count it once', `${(pre.find((l) => l.startsWith('  K-5 ')) ?? '').includes('$0.40')} ${/-\d/.test(pre.at(-1))} ${pre.at(-1).includes('1 cloud worker(s) counted for their local review runs only')}`, 'true false true');
 
 rmSync(S, { recursive: true, force: true });
+
+// ---- a stalled cloud session (issue-1553 AC2) --------------------------------
+const H = 3_600_000, st0 = Date.parse('2026-11-01T00:00:00Z'), iso = (ms) => new Date(ms).toISOString();
+const ships = iso(st0 + 5 * H);
+t('issue-1553 AC2 before its ETA plus margin it is not stuck', cloudStall({ started: iso(st0), ships, now: st0 + 5 * H + CLOUD_STALL_MARGIN_MS }), null);
+const s1 = cloudStall({ started: iso(st0), ships, now: st0 + 8 * H });
+t('issue-1553 AC2 no push past its ETA plus margin: possibly stuck, dated from its estimate', `${s1?.from} ${s1?.due === st0 + 5 * H + CLOUD_STALL_MARGIN_MS} ${s1?.last === st0}`, 'estimate true true');
+t('issue-1553 AC2 a push inside the margin keeps it from stuck', cloudStall({ started: iso(st0), ships, lastPush: iso(st0 + 7 * H), now: st0 + 8 * H }), null);
+t('issue-1553 AC2 a push older than the margin does not', cloudStall({ started: iso(st0), ships, lastPush: iso(st0 + 3 * H), now: st0 + 8 * H })?.last, st0 + 3 * H);
+t('issue-1553 AC2 a commit from before the session started is not its push', cloudStall({ started: iso(st0), ships, lastPush: iso(st0 - H), now: st0 + 8 * H })?.last, st0);
+t('issue-1553 AC2 with no estimate its ETA is the fallback from its start', cloudStall({ started: iso(st0), now: st0 + CLOUD_ETA_FALLBACK_MS + 1 * H }), null);
+t('issue-1553 AC2 ... and past that plus the margin it is possibly stuck', cloudStall({ started: iso(st0), now: st0 + CLOUD_ETA_FALLBACK_MS + 3 * H })?.from, 'fallback');
+t('issue-1553 AC2 a session with no start recorded is never called stuck', cloudStall({ started: null, now: st0 }), null);
 
 // ---- finished sessions to archive -------------------------------------------
 const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });
