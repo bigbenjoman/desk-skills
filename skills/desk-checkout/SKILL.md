@@ -27,11 +27,12 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 only these rows, never the `CONFIG` file:
 
 ```bash
-desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
+desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own read-others slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
 ```
 
-Name any `UNSET` row and offer `/desk-setup`; an unset §3 row is a `no`. Never ask a
-former member, §5 binds the draft, and **§4 Check-out destination** says where it goes:
+Name any row printed `UNSET` (a `TODO`, or missing) and offer `/desk-setup`; an unset §3 row is a
+`no`. §3 says which sources you may read, §4 People who's who (never ask a former member), §5 binds
+the draft as any message, and **§4 Check-out destination** says where it goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
@@ -104,13 +105,9 @@ is usually there: the root cause, the status or the drafted announcement. Skip i
 small sessions.
 
 **Connectors.** They're deferred tools, so search with a required term: `+gmail`, `+calendar`,
-`+slack` (e.g. `ToolSearch "+slack search"`). A role is missing when no returned tool name
-contains that term. Unrelated hits (WebSearch, Atlassian) never stand in.
-When a role is missing, run `perl -e 'alarm 90; exec @ARGV' claude mcp list`.
-If it shows the connector as `✔ Connected`, it was connected after this session started, and
-the fix is a **new session**: reconnecting won't help. Otherwise the fix is to enable it at
-claude.ai → Settings → Connectors. Either way, carry on and **name it under the draft** with
-its fix. With no calendar, leave out meeting lines: never guess them.
+`+slack`. A role with no tool name containing its term is missing: `references/connectors.md` says
+how to find the fix, and the draft names it. With no calendar, leave out meeting lines: never
+guess them.
 
 If a script fails, report its error line and carry on. A missing Jira
 credential means `desk-jira` isn't set up for that repo yet (`desk-jira where` shows the paths;
