@@ -439,6 +439,11 @@ How to turn what you find into rows:
   fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
   a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
   included.
+- **Test sign-in permissions.** For each app with a Test sign-in item, ask which permissions its
+  signed-in pages need that user to hold in its Clerk `public_metadata.services`, as
+  `` `<dir>: <PERM>, <PERM>` ``; the names are the user's to give, never guessed from the code.
+  `none` (the default) skips the check. `desk-env drift --app <dir>` reads the user with the app's
+  development key and names each one it lacks `NOPERM`.
 - **Database URL variable.** **Every** variable name in those env files (and `.env.example`) that
   holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
   one span each, from the name scan above; never read a value. Missing one matters: a worker's
@@ -488,7 +493,15 @@ How to turn what you find into rows:
   own instructions then decide the wording), otherwise ask. If the user picks `forbidden`, offer to
   also write `{"attribution": {"commit": "", "pr": "", "sessionUrl": false}}` into the repo's
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
-  the hook is the backstop.
+  the hook is the backstop. Where §3b Worker location is `cloud`, say this too: a Claude Code cloud
+  session reads the repo's checked-in `.claude/settings.json`, not `settings.local.json` and not this
+  computer's settings, and no hook here sees its commits. So the same `attribution` setting (empty
+  `commit` and `pr` strings) in the checked-in `.claude/settings.json` is what stops a cloud session
+  adding it. Without it, the pass finds it on the PR and removes it itself (rewriting the commits and
+  editing the body and comments) where §3 `git-force-with-lease` and `pr-edit` are `yes`, and parks
+  the ticket where either is not, or the removal fails. That file is shared with
+  everyone who works on the repo, so setting it is the repo owner's call, not desk's: name it, and do
+  not write it.
 - **Whose commits count for AI attribution.** The count in the detect block takes every author's
   commit messages line by line, so on a squash-merge repo it counts teammates' trailers, often many
   times over. "Recent commits" in the item above are the user's own: count those commits, by the

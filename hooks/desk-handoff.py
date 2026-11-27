@@ -56,7 +56,8 @@ CLAUDE_CODE_DISABLE_1M_CONTEXT is set) or a `[1m]` model (SessionStart's model i
 `model` for the same family, since that id drops the suffix; or once usage has passed 200,000,
 which no smaller window allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
 added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session id>.json, which is
-also the marker that stops a second injection or a second Stop block.
+also the marker that stops a second injection or a second Stop block, and records the threshold and
+window the session runs under (`arm`), which handoff-report.mjs reads.
 
 Never fails a session: any error exits 0 with no output.
 
@@ -217,9 +218,17 @@ def family(model):
     return ""
 
 
-# The oldest version of each family whose default window is 1M, with no [1m] (Claude Code's model
-# configuration docs). An older version reaches 1M only through its [1m] variant.
-DEFAULT_1M_SINCE = {"fable": (0, 0), "sonnet": (5, 0), "haiku": (5, 5), "opus": (4, 7)}
+def load_default_1m_since():
+    """The oldest version of each family whose default window is 1M, with no [1m]: desk's
+    bin/model-windows.json, which handoff-report.mjs reads too. Unreadable, no model is 1M by default."""
+    try:
+        with open(os.path.join(DESK_HOME, "bin", "model-windows.json")) as f:
+            return {k: tuple(v) for k, v in json.load(f)["default_1m_since"].items()}
+    except Exception:
+        return {}
+
+
+DEFAULT_1M_SINCE = load_default_1m_since()
 
 
 def version(model):
@@ -506,6 +515,7 @@ def on_context(event, data, session, root):
     if not pct:
         save_state(session, state)
         return
+    state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     if now < pct:
         save_state(session, state)
@@ -624,6 +634,8 @@ def on_worker_context(event, data, session, root, path):
     w = window(state, used)
     if w >= LARGE_WINDOW:
         pct = pct_1m
+    if pct:
+        state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     stage = current_stage(transcript) if pct and now >= pct else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.

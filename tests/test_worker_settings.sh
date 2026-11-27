@@ -732,6 +732,16 @@ check "DS-576 AC8 a GH_CONFIG_DIR or gh token prefix is still refused" \
 settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=no)"
 check "DS-576 AC8 review-post.mjs is refused where §3 pr-self-review-comment is not yes" 'no "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP"'
 
+# issue-1559: desk-review's desk-script calls read `node <desk bin>/<script>`, and a worker resolves
+# <desk bin> to the desk bin path (no CLAUDE_PLUGIN_ROOT in a worker). Each call so resolved is allowed
+# where its row is granted. The `${CLAUDE_PLUGIN_ROOT:-…}` spelling never is: Claude Code refuses a
+# command holding `${` whatever the rules say.
+DESK_BIN_CALLS=()
+while IFS= read -r l; do DESK_BIN_CALLS+=("${l//<desk bin>/$B}"); done < <(grep -h '^node <desk bin>/' "$SRC"/skills/desk-review/references/*.md)
+settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=yes codex-review=yes)"
+check "issue-1559 desk-review's three <desk bin> calls are read (${#DESK_BIN_CALLS[@]})" '[ "${#DESK_BIN_CALLS[@]}" -eq 3 ]'
+check "issue-1559 each <desk bin> call, resolved, is allowed to a worker" 'ok "${DESK_BIN_CALLS[@]}"'
+
 # Workers drop the repo's .claude/settings.local.json, so a §5 AI attribution of forbidden turns
 # Claude Code's trailer off in the worker's own settings.
 attr5(){ printf '\n## 5. Conventions\n| Field | Value |\n|---|---|\n| AI attribution | %s |\n' "$1"; }

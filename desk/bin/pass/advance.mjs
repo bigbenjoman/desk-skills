@@ -507,7 +507,8 @@ function* linksOnDone(t, pr) {
 //   holds      the workers the advance step found paused: { key, limit, was, login }
 //   stored     the queue's usage_hold, or null
 //   preLogin   the login a stored preflight hold ran on
-//   repoLogin  the repo's own login: only a limit there holds the batch
+//   repoLogin  the login new sessions start on: only a limit there holds the batch
+//   fallback   that login's name while it is the fallback (fallback-login.mjs), else null
 //   now        the time, in ms
 //
 // Actions, beside `set` and `report`:
@@ -547,7 +548,7 @@ export function* decideUsageLimit(s) {
     if (sameLogin(s.repoLogin, h.login) && !(yield { type: 'lifted', limit: h.limit, login: h.login })) { holding = h; break; }
   }
   if (holding) yield { type: 'usage-hold', hold: { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: holding === pre ? pre.key : null, login: holding.login } };
-  else if (pre && !sameLogin(s.repoLogin, pre.login)) yield say(null, 'advanced', `${limitName(pre.limit.type)} on login ${pre.login.name} no longer holds the batch, as this repo's subscription is another: spawns go ahead`);
+  else if (pre && !sameLogin(s.repoLogin, pre.login)) yield say(null, 'advanced', `${limitName(pre.limit.type)} on login ${pre.login.name} no longer holds the batch, as ${s.fallback ? `new workers start on fallback login ${s.fallback}` : 'this repo\'s subscription is another'}: spawns go ahead`);
   else if (pre) yield say(null, 'advanced', `${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit, s.now)}): spawns and resumes go ahead`);
 }
 

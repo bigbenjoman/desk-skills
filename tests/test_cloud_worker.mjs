@@ -8,7 +8,9 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { execFileSync } from 'node:child_process';
+import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { scratch } from './scratch.mjs';
@@ -51,6 +53,104 @@ t('AC2 and the branch to push and the PR to open', prompt.includes('branch named
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
 t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
   ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
+
+// ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
+const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
+const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'b', text: 'T', tests: [], rules });
+t('issue-1569 AC1 the prompt has a section of the repo\'s rules', ruled.includes("## This repo's rules"), true);
+t('issue-1569 AC1 it names the git author, PR title and body shapes and merge method',
+  ['Author every commit as `Ada Lovelace <ada@example.com>`', 'PR title: `type(scope): <TICKET> description`', 'PR body: intro · ### Changes · ### Testing', 'merge by squash'].every((x) => ruled.includes(x)), true);
+t('issue-1569 AC5 it names the author as git user.name and user.email, and says another author\'s commits are rewritten',
+  ['git config user.name "Ada Lovelace"', 'git config user.email "ada@example.com"', 'authored as anyone else has its commits rewritten before it merges'].every((x) => ruled.includes(x)), true);
+t('issue-1569 the no-attribution rule names every mark the check looks for', ATTRIBUTION_MARKS.every(([, what]) => ruled.includes(what)), true);
+// The hook is installed on its own (install.sh), so it keeps its own BANNED: run both on one table of
+// samples, each a mark or a near miss, and they must flag the same marks, in the same order, on each.
+const samples = [
+  'Co-Authored-By: Claude <x@y.z>', 'co-authored-by = Anthropic bot', 'Co-Authored-By: Jane <jane@example.com>',
+  'Claude-Session: abc', 'claude-session=1', 'Claude session notes',
+  '🤖 Generated with [Claude Code](https://claude.ai/code)', 'generated with claude code', 'Generated with Claude',
+  'NOREPLY@anthropic.com', 'noreply@anthropic.org', 'https://claude.ai/code/session_01X', 'https://claude.ai/code', '🤖', 'a plain commit message',
+];
+const hookPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'deny-ai-attribution.py');
+const hookHits = JSON.parse(execFileSync('python3', ['-c',
+  'import importlib.util, json, sys\ns = importlib.util.spec_from_file_location("h", sys.argv[1]); h = importlib.util.module_from_spec(s); s.loader.exec_module(h)\n' +
+  'print(json.dumps([[i for i, b in enumerate(h.BANNED) if b.search(x)] for x in json.load(sys.stdin)]))', hookPath],
+  { input: JSON.stringify(samples), encoding: 'utf8' }));
+const jsHits = samples.map((x) => ATTRIBUTION_MARKS.flatMap(([re], i) => (re.test(x) ? [i] : [])));
+t('issue-1569 the check\'s marks flag what the attribution hook\'s BANNED flags, mark for mark, on every sample', JSON.stringify(hookHits), JSON.stringify(jsHits));
+t('issue-1569 and every mark is flagged by some sample, and some sample by none', ATTRIBUTION_MARKS.every((_, i) => jsHits.some((h) => h.includes(i))) && jsHits.some((h) => !h.length), true);
+t('issue-1569 AC1 where §5 forbids attribution, it rules out the trailer, session link and footer in commits, PR body and comments',
+  ['No AI attribution', 'Co-Authored-By', 'Claude-Session', 'claude.ai/code/session_', 'Generated with Claude Code', 'noreply@anthropic.com', 'commit messages', 'PR title and body', 'PR comments'].every((x) => ruled.includes(x)), true);
+t('issue-1569 AC1 the rules come before the ticket text', ruled.indexOf("## This repo's rules") < ruled.indexOf('## The ticket'), true);
+const allowed = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], rules: { ...rules, noAttribution: false } });
+t('issue-1569 AC1 where attribution is allowed, nothing rules it out', allowed.includes('No AI attribution') || allowed.includes('Co-Authored-By'), false);
+t('issue-1569 AC1 and the other rules stay', allowed.includes('Author every commit as'), true);
+t('issue-1569 AC1 with no rules set, there is no rules section', prompt.includes("This repo's rules"), false);
+t('issue-1569 §5 read as the hook reads it: forbidden', [attributionForbidden('forbidden'), attributionForbidden('`forbidden` (hook)'), attributionForbidden('allowed'), attributionForbidden(null)].join(), 'true,true,false,false');
+
+const clean = { body: 'What changed.', commits: [{ oid: 'abcdef1234', messageHeadline: 'fix: K-1 x', messageBody: '', authors: [{ name: 'Ada', email: 'ada@example.com' }] }], comments: [{ author: { login: 'ada' }, body: 'LGTM' }] };
+t('issue-1569 AC2 a PR with no attribution has none found', attributionFound(clean).length, 0);
+const marked = {
+  body: 'Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)',
+  commits: [
+    { oid: 'abcdef1234', messageHeadline: 'fix: K-1 x', messageBody: 'Co-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01X', authors: [{ name: 'Ada', email: 'ada@example.com' }] },
+    { oid: '9876543210', messageHeadline: 'chore', messageBody: '', authors: [{ name: 'Claude', email: 'noreply@anthropic.com' }] },
+  ],
+  comments: [{ author: { login: 'ada' }, body: 'see https://claude.ai/code/session_02Y' }],
+};
+const found = attributionFound(marked);
+t('issue-1569 AC2 a co-author trailer in a commit is found, naming the commit', found.includes("a Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1's message"), true);
+t('issue-1569 AC2 so is a session trailer and its link', found.includes("a Claude-Session trailer in commit abcdef1's message") && found.includes("a claude.ai/code/session_ link in commit abcdef1's message"), true);
+t('issue-1569 AC2 an Anthropic author email is found', found.includes("noreply@anthropic.com in commit 9876543's authors"), true);
+t('issue-1569 AC2 the footer and robot emoji in the PR body are found', found.includes('a "Generated with Claude Code" footer in the PR body') && found.includes('the robot emoji in the PR body'), true);
+t('issue-1569 AC2 a session link in a comment is found, naming it', found.includes('a claude.ai/code/session_ link in comment 1 by ada'), true);
+t('issue-1569 AC2 an empty view finds nothing', attributionFound({}).length, 0);
+
+const ada = { name: 'Ada Lovelace', email: 'ada@example.com' };
+t('issue-1569 AC5 commits authored as the expected email pass, case aside', authorMismatches({ commits: [{ oid: 'a1', authors: [{ name: 'Ada', email: 'ADA@example.com' }] }] }, ada).length, 0);
+t('issue-1569 AC5 a co-authored commit with the expected author among its authors passes', authorMismatches({ commits: [{ oid: 'a1', authors: [{ name: 'Bot', email: 'bot@x' }, { name: 'Ada', email: 'ada@example.com' }] }] }, ada).length, 0);
+t('issue-1569 AC5 a commit authored as anyone else is named, with who it was authored as',
+  authorMismatches(marked, ada).join('|'), 'commit 9876543 authored as Claude <noreply@anthropic.com>, not Ada Lovelace <ada@example.com>');
+t('issue-1569 AC5 with no author known, nothing is checked', authorMismatches(marked, null).length, 0);
+
+// ---- removing attribution (issue-1569 AC2) -----------------------------------
+t('issue-1569 AC2 stripAttribution drops each marked line and the blank lines that leaves at the end',
+  JSON.stringify(stripAttribution('Done.\n\nKeep this.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n')), JSON.stringify('Done.\n\nKeep this.'));
+t('issue-1569 AC2 stripAttribution leaves a clean text as it was', stripAttribution('a\n\nb'), 'a\n\nb');
+t('issue-1569 AC2 stripAttribution of nothing but attribution is empty', stripAttribution('Co-Authored-By: Claude <noreply@anthropic.com>'), '');
+{
+  // A real repo: a base commit, then two cloud commits authored as Claude with its trailers.
+  const repo = join(S, 'rewrite');
+  mkdirSync(repo, { recursive: true });
+  const env = (who) => ({ ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email });
+  const claude = { name: 'Claude', email: 'noreply@anthropic.com' };
+  const run = (args, o = {}) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: env(ada), ...o });
+  run(['init', '-q', '-b', 'main']);
+  writeFileSync(join(repo, 'a.txt'), 'a\n'); run(['add', '.']); run(['commit', '-q', '-m', 'base']);
+  run(['checkout', '-q', '-b', 'cloud']);
+  writeFileSync(join(repo, 'b.txt'), 'b\n'); run(['add', '.']);
+  run(['commit', '-q', '-m', 'feat: one\n\nWhy it is.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01X'], { env: env(claude) });
+  writeFileSync(join(repo, 'c.txt'), 'c\n'); run(['add', '.']);
+  run(['commit', '-q', '-m', 'feat: two'], { env: env(claude) });
+  const git = (args, { env: e, input } = {}) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(e ?? process.env), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, input: input ?? '' });
+  const old = run(['rev-parse', 'cloud']).trim();
+  const r = rewriteCommits(git, { head: old, base: 'main', author: ada });
+  t('issue-1569 AC2 rewriteCommits rewrites each commit the base lacks', r.n, 2);
+  t('issue-1569 AC2 the rewritten head has the old head\'s tree', r.head && run(['rev-parse', `${r.head}^{tree}`]).trim(), run(['rev-parse', `${old}^{tree}`]).trim());
+  t('issue-1569 AC2 the rewritten commits sit on the same base', r.head && run(['rev-parse', `${r.head}~2`]).trim(), run(['rev-parse', 'main']).trim());
+  const log = r.head ? run(['log', '--format=%an <%ae>|%cn <%ce>|%B', 'main..' + r.head]) : '';
+  t('issue-1569 AC2 every rewritten commit is authored and committed as the repo identity', log.split('\n').filter((l) => l.includes('|')).every((l) => l.startsWith('Ada Lovelace <ada@example.com>|Ada Lovelace <ada@example.com>|')), true);
+  t('issue-1569 AC2 the trailers are gone, and the rest of the message stays', /Co-Authored-By|Claude-Session/.test(log) || !log.includes('Why it is.') || !log.includes('feat: two'), false);
+  t('issue-1569 AC2 the author dates are kept', r.head && run(['log', '-1', '--format=%aI', r.head]).trim(), run(['log', '-1', '--format=%aI', old]).trim());
+  t('issue-1569 AC2 the original branch is left alone', run(['rev-parse', 'cloud']).trim(), old);
+  // A git whose diff finds the trees differ: the rewrite is refused, never pushed.
+  const differs = (args, o) => { if (args[0] === 'diff') throw new Error('trees differ'); return git(args, o); };
+  t('issue-1569 AC2 a rewrite whose tree differs is refused', rewriteCommits(differs, { head: old, base: 'main', author: ada }).error, `the rewrite of ${old.slice(0, 7)} would change its tree`);
+  const kept = rewriteCommits(git, { head: old, base: 'main', author: ada, strip: false });
+  const keptLog = kept.head ? run(['log', '--format=%an <%ae>|%B', 'main..' + kept.head]) : '';
+  t('issue-1569 AC5 where §5 allows attribution, a rewrite for the author alone keeps the trailers', keptLog.includes('Co-Authored-By: Claude') && keptLog.includes('Claude-Session:') && keptLog.includes('Ada Lovelace <ada@example.com>|'), true);
+  t('issue-1569 AC2 a head with nothing the base lacks is refused', /has no commits that main lacks/.test(rewriteCommits(git, { head: run(['rev-parse', 'main']).trim(), base: 'main', author: ada }).error ?? ''), true);
+}
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));

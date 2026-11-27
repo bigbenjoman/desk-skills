@@ -125,6 +125,7 @@ const say = (o) => console.log(JSON.stringify(o));
 if (prompt.includes('CRASH')) { process.stderr.write('boom'); process.exit(1); }
 if (prompt.includes('SLOW')) { setTimeout(() => {}, 5000); return; }
 if (prompt.includes('FIX')) fs.writeFileSync('src.txt', 'new\\n');
+if (prompt.includes('LOCK-LEDGER')) fs.chmodSync(process.env.STUB_LEDGER, 0o444);
 if (prompt.includes('NEW-FILE')) fs.writeFileSync('notes.txt', 'added\\n');
 if (prompt.includes('PUSH')) {
   say({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git push origin HEAD' } }] } });
@@ -324,6 +325,20 @@ t('DS-477 AC1 unset settings print the defaults', r.stderr.includes('quota: cap 
 t('DS-477 AC6 a run records its quota points', results(join(dir, 'q-default'))['one.a'].quota.points, 0.1);
 t('DS-477 the report prints the points', /quota: Claude login default: the bench has used 0\.1 of 10 points this week, weekly use 10\.1%/.test(r.stdout), true);
 t('DS-477 run.json keeps the quota', JSON.parse(readFileSync(join(dir, 'q-default', 'run.json'), 'utf8')).quota.cap, 10);
+
+// Use of the account while the hidden tests are scored (as other sessions spend during a long wait
+// for the test lock) is not the run's: the session's 1 point is, the scoring's 5 are not.
+writeFileSync(join(hidden, 'tests', 'spend.sh'), `node -e "const f=process.env.STUB_USAGE,fs=require('fs'),u=JSON.parse(fs.readFileSync(f));u.used+=0.05;fs.writeFileSync(f,JSON.stringify(u))"\n${FIXED}`);
+setUsage(0.1);
+r = qrun('q-scoring', [task('one', 'FIX', ['tests/spend.sh'])], { STUB_STEP: '0.01' });
+t('DS-1023 scoring is not in the run\'s points', results(join(dir, 'q-scoring'))['one.a'].quota?.points, 1);
+t('DS-1023 the run is still scored', results(join(dir, 'q-scoring'))['one.a'].status, 'accepted');
+// A charge that throws (the ledger turned unwritable during the session) still leaves the scored
+// result, so a resumed bench reuses it rather than paying for the session again.
+r = qrun('q-ledger', [task('one', 'FIX LOCK-LEDGER')], { STUB_LEDGER: join(dir, 'usage-q-ledger', 'bench-quota.jsonl') });
+chmodSync(join(dir, 'usage-q-ledger', 'bench-quota.jsonl'), 0o644);
+t('DS-1023 a failed charge stops the bench', r.status !== 0 && /EACCES|permission denied/i.test(r.stderr), true);
+t('DS-1023 a failed charge keeps the scored result', results(join(dir, 'q-ledger'))['one.a']?.status, 'accepted');
 
 // AC2, AC6, AC7: a 2-point cap, each run 1 point: two run, the third stops; after the reset it runs.
 const capSet = [task('one', 'FIX'), task('two', 'FIX'), task('three', 'FIX')];

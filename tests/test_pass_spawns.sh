@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (122 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -145,8 +145,13 @@ echo '[{"sessionId": "live-1"}]'
 EOF
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
+echo "\$*" >> "$T/gh-calls"
 [ "\$1 \$2" = "pr list" ] && [ -e "$T/cloud-prs.json" ] && cat "$T/cloud-prs.json"
 [ "\$1" = api ] && [ -e "$T/cloud-push" ] && case "\$2" in */branches/*) cat "$T/cloud-push" ;; esac
+# A cloud PR's commits, body and comments: none of them, unless a test writes its own.
+case "\$*" in "pr view "*body,commits,comments*) if [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; else echo '{"body":"","commits":[],"comments":[]}'; fi ;; esac
+# Its body and comments read again just before they are edited: as first read, unless a test changes them.
+case "\$*" in "pr view "*"--json body,comments") if [ -e "$T/cloud-live.json" ]; then cat "$T/cloud-live.json"; elif [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; fi ;; esac
 exit 0
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
@@ -206,6 +211,88 @@ check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$
 effort_cfg 0=turbo; cloud_ticket CW-5; q set CW-5 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
+# issue-1569: where §5 forbids AI attribution, the session is told so, and its PR is read for it before
+# the ticket is done: found, the pass removes it where config §3 lets it, and otherwise parks naming it
+# and the row, on the PR's branch.
+{ cat "$T/config.md"; printf '\n## 5. Conventions\n| Field | Value |\n|---|---|\n| AI attribution | `forbidden` |\n\n## 1. Identity\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n'; } > "$T/config-ai.md"
+cloud_ticket CW-6
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC1 with attribution forbidden, the cloud prompt rules it out" '[ "$(field CW-6 state)" = "\"running\"" ] && grep -q "No AI attribution anywhere" "$T/cloud-prompt" && grep -q "Co-Authored-By" "$T/cloud-prompt"'
+check "issue-1569 AC5 with no §1 Git author, the prompt names the repo's git user.name and user.email" 'grep -qF "Author every commit as \`t <t@example.com>\`" "$T/cloud-prompt" && grep -qF "git config user.email \"t@example.com\"" "$T/cloud-prompt"'
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 61, title: "feat(w): CW-6 save", url: "u", headRefName: "claude/cw-6-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-6 cloud.started)" > "$T/cloud-prs.json"
+echo 'not json' > "$T/cloud-view.json"
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC2 a PR whose commits cannot be read leaves the ticket running, said quietly" '[ "$(field CW-6 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-6: cloud session .* opened PR #61, whose commits, body and comments could not be read"'
+: > "$T/gh-calls"
+printf '%s\n' '{"author":{"login":"me"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"abcdef1234","messageHeadline":"feat: CW-6 save","messageBody":"Co-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC2 a cloud PR carrying attribution the pass may not remove parks the ticket, naming what was found" '[ "$(field CW-6 state)" = "\"parked\"" ] && field CW-6 park.question | grep -q "cloud PR #61 breaks this repo.s commit and PR rules" && field CW-6 park.question | grep -q "Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1" && field CW-6 park.question | grep -q "Generated with Claude Code.* footer in the PR body" && ! field CW-6 park.question | grep -q "authored as"'
+check "issue-1569 AC2 and naming each config §3 row that keeps the pass from removing it" 'field CW-6 park.question | jq -r . | grep -q "The pass may not remove it: config §3 git-force-with-lease is \"[a-z]*\" and pr-edit is \"[a-z]*\"" && ! grep -qE "pr edit 61 |-X DELETE |-f body=" "$T/gh-calls"'
+check "issue-1569 AC2 it is not recorded done, and a requeue works its PR's branch locally" '[ "$(field CW-6 result)" = null ] && [ "$(field CW-6 branch)" = "\"claude/cw-6-abc\"" ] && [ "$(field CW-6 cloud.pr_at)" != null ]'
+# With git-force-with-lease and pr-edit granted, the pass removes it itself: a real branch on a bare
+# origin, two commits authored as Claude with its trailers, and a body and two comments carrying it.
+node -e 'const fs = require("fs"); const [i, o] = process.argv.slice(1); fs.writeFileSync(o, fs.readFileSync(i, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `git-force-with-lease` | Force-push with a lease | `ask` | `yes` |\n| `pr-edit` | Edit PRs | `ask` | `yes` |"))' "$T/config-ai.md" "$T/config-ai-ok.md"
+git init -q --bare "$T/origin.git"; git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
+git clone -q -b main "$T/origin.git" "$T/cw8"; git -C "$T/cw8" checkout -q -b claude/cw-8-abc
+echo one > "$T/cw8/one.txt"; git -C "$T/cw8" add one.txt
+GIT_AUTHOR_NAME=Claude GIT_AUTHOR_EMAIL=noreply@anthropic.com git -C "$T/cw8" commit -q -m 'feat: CW-8 one' -m 'Why it is.' -m 'Co-Authored-By: Claude <noreply@anthropic.com>'
+echo two > "$T/cw8/two.txt"; git -C "$T/cw8" add two.txt
+GIT_AUTHOR_NAME=Claude GIT_AUTHOR_EMAIL=noreply@anthropic.com git -C "$T/cw8" commit -q -m 'feat: CW-8 two' -m 'Claude-Session: https://claude.ai/code/session_01X'
+git -C "$T/cw8" push -q origin claude/cw-8-abc; CW8_OLD=$(git -C "$T/cw8" rev-parse HEAD); CW8_TREE=$(git -C "$T/cw8" rev-parse 'HEAD^{tree}')
+rm -f "$T/cloud-prompt"; cloud_ticket CW-8
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 63, title: "feat(w): CW-8 save", url: "u", headRefName: "claude/cw-8-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-8 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"baseRefName":"main","headRefName":"claude/cw-8-abc","author":{"login":"me"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"aaaaaaa111","messageHeadline":"feat: CW-8 one","messageBody":"Why it is.\n\nCo-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"Claude","email":"noreply@anthropic.com"}]}],"comments":[{"url":"https://github.com/acme/widgets/pull/63#issuecomment-77","body":"Fixed it.\n\nGenerated with Claude Code","author":{"login":"t"}},{"url":"https://github.com/acme/widgets/pull/63#issuecomment-78","body":"https://claude.ai/code/session_01X","author":{"login":"t"}}]}' > "$T/cloud-view.json"
+# By the time the body is edited, CI has added a section to it, which the edit keeps.
+jq -c '.body = "Done.\n\nPreview: https://preview.example/63\n\n🤖 Generated with [Claude Code](https://claude.ai/code)"' "$T/cloud-view.json" > "$T/cloud-live.json"
+: > "$T/gh-calls"
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+rm -f "$T/cloud-live.json"
+CW8_NEW=$(git -C "$T/origin.git" rev-parse claude/cw-8-abc)
+check "issue-1569 AC2 the pass rewrites the cloud commits on origin, with the same tree, and does not park" '[ "$(field CW-8 state)" = "\"running\"" ] && [ "$CW8_NEW" != "$CW8_OLD" ] && [ "$(git -C "$T/origin.git" rev-parse "claude/cw-8-abc^{tree}")" = "$CW8_TREE" ] && [ "$(git -C "$T/origin.git" rev-parse "claude/cw-8-abc~2")" = "$(git -C "$T/origin.git" rev-parse main)" ]'
+check "issue-1569 AC2 each rewritten commit is the repo identity's, its trailers gone and the rest kept" '[ "$(git -C "$T/origin.git" log --format="%an <%ae>|%cn <%ce>" main..claude/cw-8-abc | grep -cvx "t <t@example.com>|t <t@example.com>")" = 0 ] && ! git -C "$T/origin.git" log --format=%B main..claude/cw-8-abc | grep -qiE "co-authored-by|claude-session" && git -C "$T/origin.git" log --format=%B main..claude/cw-8-abc | grep -qx "Why it is."'
+check "issue-1569 AC2 it strips the footer from the PR body as it reads after the push, keeping what CI added since" 'grep -qx "pr view 63 --repo acme/widgets --json body,comments" "$T/gh-calls" && grep -qF "pr edit 63 --repo acme/widgets --body-file " "$T/gh-calls" && [ "$(cat "$T/state-cl/cloud/CW-8-pr-63-body.md")" = "$(printf "Done.\n\nPreview: https://preview.example/63")" ]'
+check "issue-1569 AC2 it edits a comment down to what is left, and deletes one that was nothing but attribution" 'grep -qx "api -X PATCH repos/acme/widgets/issues/comments/77 -f body=Fixed it." "$T/gh-calls" && grep -qx "api -X DELETE repos/acme/widgets/issues/comments/78" "$T/gh-calls"'
+check "issue-1569 AC2 it says what it did, records the one scrub, and leaves no fetch refs behind" 'echo "$out" | grep -q "CW-8: cloud PR #63 broke this repo.s commit and PR rules .*: the pass rewrote its 2 commit(s) as t <t@example.com> with the same tree" && [ "$(field CW-8 cloud.scrubbed)" = 1 ] && [ "$(field CW-8 cloud.pr_at)" = null ] && [ -z "$(git -C "$T/repo" for-each-ref refs/desk/cloud)" ]'
+printf '%s\n' '{"baseRefName":"main","headRefName":"claude/cw-8-abc","body":"Done.","commits":[{"oid":"bbbbbbb222","messageHeadline":"feat: CW-8 one","messageBody":"Why it is.","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC2 once the PR reads clean, the next pass records the ticket done" '[ "$(field CW-8 state)" = "\"done\"" ] && [ "$(field CW-8 result.pr)" = 63 ]'
+# A PR that still carries it after the pass removed it once parks, never scrubbed again.
+cloud_ticket CW-9
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+q set CW-9 "cloud=$(field CW-9 cloud | jq -c '.scrubbed = 1')"
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 64, title: "feat(w): CW-9 save", url: "u", headRefName: "claude/cw-9-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-9 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[],"comments":[]}' > "$T/cloud-view.json"
+: > "$T/gh-calls"
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC2 a PR that still carries it after one scrub parks, and is not edited again" '[ "$(field CW-9 state)" = "\"parked\"" ] && field CW-9 park.question | grep -q "It still does after the pass removed what it found once" && ! grep -q "pr edit" "$T/gh-calls"'
+# A PR found only by the key in its title, off the session's branch and opened by someone else, may be a
+# teammate's: it parks, and nothing of it is rewritten or edited.
+cloud_ticket CW-10
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 65, title: "feat(w): CW-10 save", url: "u", headRefName: "pat/cw-10", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-10 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"baseRefName":"main","headRefName":"pat/cw-10","author":{"login":"pat"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"ccccccc333","messageHeadline":"feat: CW-10","messageBody":"","authors":[{"name":"Pat","email":"pat@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+: > "$T/gh-calls"
+out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 a title-matched PR on another branch, opened by someone else, parks and is neither rewritten nor edited" '[ "$(field CW-10 state)" = "\"parked\"" ] && field CW-10 park.question | grep -q "The pass will not rewrite or edit it: it is on pat/cw-10, not feat/CW-10, and was opened by pat, not me" && ! grep -qE "pr edit 65 |-X DELETE |-f body=" "$T/gh-calls"'
+check "issue-1569 and the ticket keeps its own branch, so a requeue never works the other PR's" '[ "$(field CW-10 branch)" = "\"feat/CW-10\"" ] && field CW-10 park.question | grep -q "a requeue of CW-10 works feat/CW-10 locally"'
+# The same where config §3 would not let the pass remove it anyway: whose PR it is is read first.
+cloud_ticket CW-11
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 66, title: "feat(w): CW-11 save", url: "u", headRefName: "pat/cw-11", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-11 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"baseRefName":"main","headRefName":"pat/cw-11","author":{"login":"pat"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[],"comments":[]}' > "$T/cloud-view.json"
+out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
+check "issue-1569 a teammate's PR keeps the ticket on its own branch where config §3 grants neither row too" '[ "$(field CW-11 state)" = "\"parked\"" ] && [ "$(field CW-11 branch)" = "\"feat/CW-11\"" ] && field CW-11 park.question | grep -q "The pass will not rewrite or edit it: it is on pat/cw-11" && ! field CW-11 park.question | grep -q "may not remove it"'
+git -C "$T/repo" remote remove origin; rm -rf "$T/cw8" "$T/origin.git"
+# AC5: whatever §5 says, a commit authored as anyone but the repo's author parks the ticket, naming it.
+rm -f "$T/cloud-prompt"; cloud_ticket CW-7
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC5 with attribution allowed, the prompt still names the author, and no attribution rule" 'grep -qF "Author every commit as \`t <t@example.com>\`" "$T/cloud-prompt" && ! grep -q "No AI attribution" "$T/cloud-prompt"'
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 62, title: "feat(w): CW-7 save", url: "u", headRefName: "claude/cw-7-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-7 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"body":"Done.","commits":[{"oid":"1234567abc","messageHeadline":"feat: CW-7 save","messageBody":"","authors":[{"name":"claude[bot]","email":"bot@users.noreply.github.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC5 a cloud PR with a commit by another author parks the ticket, naming the commit and its author" '[ "$(field CW-7 state)" = "\"parked\"" ] && [ "$(field CW-7 result)" = null ] && field CW-7 park.question | grep -qF "commit 1234567 authored as claude[bot] <bot@users.noreply.github.com>, not t <t@example.com>"'
+rm -f "$T/cloud-view.json" "$T/cloud-prs.json"
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
 # queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked
@@ -333,16 +420,19 @@ lq_pass
 check "a fix try last parked at Stage 7 is held by the deep queue, as its task runs suites" '[ "$(spawns_of LQ-8)" = 0 ] && echo "$out" | grep -q "Stage 4 (.*LQ-8"'
 q set LQ-8 state=done session_id=null
 # One waiter drains: below the hold at 2 with 1 waiting, each pass starts at most 2 - 1 = 1 of the held
-# three (the listing stays as it is, so each pass has the same room).
+# suite-bound two (the listing stays as it is, so each pass has the same room). The fresh LQ-1 takes no
+# room (#1544): its first suite is a stage away, so it starts on the first pass beside one of them.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 # Each one started is marked done before the next pass, so the repo's worker cap never holds the others.
 lq_started(){ echo $(( $(spawns_of LQ-1) + $(spawns_of LQ-2) + $(spawns_of LQ-3) )); }
 lq_retire(){ for k in LQ-1 LQ-2 LQ-3; do [ "$(field "$k" state)" = '"running"' ] && q set "$k" state=done session_id=null; done; :; }
 lq_pass
-check "DoD5 below the hold, a pass starts at most the hold less those waiting: one of the three, the rest held past a room of 1" \
-  '[ "$(lq_started)" = 1 ] && echo "$out" | grep -qF "under the hold at 1 x 2 = 2" && echo "$out" | grep -qF "past the 1 this pass had room for"'
+check "DoD5 below the hold, a pass starts at most the hold less those waiting: one of the suite-bound two, the other held past a room of 1" \
+  '[ $(( $(spawns_of LQ-2) + $(spawns_of LQ-3) )) = 1 ] && echo "$out" | grep -qF "under the hold at 1 x 2 = 2" && echo "$out" | grep -qF "past the 1 this pass had room for"'
+check "#1544 AC1 below the hold, the fresh Stage 0 start takes no lock-queue room and starts on the first pass" \
+  '[ "$(spawns_of LQ-1)" = 1 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-1"'
 lq_retire; lq_pass
-check "DoD5 the next pass starts one more" '[ "$(lq_started)" = 2 ]'
+check "DoD5 the next pass starts one more" '[ "$(lq_started)" = 3 ]'
 lq_retire; lq_pass
 check "DS-662 AC3 below the hold, the held resume, handoff and new ticket all start in time, and then nothing names the lock queue" \
   'grep -qx "LQ-2 resume=yes stage=" "$T/rr-spawns" && grep -qx "LQ-3 resume= stage=4b" "$T/rr-spawns" && [ "$(spawns_of LQ-1)" = 1 ] && ! echo "$out" | grep -q "test lock queue"'
@@ -374,18 +464,23 @@ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-queue-fa
   for p in 9301 9302 9303; do printf 'p%s\ncbash\nfcwd\nn/elsewhere\n' "$p"; done; } > "$T/lsof.out"
 # A worker cap of 8 leaves the lock gate as the only limit.
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; } > "$T/config-lq.md"
-for k in LQ-10 LQ-11 LQ-12; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+# The three are handoffs to 4b, whose next step is a suite; two fresh Stage 0 starts beside them take no
+# lock-queue room (#1544), so both start whatever the share.
+for k in LQ-10 LQ-11 LQ-12; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; done
+for k in LQ-16 LQ-17; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
 check "DoD1 with the queue deep and three repos on it, this repo with no run starts its share of 2 of 3 ready tickets" \
   '[ $(( $(spawns_of LQ-10) + $(spawns_of LQ-11) + $(spawns_of LQ-12) )) = 2 ]'
 check "DoD4 the held note names the runs of each active repo, and this repo share, and the third ticket" \
   'echo "$out" | grep -q "Stage 4 (LQ-1[012]), past the 2" && echo "$out" | grep -qF "6 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 6 = 6; runs by repo: api 4, other 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && echo "$out" | grep -qF "past the 2 this pass had room for"'
-for k in LQ-10 LQ-11 LQ-12; do q set "$k" state=done session_id=null; done
+check "#1544 AC2 with this repo waiting on no lock and free slots, every fresh start begins and only the suite-bound handoff past the room is held" \
+  '[ "$(spawns_of LQ-16)" = 1 ] && [ "$(spawns_of LQ-17)" = 1 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-1[67]"'
+for k in LQ-10 LQ-11 LQ-12 LQ-16 LQ-17; do q set "$k" state=done session_id=null; done
 # Two configured repos of one name under different owners are two repos, each named owner/name as
 # desk-q names them: the three runs in /elsewhere are now beta/api's, not merged into acme's api.
 mkdir -p "$T/cfg-lq/repos/beta__api"
 printf '## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | `/elsewhere` |\n' > "$T/cfg-lq/repos/beta__api/config.md"
-for k in LQ-13 LQ-14 LQ-15; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+for k in LQ-13 LQ-14 LQ-15; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; done
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
@@ -742,6 +837,19 @@ check "DS-496 AC2 a 5xx on the pass's own push records the push as what clears t
   '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"fix/P-3\"}" ] && echo "$first" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it" && echo "$out" | grep -qF "P-3: waiting on \"git push origin fix/P-3 succeeds\" (GitHub still answers 5xx): left parked"'
 rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 AC2 and the next pass pushes it and requeues it for the steps its park named" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" != "\"parked\"" ] && [ "$(field P-3 state)" != "\"done\"" ] && echo "$out" | grep -qF "P-3: \"git push origin fix/P-3 succeeds\" holds: requeued"'
+# #1532 AC4: the live red spell's repair, its worker failed with the fix committed and not pushed while main
+# is still red, has its branch pushed and its draft opened by the pass (pushRepairFix), not asked about.
+RK="base-red-main-20261126175511"; MS=$(git -C "$T/repo" rev-parse main)
+git -C "$T/repo" worktree add -q -b "fix/$RK" "$T/wt/$RK" main
+echo g > "$T/wt/$RK/guard.txt"; git -C "$T/wt/$RK" add guard.txt; git -C "$T/wt/$RK" commit -q -m "fix(guards): $RK add the missing guard"
+printf '{"branch":"main","sha":"%s","checks":[{"name":"tests","sha":"%s","url":null}],"merges":[],"repair_key":"%s","since":"2026-11-26T17:55:11Z","at":"%s"}\n' "$MS" "$MS" "$RK" "$(node -e 'console.log(new Date().toISOString())')" > "$T/state-rc/base-red.json"
+q add "$RK"; q set "$RK" state=failed lane=A "branch=fix/$RK" "worktree=$T/wt/$RK"
+: > "$T/rc-gh.log"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1532 AC4 a red spell's repair left with an unpushed fix is pushed and opened as its draft, titled by its commit" \
+  '[ "$(git -C "$T/rc-origin.git" rev-parse "refs/heads/fix/$RK")" = "$(git -C "$T/wt/$RK" rev-parse HEAD)" ] && grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/$RK --title fix\(guards\): $RK add the missing guard --body-file .*/state-rc/pr-bodies/$RK.md$" "$T/rc-gh.log" && grep -qF "Repairs the red main: \"tests\" failed on its latest run there." "$T/state-rc/pr-bodies/$RK.md"'
+check "#1532 AC4 and it is recorded done on that draft, and the pass says so" \
+  '[ "$(field "$RK" state)" = "\"done\"" ] && [ "$(field "$RK" result.pr)" = 91 ] && [ "$(field "$RK" draft_pr)" = 91 ] && echo "$out" | grep -qF "$RK: its worker left an unpushed fix while main is still red: pushed fix/$RK and opened draft PR #91"'
+rm -f "$T/state-rc/base-red.json"
 
 # ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
 # acme/web's default branch is not main, and this repo's origin says where its neighbours are. Each
@@ -1157,7 +1265,7 @@ check "DS-796 an owner the pass does not read for itself is given its criteria b
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
-{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n'; } > "$T/config-mx.md"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n| Per-file collision budget | x | `1` |\n'; } > "$T/config-mx.md"
 export DESK_CONFIG="$T/config-mx.md" DESK_QUEUE="$T/queue-mx.json" DESK_AUTOPILOT_STATE="$T/state-mx"; mkdir -p "$T/state-mx/logs" "$T/state-mx/triage"
 printf '{"files_in_scope":["src/a.ts","src/b.ts"]}\n' > "$T/state-mx/triage/MX-1.json"
 printf '{"files_in_scope":["src/a.ts"]}\n' > "$T/state-mx/triage/MX-2.json"
@@ -1432,15 +1540,15 @@ spawned(){ grep -qx "$1" "$T/fb-spawns"; }
 
 fbq fba ''
 fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
-fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts
+fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts; fbt FB-9 triaged src/edge.ts
 fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC1 with no budget row, three ready tickets naming a file over 1,000 lines on the base all start" \
   'spawned FB-1 && spawned FB-2 && spawned FB-3'
 check "DS-755 AC2 a fourth naming it does not start, and the report names the file and the three running" \
   '! spawned FB-4 && [ "$(field FB-4 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-4 (src/big.ts has 3 running of its 3: FB-1, FB-2, FB-3)"'
-check "DS-755 AC3 AC9 of two naming a 1,000-line file, the first in queue order starts and the other waits" \
-  'spawned FB-5 && ! spawned FB-6 && echo "$out" | grep -qF "FB-6 (src/edge.ts has 1 running of its 1: FB-5)"'
+check "DS-755 AC3 AC9 DS-1032 AC3 of three naming a 1,000-line file, the first two in queue order start and the third waits" \
+  'spawned FB-5 && spawned FB-6 && ! spawned FB-9 && echo "$out" | grep -qF "FB-9 (src/edge.ts has 2 running of its 2: FB-5, FB-6)"'
 check "DS-755 AC5 a ticket naming two files, one at its budget, does not start" '! spawned FB-7 && [ "$(field FB-7 state)" = "\"triaged\"" ]'
 check "DS-755 AC7 an admission-time collides_with naming a running ticket that shares no file in the triage records holds nothing" 'spawned FB-8'
 check "DS-755 the metrics line names each held ticket's files at their budget and the running tickets filling them" \
@@ -1455,6 +1563,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC2 with three already running that name the file, a fourth does not start, and the report names them" \
   '! spawned FB-14 && echo "$out" | grep -qF "FB-14 (src/big.ts has 3 running of its 3: FB-11, FB-12, FB-13)"'
 check "DS-755 AC3 AC7 once the first has stopped running, the other starts: a done ticket its collides_with names holds nothing" 'spawned FB-16'
+
+# A test file takes no place, under a row of 1 too; a shared non-test file still holds.
+fbq fbt '1'
+fbt FB-61 triaged tests/test_prompts.py src/c.test.ts; fbt FB-62 triaged tests/test_prompts.py src/c.test.ts; fbt FB-63 triaged tests/test_prompts.py src/c.test.ts
+fbt FB-64 triaged tests/test_prompts.py src/solo.ts; fbt FB-65 triaged tests/test_prompts.py src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1032 AC2 a test file takes no place: three ready tickets whose only shared files are test files all start" \
+  'spawned FB-61 && spawned FB-62 && spawned FB-63 && ! echo "$out" | grep "^held back by a collision:" | grep -qE "FB-6[123] \("'
+check "DS-1032 AC2 negative control: tickets also sharing a non-test file are held on that file alone" \
+  'spawned FB-64 && ! spawned FB-65 && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-65 (src/solo.ts has 1 running of its 1: FB-64)"'
 
 fbq fbc '3 over 1000 lines, else 1; serial: src/hot.ts, docs/*.md'
 fbt FB-21 triaged src/hot.ts; fbt FB-22 triaged src/hot.ts; fbt FB-23 triaged src/big.ts; fbt FB-24 triaged src/big.ts

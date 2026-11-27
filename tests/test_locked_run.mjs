@@ -107,6 +107,10 @@ t('#1526 AC5 each measured run is one release line with its ticket, step, exit a
   reads ? [['T-1526', 'test', 'test', 3, 'number', realpathSync(app)], [null, 'lint', 'tsc', 0, 'number', realpathSync(app)]] : []);
 r = wl(['test', '--', 'true']);
 t('#1526 AC5 an unmeasured run logs no peak', readLog({ dir: leases }).peaks.length, peaks.length);
+// #1567 where no flock holds fd 9 (stock macOS), a measured run hands on none, so a descriptor node
+// opened for itself at fd 9 is never passed to the command.
+r = spawnSync('node', [join(root, 'desk', 'bin', 'locked-run.mjs'), 'run', 'tsc', '--', 'sh', '-c', 'echo ran; exit 4'], { cwd: app, env: env({ DESK_PEAK_SAMPLE_MS: '20' }), encoding: 'utf8' });
+t('#1567 a measured run outside flock runs its command and keeps its status', [r.status, r.stdout.trim()], [4, 'ran']);
 t('#1526 AC5 usedGiB reads MemTotal less MemAvailable', usedGiB('MemTotal: 4194304 kB\nMemFree: 1 kB\nMemAvailable: 1048576 kB\n'), 3);
 
 // desk-q's note names the heaviest runs of the last day, heaviest first.

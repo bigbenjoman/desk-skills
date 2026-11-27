@@ -591,6 +591,51 @@ t('the text labels the reading provisional, with its PRs and hours, and flags th
   [t11.includes('provisional, from the elapsed part of open windows (never a recommendation on its own): '), t11.includes('20% of 800,000 3 PR(s), 3 open at 72h elapsed on average: pr-post-merge 0.33'),
     t11.includes('    20% of 800,000 would be refused on what is seen so far: pr-post-merge 0.33 per PR against 0.00 on the baseline so far'), t11.includes('refused at once')], [true, true, true, false]);
 
+// Autopilot workers: sessions in this repo's worktree project folders, an arm from a worker's injection or
+// from the hook's per-session state (its stamped arm, or the §2 rows it cached on the window its model
+// and peak context give), and an arm whose threshold is below the window's mean resume overhead.
+const ROOT13 = join(T, 'projects13');
+const WT = join(ROOT13, '-x-repo-worktrees-issue-7');
+const NOT_WT = join(ROOT13, '-x-repo-worktrees2');
+const HOOK = join(HOME, '.claude', 'desk', 'handoff');
+for (const d of [join(ROOT13, '-x-repo'), WT, NOT_WT, HOOK]) mkdirSync(d, { recursive: true });
+const stamp = (id, state) => writeFileSync(join(HOOK, `${id}.json`), JSON.stringify(state));
+const workerFire = (min, pct, window) => ({ type: 'attachment', timestamp: at(min), attachment: { type: 'hook_additional_context', toolUseID: `w-${min}`, hookEvent: 'PostToolUse',
+  content: [`desk handoff: context is at ${pct + 4}% of a ${window.toLocaleString('en-US')}-token window, past this worker's threshold of ${pct}% (handoff-threshold ${pct}), partway through Stage 3.`] } });
+const work = (dir, name, cost, extra = []) => session(dir, name, [...Array.from({ length: 12 }, (_, i) => user(i * 5)), req(`${name}-r`, 60, { uncached: cost }), ...extra]);
+// A compaction whose resume overhead is 100,000 tokens.
+const resumeAt = (name) => [compact(61), req(`${name}-after`, 62, { uncached: 100_000 })];
+for (let i = 1; i <= 5; i += 1) {
+  work(WT, `wbase${i}`, 1_000_000);
+  stamp(`wbase${i}`, { pct: 45, pct_1m: 45, arm: { pct: 45, window: 800_000 } });
+  work(WT, `wlow${i}`, 200_000, [...(i === 1 ? [workerFire(30, 5, 800_000)] : []), ...resumeAt(`wlow${i}`)]);
+  if (i > 1) stamp(`wlow${i}`, { arm: { pct: 5, window: 800_000 } });
+}
+work(WT, 'legacy200', 1, []);
+stamp('legacy200', { pct: 20, pct_1m: 10, model: 'claude-sonnet-4-5' });
+work(WT, 'legacy1m', 1, []);
+stamp('legacy1m', { pct: 20, pct_1m: 10, model: 'claude-opus-5-5' });
+work(WT, 'legacyPeak', 1, [req('legacyPeak-big', 61, { read: 300_000, model: 'claude-sonnet-4-5' })]);
+stamp('legacyPeak', { pct: 20, pct_1m: 10, model: 'claude-sonnet-4-5' });
+work(WT, 'legacyOff', 1, []);
+stamp('legacyOff', { pct: 0, pct_1m: 0 });
+work(NOT_WT, 'decoy', 1, [fire(30, 45, 200_000)]);
+const r13 = (...args) => JSON.parse(spawnSync(process.execPath, [BIN, '--root', ROOT13, '--tickets', NONE, '--offline', '--json', ...args], { cwd: T, env, encoding: 'utf8' }).stdout);
+const p13 = r13();
+const s13 = (id) => p13.sessions.find((x) => x.id === id);
+t('without --all, a worker session in a worktree project folder is this repo\'s; a folder that only shares the prefix is not',
+  [!!s13('wbase1'), !!s13('decoy'), p13.sessions.length, r13('--all').sessions.length], [true, false, 14, 15]);
+t('a worker\'s injection names its arm', s13('wlow1').arm, { pct: 5, window: 800_000 });
+t('a session with no injection takes the arm the hook stamped on it', s13('wbase2').arm, { pct: 45, window: 800_000 });
+t('with no stamped arm, the §2 rows the hook cached, on the window its model and peak context give; a row of 0 is no arm',
+  ['legacy200', 'legacy1m', 'legacyPeak', 'legacyOff'].map((id) => s13(id).arm), [{ pct: 20, window: 200_000 }, { pct: 10, window: 1_000_000 }, { pct: 10, window: 1_000_000 }, null]);
+const r13w = rec(p13, 800_000);
+t('an arm whose threshold is below the window\'s mean resume overhead is flagged with both figures and never recommended',
+  [r13w.startup, r13w.verdict, r13w.pct, r13w.refused.find((x) => x.arm === '5% of 800,000')?.why.startsWith('below start-up cost: its threshold, 40,000 tokens, is under the 100,000-token mean resume overhead on this window (5 resume(s))')],
+  [{ overhead: 100_000, samples: 5, below: [{ arm: '5% of 800,000', threshold_tokens: 40_000, overhead: 100_000, samples: 5 }] }, 'recommend', 45, true]);
+const t13 = spawnSync(process.execPath, [BIN, '--root', ROOT13, '--tickets', NONE, '--offline'], { cwd: T, env, encoding: 'utf8' }).stdout;
+t('the text names the arm below start-up cost and both figures', t13.includes('    5% of 800,000 is below start-up cost: its threshold, 40,000 tokens, is under the 100,000-token mean resume overhead on this window (5 resume(s)): never recommended'), true);
+
 // --help and -h print the usage and exit 0, reading no GitHub and writing no cache.
 for (const flag of ['--help', '-h']) {
   const S12 = join(T, `state12${flag}`);

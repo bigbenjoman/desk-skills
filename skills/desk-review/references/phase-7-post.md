@@ -56,13 +56,18 @@ of a review then means *not reviewed*, unambiguously, and the next sweep's skip 
   can check*): the body, as the `--post-merge` section, never under a gaps heading.
 - **`UNVERIFIED CODE CLAIM` gaps never reach GitHub** in any form.
 
+`<desk bin>` is the desk scripts folder, resolved before you run it:
+`$CLAUDE_PLUGIN_ROOT/desk/bin` when `echo "$CLAUDE_PLUGIN_ROOT"` prints a path, else `desk/bin`
+under `~/.claude`. Write the path out: a command holding `${…}` is refused by the permission matcher
+whatever the allow rules say.
+
 Interactive: one call posts the body and its inline comments as a single review
 (`references/gotchas.md#posting` has the JSON). In a worker, which has no `gh api` and writes only
 inside its worktree, everything goes in the body, written to `desk-review.md` at the worktree root
 after the finders are done, and removed afterwards with `git clean -f desk-review.md`:
 
 ```bash
-node ~/.claude/desk/bin/review-post.mjs <n> --repo <owner>/<repo> --body-file desk-review.md
+node <desk bin>/review-post.mjs <n> --repo <owner>/<repo> --body-file desk-review.md
 ```
 
 It posts from §4 Review account (`desk-env get review-account`, its login before the colon), or §1

@@ -41,6 +41,8 @@ const o = parseArgs(['--tasks', 'set.json', '--max-budget-usd', '2', '--total-bu
 t('two arms, the baseline first', o.arms.map((a) => `${a.name}=${a.model}:${a.effort}`).join(' '), `opus=opus:medium ${PACK_ARM}=opus:medium`);
 t('ten tasks by default', o.limit, 10);
 t('the baseline arm takes the earlier run\'s name', parseArgs(['--tasks', 's', '--max-budget-usd', '1', '--baseline-arm', 'filed']).arms[0].name, 'filed');
+t('--model runs both arms on that model, so a baseline stored under a full model id is reused', parseArgs(['--tasks', 's', '--max-budget-usd', '1', '--model', 'claude-opus-5-5']).arms.map((x) => `${x.name}=${x.model}:${x.effort}`).join(' '), `opus=claude-opus-5-5:medium ${PACK_ARM}=claude-opus-5-5:medium`);
+t('a bad --model is refused', /--model must be/.test(throws(() => parseArgs(['--tasks', 's', '--max-budget-usd', '1', '--model', 'a b']))), true);
 t('an --arm of its own is refused', /sets its own arms/.test(throws(() => parseArgs(['--tasks', 's', '--max-budget-usd', '1', '--arm', 'x=opus']))), true);
 t('a bad --limit is refused', /--limit must be/.test(throws(() => parseArgs(['--tasks', 's', '--max-budget-usd', '1', '--limit', '0']))), true);
 

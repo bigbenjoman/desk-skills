@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { splitRow } from './machine.mjs';
+import { isRealDay, localDay, splitRow } from './machine.mjs';
 
 export const TOOLS = Object.freeze(['claude', 'codex']);
 export const RULES = Object.freeze(['in rotation', 'standby', 'off']);
@@ -59,9 +59,10 @@ export function normRule(v) {
   return RULES.includes(s) ? s : null;
 }
 // What the file may say in place of a rule, and the rule every reader gets for it: a tool's one
-// `default` login reads as in rotation and each `unused` one as standby. A login read from one keeps
-// the word as `stored`, so writing the file back keeps it.
-export const STORED_RULES = Object.freeze({ default: 'in rotation', unused: 'standby' });
+// `default` login reads as in rotation, and each `unused` one and Claude's one `fallback` (new work of
+// the repos following the default runs there while the default is full) as standby. A login read from
+// one keeps the word as `stored`, so writing the file back keeps it.
+export const STORED_RULES = Object.freeze({ default: 'in rotation', unused: 'standby', fallback: 'standby' });
 const storedRule = (v) => { const s = ruleWords(v); return Object.hasOwn(STORED_RULES, s) ? s : null; };
 export const ruleError = (v) => `"${v}" is not a rule: use one of ${RULES.map((r) => `\`${r}\``).join(', ')}`;
 // What a person is shown for a login: its stored word, else its rule.
@@ -100,11 +101,12 @@ export function feeUsd(v) {
   return /^\d+(\.\d+)?$/.test(s) ? Number(s) : undefined;
 }
 
-// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A
+// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir, at }], errors: ["line <n>: <why>"] }. A
 // malformed row is named and left out; a tool with no good row keeps its default login, except Claude in
 // a file with an Account column (`accounts`), which stays in multi-account mode with no login rather
-// than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder) names, so
-// setting a rule on one puts back its own folder.
+// than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder, Removed)
+// names, so setting a rule on one puts back its own folder; `at` is the day it was removed (YYYY-MM-DD),
+// null where the table predates that column or says `-`.
 export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
@@ -127,10 +129,13 @@ export function parseSubscriptions(text, { exists = true } = {}) {
       else fees.push({ at, tool, name, fee: { plan: plan && plan !== '-' ? plan : null, usd } });
       return;
     }
-    if (header.join('|') === 'tool|name|folder') {
-      const [tool, name, folder] = c;
-      if (c.length !== 3 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name and a folder`);
-      else removed.push(removedLogin(tool, name, folder));
+    const dated = header.join('|') === 'tool|name|folder|removed';
+    if (dated || header.join('|') === 'tool|name|folder') {
+      const [tool, name, folder, day = '-'] = c;
+      const when = day === '-' || day === '' ? null : day;
+      if (c.length !== (dated ? 4 : 3) || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name, a folder${dated ? ' and the day it was removed' : ''}`);
+      else if (when && !isRealDay(when)) errors.push(`${at}: ${tool} ${name}: removed "${when}" wants a day as YYYY-MM-DD, or -`);
+      else removed.push(removedLogin(tool, name, folder, when));
       return;
     }
     const pinned = header.join('|') === 'tool|name|folder|account|rule';
@@ -166,7 +171,9 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
-const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
+const removedLogin = (tool, name, folder, at = null) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir, at }; };
+// `rows` as Removed table entries, removed today (this computer's date).
+const asRemoved = (rows) => rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir, at: localDay() }));
 
 export const readSubscriptions = (path) => (path && existsSync(path)
   ? parseSubscriptions(readFileSync(path, 'utf8'))
@@ -189,8 +196,13 @@ const wantsWords = (rows) => rows.length > 0 && rows.some((l) => l.rule !== 'off
 export function migrateLogins(logins) {
   const moved = TOOLS.filter((tool) => wantsWords(logins.filter((l) => l.tool === tool)));
   const defaults = moved.map((tool) => defaultOf(logins, tool));
-  return logins.map((l) => (moved.includes(l.tool) ? asWord(l, defaults.includes(l) ? 'default' : 'unused') : l));
+  return logins.map((l) => (moved.includes(l.tool) ? asWord(l, defaults.includes(l) ? 'default' : l.stored === 'fallback' ? 'fallback' : 'unused') : l));
 }
+// Claude's fallback login: the one marked fallback, not off and not the default; null with none.
+export const fallbackOf = (logins) => {
+  const def = defaultOf(logins, 'claude');
+  return logins.find((l) => l.tool === 'claude' && l.stored === 'fallback' && l.rule !== 'off' && l.dir !== def?.dir) ?? null;
+};
 // Whether the file's own rows want migrating, so the file wants writing.
 export const needsMigration = (subs) => subs.exists
   && TOOLS.some((tool) => wantsWords(subs.logins.filter((l) => l.tool === tool && l.source === 'file')));
@@ -206,10 +218,12 @@ export function renderSubscriptions(logins, removed = []) {
     '',
     'The Claude and Codex logins desk may use on this computer, shared by every repo here. Each is a',
     'config folder (CLAUDE_CONFIG_DIR for Claude, CODEX_HOME for Codex), marked `default` (the one',
-    'subscription of its tool this computer runs on) or `unused`. `desk-env logins default` changes a',
-    'tool\'s default and `desk-env logins remove` removes a login, each keeping the previous copy as',
-    'subscriptions.md.bak; `desk-env logins check` confirms each is signed in. No token or credential',
-    'is kept here.',
+    'subscription of its tool this computer runs on) or `unused`. One Claude login may be `fallback`:',
+    'new work of the repos following the default starts there only while the default is full.',
+    '`desk-env logins default` changes a tool\'s default, `desk-env logins set claude <name> fallback`',
+    'sets the fallback and `desk-env logins remove` removes a login, each keeping the previous copy as',
+    'subscriptions.md.bak, and a migration keeps a dated copy; `desk-env logins check` confirms each is',
+    'signed in. No token or credential is kept here.',
     ...(pinned ? ['Account is the Claude account a folder belongs to: desk uses the folder only while it is signed in to that account.'] : []),
     '',
     ...(pinned ? ['| Tool | Name | Folder | Account | Rule |', '|---|---|---|---|---|'] : ['| Tool | Name | Folder | Rule |', '|---|---|---|---|']),
@@ -231,10 +245,11 @@ export function renderSubscriptions(logins, removed = []) {
       '',
       'Logins desk leaves alone: removed from the rules, with their folder and sign-in kept, so a folder',
       'under ~/.claude-logins or ~/.codex-logins is not found again. Setting a rule on one lists it again.',
+      'Removed is the day it was removed, `-` where that was not recorded.',
       '',
-      '| Tool | Name | Folder |',
-      '|---|---|---|',
-      ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.name)} | ${cell(r.folder)} |`),
+      '| Tool | Name | Folder | Removed |',
+      '|---|---|---|---|',
+      ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.name)} | ${cell(r.folder)} | ${cell(r.at ?? '-')} |`),
       '',
     ] : []),
   ].join('\n');
@@ -422,9 +437,10 @@ export const isUsable = (l) => l.state === 'signed in' && (l.rule === 'in rotati
 // What `desk-env logins set` takes, and the rule each is read as. The default is chosen by name with
 // `desk-env logins default`, never set as a rule, and the older rules are refused rather than mapped, so
 // a stale script fails loudly.
-export const SET_WORDS = Object.freeze({ unused: STORED_RULES.unused, off: 'off' });
+export const SET_WORDS = Object.freeze({ unused: STORED_RULES.unused, fallback: STORED_RULES.fallback, off: 'off' });
 export const setWordError = (tool, v) => {
-  const how = `choose the default with desk-env logins default ${TOOLS.includes(tool) ? tool : '<claude|codex>'} <name>, and set any other login ${Object.keys(SET_WORDS).map((w) => `\`${w}\``).join(' or ')}`;
+  const words = Object.keys(SET_WORDS).map((w) => `\`${w}\``);
+  const how = `choose the default with desk-env logins default ${TOOLS.includes(tool) ? tool : '<claude|codex>'} <name>, and set any other login ${words.slice(0, -1).join(', ')} or ${words.at(-1)}`;
   const s = ruleWords(v);
   return s === 'default' || s === 'in rotation' || s === 'standby'
     ? `logins: "${v}" is not a rule desk sets any more: ${how}` : `logins: "${v}" is not a rule: ${how}`;
@@ -440,10 +456,12 @@ export function setRule(subs, { tool, name, rule: word, check, repos = () => [] 
   const w = ruleWords(word);
   const rule = Object.hasOwn(SET_WORDS, w) ? SET_WORDS[w] : null;
   if (!rule) throw new Error(setWordError(tool, word));
-  return writeRule(subs, { tool, name, rule, check, repos });
+  if (w === 'fallback' && tool !== 'claude') throw new Error(`logins: only a Claude login can be the fallback, not ${tool} ${name}`);
+  return writeRule(subs, { tool, name, rule, fallback: w === 'fallback', check, repos });
 }
-// setRule's write, given the rule a reader gets (in rotation for the tool's default, standby for unused).
-function writeRule(subs, { tool, name, rule, check, repos = () => [] }) {
+// setRule's write, given the rule a reader gets (in rotation for the tool's default, standby for unused
+// or fallback). `fallback` makes the login Claude's one fallback and its old fallback unused.
+function writeRule(subs, { tool, name, rule, fallback = false, check, repos = () => [] }) {
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   // Listed, then removed (its own folder), then a folder of that name, then the tool's own default.
   let target = subs.logins.find((l) => l.tool === tool && l.name === name);
@@ -466,10 +484,11 @@ function writeRule(subs, { tool, name, rule, check, repos = () => [] }) {
   // leaves the Removed table. Where the tool's rows say default and unused, the rule is written in
   // those words: in rotation makes this login the tool's one default and its old default unused.
   const words = subs.logins.some((l) => l.tool === tool && l.stored);
-  const stored = words ? Object.keys(STORED_RULES).find((k) => STORED_RULES[k] === rule) : undefined;
+  const stored = fallback ? 'fallback' : words ? Object.keys(STORED_RULES).find((k) => STORED_RULES[k] === rule) : undefined;
   const { stored: _was, ...rest } = target;
   const changed = { ...rest, rule, source: 'file', ...(stored ? { stored } : {}) };
-  const down = demotedBy(subs.logins, { tool, name: target.name, rule });
+  const down = fallback ? subs.logins.filter((l) => l.tool === tool && l.name !== target.name && l.stored === 'fallback')
+    : demotedBy(subs.logins, { tool, name: target.name, rule });
   const demoted = (l) => (down.includes(l) ? { ...l, rule: STORED_RULES.unused, stored: 'unused' } : l);
   const listed = subs.logins.some((l) => l.tool === tool && l.name === target.name);
   const logins = listed
@@ -549,14 +568,17 @@ export function offSubscriptionLogin(subs, email) {
 // What a repo's subscription resolves to. `value` is `default` or an account email, read from `source`
 // (DESK_SUBSCRIPTION or the repo's row); unset or `default` is this computer's Claude default, and no
 // login while that default is off. An email no login here is signed in to, or only an off one,
-// resolves to no login, never to the default; `off` is the login set off it names, else null.
-//   -> { email, login, source: source | 'default' | 'unknown email', off }
+// resolves to no login, never to the default; `off` is the login set off it names, else null. Only a
+// repo following the default has a `fallback`: Claude's fallback login (fallbackOf), else null.
+//   -> { email, login, source: source | 'default' | 'unknown email', off, fallback }
 export function repoSubscription(subs, { value, source }) {
   const v = String(value ?? '').trim().toLowerCase();
   if (!v || v === 'default') {
     // With accounts pinned and no pinned row readable there is no default: no login, never ~/.claude.
     const l = toolDefault(subs, 'claude');
-    return { email: l ? (l.account ?? claudeAccount(l).email?.toLowerCase() ?? null) : null, login: l?.rule === 'off' ? null : l, source: 'default', off: null };
+    const login = l?.rule === 'off' ? null : l;
+    return { email: l ? (l.account ?? claudeAccount(l).email?.toLowerCase() ?? null) : null, login, source: 'default', off: null,
+      fallback: login ? fallbackOf(migrateLogins(subs.logins)) : null };
   }
   const l = subscriptionLogin(subs, v);
   return { email: v, login: l, source: l ? source : 'unknown email', off: l ? null : offSubscriptionLogin(subs, v) };
@@ -607,14 +629,14 @@ export function removeLogin(subs, { tool, name, check, repos = () => [] }) {
     throw new Error(`logins: claude ${name} is the only Claude account desk has, and removing it would put desk back on ${tilde(TOOL.claude.dir())}: add another account first, or sign this one in again (${signInCommand(target)})`);
   }
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
-  return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
+  return { text: renderSubscriptions(logins, [...subs.removed, ...asRemoved([target])]), login: target };
 }
 
 // ---- pinning a folder to its account ---------------------------------------------------------
 const underLogins = (l) => l.dir.startsWith(`${loginsFolder(l.tool)}/`);
 // A listed ~/.claude row has no place once pins are written: it goes to Removed, as migration does.
 const defaultRows = (subs) => subs.logins.filter((l) => l.tool === 'claude' && !l.configDir);
-const removedFrom = (subs, rows) => [...subs.removed, ...rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir }))];
+const removedFrom = (subs, rows) => [...subs.removed, ...asRemoved(rows)];
 // `logins` once the ~/.claude rows are gone: where one of them was Claude's default, the folder pinned
 // to the account ~/.claude was signed in to (`live`) takes over as the default, and every other Claude
 // login is unused; with no such folder, nothing is marked and the first in rotation reads as default.
@@ -630,7 +652,8 @@ const ownLive = (checked) => checked.logins.find((l) => l.tool === 'claude' && !
 // The file's text with one Claude folder pinned to the email it is signed in to. A folder the file does
 // not list is added unused (a Removed one with its own folder, or a folder of that name under
 // ~/.claude-logins); a listed one keeps its rule. `check` is -> checkLogins' result.
-//   -> { text, login }, or throws with the reason
+//   -> { text, login, migrated }, or throws with the reason; migrated is true when the pin also moves a
+//   ~/.claude row to Removed, which makes the write a migration
 export function pinLogin(subs, { tool, name, check }) {
   if (tool !== 'claude') throw new Error(`logins: only a Claude login is pinned, not ${tool}`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
@@ -657,7 +680,7 @@ export function pinLogin(subs, { tool, name, check }) {
   const logins = listed ? kept.map((l) => (l.dir === changed.dir ? changed : l)) : [...kept, changed];
   const removed = removedFrom({ removed: subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)) }, defaultRows(subs));
   const kept2 = defaultKept(subs, logins, ownLive(checked));
-  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir) };
+  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir), migrated: defaultRows(subs).length > 0 };
 }
 
 // True when the file exists, has no pins, and lists or finds a Claude folder under ~/.claude-logins that
@@ -690,6 +713,33 @@ export function migratePins(subs, check) {
   const live = claude.find((l) => !l.configDir)?.liveEmail?.toLowerCase() ?? null;
   const rows = own.length ? own : [defaultLogin('claude')];
   return { text: renderSubscriptions(defaultKept(subs, [...listed, ...found], live), removedFrom(subs, rows)), hint: live && !pins.has(live) ? live : null };
+}
+
+// What a migration changes, for the person to read: `before -> after` for each login of `was` (the file
+// as read) whose rule or section differs in `text` (the file to be written), then, for a ~/.claude
+// login moved to Removed, why and the command that lists it again.   -> [line]
+export function migrationLines(was, text) {
+  const now = parseSubscriptions(text);
+  const same = (l) => (o) => o.tool === l.tool && o.dir === l.dir;
+  const lines = [], moved = [];
+  for (const l of was.logins) {
+    const after = now.logins.find(same(l));
+    const gone = !after && now.removed.find(same(l));
+    const word = after ? ruleWord(after) : gone ? 'Removed' : null;
+    if (!word || word === ruleWord(l)) continue;
+    lines.push(`${l.tool} ${l.name} (${l.folder}): ${ruleWord(l)} -> ${word}`);
+    if (gone && l.tool === 'claude' && !l.configDir) moved.push(l);
+  }
+  // ~/.claude moved to Removed though the file never listed it (migratePins' fallback): said too.
+  for (const r of now.removed) {
+    if (r.tool !== 'claude' || r.dir !== defaultLogin('claude').dir || was.logins.some(same(r)) || was.removed.some(same(r))) continue;
+    lines.push(`${r.tool} ${r.name} (${r.folder}): not listed -> Removed`);
+    moved.push(r);
+  }
+  for (const l of moved) {
+    lines.push(`${l.tool} ${l.name} (${l.folder}) moved to Removed: once a Claude login is pinned to an account, desk signs in only through pinned folders, never ${l.folder}. To list it again: desk-env logins set ${l.tool} ${l.name} unused`);
+  }
+  return lines;
 }
 
 // ---- what the person is shown ----------------------------------------------------------------
