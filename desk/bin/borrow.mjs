@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
 import { namedBatches } from './batches.mjs';
+import { whole } from './leases.mjs';
 
 // A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
 // desk-q and borrowing through liveBeat, which also counts a recorded next pass still to come.
@@ -37,15 +38,12 @@ export function machineCap(value = E.machineValue('autopilot-concurrency')) {
   return value ? E.concurrencyLimits(value).cap : null;
 }
 
-// The machine's memory ceiling for workers: the machine profile's memory-ceiling-gb, or null.
-export function machineCeiling(value = E.machineValue('memory-ceiling-gb')) {
-  const n = Number(String(value ?? '').trim());
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
+// The machine's memory ceiling for workers: the machine profile's memory-ceiling-gb, or null. Read as the
+// lease pool reads it (leases.mjs capacities), so the budget and the leases share one ceiling.
+export const machineCeiling = (value = E.machineValue('memory-ceiling-gb')) => whole(value);
 
 // The GB one worker takes when its repo sets no weight: the ceiling shared flat over the worker cap, at
-// least 1, so `cap` unweighted workers fit under the ceiling as they did before weights. Null with no
-// ceiling.
+// least 1, so `cap` unweighted workers fit under the ceiling. Null with no ceiling.
 export const flatShare = (ceiling, cap) => (ceiling > 0 ? Math.max(1, Math.floor(ceiling / Math.max(1, cap || 1))) : null);
 
 // The GB each of a repo's workers counts for against the machine's memory ceiling: config §3b "Worker
@@ -58,6 +56,13 @@ export function workerWeight(raw, { ceiling, cap }) {
 }
 // Repo `slug`'s weight row as written, or null: a config that cannot be read sets none.
 export const repoWeightRaw = (slug) => { try { return E.repoConfigValue(slug, 'worker-memory'); } catch { return null; } };
+// Each of `slugs`' GB per worker (workerWeight's gb), by slug; `raw` reads a repo's row by its slug.
+export const repoWeights = (slugs, { ceiling, cap, raw = repoWeightRaw }) =>
+  Object.fromEntries([...new Set(slugs)].map((s) => [s, workerWeight(raw(s), { ceiling, cap }).gb]));
+// The GB `counts`, [slug, workers] pairs, hold with each slug's workers at `gbOf(slug)`.
+export const weighedGB = (counts, gbOf) => counts.reduce((a, [slug, n]) => a + n * gbOf(slug), 0);
+// How many workers of `gb` each fit in what `used` GB leaves of `ceiling`.
+export const memoryRoom = (ceiling, used, gb) => Math.max(0, Math.floor((ceiling - used) / gb));
 
 // How long past its recorded next pass a batch still counts as live: a wake-up runs late, and a pass
 // takes time to write its heartbeat.
@@ -202,39 +207,33 @@ const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state =
 //   ceiling   the machine's memory ceiling (machineCeiling), or null: with one, each running worker
 //             counts its repo's weight against it as well as one against the cap, and both must hold
 //   weight    this repo's workerWeight; weightOf another repo's GB per worker by its slug
-// -> { room, line, gb }   room is Infinity with no machine total; gb { used, ceiling, weight } where
-//    weights were counted, else null
+// -> { room, line }   room is Infinity with no machine total
 export const repoCap = (slug) => E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency')).cap;
 export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [], profiled, capOf = repoCap, ceiling = null, weight = null, weightOf = null }) {
   if (machine == null) {
     const why = (profiled ?? E.machineProfile() != null) ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
-    return { room: Infinity, line: `machine budget: none — ${why}, so this repo uses its own §3b rows`, gb: null };
+    return { room: Infinity, line: `machine budget: none — ${why}, so this repo uses its own §3b rows` };
   }
   const weighed = ceiling != null && weight?.gb != null;
   const each = (slug) => (weightOf ? weightOf(slug) : null) ?? flatShare(ceiling, machine);
-  let all = running;
-  let used = weighed ? running * weight.gb : 0;
+  const counts = [];
   let why = '';
   for (const o of queues) {
-    if (o.error) {
-      const counted = capOf(o.slug);
-      why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
-      all += counted;
-      if (weighed) used += counted * each(o.slug);
-    } else {
-      all += runningIn(o.q);
-      if (weighed) used += runningIn(o.q) * each(o.slug);
-    }
+    const n = o.error ? capOf(o.slug) : runningIn(o.q);
+    if (o.error) why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(n)}`;
+    counts.push([o.slug, n]);
   }
+  const all = running + counts.reduce((a, [, n]) => a + n, 0);
+  const used = weighed ? running * weight.gb + weighedGB(counts, each) : 0;
   const byCount = Math.max(0, machine - all);
-  const byMemory = weighed ? Math.max(0, Math.floor((ceiling - used) / weight.gb)) : Infinity;
+  const byMemory = weighed ? memoryRoom(ceiling, used, weight.gb) : Infinity;
   const room = Math.min(byCount, byMemory);
   const gbPart = weighed ? `, ${used}G of the ${ceiling}G memory ceiling by worker weight (this repo's ${weight.gb}G each${weight.set ? '' : ', the flat share'})` : '';
   const head = `machine budget: ${all} of the machine's ${machine} worker(s) running across every repo${gbPart}${why}`;
   const full = byMemory < byCount ? `the memory ceiling has no room for another ${weight.gb}G worker` : 'the machine is at its cap';
   const tail = room === 0 && wanted > 0 ? `: ${full}, so nothing starts this pass`
     : room < wanted ? `: starting at most ${room}` : '';
-  return { room, line: head + tail, gb: weighed ? { used, ceiling, weight: weight.gb } : null };
+  return { room, line: head + tail };
 }
 
 // A ticket another batch could start now: triaged, with no question open, and not held.

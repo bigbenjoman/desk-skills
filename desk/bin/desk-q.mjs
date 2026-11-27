@@ -54,7 +54,7 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, repoWeightRaw, stoppedAt, workerWeight } from './borrow.mjs';
+import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -957,19 +957,18 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
-export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
-// The machine's memory as the pass weighs it (borrow.mjs machineBudget): each running worker counts its
-// repo's config §3b "Worker memory weight (GB)" (the flat share where unset) against the machine
-// profile's memory ceiling, an unreadable batch at its cap. `weightOf` gives a repo's raw row by slug.
+const workersOf = (r) => (r.error ? r.cap ?? 0 : workersRunning(r));
+export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + workersOf(r), 0);
+// The same workers weighed against the machine profile's memory ceiling, each at its repo's config §3b
+// "Worker memory weight (GB)" (borrow.mjs repoWeights). `weightOf` gives a repo's raw row by slug.
 //   -> { used, ceiling, light, heavy } in GB (light and heavy the least and most a repo's worker weighs),
 //      or null with no ceiling or no machine cap
 export function machineMemory(repos, { cap, ceiling = machineCeiling(), weightOf = repoWeightRaw } = {}) {
   if (cap == null || ceiling == null) return null;
   const all = withOthers(repos);
-  const gb = new Map([...new Set(all.map((r) => r.slug))].map((s) => [s, workerWeight(weightOf(s), { ceiling, cap }).gb]));
-  const used = all.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)) * gb.get(r.slug), 0);
-  const each = gb.size ? [...gb.values()] : [flatShare(ceiling, cap)];
-  return { used, ceiling, light: Math.min(...each), heavy: Math.max(...each) };
+  const gb = repoWeights(all.map((r) => r.slug), { ceiling, cap, raw: weightOf });
+  const each = all.length ? Object.values(gb) : [flatShare(ceiling, cap)];
+  return { used: weighedGB(all.map((r) => [r.slug, workersOf(r)]), (s) => gb[s]), ceiling, light: Math.min(...each), heavy: Math.max(...each) };
 }
 // A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
 // writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
@@ -2209,10 +2208,9 @@ export function headroom({ running, cap, avail, gate, perWorker }) {
 // fit, how many of the lightest's, `light` true.   -> { room, light }
 export function weightedRoom(room, mem) {
   if (!mem) return { room, light: false };
-  const free = Math.max(0, mem.ceiling - mem.used);
-  const heavy = Math.min(room, Math.floor(free / mem.heavy));
+  const heavy = Math.min(room, memoryRoom(mem.ceiling, mem.used, mem.heavy));
   if (heavy > 0 || mem.light === mem.heavy) return { room: heavy, light: false };
-  return { room: Math.min(room, Math.floor(free / mem.light)), light: true };
+  return { room: Math.min(room, memoryRoom(mem.ceiling, mem.used, mem.light)), light: true };
 }
 
 // Ready tickets beyond the batch's free slots: they start only as its running workers finish.
