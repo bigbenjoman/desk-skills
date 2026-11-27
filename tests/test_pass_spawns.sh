@@ -2588,13 +2588,14 @@ fi
 echo "\$1 model=\${AUTOPILOT_MODEL:-} fallback=\${AUTOPILOT_MODEL_FALLBACK:-}\${AUTOPILOT_FINDER_FALLBACK:+ finder_fallback=\$AUTOPILOT_FINDER_FALLBACK}" >> "$T/wm-spawns"; echo "[spawn] ticket=\$1"
 EOF
 : > "$T/wm-spawns"; : > "$T/wm-preflights"
+# The repo's worker cap is 3 and X-1's running X-9 holds one: free it, so WM-1 to WM-3 all start, and
+# start WM-4 in a pass of its own once they are done.
+DESK_QUEUE="$X1Q" q set X-9 state=done session_id=null
 q init wm; q set-batch concurrency=3
 wm_pin(){ printf 'levers={"set":[%s],"arms":{"worker-model":"%s"},"trial_ids":{},"values":{"worker-model":"%s"},"at":"2026-11-27T00:00:00Z"}' "$2" "$1" "$1"; }
 q add WM-1; q set WM-1 state=triaged lane=A branch=feat/WM-1 "$(wm_pin sonnet '"worker-model"')"
 q add WM-2; q set WM-2 state=triaged lane=A branch=feat/WM-2 "$(wm_pin sonnet '"worker-model"')"
 q add WM-3; q set WM-3 state=triaged lane=A branch=feat/WM-3 "$(wm_pin config '')"
-q add WM-4; q set WM-4 state=triaged lane=A branch=feat/WM-4 'levers={"set":["finder-model"],"arms":{"finder-model":"haiku"},"trial_ids":{},"values":{"finder-model":"haiku"},"at":"2026-11-27T00:00:00Z"}'
-q set-batch concurrency=4
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1036 AC2 a ticket that drew sonnet starts on sonnet, and its queue entry names it" \
   'grep -qx "WM-1 model=sonnet fallback=" "$T/wm-spawns" && [ "$(field WM-1 model)" = "\"sonnet\"" ] && [ "$(field WM-1 model_fallback)" = null ]'
@@ -2603,6 +2604,9 @@ check "DS-1036 AC5 a drawn model the CLI cannot start on: the worker runs on the
   'grep -qx "WM-2 model= fallback=sonnet" "$T/wm-spawns" && [ "$(field WM-2 state)" = "\"running\"" ] && [ "$(field WM-2 model)" = "\"default\"" ] && [ "$(field WM-2 model_fallback)" = "\"sonnet\"" ] && echo "$out" | grep -q "WM-2 .*model=default (the worker-model lever drew sonnet, which the CLI could not start on)"'
 check "DS-1036 the drawn model's preflight tells spawn-worker.sh it was drawn, so a rejection is not the preflight lever's step; the baseline's retry does not" \
   'grep -qx "WM-2 model=sonnet drawn=1 finder=" "$T/wm-preflights" && grep -qx "WM-2 model= drawn= finder=" "$T/wm-preflights" && grep -qx "WM-3 model= drawn= finder=" "$T/wm-preflights"'
+for k in WM-1 WM-2 WM-3; do q set "$k" state=done session_id=null; done
+q add WM-4; q set WM-4 state=triaged lane=A branch=feat/WM-4 'levers={"set":["finder-model"],"arms":{"finder-model":"haiku"},"trial_ids":{},"values":{"finder-model":"haiku"},"at":"2026-11-27T00:00:00Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1036 AC5 a drawn finder model the CLI cannot start on: proved, then the finders run on the row's, and the start says so" \
   'grep -qx "WM-4 model= drawn= finder=haiku" "$T/wm-preflights" && grep -qx "WM-4 model= drawn= finder=" "$T/wm-preflights" && grep -qx "WM-4 model= fallback= finder_fallback=haiku" "$T/wm-spawns" && [ "$(field WM-4 finder_fallback)" = "\"haiku\"" ] && [ "$(field WM-1 finder_fallback)" = null ] && echo "$out" | grep -q "WM-4 .*the finder-model lever drew haiku, which the CLI could not start on"'
 
