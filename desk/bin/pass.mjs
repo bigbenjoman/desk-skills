@@ -71,7 +71,8 @@ import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './revie
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, readBaseRed, readGreenRec, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
 import { decideSupersededRepairs, greenRead } from './pass/repair-superseded.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges, holdersText } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges, holdersText, runRepo } from './suite-wait.mjs';
+import { expectedOf, holdStep } from './lock-holds.mjs';
 import { reclaimOrphans } from './lock-orphans.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -102,7 +103,7 @@ import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from '
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, lockHeldLine, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, holdOf, heldText, lockHeldLine, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -2560,9 +2561,15 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   // machineProfile: the rows as with-lock's admission reads them, so a TODO sizes the pool as it does there.
   try { pools = slotPools({ ...LEASE_ENV, machineProfile: E.machineProfile, lockDir: E.lockDir }); } catch { /* as above */ }
   const factor = whole(E.machineValue('test-lock-queue-factor'), 2);
+  // Each holder named by the repo it works in (null where its directory was not read), with its usual
+  // hold from the holds passes saw finish.
+  const inRepo = runRepo(repos);
+  const repoOf = (cwd) => (cwd ? inRepo(cwd) : null);
+  const usual = expectedOf(E.repoStateOf(STATE));
   const queueOf = (locks, slots) => {
     const holders = lockHolders(E.lockDir(), { locks });
-    const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir(), { locks }), locks });
+    const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir(), { locks }), locks })
+      .map((r) => { const repo = repoOf(r.cwd); return { ...r, repo, expectedS: usual(repo, r.args) }; });
     return lockQueue({
       waiting: lockWaiters({ procs: processList(), holders, locks }),
       held,
@@ -2577,6 +2584,9 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
     light ? queueOf('light', pools?.light.current ?? E.lightLockSlots()) : null,
   ]);
 })();
+// The holds passes see finish give each holder its usual time (lock-holds.mjs). A dry run records none,
+// and nor does a pass that could not read the process table: its holders are unknown, not gone.
+if (LOCK_QUEUE && !DRY && !LOCK_QUEUE.queues.some((q) => q.unread)) report.recovered.push(...holdStep(E.repoStateOf(STATE), LOCK_QUEUE.queues.flatMap((q) => q.holders), { now: PASS_AT }));
 // The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
 // resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
@@ -4415,7 +4425,6 @@ const slotsHeld = slotStopAt != null && slotsAllStarted && (capHolder != null ||
 const SLOT_HELD = !slotsHeld || spawnHeld || lowMemory || MAINT.hold || repoUnlocked ? {}
   : Object.fromEntries(spawnable.slice(slotStopAt).filter(toHandoff).map((t) => [t.key, slotHolders]));
 const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
-const lockQueueHeldText = LOCK_HELD?.line ?? null;
 if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waits'].push(LOCK_HELD.line);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
 // moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
@@ -6467,10 +6476,13 @@ runPhase({
   handlers: { ...LINE_HANDLERS, table: () => { tableAt = lines.push('') - 1; } },
   report,
 });
-const heldWhy = heldWhyOf({
+const HOLD = holdOf({
   spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, harmWhy, availGB, minAvailGB: MIN_AVAIL_GB,
-  lockQueueHeldText, machine: MACHINE, repoUnlocked, repoLine, repo: REPO, concurrency,
+  lockHold: LOCK_HELD?.hold ?? null, machine: MACHINE, repoUnlocked, repoLine, repo: REPO, concurrency,
+  heldBack: heldBack.map((r) => r.key),
+  bins: { queue: join(SHOWN_BIN, 'queue.mjs'), pass: join(SHOWN_BIN, 'pass.mjs') },
 });
+const heldWhy = heldText(HOLD);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
 const mergeGapsEnd = mergeGaps(Object.values(qEnd.tickets));
@@ -6569,7 +6581,7 @@ const late = [...ledgerLate, ...recordPass((prev) => {
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, idle_at: idle ? PASS_AT : null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, merge_gaps: mergeGapsEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
+  return { held: heldWhy, hold: HOLD, errors: 0, error: null, idle_at: idle ? PASS_AT : null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, merge_gaps: mergeGapsEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
 })];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
