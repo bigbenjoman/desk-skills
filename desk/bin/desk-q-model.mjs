@@ -4537,7 +4537,7 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
  *   group: string | null, pos: number | null, lane: string | null, stage: number | string | null, pr: number | null } }} TicketView
  */
 /**
- * @typedef {{ tool: string, label: string | null, plan: string | null, default: boolean, pinned: string[],
+ * @typedef {{ tool: string, label: string | null, name: string | null, off: boolean, plan: string | null, default: boolean, pinned: string[],
  *   workers: number | null, reading: UsageReading | null, read: InputAge, limit: { type: string, at: number | null } | null }} UsageLogin
  */
 /**
@@ -4786,7 +4786,8 @@ export function ticketPageJson(r, key, { now = Date.now(), checkin = false } = {
 /** @returns {UsageView} */
 export function usageViewJson(repos, { now = Date.now() } = {}) {
   const u = usageTable(repos, now);
-  const login = (x) => ({ tool: x.tool, label: loginLabel(x.login), plan: x.plan ?? null, default: !!x.use?.isDefault, pinned: x.use?.pinned ?? [],
+  const login = (x) => ({ tool: x.tool, label: loginLabel(x.login), name: x.login?.name ?? null, off: x.login?.rule === 'off',
+    plan: x.plan ?? null, default: !!x.use?.isDefault, pinned: x.use?.pinned ?? [],
     workers: x.workers, reading: x.reading ?? null, read: inputAge(x.reading?.at, now), limit: x.limit ?? null });
   return envelope('usage', now, { usage: [...u.claude, ...u.codex].map((x) => ({ login: loginLabel(x.login), ...inputAge(x.reading?.at, now) })) },
     { logins: [...u.claude, ...u.codex].map(login), following: u.following }, usageParts(repos, { now }));

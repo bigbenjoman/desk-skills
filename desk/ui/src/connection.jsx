@@ -4,6 +4,7 @@ import { loadSnapshot } from './snapshot.js';
 const RETRY_S = 5;
 const BLOCKED = {
   unreachable: "Can't change anything until the server is back.",
+  restarting: "Can't change anything until the server is back.",
   'signed-out': 'Sign in first: re-run install.sh in Terminal.',
 };
 // Why writes are off in `view`, or null when they are allowed.
@@ -14,6 +15,12 @@ const RECONNECTED = 'Reconnected. Showing live data.';
 const DOWN = 'desk:down';
 // Kept across reloads: the checkout install.sh ran from, for the not-signed-in body's command.
 const CHECKOUT = 'desk:checkout';
+// Kept for this window only: the server said it is restarting after an update, so losing it is that.
+const RESTARTING = 'desk:restarting';
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+// §2.7's release toast; the toast draws its own ✓.
+export const releasedText = (sha, commits) =>
+  `Desk updated to ${String(sha).slice(0, 8)}${Number.isInteger(commits) && commits > 0 ? ` (${plural(commits, 'commit')})` : ''}. Supervisors move to it by themselves.`;
 
 const storage = (name) => { try { return globalThis[name] ?? null; } catch { return null; } };
 const kept = (name, key) => { try { return storage(name)?.getItem(key) ?? null; } catch { return null; } };
@@ -22,7 +29,11 @@ const keep = (name, key, value) => {
 };
 
 // The window's view of the server:
-//   view      loading | app | unreachable | signed-out | not-installed | first-run
+//   view      loading | app | unreachable | restarting | signed-out | not-installed | first-run;
+//             restarting is unreachable after the server said it restarts after an update: the frame
+//             stays, with its banner, in place of the unreachable card
+//   app       { updated, failed }: a newer app build than this page's is served (updated), and the
+//             source hash of a build that failed at install (failed), from /api/meta and the `server` event
 //   snapshot  the last one read (or kept from an earlier load), null for none
 //   setup     /api/setup's answer, null until one is read
 //   checkout  the checkout install.sh ran from, null when never read
@@ -31,10 +42,13 @@ const keep = (name, key, value) => {
 //   toast     the one toast showing, or null
 // `get` is fetch, `Events` EventSource and `store` Cache Storage; `tickMs` is one second of the countdown.
 export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis.EventSource, store = globalThis.caches, tickMs = 1000 } = {}) {
-  const cur = useRef({ view: 'loading', snapshot: null, setup: null, checkout: kept('localStorage', CHECKOUT), attempt: 0, left: 0, toast: null });
+  const cur = useRef({ view: 'loading', snapshot: null, setup: null, checkout: kept('localStorage', CHECKOUT), attempt: 0, left: 0, toast: null,
+    app: { updated: false, failed: null } });
   const [state, setState] = useState(cur.current);
   const live = useRef(false);
   const t = useRef({ tick: null, again: null, toast: null, stream: null, checking: null });
+  // The app build and installed commit this page loaded with, from the first /api/meta it read.
+  const base = useRef(null);
   const set = (patch) => {
     if (!live.current) return;
     cur.current = { ...cur.current, ...(typeof patch === 'function' ? patch(cur.current) : patch) };
@@ -57,7 +71,8 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
     if (!cur.current.snapshot) {
       try { copy = await loadSnapshot({ get: () => Promise.reject(new Error('unreachable')), store }); } catch { copy = null; }
     }
-    set((s) => ({ view: 'unreachable', attempt: s.attempt + 1, left: RETRY_S, snapshot: s.snapshot ?? copy, toast: null }));
+    const view = kept('sessionStorage', RESTARTING) != null ? 'restarting' : 'unreachable';
+    set((s) => ({ view, attempt: s.attempt + 1, left: RETRY_S, snapshot: s.snapshot ?? copy, toast: null }));
     if (!live.current) return;
     t.current.tick = setInterval(() => {
       const left = cur.current.left - 1;
@@ -83,10 +98,30 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
     }
     // Desk with no snapshot read is the server answering without its data: not yet reconnected.
     const reconnected = view !== 'app' || snapshot != null;
-    if (reconnected) keep('sessionStorage', DOWN, null);
+    if (reconnected) { keep('sessionStorage', DOWN, null); keep('sessionStorage', RESTARTING, null); }
     set((s) => ({ view, setup, attempt: 0, left: 0, checkout: setup?.checkout ?? s.checkout, snapshot: snapshot ?? s.snapshot }));
     if (back && reconnected) toast(RECONNECTED);
+    if (view === 'app') readMeta();
     openStream();
+  }
+
+  // What the server says of the app build and the installed commit (/api/meta, the `server` event).
+  async function readMeta() {
+    let m = null;
+    try { const r = await get('/api/meta'); if (r.status === 200) m = await r.json(); } catch { m = null; }
+    if (m) heard(m);
+  }
+  function heard(m) {
+    if (!m || typeof m !== 'object') return;
+    const build = typeof m.app?.build === 'string' ? m.app.build : null;
+    const failed = typeof m.app?.failed === 'string' ? m.app.failed : null;
+    base.current ??= { build, installed: m.installed ?? null };
+    if (m.restarting) keep('sessionStorage', RESTARTING, '1');
+    if (m.released && typeof m.installed === 'string' && m.installed !== base.current.installed) {
+      base.current.installed = m.installed;
+      toast(releasedText(m.installed, m.released.commits));
+    }
+    set((s) => ({ app: { updated: s.app.updated || (build != null && build !== base.current.build), failed } }));
   }
   // One look at a time; a look asked for while one runs is that one.
   function check() {
@@ -113,6 +148,7 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
       firstRunEnds();
       try { const d = JSON.parse(e.data); set((s) => (s.snapshot ? { snapshot: fn(s.snapshot, d) } : {})); } catch { /* not JSON */ }
     };
+    es.addEventListener('server', (e) => { try { heard(JSON.parse(e.data)); } catch { /* not JSON */ } });
     es.addEventListener('home', (e) => onto(e, (s, d) => ({ ...s, ...d })));
     es.addEventListener('repo', (e) => onto(e, (s, { slug, summary }) => {
       const repos = s.repos ?? [];

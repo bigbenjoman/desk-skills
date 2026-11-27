@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { useColorScheme } from './color-scheme.js';
+import { useCallback, useEffect, useState } from 'react';
+import { Prefs, useColorScheme, usePrefs } from './color-scheme.js';
 import { Frame, WINDOW_DRAG } from './frame.jsx';
+import { saveKept, useKept } from './kept.js';
 import { ROUTES, screenAt } from './routes.js';
 import { blockedIn, useConnection, Writes } from './connection.jsx';
 import { clock, FirstRun, NotInstalled, SignedOut, Toast, Unreachable } from './system.jsx';
@@ -19,16 +20,62 @@ function systemView(c, get) {
   return null;
 }
 
-function Body({ c, get, routes }) {
-  const [path, go] = useState('/');
+// §2.5's app banners. `Later` hides App updated until Desk next comes to the front at least an hour on.
+export const LATER_MS = 60 * 60 * 1000;
+const FAILED_SEEN = 'desk:build-failed-dismissed';
+export const reloadApp = () => { saveKept(); window.location.reload(); };
+const keptLocal = (k) => { try { return globalThis.localStorage?.getItem(k) ?? null; } catch { return null; } };
+const keepLocal = (k, v) => { try { globalThis.localStorage?.setItem(k, v); } catch { /* only the dismissal is lost */ } };
+
+function useAppBanners(c, get, reload) {
+  const [later, setLater] = useState(null);
+  const [failedSeen, setFailedSeen] = useState(() => keptLocal(FAILED_SEEN));
+  useEffect(() => {
+    if (later == null) return undefined;
+    const back = () => { if (Date.now() - later >= LATER_MS) setLater(null); };
+    window.addEventListener('focus', back);
+    return () => window.removeEventListener('focus', back);
+  }, [later]);
+  const updated = c.app?.updated && later == null;
+  useEffect(() => {
+    if (!updated) return undefined;
+    const key = (e) => { if (e.metaKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'r') { e.preventDefault(); reload(); } };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [updated, reload]);
+  const out = [];
+  if (updated) {
+    out.push({ id: 'app-updated', tone: 'info', glyph: null, body: 'Desk updated. Reload to use the new version of the app.',
+      actions: [{ label: 'Reload ⌘R', run: reload }, { label: 'Later', run: () => setLater(Date.now()) }] });
+  }
+  if (c.view === 'restarting') {
+    const copy = c.snapshot?.at ? ` You're looking at the copy from ${clock(c.snapshot.at)}.` : '';
+    out.push({ id: 'restarting', tone: 'info', glyph: '◌', body: `Desk's server is restarting after an update. Reconnecting…${copy}`, action: null });
+  }
+  const failed = c.app?.failed;
+  if (failed && failed !== failedSeen) {
+    out.push({ id: 'app-failed', tone: 'warn', glyph: '!', body: "Desk updated, but the app's new version didn't build. You're on the previous app version.",
+      sub: 'The update itself still applies: supervisors and workers run the new desk code. Only the window stays on the previous app.',
+      actions: [
+        { label: 'Open install log', run: () => { get('/api/settings/install-log', { method: 'POST' }).catch(() => {}); } },
+        { label: 'Dismiss', run: () => { keepLocal(FAILED_SEEN, failed); setFailedSeen(failed); } },
+      ] });
+  }
+  return out;
+}
+
+function Body({ c, get, routes, reload }) {
+  // Kept across a reload for a new app, so the window comes back on the same screen (§2.5).
+  const [path, go] = useKept('path', '/');
+  const banners = useAppBanners(c, get, reload);
   const card = systemView(c, get);
   // The window has no native title bar, so a card keeps the top 40 px to drag it by.
   if (card) return <>{card}<div aria-hidden="true" data-drag="" style={WINDOW_DRAG} className="fixed inset-x-0 top-0 h-10" /></>;
   const screen = screenAt(path, routes);
   const Screen = screen ? routes[screen.id] : null;
   return (
-    <Frame snapshot={c.snapshot} live={c.view === 'app'} path={screen ? path : '/'} go={go} routes={routes} title={screen ? screen.title?.(path) ?? screen.label : null}>
-      {Screen ? <Screen path={path} go={go} snapshot={c.snapshot} get={get} /> : (
+    <Frame snapshot={c.snapshot} live={c.view === 'app'} path={screen ? path : '/'} go={go} routes={routes} title={screen ? screen.title?.(path) ?? screen.label : null} banners={banners}>
+      {Screen ? <Screen path={path} go={go} snapshot={c.snapshot} get={get} routes={routes} /> : (
         <main className="flex h-full flex-col items-center justify-center gap-1">
           <h1 className="text-base font-semibold">Desk</h1>
           {c.snapshot?.at && <p className="text-xs text-muted-fg">As of {clock(c.snapshot.at)}</p>}
@@ -39,15 +86,21 @@ function Body({ c, get, routes }) {
 }
 
 // `deps` stands in for fetch, EventSource, Cache Storage and the countdown's second (useConnection),
-// and `routes` for the screens that exist (routes.js ROUTES).
+// `routes` for the screens that exist (routes.js ROUTES), `desk` for Desk.app's bridge (window.desk)
+// and `reload` for reloading the window.
 export default function App({ deps = {} }) {
-  useColorScheme();
+  const prefs = usePrefs(deps.desk ?? globalThis.window?.desk);
+  useColorScheme(document.documentElement, prefs.prefs);
   const c = useConnection(deps);
-  const get = deps.get ?? ((u, o) => fetch(u, o));
+  // One function for the window's life: a screen reads again when the `get` it holds changes.
+  const fallback = useCallback((u, o) => fetch(u, o), []);
+  const get = deps.get ?? fallback;
   return (
-    <Writes.Provider value={blockedIn(c.view)}>
-      <Body c={c} get={get} routes={deps.routes ?? ROUTES} />
-      <Toast text={c.toast} onDismiss={c.dismiss} />
-    </Writes.Provider>
+    <Prefs.Provider value={prefs}>
+      <Writes.Provider value={blockedIn(c.view)}>
+        <Body c={c} get={get} routes={deps.routes ?? ROUTES} reload={deps.reload ?? reloadApp} />
+        <Toast text={c.toast} onDismiss={c.dismiss} />
+      </Writes.Provider>
+    </Prefs.Provider>
   );
 }

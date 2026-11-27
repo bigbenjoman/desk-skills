@@ -6,12 +6,13 @@
 // token file changes or the server restarts. A server that does not answer shows the unreachable card
 // and is tried again every few seconds.
 // The window is sandboxed with no Node, never leaves the server, opens no other window, and the page
-// can ask only for the preload's badge, notify, openExternal, onDeepLink and startServer.
+// can ask only for the preload's badge, notify, openExternal, onDeepLink, startServer and the app's
+// own preferences (prefs, setPref).
 import { request } from 'node:http';
 import { execFile } from 'node:child_process';
-import { readFileSync, watchFile } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, watchFile, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const ORIGIN = 'http://127.0.0.1:4823';
@@ -122,6 +123,26 @@ export async function externalUrl(raw, sites = async () => []) {
   if (u.host === 'github.com') return u.href;
   return (await sites()).includes(u.host) ? u.href : null;
 }
+// The app's own display preferences (screen-spec §9.2), in Electron's userData folder: outside desk's
+// state, and written by no desk command. A missing or unreadable file, or a value that is not one of
+// the choices, reads as the default, with no error.
+export const PREFS = { theme: ['system', 'light', 'dark'], density: ['comfortable', 'compact'] };
+export const DEFAULT_PREFS = { theme: 'system', density: 'comfortable' };
+const pick = (raw) => Object.fromEntries(Object.entries(PREFS).map(([k, xs]) => [k, xs.includes(raw?.[k]) ? raw[k] : DEFAULT_PREFS[k]]));
+export function readPrefs(file) {
+  try { return pick(JSON.parse(readFileSync(file, 'utf8'))); } catch { return { ...DEFAULT_PREFS }; }
+}
+// One choice changed -> the preferences as saved, or null for a key or value that is not a choice.
+export function writePrefs(file, change) {
+  const keys = change && typeof change === 'object' && !Array.isArray(change) ? Object.keys(change) : [];
+  if (!keys.length || keys.some((k) => !PREFS[k]?.includes(change[k]))) return null;
+  const next = { ...readPrefs(file), ...Object.fromEntries(keys.map((k) => [k, change[k]])) };
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(`${file}.tmp`, `${JSON.stringify(next, null, 2)}\n`);
+  renameSync(`${file}.tmp`, file);
+  return next;
+}
+
 // Starts the desk-ui server's launchd job if it is not running; a running one is left alone.
 export const startJob = () => new Promise((resolve) => {
   execFile('launchctl', ['kickstart', `gui/${process.getuid()}/${UI_JOB}`], { timeout: 5000 }, () => resolve());
@@ -135,6 +156,7 @@ export function createShell(electron, {
   install = () => checkout(paths), probe = serverBoot, jira = () => jiraSites(paths), kick = startJob,
   watch = (fn) => watchFile(tokenFile(paths), { interval: 2000 }, (cur, prev) => { if (cur.mtimeMs !== prev.mtimeMs) fn(); }),
   retryMs = RETRY_MS, setTimer = setTimeout, clearTimer = clearTimeout,
+  prefsFile = () => join(electron.app.getPath('userData'), 'preferences.json'),
 } = {}) {
   const { BrowserWindow, session, ipcMain, app, Notification } = electron;
   const ses = session.fromPartition(PARTITION);
@@ -163,6 +185,12 @@ export function createShell(electron, {
     if (!to) return false;
     await electron.shell.openExternal(to);
     return true;
+  });
+  // Settings · App: read and change the app's own preferences. A file that can't be written is false.
+  ipcMain.handle('desk:prefs-get', (e) => (fromPage(e) ? readPrefs(prefsFile()) : null));
+  ipcMain.handle('desk:prefs-set', (e, change) => {
+    if (!fromPage(e)) return false;
+    try { return writePrefs(prefsFile(), change) ?? false; } catch { return false; }
   });
   // The unreachable card's Try now: start the server's job if it is down, and connect at once.
   ipcMain.handle('desk:start-server', async (e) => {

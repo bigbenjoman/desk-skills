@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { COMPACT_BELOW, ExternalLink, TicketLink, useWidth, waited } from './frame.jsx';
 import { Button, clock, Command, useCopy, WriteButton } from './system.jsx';
+import { useKept } from './kept.js';
 
 export const KIND_TIPS = {
   parked: 'A worker stopped to ask you something.',
@@ -380,8 +381,8 @@ function Gone({ gone, next, step }) {
 }
 
 function Detail({ item, snapshot, compact, step, result, record, go, next, nextPass, nextCheckin }) {
-  const [chosen, setChosen] = useState(null);
-  const [text, setText] = useState('');
+  const [chosen, setChosen] = useKept(`inbox:chosen:${item.id}`, null);
+  const [text, setText] = useKept(`inbox:draft:${item.id}`, '');
   const [hint, setHint] = useState(null);
   const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined');
   const field = useRef(null);
@@ -619,16 +620,17 @@ export function Inbox({ get, snapshot, go }) {
   const [gone, setGone] = useState(null);
   const [failed, setFailed] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [sel, setSel] = useState(null);
-  const [repoF, setRepoF] = useState('');
-  const [kindF, setKindF] = useState('');
-  const [sort, setSort] = useState('oldest');
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  // Kept across a reload for a new app (§2.5): the item open, the filters and the sort.
+  const [sel, setSel] = useKept('inbox:sel', null);
+  const [repoF, setRepoF] = useKept('inbox:repo', '');
+  const [kindF, setKindF] = useKept('inbox:kind', '');
+  const [sort, setSort] = useKept('inbox:sort', 'oldest');
+  const [filtersOpen, setFiltersOpen] = useKept('inbox:filters-open', false);
   const compact = useWidth() < COMPACT_BELOW;
   const busy = useRef(false);
   const lastSettle = useRef(-Infinity);
   const rows = useRef(new Map());
-  const picked = useRef(false);
+  const picked = useRef(sel != null); // an item kept across a reload stays open
 
   const load = useCallback(async (settle) => {
     // A press while a check runs is that check; one within a minute of the last reads the list only.
