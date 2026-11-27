@@ -2774,8 +2774,9 @@ const budgetFiles = (key) => {
   return scopeOf.get(key);
 };
 // The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
-// its batch's queue and triage record; a review try there fills none, as here. A queue that does not
-// read counts nothing, and is named in the report.
+// its batch's queue and triage record, and those handed off there between sessions with `handoff: true`
+// (budgetHolds); a review try there fills none, as here. A queue that does not read counts nothing, and
+// is named in the report.
 // Read here for the ready list, and again from the queues read under the borrow lock before any spawn.
 const elsewhereRunning = [];
 const budgetUnread = [];
@@ -2789,10 +2790,11 @@ const countElsewhere = (queues) => {
     if (o.error) { budgetUnread.push(o.error); continue; }
     const triageDir = join(E.batchPaths(budgetSlug, o.batch).state, 'triage');
     for (const t of Object.values(o.q.tickets ?? {})) {
-      if (t?.state !== 'running' || !t.key || reviewOnlyTry(t)) continue;
+      const handoff = t?.state === 'triaged' && toHandoff(t);
+      if ((t?.state !== 'running' && !handoff) || !t.key || reviewOnlyTry(t)) continue;
       let rec = null;
       try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
-      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
+      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec), ...(handoff ? { handoff: true } : {}) });
     }
   }
 };
@@ -2872,19 +2874,34 @@ const placesFor = (f) => {
 };
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
+// A ticket handed off between sessions, its next one not yet started, keeps the places its files fill
+// as if it ran, so a new ticket does not start on them and hold it out. Against new tickets only:
+// handoffs among themselves count the running alone, and start in queue order, so none holds another
+// forever. Read from the queue as the pass found it; a handoff the loop starts is running from then.
+const handedOffKeys = new Set(all.filter((t) => t.state === 'triaged' && toHandoff(t) && !reviewOnlyTry(t)).map((t) => t.key));
 // Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
-// them (`by`) and those of the repo's other batches (`elsewhere`, { key, batch }).
+// them (`by`), its handoffs waiting for their next session (`handoff`; for a ticket not itself handed
+// off) and the repo's other batches' (`elsewhere`, { key, batch, handoff? }).
 const budgetHolds = (r) => {
   const holds = [];
   if (reviewOnlyTry(r)) return holds;
+  const newTicket = !toHandoff(r);
   for (const f of budgetFiles(r.key)) {
     const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && o.files.includes(f)).map(({ key, batch }) => ({ key, batch }));
-    if (!by.length && !elsewhere.length) continue;
+    const handoff = newTicket ? [...handedOffKeys].filter((k) => k !== r.key && !runningKeys.has(k) && budgetFiles(k).includes(f)) : [];
+    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && (newTicket || !o.handoff) && o.files.includes(f))
+      .map(({ key, batch, handoff: h }) => ({ key, batch, ...(h ? { handoff: true } : {}) }));
+    if (!by.length && !handoff.length && !elsewhere.length) continue;
     const k = placesFor(f);
-    if (by.length + elsewhere.length >= k) holds.push({ file: f, k, by, elsewhere });
+    if (by.length + handoff.length + elsewhere.length >= k) holds.push({ file: f, k, by, handoff, elsewhere });
   }
   return holds;
+};
+// The files and tickets that hold a pending handoff back, as its handoff wait records them
+// (pass/deadlines.mjs): [{ file, with: [key, or "key in batch <label>"] }], or null where none does.
+const collisionHolds = (r) => {
+  const holds = budgetHolds(r);
+  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
 };
 const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
@@ -6533,8 +6550,18 @@ runPhase({
 
 // ---- deadlines -----------------------------------------------------------
 // Each wait a ticket is in, read once this pass's PR reads, undrafts and spawns are made, with its
-// deadline; one past it is escalated once (pass/deadlines.mjs).
-runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY, slotHeld: SLOT_HELD }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
+// deadline; one past it is escalated once (pass/deadlines.mjs). A pending handoff a running ticket's
+// files hold back waits on that collision, by name, with no deadline while it lasts.
+runPhase({
+  name: 'deadlines',
+  snapshot: () => {
+    const tickets = queue().tickets;
+    const collisionHeld = Object.fromEntries(Object.values(tickets).filter((t) => t.state === 'triaged' && toHandoff(t))
+      .map((t) => [t.key, collisionHolds(t)]).filter(([, c]) => c));
+    return { tickets, at: PASS_AT, dry: DRY, slotHeld: SLOT_HELD, collisionHeld };
+  },
+  decide: decideDeadlines, handlers: PHASE_HANDLERS, report,
+});
 
 // The red base as the batch's record (pass/base-gate.mjs decideBaseRed): its one line, the report's RED
 // BASE, only on the pass that records the spell, and its escalation once past its deadline. It is cleared
@@ -6604,7 +6631,7 @@ runPhase({
       overrides: readDecisions(STATE).overrides, overridesSeen: seenRead('overrides-reported.json', JSON.parse, []),
       reviewClash, reviewSeen: reviewClash ? seenRead('review-rows-reported.txt', (x) => x, '') : '',
       blocked, heldBack: heldBack.map((r) => ({
-        key: r.key, holds: budgetHolds(r).map((h) => ({ ...h, elsewhere: h.elsewhere.map((o) => ({ key: o.key, label: batchLabel(o.batch) })) })),
+        key: r.key, holds: budgetHolds(r).map((h) => ({ ...h, elsewhere: h.elsewhere.map((o) => ({ key: o.key, label: batchLabel(o.batch), ...(o.handoff ? { handoff: true } : {}) })) })),
       })),
       resumeRows: Object.values(qNow.tickets).filter((r) => r.state === 'triaged').map((r) => ({
         key: r.key, resume: r.resume, resume_why: r.resume_why, toResume: toResume(r), rebootWait: r.resume === 'reboot' ? rebootReady(r).wait ?? null : null,
@@ -6763,7 +6790,7 @@ if (!DRY) {
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held && held !== harmWhy ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.handoff, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
