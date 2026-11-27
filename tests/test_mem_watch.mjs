@@ -5,7 +5,7 @@
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { heavyFromPs as heavyFromRows, parsePs, sustainedBandGiB, sustainedStep, harmStep, oomKills, workerMemSignals, workerLogTail,
-  harmThresholds, harmRecord, writeHarmRecord, harmHold } from '../desk/bin/desk-env.mjs';
+  harmThresholds, harmRecord, writeHarmRecord, harmHold, readStops, recordStop } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 const heavyFromPs = (text, self) => heavyFromRows(parsePs(text, 'pid=,args='), self);
 let fails = 0;
@@ -75,12 +75,12 @@ const kernel = [
   '[ 901.4] Memory cgroup out of memory: Killed process 5200 (vitest) total-vm:4000000kB',
 ].join('\n');
 t('#758 one kill is one line, its oom-kill: summary aside; a cgroup kill counts too, each by its timestamp and naming the process', JSON.stringify(oomKills(kernel)),
-  JSON.stringify([{ key: 812.1, proc: 'node (pid 4100)' }, { key: 901.4, proc: 'vitest (pid 5200)' }]));
+  JSON.stringify([{ key: 812.1, proc: 'node (pid 4100)', line: kernel.split('\n')[1] }, { key: 901.4, proc: 'vitest (pid 5200)', line: kernel.split('\n')[2] }]));
 
 // ---- the kill named, worker logs, the WSL VM against its grant, thresholds, the record the pass reads
 const kills = oomKills(kernel);
 t('AC3 a new OOM kill names the killed process', JSON.stringify(harm([hs(0, 1, kills.slice(0, 1)), hs(1, 1, kills)])),
-  JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory (vitest (pid 5200)): drop to the ladder's lowest count"]));
+  JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory (vitest (pid 5200)): drop to the ladder's lowest count (dmesg: [ 901.4] Memory cgroup out of memory: Killed process 5200 (vitest) total-vm:4000000kB)"]));
 t('AC8 an unreadable kernel log still reads swap', harm([hs(0, 1, null), hs(3, 3.5, null)]).filter((l) => l.startsWith('SWAP-GROWING')).length, 1);
 t('tmpfs is 2G unless set', JSON.stringify([harm([hs(0, 1, [], 2.5)]).length, harm([hs(0, 1, [], 2.5)], { tmpfsGiB: 3 }).length]), '[1,0]');
 
@@ -99,6 +99,29 @@ t('AC4 nor a file read or grep that holds them, even one that failed for another
   JSON.stringify([workerMemSignals(result(`${heapLine}\n${killedLine}\n${banner}\nExit code 137`, false)), workerMemSignals(result(`Exit code 1\n  86\t${heapLine}\n  87\t${killedLine}`))]), '[[],[]]');
 t('AC4 a worker log signal names the ticket', JSON.stringify(harm([{ now: 0, swapGiB: 1, oom: [], workers: [{ key: 'DS-12', text: heapLine }] }])),
   JSON.stringify(["WORKER-OOM: DS-12's log shows JavaScript heap out of memory: drop to the ladder's lowest count"]));
+
+// ---- issue-1614: a worker queue.mjs stop ended leaves exit 137, which is not an OOM kill
+const stopAt = 10 * 60_000;
+const stops = { 'DS-15': { at: stopAt, pids: [4100, 4101] } };
+const w137 = (min, extra = {}) => ({ now: min * 60_000, swapGiB: 1, oom: [], workers: [{ key: 'DS-15', text: killedLine }], ...extra });
+t('issue-1614 AC1 an exit 137 in the log of a worker a recorded stop ended, memory plentiful: no hold',
+  harm([w137(10.5, { stops, availGiB: 17.7 })]).length, 0);
+t('issue-1614 AC1 nor with available memory unknown', harm([w137(10.5, { stops })]).length, 0);
+t('issue-1614 AC1 a heap OOM in that log still holds', harm([{ ...w137(10.5, { stops, availGiB: 17.7 }), workers: [{ key: 'DS-15', text: heapLine }] }]).length, 1);
+t('issue-1614 AC1 the stop explains another worker\'s exit 137 not at all, and the line names the memory available',
+  JSON.stringify(harm([{ ...w137(10.5, { stops, availGiB: 17.7 }), workers: [{ key: 'DS-16', text: killedLine }] }])),
+  JSON.stringify(["WORKER-OOM: DS-16's log shows a command killed with exit 137 (SIGKILL): drop to the ladder's lowest count (17.7G available at the time)"]));
+t('issue-1614 AC1 nor an exit 137 long after the stop', harm([w137(16, { stops, availGiB: 17.7 })]).length, 1);
+t('issue-1614 AC2 an exit 137 from a stopped worker with memory low at the time holds, naming the figure',
+  JSON.stringify(harm([w137(10.5, { stops, availGiB: 1.2 })])),
+  JSON.stringify(["WORKER-OOM: DS-15's log shows a command killed with exit 137 (SIGKILL): drop to the ladder's lowest count (1.2G available at the time, under 2G)"]));
+const oomLine = '[ 950.2] Out of memory: Killed process 4101 (node) total-vm:9000000kB, anon-rss:7000000kB';
+const kOom = [...oomKills(kernel), ...oomKills(oomLine)];
+const kernelHold = harm([{ now: 9 * 60_000, swapGiB: 1, oom: oomKills(kernel), availGiB: 17.7 }, w137(10.5, { stops, availGiB: 17.7, oom: kOom })]);
+t('issue-1614 AC2 AC4 a kernel OOM kill at a stop holds both ways, each line naming the dmesg line', JSON.stringify(kernelHold), JSON.stringify([
+  `OOM-KILL: the kernel killed 1 process(es) for memory (node (pid 4101)): drop to the ladder's lowest count (dmesg: ${oomLine})`,
+  `WORKER-OOM: DS-15's log shows a command killed with exit 137 (SIGKILL): drop to the ladder's lowest count (dmesg: ${oomLine})`]));
+t('issue-1614 AC2 swap growing at a stop holds it too', harm([w137(9, { swapGiB: 1, workers: [], stops }), w137(10.5, { swapGiB: 4, stops, availGiB: 17.7 })]).filter((l) => l.startsWith('WORKER-OOM')).length, 1);
 
 const T = scratch('desk-memwatch-');
 const logs = join(T, 'logs');
@@ -133,6 +156,11 @@ t('values the row type refuses, or zero, keep the default', JSON.stringify(harmT
 
 const st = join(T, 'state');
 t('AC9 with no record nothing holds', harmHold(st, 0).length, 0);
+t('issue-1614 no stop recorded reads as none', JSON.stringify(readStops(st)), '{}');
+mkdirSync(st, { recursive: true });
+recordStop(st, { key: 'OLD-1', at: 0, pids: [1] }, 0);
+recordStop(st, { key: 'DS-15', at: 2 * 86_400_000, pids: [4100] }, 2 * 86_400_000);
+t('issue-1614 a stop is recorded by key with its time and pids, one older than a day dropped', JSON.stringify(readStops(st)), JSON.stringify({ 'DS-15': { at: 2 * 86_400_000, pids: [4100] } }));
 let rec = harmRecord(null, { now: 0, lines: ['OOM-UNKNOWN: x', 'SWAP-GROWING: up'], standing: ['SWAP-GROWING'] });
 rec = harmRecord(rec, { now: 9 * 60_000, lines: [], standing: ['SWAP-GROWING'] });
 writeHarmRecord(st, rec);
