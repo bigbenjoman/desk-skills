@@ -55,8 +55,100 @@ export function featureRole(batch, key) {
   return Object.values(batch.owners ?? {}).includes(key) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null;
 }
 
+// The marks of AI attribution, hooks/deny-ai-attribution.py's BANNED, in the same order, with what each
+// is. The hook is installed standalone, so it keeps its own copy: tests/test_cloud_worker.mjs holds the two equal.
+export const ATTRIBUTION_MARKS = [
+  [/co-authored-by\s*[:=][^\n"']*(claude|anthropic)/i, 'a Co-Authored-By trailer naming Claude or Anthropic'],
+  [/claude-session\s*[:=]/i, 'a Claude-Session trailer'],
+  [/generated with \[?claude code/i, 'a "Generated with Claude Code" footer'],
+  [/noreply@anthropic\.com/i, 'noreply@anthropic.com'],
+  [/claude\.ai\/code\/session_/i, 'a claude.ai/code/session_ link'],
+  [/\u{1F916}/u, 'the robot emoji'],
+];
+
+// The commits in a PR (`gh pr view <n> --json commits`) none of whose authors has `author.email`
+// (case aside): one line per commit naming it and who it was authored as, or [] with no email to match.
+export function authorMismatches(view, author) {
+  const want = String(author?.email ?? '').trim().toLowerCase();
+  if (!want) return [];
+  const out = [];
+  for (const c of view?.commits ?? []) {
+    const authors = c?.authors ?? [];
+    if (!authors.length || authors.some((a) => String(a?.email ?? '').trim().toLowerCase() === want)) continue;
+    const sha = String(c?.oid ?? '').slice(0, 7) || '(no sha)';
+    out.push(`commit ${sha} authored as ${authors.map((a) => `${a?.name ?? ''} <${a?.email ?? ''}>`).join(', ')}, not ${author.name} <${author.email}>`);
+  }
+  return out;
+}
+
+// The attribution in a PR, from `gh pr view <n> --json body,commits,comments`: its commits' messages and
+// authors' emails, its body and its comments. -> one line per mark found, naming where, or [].
+export function attributionFound(view) {
+  const found = [];
+  const scan = (where, text) => {
+    for (const [re, what] of ATTRIBUTION_MARKS) if (re.test(String(text ?? ''))) found.push(`${what} in ${where}`);
+  };
+  for (const c of view?.commits ?? []) {
+    const sha = String(c?.oid ?? '').slice(0, 7) || '(no sha)';
+    scan(`commit ${sha}'s message`, `${c?.messageHeadline ?? ''}\n${c?.messageBody ?? ''}`);
+    scan(`commit ${sha}'s authors`, (c?.authors ?? []).map((a) => `${a?.name ?? ''} <${a?.email ?? ''}>`).join('\n'));
+  }
+  scan('the PR body', view?.body);
+  (view?.comments ?? []).forEach((c, i) => scan(`comment ${i + 1}${c?.author?.login ? ` by ${c.author.login}` : ''}`, c?.body));
+  return found;
+}
+
+// `text` without its lines that carry an attribution mark, and without the blank lines that leaves at its end.
+export function stripAttribution(text) {
+  const kept = String(text ?? '').split('\n').filter((l) => !ATTRIBUTION_MARKS.some(([re]) => re.test(l)));
+  while (kept.length && !kept.at(-1).trim()) kept.pop();
+  return kept.join('\n');
+}
+
+// Rewrites the commits on `head` that `base` lacks, oldest first, as `author`, each message through
+// stripAttribution where `strip` (§5 forbids attribution): each keeps its own tree and dates, on its
+// rewritten parents. `git(args, { env, input })` runs git in the repo and returns its stdout, throwing on
+// failure. -> { head, n } once `git diff` finds the new head's tree the old one's, else { error }.
+export function rewriteCommits(git, { head, base, author, strip = true }) {
+  const shas = git(['rev-list', '--reverse', '--topo-order', head, '--not', base]).split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!shas.length) return { error: `${head.slice(0, 7)} has no commits that ${base} lacks` };
+  const done = new Map();
+  for (const sha of shas) {
+    const [tree, parents = '', aDate, cDate] = git(['log', '-1', '--format=%T%n%P%n%aI%n%cI', sha]).split('\n');
+    const body = git(['log', '-1', '--format=%B', sha]);
+    const msg = strip ? stripAttribution(body) : body.replace(/\n+$/, '');
+    if (!msg.trim()) return { error: `commit ${sha.slice(0, 7)}'s message is nothing but attribution` };
+    const env = { ...process.env, GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, GIT_AUTHOR_DATE: aDate,
+      GIT_COMMITTER_NAME: author.name, GIT_COMMITTER_EMAIL: author.email, GIT_COMMITTER_DATE: cDate };
+    const ps = parents.split(' ').filter(Boolean).flatMap((p) => ['-p', done.get(p) ?? p]);
+    done.set(sha, git(['commit-tree', tree, ...ps], { env, input: `${msg}\n` }).trim());
+  }
+  const out = done.get(shas.at(-1));
+  try { git(['diff', '--quiet', head, out]); } catch { return { error: `the rewrite of ${head.slice(0, 7)} would change its tree` }; }
+  return { head: out, n: shas.length };
+}
+
+// The repo's §1 and §5 commit and PR rules, as the cloud session is to follow them. `rules` is
+// { author: { name, email }, prTitle, prBody, mergeMethod, noAttribution }, each null or false where unset.
+function rulesSection(rules) {
+  const r = rules ?? {};
+  const lines = [];
+  if (r.author) {
+    lines.push(`- Author every commit as \`${r.author.name} <${r.author.email}>\`: run \`git config user.name "${r.author.name}"\` and \`git config user.email "${r.author.email}"\` before your first commit. ` +
+      'A PR with a commit authored as anyone else has its commits rewritten before it merges.');
+  }
+  if (r.prTitle) lines.push(`- PR title: \`${r.prTitle}\`.`);
+  if (r.prBody) lines.push(`- PR body: ${r.prBody}.`);
+  if (r.mergeMethod) lines.push(`- PRs here merge by ${r.mergeMethod}: write your commits for that.`);
+  if (r.noAttribution) {
+    lines.push(`- No AI attribution anywhere: in commit messages, commit authors, the PR title and body, and PR comments, add none of these: ${ATTRIBUTION_MARKS.map(([, what]) => what).join(', ')}. ` +
+      'Your harness may add these by default: remove them before you push, and amend any commit that has one. A PR carrying any of them has them stripped and its commits rewritten before it merges.');
+  }
+  return lines.length ? ['', `## This repo's rules`, '', ...lines] : [];
+}
+
 // The cloud session's whole brief: it reads nothing from this computer.
-export function cloudPrompt({ key, repo, base, branch, text, tests }) {
+export function cloudPrompt({ key, repo, base, branch, text, tests, rules }) {
   const run = tests?.length ? `Run ${tests.map((c) => `\`${c}\``).join(' and ')} before you push, and fix what fails.` : 'Run the repo\'s tests for what you change before you push, and fix what fails.';
   return [
     `Work ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.`,
@@ -68,6 +160,7 @@ export function cloudPrompt({ key, repo, base, branch, text, tests }) {
     `4. Open a draft pull request from \`${branch}\` into \`${base}\` with ${key} in its title, and in its body what changed and how you tested it.`,
     '5. If you cannot finish, push what you have and open the draft PR anyway, with what is left in its body.',
     `6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
+    ...rulesSection(rules),
     '',
     `## The ticket`,
     '',

@@ -1141,6 +1141,8 @@ export function gitAuthor() {
   }
   return author;
 }
+// §5 AI attribution read as hooks/deny-ai-attribution.py reads it: true where the value is `forbidden`.
+export const attributionForbidden = (value) => /^`?forbidden/i.test(String(value ?? '').trim());
 // §4 Review account, the login desk posts its review verdicts from and that login's gh config
 // directory: { login, dir }, or null where the row is unset, a TODO or `none` (verdicts post from the
 // §1 GitHub handle). A value in another shape throws rather than posting from a guessed account.
