@@ -865,7 +865,9 @@ function whoRuns(r) {
 // What the pass record (pass.mjs recordPass) and the supervisor's own files say about a batch whose
 // passes run but move nothing, or cannot run:
 //   noProgress  how long nothing started, merged or was released, once that is NO_PROGRESS_MS or more
-//               while the last pass held something it could have started (`held`, its reason)
+//               while the last pass held something it could have started (`held`, its reason), counted
+//               only while a ticket was ready, running or waiting
+//   idle        { since }: the batch holds no unfinished ticket or PR, `since` its last progress or null
 //   errors      { n, error } once ERROR_STREAK passes in a row have errored
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
 //   cannotStart the loaded agent's failed last run, { code, why }, `why` its own log's last line
@@ -885,8 +887,12 @@ function stallOf(r, now) {
   const rec = r.q.pass && typeof r.q.pass === 'object' ? r.q.pass : {};
   const sup = r.run?.by === 'supervisor' ? readJson(join(r.stateDir, 'supervisor.json')) : null;
   const loaded = r.run?.agent === 'loaded';
-  // With no progress recorded yet, the batch has had none since its first ticket was added.
-  const from = timeOf(rec.progress_at) ?? Math.min(...Object.values(r.q.tickets ?? {}).map((t) => timeOf(t.added_at) ?? Infinity));
+  // The clock runs only while a ticket is ready, running or waiting: from the later of the last progress
+  // and the earliest such ticket's admission, so time the queue sat empty is not counted.
+  const open = r.rows.filter((x) => ['running', 'ready', 'waiting'].includes(groupOf(x.k)));
+  const admitted = Math.min(...open.map((x) => timeOf(x.t.added_at) ?? Infinity));
+  const progress = timeOf(rec.progress_at);
+  const from = !open.length ? null : progress == null ? admitted : Number.isFinite(admitted) ? Math.max(progress, admitted) : progress;
   const quiet = r.live && rec.held && Number.isFinite(from) && now - from >= NO_PROGRESS_MS ? now - from : null;
   const session = timeOf(rec.session_at ?? (rec.by === 'session' ? rec.at : null));
   const errors = Number(rec.errors) >= ERROR_STREAK ? { n: Number(rec.errors), error: String(rec.error ?? 'no error recorded') } : null;
@@ -917,7 +923,7 @@ function stallOf(r, now) {
   const installed = readInstalled();
   const old = { supervisor: loaded && oldCode(agentVersion(r.slug), installed),
     driver: r.run?.by === 'supervisor' && typeof holder === 'number' && oldCode(lockVersion(r.stateDir), installed) };
-  return { noProgress: quiet, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
+  return { noProgress: quiet, idle: unfinished(r) ? null : { since: progress }, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
     oldCode: old.supervisor || old.driver ? old : null };
 }
 // The batch's hold on a usage limit, as the last pass recorded it (pass.mjs usage_hold), in one
@@ -2157,7 +2163,8 @@ const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGat
 // 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
 // when the batch was handed to a supervisor that is not loaded; stopped, how long since the last
 // pass, yellow under a day and red beyond. Live but not moving, in amber: a session running passes
-// beside the supervisor, or passes that held everything for NO_PROGRESS_MS.
+// beside the supervisor, or passes that held everything for NO_PROGRESS_MS. Live with nothing left in
+// the batch, in grey: "● idle since 06:08".
 const LAST_W = 26;
 // ALL DONE BY fits "passes stopped".
 const QD_W = 14;
@@ -2166,6 +2173,7 @@ function lastPass(r, now) {
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, FAIL];
   if (r.live && r.stall?.sessionToo) return ['▲ supervisor + session', WARN];
   if (r.live && r.stall?.noProgress != null) return [`▲ no progress ${since(r.stall.noProgress)}`, WARN];
+  if (r.live && r.stall?.idle) return [`● idle${r.stall.idle.since == null ? '' : ` since ${calendarDays(r.stall.idle.since, now) === 0 ? clock(r.stall.idle.since) : when(r.stall.idle.since, now)}`}`, GREY];
   if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
   if (idleStopped(r)) return [`■ idle · ${since(age)}`, GREY];
