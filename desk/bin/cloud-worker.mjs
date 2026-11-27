@@ -55,25 +55,38 @@ export function featureRole(batch, key) {
   return Object.values(batch.owners ?? {}).includes(key) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null;
 }
 
-// §5 AI attribution, read as the attribution hook and worker-settings.mjs read it: forbidden or not.
-export const attributionForbidden = (value) => /^`?forbidden/i.test(String(value ?? '').trim());
-
-// The marks of AI attribution, hooks/deny-ai-attribution.py's BANNED, in the same order, with what each is.
-const BANNED = [
+// The marks of AI attribution, hooks/deny-ai-attribution.py's BANNED, in the same order, with what each
+// is. The hook is installed standalone, so it keeps its own copy: tests/test_cloud_worker.mjs holds the two equal.
+export const ATTRIBUTION_MARKS = [
   [/co-authored-by\s*[:=][^\n"']*(claude|anthropic)/i, 'a Co-Authored-By trailer naming Claude or Anthropic'],
   [/claude-session\s*[:=]/i, 'a Claude-Session trailer'],
   [/generated with \[?claude code/i, 'a "Generated with Claude Code" footer'],
   [/noreply@anthropic\.com/i, 'noreply@anthropic.com'],
-  [/claude\.ai\/code\/session_/i, 'a claude.ai/code session link'],
+  [/claude\.ai\/code\/session_/i, 'a claude.ai/code/session_ link'],
   [/\u{1F916}/u, 'the robot emoji'],
 ];
+
+// The commits in a PR (`gh pr view <n> --json commits`) none of whose authors has `author.email`
+// (case aside): one line per commit naming it and who it was authored as, or [] with no email to match.
+export function authorMismatches(view, author) {
+  const want = String(author?.email ?? '').trim().toLowerCase();
+  if (!want) return [];
+  const out = [];
+  for (const c of view?.commits ?? []) {
+    const authors = c?.authors ?? [];
+    if (!authors.length || authors.some((a) => String(a?.email ?? '').trim().toLowerCase() === want)) continue;
+    const sha = String(c?.oid ?? '').slice(0, 7) || '(no sha)';
+    out.push(`commit ${sha} authored as ${authors.map((a) => `${a?.name ?? ''} <${a?.email ?? ''}>`).join(', ')}, not ${author.name} <${author.email}>`);
+  }
+  return out;
+}
 
 // The attribution in a PR, from `gh pr view <n> --json body,commits,comments`: its commits' messages and
 // authors' emails, its body and its comments. -> one line per mark found, naming where, or [].
 export function attributionFound(view) {
   const found = [];
   const scan = (where, text) => {
-    for (const [re, what] of BANNED) if (re.test(String(text ?? ''))) found.push(`${what} in ${where}`);
+    for (const [re, what] of ATTRIBUTION_MARKS) if (re.test(String(text ?? ''))) found.push(`${what} in ${where}`);
   };
   for (const c of view?.commits ?? []) {
     const sha = String(c?.oid ?? '').slice(0, 7) || '(no sha)';
@@ -86,16 +99,19 @@ export function attributionFound(view) {
 }
 
 // The repo's §1 and §5 commit and PR rules, as the cloud session is to follow them. `rules` is
-// { author, prTitle, prBody, mergeMethod, noAttribution }, each null or false where unset.
+// { author: { name, email }, prTitle, prBody, mergeMethod, noAttribution }, each null or false where unset.
 function rulesSection(rules) {
   const r = rules ?? {};
   const lines = [];
-  if (r.author) lines.push(`- Author every commit as \`${r.author}\`.`);
+  if (r.author) {
+    lines.push(`- Author every commit as \`${r.author.name} <${r.author.email}>\`: run \`git config user.name "${r.author.name}"\` and \`git config user.email "${r.author.email}"\` before your first commit. ` +
+      'A PR with a commit authored as anyone else is parked, not merged.');
+  }
   if (r.prTitle) lines.push(`- PR title: \`${r.prTitle}\`.`);
   if (r.prBody) lines.push(`- PR body: ${r.prBody}.`);
   if (r.mergeMethod) lines.push(`- PRs here merge by ${r.mergeMethod}: write your commits for that.`);
   if (r.noAttribution) {
-    lines.push('- No AI attribution anywhere: in commit messages, the PR title and body, and PR comments, add no Co-Authored-By trailer naming Claude or Anthropic, no Claude-Session trailer or claude.ai/code/session_ link, no "Generated with Claude Code" footer, no robot emoji, and no noreply@anthropic.com. ' +
+    lines.push(`- No AI attribution anywhere: in commit messages, commit authors, the PR title and body, and PR comments, add none of these: ${ATTRIBUTION_MARKS.map(([, what]) => what).join(', ')}. ` +
       'Your harness may add these by default: remove them before you push, and amend any commit that has one. A PR carrying any of them is parked, not merged.');
   }
   return lines.length ? ['', `## This repo's rules`, '', ...lines] : [];

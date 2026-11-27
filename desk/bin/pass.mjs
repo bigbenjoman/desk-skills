@@ -35,7 +35,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT, attributionForbidden, attributionFound } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT, attributionFound, authorMismatches } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -1027,20 +1027,24 @@ function advanceCloud(t) {
     return;
   }
   const cloud = { ...c, pr_at: pr.createdAt };
-  // Where §5 forbids AI attribution, the PR is read for it before the ticket is done: a cloud session's
-  // harness adds a co-author trailer and a session link by default, and no hook here sees its commits.
-  // Found, the ticket parks on its PR's branch, where a requeue is a local worker (cloudPrHere).
-  if (attributionForbidden(E.configValue('ai-attribution'))) {
+  // The PR is read against the rules its session was told (cloudRules) before the ticket is done: where
+  // §5 forbids AI attribution, for that (a cloud session's harness adds a co-author trailer and a session
+  // link by default, and no hook here sees its commits), and where an author is known, for commits
+  // authored as anyone else. Broken, the ticket parks on its PR's branch, where a requeue is a local
+  // worker (cloudPrHere).
+  const forbidden = E.attributionForbidden(E.configValue('ai-attribution'));
+  const author = cloudAuthor();
+  if (forbidden || author) {
     const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments'], { fresh: true });
     let view = null;
     try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
     if (!view) {
-      report.quiet.push(`${t.key}: cloud session ${where} opened PR #${pr.number}, whose attribution could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}); read again next pass`);
+      report.quiet.push(`${t.key}: cloud session ${where} opened PR #${pr.number}, whose commits, body and comments could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}); read again next pass`);
       return;
     }
-    const found = attributionFound(view);
+    const found = [...(forbidden ? attributionFound(view) : []), ...authorMismatches(view, author)];
     if (found.length) {
-      const line = `cloud PR #${pr.number} carries AI attribution, which config §5 forbids: ${found.join('; ')}. Remove it from the commits, body and comments, then requeue ${t.key}`;
+      const line = `cloud PR #${pr.number} breaks this repo's commit and PR rules: ${found.join('; ')}. Fix its commits, body and comments, then requeue ${t.key}`;
       q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`);
       q('park', t.key, line);
       report.parked.push(`${t.key}: ${line}`);
@@ -3685,20 +3689,31 @@ function cloudTicketText(key) {
   const comments = shOut('desk-jira', ['comments', key]);
   return `${got.out}\n\n## Comments\n\n${comments.ok ? comments.out : `(not read: ${comments.out.split('\n').pop()})`}`;
 }
+// The commit author a cloud session is told and its PR is checked against: §1 Git author, else the
+// repo's git user.name and user.email (what a local commit here is authored as), else null. A malformed
+// §1 row is left out, as a local worker refuses it, and the repo's config is not read in its place.
+function cloudAuthor() {
+  try {
+    const a = E.gitAuthor();
+    if (a) return a;
+  } catch { return null; }
+  const get = (k) => sh('git', ['-C', MAIN, 'config', '--get', k], { tolerant: true }).trim();
+  const name = get('user.name');
+  const email = get('user.email');
+  return name && email ? { name, email } : null;
+}
 // The repo's §1 and §5 commit and PR rules a cloud session is told (cloud-worker.mjs cloudPrompt): it reads
 // no config. A row unset, `none` or unreadable is left out.
 function cloudRules() {
   const set = (v) => (v == null || E.isNone(v) ? null : String(v).trim() || null);
-  let author = null;
-  try { const a = E.gitAuthor(); author = a ? `${a.name} <${a.email}>` : null; } catch { /* malformed: left out, as a local worker refuses it */ }
   let prBody = null;
   try { prBody = set(E.declaredValue('pr-body')); } catch { /* unread */ }
   return {
-    author,
+    author: cloudAuthor(),
     prTitle: set(E.configValue('pr-title')),
     prBody,
     mergeMethod: set(E.configValue('merge-method')),
-    noAttribution: attributionForbidden(E.configValue('ai-attribution')),
+    noAttribution: E.attributionForbidden(E.configValue('ai-attribution')),
   };
 }
 function spawnCloud(t) {

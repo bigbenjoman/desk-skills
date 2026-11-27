@@ -146,7 +146,8 @@ EOF
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 [ "\$1 \$2" = "pr list" ] && [ -e "$T/cloud-prs.json" ] && cat "$T/cloud-prs.json"
-[ "\$1 \$2" = "pr view" ] && [ -e "$T/cloud-view.json" ] && cat "$T/cloud-view.json"
+# A cloud PR's commits, body and comments: none of them, unless a test writes its own.
+case "\$*" in "pr view "*body,commits,comments*) if [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; else echo '{"body":"","commits":[],"comments":[]}'; fi ;; esac
 exit 0
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
@@ -201,13 +202,23 @@ check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming th
 cloud_ticket CW-6
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC1 with attribution forbidden, the cloud prompt rules it out" '[ "$(field CW-6 state)" = "\"running\"" ] && grep -q "No AI attribution anywhere" "$T/cloud-prompt" && grep -q "Co-Authored-By" "$T/cloud-prompt"'
+check "issue-1569 AC5 with no §1 Git author, the prompt names the repo's git user.name and user.email" 'grep -qF "Author every commit as \`t <t@example.com>\`" "$T/cloud-prompt" && grep -qF "git config user.email \"t@example.com\"" "$T/cloud-prompt"'
 node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 61, title: "feat(w): CW-6 save", url: "u", headRefName: "claude/cw-6-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-6 cloud.started)" > "$T/cloud-prs.json"
+echo 'not json' > "$T/cloud-view.json"
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
-check "issue-1569 AC2 a PR whose attribution cannot be read leaves the ticket running, said quietly" '[ "$(field CW-6 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-6: cloud session .* opened PR #61, whose attribution could not be read"'
-printf '%s\n' '{"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"abcdef1234","messageHeadline":"feat: CW-6 save","messageBody":"Co-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"A","email":"a@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+check "issue-1569 AC2 a PR whose commits cannot be read leaves the ticket running, said quietly" '[ "$(field CW-6 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-6: cloud session .* opened PR #61, whose commits, body and comments could not be read"'
+printf '%s\n' '{"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"abcdef1234","messageHeadline":"feat: CW-6 save","messageBody":"Co-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
-check "issue-1569 AC2 a cloud PR carrying attribution parks the ticket, naming what was found" '[ "$(field CW-6 state)" = "\"parked\"" ] && field CW-6 park.question | grep -q "cloud PR #61 carries AI attribution" && field CW-6 park.question | grep -q "Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1" && field CW-6 park.question | grep -q "Generated with Claude Code.* footer in the PR body"'
+check "issue-1569 AC2 a cloud PR carrying attribution parks the ticket, naming what was found" '[ "$(field CW-6 state)" = "\"parked\"" ] && field CW-6 park.question | grep -q "cloud PR #61 breaks this repo.s commit and PR rules" && field CW-6 park.question | grep -q "Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1" && field CW-6 park.question | grep -q "Generated with Claude Code.* footer in the PR body" && ! field CW-6 park.question | grep -q "authored as"'
 check "issue-1569 AC2 it is not recorded done, and a requeue works its PR's branch locally" '[ "$(field CW-6 result)" = null ] && [ "$(field CW-6 branch)" = "\"claude/cw-6-abc\"" ] && [ "$(field CW-6 cloud.pr_at)" != null ]'
+# AC5: whatever §5 says, a commit authored as anyone but the repo's author parks the ticket, naming it.
+rm -f "$T/cloud-prompt"; cloud_ticket CW-7
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC5 with attribution allowed, the prompt still names the author, and no attribution rule" 'grep -qF "Author every commit as \`t <t@example.com>\`" "$T/cloud-prompt" && ! grep -q "No AI attribution" "$T/cloud-prompt"'
+node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 62, title: "feat(w): CW-7 save", url: "u", headRefName: "claude/cw-7-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-7 cloud.started)" > "$T/cloud-prs.json"
+printf '%s\n' '{"body":"Done.","commits":[{"oid":"1234567abc","messageHeadline":"feat: CW-7 save","messageBody":"","authors":[{"name":"claude[bot]","email":"bot@users.noreply.github.com"}]}],"comments":[]}' > "$T/cloud-view.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1569 AC5 a cloud PR with a commit by another author parks the ticket, naming the commit and its author" '[ "$(field CW-7 state)" = "\"parked\"" ] && [ "$(field CW-7 result)" = null ] && field CW-7 park.question | grep -qF "commit 1234567 authored as claude[bot] <bot@users.noreply.github.com>, not t <t@example.com>"'
 rm -f "$T/cloud-view.json" "$T/cloud-prs.json"
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.

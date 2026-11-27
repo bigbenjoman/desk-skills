@@ -8,7 +8,8 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT, attributionForbidden, attributionFound } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT, attributionFound, authorMismatches, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { scratch } from './scratch.mjs';
@@ -53,11 +54,21 @@ t('before it pushes, it reads where each server-set value its change branches on
   ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
 
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
-const rules = { author: 'Ada Lovelace <ada@example.com>', prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
+const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
 const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'b', text: 'T', tests: [], rules });
 t('issue-1569 AC1 the prompt has a section of the repo\'s rules', ruled.includes("## This repo's rules"), true);
 t('issue-1569 AC1 it names the git author, PR title and body shapes and merge method',
   ['Author every commit as `Ada Lovelace <ada@example.com>`', 'PR title: `type(scope): <TICKET> description`', 'PR body: intro · ### Changes · ### Testing', 'merge by squash'].every((x) => ruled.includes(x)), true);
+t('issue-1569 AC5 it names the author as git user.name and user.email, and says another author parks',
+  ['git config user.name "Ada Lovelace"', 'git config user.email "ada@example.com"', 'authored as anyone else is parked'].every((x) => ruled.includes(x)), true);
+t('issue-1569 the no-attribution rule names every mark the check looks for', ATTRIBUTION_MARKS.every(([, what]) => ruled.includes(what)), true);
+// The hook is installed on its own (install.sh), so it keeps its own BANNED: the two must match, mark for mark.
+const hookSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'deny-ai-attribution.py'), 'utf8');
+const hookBanned = [...(hookSrc.match(/^BANNED = \(\n([\s\S]*?)\n\)/m)?.[1] ?? '').matchAll(/re\.compile\(r?"((?:[^"\\]|\\.)*)"(,\s*re\.I)?\)/g)]
+  .map(([, src, i]) => `${src.replace(/\\"/g, '"').replace(/\\N\{ROBOT FACE\}/g, '\\u{1F916}')}/${i ? 'i' : ''}`);
+const jsBanned = ATTRIBUTION_MARKS.map(([re]) => `${re.source.replace(/\\\//g, '/')}/${re.flags.replace('u', '')}`);
+t('issue-1569 the check\'s marks are the attribution hook\'s BANNED: same count, order, patterns and flags', `${hookBanned.length}:${JSON.stringify(hookBanned)}`, `${jsBanned.length}:${JSON.stringify(jsBanned)}`);
+t('issue-1569 and the hook has some to compare', hookBanned.length > 0, true);
 t('issue-1569 AC1 where §5 forbids attribution, it rules out the trailer, session link and footer in commits, PR body and comments',
   ['No AI attribution', 'Co-Authored-By', 'Claude-Session', 'claude.ai/code/session_', 'Generated with Claude Code', 'noreply@anthropic.com', 'commit messages', 'PR title and body', 'PR comments'].every((x) => ruled.includes(x)), true);
 t('issue-1569 AC1 the rules come before the ticket text', ruled.indexOf("## This repo's rules") < ruled.indexOf('## The ticket'), true);
@@ -79,11 +90,18 @@ const marked = {
 };
 const found = attributionFound(marked);
 t('issue-1569 AC2 a co-author trailer in a commit is found, naming the commit', found.includes("a Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1's message"), true);
-t('issue-1569 AC2 so is a session trailer and its link', found.includes("a Claude-Session trailer in commit abcdef1's message") && found.includes("a claude.ai/code session link in commit abcdef1's message"), true);
+t('issue-1569 AC2 so is a session trailer and its link', found.includes("a Claude-Session trailer in commit abcdef1's message") && found.includes("a claude.ai/code/session_ link in commit abcdef1's message"), true);
 t('issue-1569 AC2 an Anthropic author email is found', found.includes("noreply@anthropic.com in commit 9876543's authors"), true);
 t('issue-1569 AC2 the footer and robot emoji in the PR body are found', found.includes('a "Generated with Claude Code" footer in the PR body') && found.includes('the robot emoji in the PR body'), true);
-t('issue-1569 AC2 a session link in a comment is found, naming it', found.includes('a claude.ai/code session link in comment 1 by ada'), true);
+t('issue-1569 AC2 a session link in a comment is found, naming it', found.includes('a claude.ai/code/session_ link in comment 1 by ada'), true);
 t('issue-1569 AC2 an empty view finds nothing', attributionFound({}).length, 0);
+
+const ada = { name: 'Ada Lovelace', email: 'ada@example.com' };
+t('issue-1569 AC5 commits authored as the expected email pass, case aside', authorMismatches({ commits: [{ oid: 'a1', authors: [{ name: 'Ada', email: 'ADA@example.com' }] }] }, ada).length, 0);
+t('issue-1569 AC5 a co-authored commit with the expected author among its authors passes', authorMismatches({ commits: [{ oid: 'a1', authors: [{ name: 'Bot', email: 'bot@x' }, { name: 'Ada', email: 'ada@example.com' }] }] }, ada).length, 0);
+t('issue-1569 AC5 a commit authored as anyone else is named, with who it was authored as',
+  authorMismatches(marked, ada).join('|'), 'commit 9876543 authored as Claude <noreply@anthropic.com>, not Ada Lovelace <ada@example.com>');
+t('issue-1569 AC5 with no author known, nothing is checked', authorMismatches(marked, null).length, 0);
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));
