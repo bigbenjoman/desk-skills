@@ -202,9 +202,13 @@ export function repoBlock(ghRepo, steps) {
   ].join('\n');
 }
 
+// What sharing one environment costs: its variables are not scoped to a repo. Said wherever the person
+// sets the environment up (the script's header, `hosts`), so the single environment is taken knowingly.
+export const SHARED_VARS_NOTE = "Every variable set in this environment reaches every desk repo's sessions in it, not only this repo's.";
+
 // The whole script for the checkout at `root` of `ghRepo`.
 export function setupScript(root, ghRepo) {
-  return `#!/bin/bash\n# desk cloud environment setup. One environment serves every desk repo: paste each repo's block, guards and all, one after another.\n${repoBlock(ghRepo, stepsOf(detect(root)))}\n`;
+  return `#!/bin/bash\n# desk cloud environment setup. One environment serves every desk repo: paste each repo's block, guards and all, one after another.\n# ${SHARED_VARS_NOTE}\n${repoBlock(ghRepo, stepsOf(detect(root)))}\n`;
 }
 
 // ---- hosts and variable names ----------------------------------------------------------------------
@@ -343,6 +347,7 @@ async function main(cmd, args) {
     console.log(`FILES ${files.length ? files.join(' ') : '(none found)'}`);
     for (const h of hosts) console.log(`HOST ${h.host}\t${h.vars.join(' ')}`);
     console.log(`VARS ${names.length ? names.join(' ') : '(none)'}`);
+    console.log(`NOTE ${SHARED_VARS_NOTE}`);
     return 0;
   }
   if (cmd === 'first-start') {

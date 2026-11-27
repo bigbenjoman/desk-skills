@@ -27,7 +27,9 @@ held (`local` for a new config), and you say so.
 2. **Network and variables.** Run `$CE hosts`. Name each `HOST` line's host and the variables that
    point at it: on Limited network access, the person adds those hosts (the Clerk API host among
    them) or the dev server and tests cannot reach them. Then name every `VARS` name as one the
-   environment needs set, by name only. Never read out or write a value.
+   environment needs set, by name only. Never read out or write a value. Then say the `NOTE` line
+   plainly: every variable in the one shared environment reaches every desk repo's sessions in it,
+   so a secret set for this repo is readable by the others' sessions too.
 3. **The first start.** Run `$CE first-start`. It starts `claude --cloud` under this repo's
    Subscription login, so a first-run prompt (allowing environment variables) is answered now, not
    by a background start that nothing answers. Where it prints a command to run instead, ask the

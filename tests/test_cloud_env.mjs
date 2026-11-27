@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { detect, stepsOf, setupScript, repoBlock, guardOpen, guardClose, envHosts, envFilesOf, clerkHost, smokeChecks, smokePrompt, smokeVerdict, versionOf, REGISTRY_MIRROR, SMOKE_FILE } from '../desk/bin/cloud-env.mjs';
+import { detect, stepsOf, setupScript, repoBlock, guardOpen, guardClose, envHosts, envFilesOf, clerkHost, smokeChecks, smokePrompt, smokeVerdict, versionOf, REGISTRY_MIRROR, SMOKE_FILE, SHARED_VARS_NOTE } from '../desk/bin/cloud-env.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -30,6 +30,7 @@ const bareScript = setupScript(bare, 'acme/bare');
 t('AC6 its script is a no-op block between its guards', bareScript.includes(`${guardOpen('acme/bare')}\n`) && bareScript.includes(guardClose('acme/bare')) && !bareScript.includes('desk_find_checkout'), true);
 let r = spawnSync('bash', ['-c', bareScript], { encoding: 'utf8' });
 t('AC6 the no-op script runs clean and prints nothing', [r.status, r.stdout, r.stderr], [0, '', '']);
+t('AC2 the script header says every variable reaches every repo sharing the environment', bareScript.split('\n').slice(0, 3).includes(`# ${SHARED_VARS_NOTE}`) && /every desk repo's sessions/.test(SHARED_VARS_NOTE), true);
 
 // ---- toolchain pins ------------------------------------------------------------------------------
 t('versionOf reads a range and a v-prefix', [versionOf('>=20.10 <22'), versionOf('v18.19.0\n'), versionOf('lts/iron')], ['20.10', '18.19.0', null]);
