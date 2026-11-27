@@ -123,6 +123,9 @@ done. Both are here, read by every run that reaches them:
   machine's, propose the machine's figure in its place and say why: "the machine profile limits
   every repo to <machine> GB (memory less 8 for the OS), and a repo
   row may be lower but never higher". A figure at or below the machine's stays as it is.
+- **Worker memory weight**: propose the repo's measured peak per worker where a per-repo source
+  holds one. memlog is machine-wide, so never read it as a repo's. With none, propose `none` (the
+  flat share, 5 GB on a 15 GB, 3-worker machine), say so, and ask to confirm.
 
 **Then §3b**: every row the config template's §3b table holds
 (`~/.agents/skills/desk-setup/references/desk-config.template.md`), in the template's order, four

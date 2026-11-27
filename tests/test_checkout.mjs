@@ -367,6 +367,8 @@ has('a change in effect is never from tomorrow', skill, 'a change already in eff
 has('an unreadable setting goes under Check before posting', skill, 'If the source cannot be read,\n  name the claim under **Check before posting** with why.');
 const style = readFileSync(join(REPO, 'skills/desk-checkout/references/style.md'), 'utf8');
 has('style: no window qualifier in the header', style, 'Never a window qualifier such as\n  `(since yesterday\'s post)`');
+has('#1471 style: never a ticket as the user last left it', style, 'Don\'t describe a ticket as the user last left it.');
+has('#1471 style: never from the next deploy unread', style, 'Don\'t write "from the next deploy" without reading the latest production deploy.');
 lacks('style: the day is no longer added just for posting late', style, 'with the day when posting late or for another day');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
@@ -392,6 +394,25 @@ has('#819 a failed read keeps the collector\'s state and says so', skill, 'If th
 has('#819 Check before posting lists it', skill, 'each PR whose state could not be\n  read again when its line was written');
 has('#819 only in a repo the GitHub collector was allowed to read', skill, 'Read only in a repo the GitHub collector read (its\n  `read-own-work` `yes`, or `ask` and the user agreed)');
 has('#819 and never in any other repo', skill, 'Never read a PR in any other repo: its\n  state stays as its source gave it.');
+has('#1471 step 3 sends each ticket and deploy claim to be read again', skill, '**Read each ticket again as you write its bullet, with every PR naming its key, and the latest\n  deploy before any deploy claim**: `references/current-state.md` says how.');
+has('#1471 one no read settled goes under Check before posting', skill, 'each ticket or deploy claim no read settled.');
+const current = readFileSync(join(REPO, 'skills/desk-checkout/references/current-state.md'), 'utf8');
+has('#1471 each ticket is read again as its bullet is written', current, '**Read each ticket again as you write its bullet, with every PR naming its key.**');
+has('#1471 its status is read from its tracker', current, '`desk-jira get <KEY>` for that ticket\'s repo');
+has('#1471 another repo\'s ticket is read from that repo\'s checkout', current, '`DESK_REPO_DIR=<its main checkout> desk-jira get <KEY>`');
+lacks('#1471 never DESK_SLUG for desk-jira, which ignores it', current, '`DESK_SLUG=<slug>`');
+has('#1471 with every PR naming its key, any author, open or merged', current, 'gh pr list --repo <owner/name> --state all --search "<KEY>" --json number,title,author,state,isDraft,mergedAt');
+has('#1471 the bullet states what those reads show', current, 'The bullet states what those reads show.');
+has('#1471 a teammate\'s fix is named or the ticket left out', current, 'is said as that, naming who and which PR\n("Sam fixed it in #1540 (merged), now in Review"), or left out.');
+has('#1471 and its ask is dropped', current, 'Any ask in its bullet is\ndropped, and so is any claim that PR settles');
+has('#1471 a failed ticket read goes under Check before posting', current, 'name the ticket under **Check before posting** as last\nseen by them.');
+has('#1471 a deploy claim is read from the latest production deploy', current, '**is read from\nthe latest production deploy first**');
+has('#1471 GitHub deployments first', current, '1. Its newest successful GitHub deployment to production.');
+has('#1471 a newer failed or unfinished deployment is skipped', current, 'Take the first whose latest status is `success`: a newer one that failed or is still\n   queued or in progress is skipped, never compared.');
+lacks('#1471 never only the single newest deployment', current, 'per_page=1`, then');
+has('#1471 then the default branch\'s deploy workflow', current, '2. With no successful deployment found, the newest successful run of the deploy workflow on the\n   repo\'s default branch');
+has('#1471 a merge the latest deploy contains is live, never from the next deploy', current, 'Then its line says it is live and since when, never "from the next deploy"');
+has('#1471 an unread deploy goes under Check before posting', current, 'the line says only that it merged, and the deploy claim goes\nunder **Check before posting** with why');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });

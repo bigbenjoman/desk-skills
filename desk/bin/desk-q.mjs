@@ -54,7 +54,7 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, idlePass, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
+import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -958,7 +958,19 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
-export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+const workersOf = (r) => (r.error ? r.cap ?? 0 : workersRunning(r));
+export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + workersOf(r), 0);
+// The same workers weighed against the machine profile's memory ceiling, each at its repo's config §3b
+// "Worker memory weight (GB)" (borrow.mjs repoWeights). `weightOf` gives a repo's raw row by slug.
+//   -> { used, ceiling, light, heavy } in GB (light and heavy the least and most a repo's worker weighs),
+//      or null with no ceiling or no machine cap
+export function machineMemory(repos, { cap, ceiling = machineCeiling(), weightOf = repoWeightRaw } = {}) {
+  if (cap == null || ceiling == null) return null;
+  const all = withOthers(repos);
+  const gb = repoWeights(all.map((r) => r.slug), { ceiling, cap, raw: weightOf });
+  const each = all.length ? Object.values(gb) : [flatShare(ceiling, cap)];
+  return { used: weighedGB(all.map((r) => [r.slug, workersOf(r)]), (s) => gb[s]), ceiling, light: Math.min(...each), heavy: Math.max(...each) };
+}
 // A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
 // writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
 function driverUp(b, now = Date.now()) {
@@ -2210,6 +2222,15 @@ export function headroom({ running, cap, avail, gate, perWorker }) {
   const byMemory = Math.max(0, Math.floor((avail - gate) / perWorker));
   return cap == null ? byMemory : Math.max(0, Math.min(cap - running, byMemory));
 }
+// headroom's `room` under the memory ceiling as well (machineMemory's `mem`): how many of the heaviest
+// repo's workers fit in the GB the running workers' weights leave, else, where only a lighter repo's
+// fit, how many of the lightest's, `light` true.   -> { room, light }
+export function weightedRoom(room, mem) {
+  if (!mem) return { room, light: false };
+  const heavy = Math.min(room, memoryRoom(mem.ceiling, mem.used, mem.heavy));
+  if (heavy > 0 || mem.light === mem.heavy) return { room: heavy, light: false };
+  return { room: Math.min(room, memoryRoom(mem.ceiling, mem.used, mem.light)), light: true };
+}
 
 // Ready tickets beyond the batch's free slots: they start only as its running workers finish.
 const unslotted = (r) => (r.batches ? r.batches.reduce((a, b) => a + Math.max(0, unslotted(b)), 0)
@@ -2245,12 +2266,17 @@ function needsLine(list, now, count = needsCount) {
   return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
 
-// The overview's second line: workers running, the machine cap and the room it leaves, free memory.
-function machineLine(running, cap, room, avail, drivers = 0) {
+// The overview's second line: workers running, the machine cap, the GB their weights hold of the memory
+// ceiling (machineMemory's `mem`, where there is one), the room left, free memory.
+function machineLine(running, cap, room, avail, drivers = 0, mem = null) {
+  const w = weightedRoom(room, mem);
+  const fits = w.light && w.room > 0 ? [w.room === 1 ? 'a light worker' : `${w.room} light workers`, BOLD] : [`${w.room} more`, BOLD];
   return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY],
     ...(drivers ? [[' · ', GREY], [`▸ ${drivers} merge driver${drivers === 1 ? '' : 's'} running`, STATE_SGR.merging]] : []), BAR,
     ...(cap == null ? [['no machine cap (/desk-setup writes a machine profile)', GREY]] : [['machine cap ', GREY], [String(cap), BOLD]]),
-    [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
+    ...(mem ? [[' · ', GREY], [`${mem.used} of ${mem.ceiling} GB`, mem.used >= mem.ceiling ? WARN : BOLD]] : []),
+    [' · ', GREY], ['room for ', GREY], fits, ...(w.light && w.room > 0 ? [[` (${mem.light} GB)`, GREY]] : []),
+    BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
 // The Levers line, under the machine line: the levers' headline, its figures, then a link to the page
@@ -3003,7 +3029,7 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null, count = needsCount } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now, count), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)), ...(levers ? [levers] : []),
+  return [...list.flatMap(bandsOf), needsLine(each, now, count), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now), machineMemory(repos, { cap })), ...(levers ? [levers] : []),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -4371,7 +4397,11 @@ export function homeJson(repos, { all = false, now = Date.now(), avail = availab
   const parts = overviewParts(repos, { all, now, avail, cap, gate, perWorker, checkin });
   return envelope('home', now, { queues: queueAges(list, now), usage: inputAge(usage.reading?.at, now), levers: inputAge(levers.builtAt, now), memory: inputAge(now, now) }, {
     needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
-    machine: { running, cap: cap ?? null, room: headroom({ running, cap, avail, gate, perWorker }), avail_gib: avail },
+    machine: (() => {
+      const mem = machineMemory(repos, { cap });
+      const w = weightedRoom(headroom({ running, cap, avail, gate, perWorker }), mem);
+      return { running, cap: cap ?? null, room: w.room, avail_gib: avail, ...(mem ? { gb_used: mem.used, gb_ceiling: mem.ceiling, room_light: w.light } : {}) };
+    })(),
     levers: leversJson(levers, now),
     usage: usageJson(usage),
     repos: list.map((r) => repoFigures(r, needs.get(r), now, checkin)),

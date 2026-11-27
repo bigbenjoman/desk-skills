@@ -88,6 +88,7 @@ function put(T, env, name, r) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n` +
     (r.runBy ? `| Batches run by | \`supervisor\` | \`${r.runBy}\` |\n` : '') +
     (r.gate ? `| Spawn gate (available memory) | \`start work > 8 GiB\` | \`${r.gate}\` |\n` : '') +
+    (r.weight ? `| Worker memory weight (GB) | \`none\` | \`${r.weight}\` |\n` : '') +
     (r.jira ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${r.jira}\` |\n` : '') +
     (r.perms ? `\n## 3. Permissions\n\n| Key | Your setting |\n|---|---|\n${Object.entries(r.perms).map(([k, v]) => `| \`${k}\` | \`${v}\` |\n`).join('')}` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -527,6 +528,28 @@ const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
   unbanded(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
+// issue-1523 AC5: the machine line's GB, each running worker at its repo's weight against the ceiling.
+{
+  const fake = (slug, n) => ({ slug, rows: Array.from({ length: n }, () => ({ k: 'running' })), prs: [] });
+  const weights = { heavy: '5', light: '2' };
+  const mem = Q.machineMemory([fake('heavy', 2), fake('light', 1)], { cap: 4, ceiling: 15, weightOf: (s) => weights[s] ?? null });
+  t('issue-1523 AC5 GB in use sums each repo\'s weight', JSON.stringify(mem), JSON.stringify({ used: 12, ceiling: 15, light: 2, heavy: 5 }));
+  t('issue-1523 AC5 a repo with no weight weighs the flat share', Q.machineMemory([fake('plain', 2)], { cap: 3, ceiling: 15, weightOf: () => null }).used, 10);
+  t('issue-1523 AC5 no memory ceiling, no GB figure', Q.machineMemory([fake('heavy', 2)], { cap: 4, ceiling: null, weightOf: () => '5' }), null);
+  t('issue-1523 AC5 3 GB free fits a light worker, not a heavy one', JSON.stringify(Q.weightedRoom(1, mem)), JSON.stringify({ room: 1, light: true }));
+  t('issue-1523 AC5 room for heavy workers reads as plain room', JSON.stringify(Q.weightedRoom(3, { used: 5, ceiling: 15, light: 2, heavy: 5 })), JSON.stringify({ room: 2, light: false }));
+  t('issue-1523 AC5 no ceiling leaves the count\'s room', JSON.stringify(Q.weightedRoom(3, null)), JSON.stringify({ room: 3, light: false }));
+}
+// issue-1523 AC5: with a memory ceiling in the machine profile the header line shows the GB beside the count.
+{
+  const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null,
+    heavy: { port: 3100, conc: '2 / 3', beat: 1, weight: '5', queue: { batch: 'h', concurrency: 2, tickets: { 'H-1': { state: 'running', stage: '4/9' }, 'H-2': { state: 'running', stage: '3/9' } } } },
+    light: { port: 3200, conc: '2 / 3', beat: 1, weight: '2', queue: { batch: 'l', concurrency: 2, tickets: { 'L-1': { state: 'running', stage: '4/9' } } } } });
+  writeFileSync(gw.env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n| memory-ceiling-gb | `15` | x |\n');
+  const head = lines(spawnSync('node', [BIN, '--plain', '--all'], { env: { ...gw.env, DESK_MEM_AVAIL_GB: '30' }, encoding: 'utf8' }).stdout).find((l) => l.startsWith('● '));
+  t('issue-1523 AC5 the machine line shows GB in use against the ceiling, alongside the worker count, and room for a light worker',
+    head, '● 3 workers running │ machine cap 10 · 12 of 15 GB · room for a light worker (2 GB) │ 30.0 GiB free');
+}
 // The room uses the spawn gate the repos set, the highest of them, and 8 GiB only for a repo that sets none.
 const gateRoom = (over, avail) => {
   const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null, ...over });

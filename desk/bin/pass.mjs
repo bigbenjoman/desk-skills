@@ -17,6 +17,7 @@ import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_B
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief } from './decisions-change.mjs';
+import { issueChanged, refreshTicket, refreshBrief } from './ticket-refresh.mjs';
 import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
@@ -80,7 +81,7 @@ import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -3037,12 +3038,15 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 // batch started while this pass waited for the lock holds its files here.
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
+// Each repo's workers weigh config §3b "Worker memory weight (GB)" against the machine profile's memory
+// ceiling, the flat share (the ceiling over the worker cap) where a repo sets none (borrow.mjs).
+const MACHINE_CEILING = machineCeiling();
+const WEIGHT = workerWeight(E.configValue('worker-memory'), { ceiling: MACHINE_CEILING, cap: MACHINE_CAP ?? E.concurrencyLimits().cap });
 // The memory every worker and peer session has reserved from the machine profile's ceiling
-// (mem-lease.mjs); a worker's share is the ceiling over the machine's worker cap, or this repo's
-// where the machine profile sets none, so every repo's workers take the same share. This read only
-// sizes the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and
-// with the kind on one that no longer fits does not start.
-const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, take: !DRY });
+// (mem-lease.mjs); a worker reserves its repo's weight, so the lease pool and the machine budget count
+// the same GB. This read only sizes the pass's slots: each spawn reserves its weight under the store's
+// lock first (memHeld), and with the kind on one that no longer fits does not start.
+const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, weight: WEIGHT.gb, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
@@ -3055,6 +3059,9 @@ const SLOTS_SNAP = {
   auditWanted: auditDue,
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
+  machineCeiling: MACHINE_CEILING, weight: WEIGHT,
+  repoWeights: MACHINE_CAP == null || MACHINE_CEILING == null ? {} : repoWeights(otherRepos.map((o) => o.slug), {
+    ceiling: MACHINE_CEILING, cap: MACHINE_CAP, raw: (slug) => (slug === REPO_SLUG ? E.configValue('worker-memory') : repoWeightRaw(slug)) }),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
   batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
   memPool: MEM_POOL,
@@ -3677,6 +3684,10 @@ async function resumeKilled(t) {
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
+  const refreshed = refreshTicketFile(t);
+  const refreshNote = refreshed.changed
+    ? ` Your ticket file ${join(STATE, 'tickets', `${t.key}.md`)} was refreshed from its issue since you read it: ${refreshed.changed}. Re-read it, and build and re-review what it adds or changes before you take the ticket or its PR as done.`
+    : '';
   // A budget stop's resume runs on BUDGET_RESUME_USD alone (spawn-worker.sh reads AUTOPILOT_BUDGET_USD):
   // --max-budget-usd counts only the resumed run's spend, not the totals restored from earlier runs, so
   // that cap is the $5 more, and the per-worker budget plus $5 would allow the whole budget again.
@@ -3686,7 +3697,7 @@ async function resumeKilled(t) {
     (budget
       ? `This session is resumed once, with $${BUDGET_RESUME_USD} more than the per-worker budget: spend it on committing your work, pushing it and finishing the stage you were in, nothing else. Check git status and git log first; if this runs out too, the ticket parks with your worktree as you leave it. `
       : 'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ') +
-    `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.` +
+    `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.${refreshNote}` +
     // Fixtures saved since its briefing was written reach it here: a resumed session keeps its briefing.
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
   const log = join(STATE, 'logs', `${t.key}.log`);
@@ -3702,8 +3713,12 @@ async function resumeKilled(t) {
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
   leaseToWorker(t.key, port, spawned.out);
+  refreshDelivered(t, refreshed);
+  // Its prompt told it of the refresh's Decisions entry, so a handoff before the next review does not
+  // restart it at Stage 3 for that entry again.
+  if (refreshed.seen && !DRY) q('set', t.key, `decisions_seen=${refreshed.seen}`);
   report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot'
-    : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
+    : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}${refreshed.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
@@ -3808,6 +3823,51 @@ function resumeRound(t, { wt, kept, branch }) {
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
+// A GitHub issue's ticket file refreshed from the issue before its worker spawns or resumes, when the
+// issue's updatedAt (the one read made otherwise) is after its last read (`issue_read`) or the file's
+// write. A criterion change with a PR open adds a dated Decisions entry, which decisionsRestart then
+// restarts the worker at Stage 3 for. Returns { line, changed, brief, seen }: `line` for the spawn
+// report, empty when nothing was refreshed, `changed` what the refresh added or changed, or '', `brief`
+// a briefing section saying so, for a session past Stage 0 that no restart tells, and `seen` the time
+// to record as `decisions_seen` where the session is told of a Decisions entry with no restart, or null.
+// What a refresh changed stays in the queue's `issue_refresh` until a spawn delivers it
+// (refreshDelivered): a spawn that does not start after the refresh leaves the next one to tell it,
+// since the issue then reads as unchanged. An unfinished fix try keeps its own task, so its issue is
+// not read and the next spawn refreshes the file.
+function refreshTicketFile(t) {
+  const none = { line: '', changed: '', brief: '', seen: null };
+  if (E.ticketKind(t.key).kind !== 'issue') return none;
+  const file = join(STATE, 'tickets', `${t.key}.md`);
+  if (!existsSync(file)) return none;
+  const n = t.key.slice('issue-'.length);
+  if (t.fix && !t.fix.finished) return { ...none, line: `; its ticket file was not checked against issue #${n}: an unfinished fix try keeps its own task, and the next spawn checks it` };
+  const pending = typeof t.issue_refresh?.what === 'string' ? t.issue_refresh.what : '';
+  const pr = t.result?.pr ?? t.draft_pr ?? null;
+  const told = (what, line) => ({ line, changed: what, brief: what ? refreshBrief({ key: t.key, n, file, what }) : '',
+    seen: what && pr != null ? new Date().toISOString() : null });
+  const before = pending ? `; ticket file refreshed from issue #${n} before a spawn that did not start: ${pending}` : '';
+  const last = (r) => r.out.split('\n').filter(Boolean).pop() ?? 'no output';
+  const stamp = shOut('gh', ['issue', 'view', n, '--repo', GH_REPO, '--json', 'updatedAt', '--jq', '.updatedAt']);
+  if (!stamp.ok) return told(pending, `${before}; its ticket file was not checked against issue #${n} (${last(stamp)})`);
+  if (!issueChanged({ updatedAt: stamp.out.trim(), readAt: t.issue_read, fileAt: statSync(file).mtime.toISOString() })) return told(pending, before);
+  const got = shOut('gh', ['issue', 'view', n, '--repo', GH_REPO, '--json', 'title,body,comments,updatedAt']);
+  let issue = null;
+  try { issue = got.ok ? JSON.parse(got.out) : null; } catch { issue = null; }
+  if (!issue) return told(pending, `${before}; issue #${n} changed since its ticket file was written, and could not be read (${got.ok ? 'not JSON' : last(got)}), so the file was not refreshed`);
+  const old = readFileSync(file, 'utf8');
+  const r = refreshTicket({ old, key: t.key, repo: GH_REPO, n, issue, today: new Date().toISOString().slice(0, 10), pr });
+  if (DRY) return { ...none, line: `; issue #${n} changed (dry run: its ticket file was not refreshed)` };
+  if (r.text !== old) writeFileSync(file, r.text);
+  const what = [pending, r.what].filter(Boolean).join('; ');
+  q('set', t.key, `issue_read=${issue.updatedAt ?? stamp.out.trim()}`, ...(what ? [`issue_refresh=${JSON.stringify({ what })}`] : []));
+  return told(what, `; ticket file ${r.text === old ? 'checked against' : 'refreshed from'} issue #${n}, updated ${issue.updatedAt ?? stamp.out.trim()}${what ? `: ${what}` : ''}`);
+}
+
+// A spawn that started has told its session what the refresh changed: clear what was kept for it.
+function refreshDelivered(t, refreshed) {
+  if (refreshed.changed && !DRY) q('set', t.key, 'issue_refresh=null');
+}
+
 // A ticket with a PR whose ticket file ($STATE/tickets/<key>.md) gained Decisions entries dated after
 // that PR's last desk review, and after the last restart delivered for them (`decisions_seen`,
 // decisions-change.mjs), restarts at Stage 3 with those entries in its briefing, whatever stage a last
@@ -3890,6 +3950,7 @@ function spawnCloud(t) {
     try { E.parseWorkerEffort(E.configValues('worker-effort')); } catch (e) { park(e.message); return; }
     park(CLOUD_NO_EFFORT); return;
   }
+  const refreshed = refreshTicketFile(t);
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
@@ -3909,7 +3970,8 @@ function spawnCloud(t) {
   }
   q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
-  report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
+  refreshDelivered(t, refreshed);
+  report.spawned.push(`${t.key} in a cloud session: ${s.url}${refreshed.line}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
@@ -3925,11 +3987,12 @@ async function spawnHandoff(t, pick) {
   if (refused) return parkIt(refused);
   // A requeue after the ticket file's Decisions changed builds them from Stage 3, with the handoff kept
   // as what the sessions before it did.
+  const refreshed = refreshTicketFile(t);
   const restart = decisionsRestart(t);
   const stage = restart?.stage ?? handedTo;
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? ''}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits })}`);
+  const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? refreshed.brief}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits })}`);
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -3963,7 +4026,8 @@ async function spawnHandoff(t, pick) {
   if (spawnRefused) return fail(spawnRefused);
   leaseToWorker(t.key, port, spawned.out);
   if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
-  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off${restart ? ` at Stage ${handedTo};${restart.line}` : ''}) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
+  refreshDelivered(t, refreshed);
+  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off${restart ? ` at Stage ${handedTo};${restart.line}` : ''}) port=${port} model=${model || 'default'}${pick.line}${refreshed.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
@@ -4519,8 +4583,10 @@ for (const t of spawnable) {
   // moved aside below as for any round not resumed.
   const round = resumeRound(t, { wt, kept, branch });
   const resumable = kept && resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE }).ok;
+  const refreshed = refreshTicketFile(t);
   const restart = t.fix && !t.fix.finished ? null : decisionsRestart(t, { resumable });
-  const resumed = restart ? { ...restart, brief: `${restart.brief}${round.brief}` } : round;
+  const resumed = restart ? { ...restart, brief: `${restart.brief}${round.brief}` }
+    : round.stage && refreshed.brief ? { ...round, brief: `${refreshed.brief}${round.brief}` } : round;
   // With several apps, `database=` lists every app's database and `migrate-failed=` the ones that failed.
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup)
     ? ([...setup.matchAll(/\[setup-worktree\] migrate-failed=(\S+)/g)].pop()?.[1] ?? database).replaceAll(',', ', ')
@@ -4614,7 +4680,8 @@ for (const t of spawnable) {
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
   // So the restart's own handoffs and later requeues compare the entries with this spawn, not the review.
   if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  refreshDelivered(t, refreshed);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${refreshed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);

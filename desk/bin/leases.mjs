@@ -69,7 +69,7 @@ export const leaseDir = () => expandHome(process.env.DESK_LEASE_DIR || join(HOME
 export const storeFile = (dir = leaseDir()) => join(dir, 'leases.json');
 export const logFile = (dir = leaseDir()) => join(dir, 'leases.log.jsonl');
 
-const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
+export const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
 // The heavy and light slot pools, each { floor, ceiling, current }, as admit-ledger.mjs poolRows gives
 // their floors and ceilings. With headroom admission on (the machine profile's lock-admission row),
 // the current size is the floor plus the runs admission let in above it that still run (the ledger,

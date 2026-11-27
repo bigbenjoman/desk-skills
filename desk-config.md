@@ -276,6 +276,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Preferred dev-server port | `3000` | `TODO` (autopilot workers start at this port + 1) |
 | Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
 | Memory ceiling for parallel work (GB) | WSL: `16` · otherwise physical RAM minus ~8 | `TODO` (`DESK_CLEARANCE_MEM_GB` overrides) |
+| Worker memory weight (GB) | `none` | `TODO` (a whole number of GB, or `none`: what each of this repo's workers counts for against the machine profile's `memory-ceiling-gb`, which every repo's running workers share; a pass starts a worker only while the weights of the workers running in every repo leave room for its own, as well as the machine's worker cap. `/desk-setup` proposes it from this repo's measured peaks where it has them. Unset or `none` is the flat share, the ceiling over the machine's worker cap: 5 on a 15 GB, 3-worker machine) |
 | Spawn gate (available memory) | start work > 8 GiB · hold 4–8 · drop to 1 below 4 | `TODO` |
 | Swap growth that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, `desk-env mem watch` says `SWAP-GROWING` when swap used grows by this much within 10 minutes, and the pass holds new workers for 10 minutes after. Unset is `2`) |
 | tmpfs /tmp size that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, with `/tmp` a tmpfs, the watch says `TMPFS-HIGH` when it holds this much, and the pass clears the regenerable caches in it, then holds new workers while it still holds this much, naming what is left in needs-you. Unset is `2`) |
@@ -316,7 +317,8 @@ repo. Left `TODO` or absent, each falls back to the machine profile, `~/.config/
 sizes from the detected hardware; a value set here wins. With no profile they behave as unset.
 The profile's memory ceiling and worker cap are hard limits across every repo: a memory ceiling set
 here above the profile's reads as the profile's, and a pass starts no worker once the workers running
-in every repo's queue reach the profile's cap (a queue that cannot be read counts at its repo's cap).
+in every repo's queue reach the profile's cap (a queue that cannot be read counts at its repo's cap),
+or once their memory weights leave no room under the profile's memory ceiling for one more of its own.
 
 ## 3c. Harness rules written by setup
 
