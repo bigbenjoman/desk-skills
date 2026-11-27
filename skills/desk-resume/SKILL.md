@@ -31,7 +31,9 @@ carries on in the same turn. This command is still the way back in after a `/cle
    ```
 
    Exit 0 prints the one handoff that is written, under a day old, not resumed before and not held by
-   a compacting session, and records it as resumed: that is the handoff. Otherwise (none, or several)
+   a compacting session, and records it as resumed: that is the handoff. It picks nothing in a
+   session `/clear` or a compaction began, where the hook named none on purpose (that session's own
+   handoff is unwritten, stale or already resumed). Otherwise (none, several, or after `/clear`)
    list the `.md` files in `<repo root>/.handoffs/` changed in the last day that do not start
    `<!-- desk handoff placeholder`, newest first, with each one's first lines, and ask which to
    resume, or say there is none and stop.

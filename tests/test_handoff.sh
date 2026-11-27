@@ -569,7 +569,7 @@ check "DS-1037 outside a worker, worker mode stays off"                    '[[ "
 
 # ---- DS-1051: /desk-resume in a session started fresh (no /clear) asks the hook to pick ----
 P="$T/pickrepo"; git init -q -b main "$P"; P="$(cd "$P" && pwd -P)"; mkdir -p "$P/.handoffs" "$P/sub"
-pick(){ out=$(python3 "$HOOK" pick "$P/sub" 2>&1); rc=$?; }
+pick(){ out=$(DESK_HANDOFF_PID="${PPID_PICK:-pkfresh}" python3 "$HOOK" pick "$P/sub" 2>&1); rc=$?; }
 printf '<!-- desk handoff placeholder: session z -->\n' > "$P/.handoffs/$DAY-3.md"
 echo "# stale" > "$P/.handoffs/old.md"; age "$P/.handoffs/old.md" 90000
 echo "# done" > "$P/.handoffs/done.md"; echo "done.md" > "$P/.handoffs/.consumed"
@@ -585,5 +585,13 @@ pick
 check "DS-1051 AC3: two that fit: none picked, none consumed"  '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qxE "(a|b)\.md" "$P/.handoffs/.consumed"'
 pick_outside="$(python3 "$HOOK" pick "$T" 2>&1)"; rc=$?
 check "DS-1051 outside a git repo: exit 1, silent"            '[ $rc -eq 1 ] && [ -z "$pick_outside" ]'
+rm -f "$P/.handoffs/b.md"
+printf '{"root":"%s","start_pid":"pkclear","start_source":"clear","started_at":%s}' "$P" "$(date +%s)" > "$DESK_HOME/handoff/pkc.json"
+PPID_PICK=pkclear pick
+check "DS-1051 a session /clear began: one fits, none picked"  '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+printf '{"hook_event_name":"SessionStart","session_id":"pks","source":"startup","cwd":"%s"}' "$P/sub" | DESK_HANDOFF_PID=pkstart python3 "$HOOK" >/dev/null 2>&1
+check "DS-1051 SessionStart records how the session began"     '[ "$(python3 -c "import json,sys; s=json.load(open(sys.argv[1])); print(s[\"start_source\"], s[\"start_pid\"])" "$DESK_HOME/handoff/pks.json")" = "startup pkstart" ]'
+PPID_PICK=pkstart pick
+check "DS-1051 a session started fresh: the one that fits"     '[ $rc -eq 0 ] && [ "$out" = "$P/.handoffs/a.md" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
