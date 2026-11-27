@@ -56,7 +56,8 @@ CLAUDE_CODE_DISABLE_1M_CONTEXT is set) or a `[1m]` model (SessionStart's model i
 `model` for the same family, since that id drops the suffix; or once usage has passed 200,000,
 which no smaller window allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
 added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session id>.json, which is
-also the marker that stops a second injection or a second Stop block.
+also the marker that stops a second injection or a second Stop block, and records the threshold and
+window the session runs under (`arm`), which handoff-report.mjs reads.
 
 Never fails a session: any error exits 0 with no output.
 
@@ -506,6 +507,7 @@ def on_context(event, data, session, root):
     if not pct:
         save_state(session, state)
         return
+    state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     if now < pct:
         save_state(session, state)
@@ -624,6 +626,8 @@ def on_worker_context(event, data, session, root, path):
     w = window(state, used)
     if w >= LARGE_WINDOW:
         pct = pct_1m
+    if pct:
+        state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     stage = current_stage(transcript) if pct and now >= pct else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
