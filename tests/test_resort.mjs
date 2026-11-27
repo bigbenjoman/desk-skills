@@ -1,7 +1,7 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
 // covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs desk/bin/config-schema.mjs
-import { resortQueue, resortLine, chainName, priorityMode, priorityRank, priorityHold, priorityHoldLine } from '../desk/bin/spawn-order.mjs';
+import { resortQueue, resortLine, chainName, priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank } from '../desk/bin/spawn-order.mjs';
 import { ROWS } from '../desk/bin/config-schema.mjs';
 import { readFileSync } from 'node:fs';
 import { layOrder } from '../desk/bin/queue-writer.mjs';
@@ -123,6 +123,21 @@ t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainN
   t('#1624 AC3 soft: a higher priority sorts ahead of a hub gating more', `${go('soft').order.join(' ')} | ${why(go('soft'))}`, 'HI LO D | HI: higher priority');
   t('#1624 AC2 strict sorts the same', go('strict').order.join(' '), 'HI LO D');
   t('#1624 AC4 off: the throughput order alone', go('off').order.join(' '), 'LO HI D');
+  // H (rank 0) blocked by J (rank 2), K (rank 1) unrelated: J inherits H's rank, so it is never held behind K.
+  const tri = [tk('K'), tk('J'), tk('H', { state: 'parked', held_by: 'J' })];
+  const tr = { H: 0, K: 1, J: 2 };
+  const inh = inheritedRank(tri, (k) => tr[k]);
+  t('#1624 a blocker of a higher ticket ranks as that ticket does; the rest keep their own', ['H', 'K', 'J'].map(inh).join(' '), '0 1 0');
+  const triHold = (key, mode, files) => priorityHold(key, { mode, rank: inh, files: (k) => files[k] ?? [], waiting: ['H', 'J', 'K'], pending: new Set(), free: 1 });
+  t('#1624 strict: a low ticket blocking a high one is not held by a ticket between them, so all three start in turn',
+    `${triHold('J', 'strict', {})} ${triHold('K', 'strict', {})?.key}`, 'null H');
+  t('#1624 soft: the same three sharing a file do not hold one another in a cycle',
+    `${triHold('J', 'soft', { H: ['f'], J: ['f'], K: ['f'] })} ${triHold('K', 'soft', { H: ['f'], J: ['f'], K: ['f'] })?.key}`, 'null H');
+  const resorted = (priority) => resortQueue(tri, { scope: () => [], fileCount: () => 0, rank: (k) => tr[k], priority }).order.join(' ');
+  t('#1624 strict and soft re-sort the low blocker of a high ticket ahead of the ticket between them', `${resorted('strict')} | ${resorted('soft')}`, 'J H K | J H K');
+  t('#1624 a ticket the queue has started passes on no rank', inheritedRank([tk('K'), tk('J'), tk('H', { state: 'running', spawned_at: 'x', held_by: 'J' })], (k) => tr[k])('J'), 2);
+  t('#1624 soft: a hold for a slot is deferred, one for a shared file is not',
+    `${triHold('K', 'soft', {}) === null} ${priorityHold('K', { mode: 'soft', rank: inh, files: () => [], waiting: ['H', 'K'], pending: new Set(['H']), free: 1 })?.defer} ${triHold('K', 'soft', { H: ['f'], K: ['f'] })?.defer}`, 'true true undefined');
   t('#1624 a blocker still starts before what it blocks, whatever its priority', resortQueue([tk('LO'), tk('HI', { state: 'parked', held_by: 'LO' })], { scope: () => [], fileCount: () => 0, rank: (k) => (k === 'HI' ? 0 : 3), priority: 'strict' }).order.join(' '), 'LO HI');
 }
 

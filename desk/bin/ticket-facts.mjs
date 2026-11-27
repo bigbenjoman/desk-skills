@@ -116,6 +116,13 @@ function epicOf(issue, kids = new Map()) {
   return out;
 }
 
+// A text, select or multi-select field's value as one string, or null when it is empty.
+const asText = (v) => {
+  const s = Array.isArray(v) ? v.map(asText).filter(Boolean).join(', ') : String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
+  return s || null;
+};
+const priorityField = () => { try { return priorityOf(configValues('jira-priority')).field; } catch { return 'priority'; } };
+
 // `keys`' issues with `fields` beside desk-jira's own, in one search per KEY_CHUNK keys (keySearch).
 const searchIssues = (keys, fields) => keySearch(keys, (jql, max) => jiraSearch({}, jql, max, fields));
 
@@ -132,7 +139,11 @@ if (process.argv[2] === '--blockers') {
     for (const key of recs.keys()) console.error(`[facts] ${key}  blockers NOT READ: ${why}`);
     process.exit(1);
   };
-  const links = recs.size ? searchIssues([...recs.keys()], ['issuelinks', 'parent']) : { ok: true, issues: new Map() };
+  // The tracker priority rides the same search, so a priority changed since triage, and a record
+  // triaged before priority was read, rank as the tracker has them now (spawn-order.mjs priorityRank).
+  // Jira's own priority is among desk-jira's fields already; a custom field is asked for (candidates.mjs).
+  const pField = priorityField();
+  const links = recs.size ? searchIssues([...recs.keys()], ['issuelinks', 'parent', ...(pField === 'priority' ? [] : [pField])]) : { ok: true, issues: new Map() };
   if (!links.ok) notRead(links.why);
   const issues = links.issues;
   const wanted = [...new Set([...recs].flatMap(([key, { rec }]) => (issues.has(key) ? blockersToRead(rec, issues.get(key)) : [])))];
@@ -142,6 +153,8 @@ if (process.argv[2] === '--blockers') {
     const issue = issues.get(key);
     if (!issue) { failed++; console.error(`[facts] ${key}  blockers NOT READ: not returned by the Jira search`); continue; }
     setBlockers(rec, issue, (k) => details.issues.get(k)?.fields);
+    // A search that did not return the field leaves the recorded priority as it was.
+    if (issue.fields && pField in issue.fields) rec.priority = asText(issue.fields[pField]);
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}${ownEpicNote(rec)}`);
   }
@@ -187,12 +200,6 @@ const asSize = (v) => {
   const s = String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim().toUpperCase();
   return SIZES.includes(s) ? s : null;
 };
-// A text, select or multi-select field's value as one string, or null when it is empty.
-const asText = (v) => {
-  const s = Array.isArray(v) ? v.map(asText).filter(Boolean).join(', ') : String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
-  return s || null;
-};
-const priorityField = () => { try { return priorityOf(configValues('jira-priority')).field; } catch { return 'priority'; } };
 const fieldNamed = (issue, re) => Object.entries(issue.names ?? {}).find(([, n]) => re.test(String(n).trim()))?.[0];
 
 if (kind.kind !== 'tracker') {

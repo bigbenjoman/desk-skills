@@ -55,7 +55,9 @@ export const resortable = (t) => unstarted(t) && !t.placed;
 // With `rank(key)` (priorityRank: lower is higher priority) and `priority` strict or soft, a higher
 // priority starts first, before SPAWN_ORDER_RULE: the per-person constraint on the throughput order
 // (§3b "Queue order: priority"). At `off`, or without `rank`, priority is not read.
-export function resortQueue(tickets, { scope, fileCount, rank = null, priority = 'off' }) {
+// `rank` is inherited through blocker links (inheritedRank) before it is read.
+export function resortQueue(tickets, { scope, fileCount, rank: own = null, priority = 'off' }) {
+  const rank = own && inheritedRank(tickets, own);
   const open = tickets.filter(unstarted);
   const movable = open.filter(resortable);
   const openKeys = new Set(open.map((t) => t.key));
@@ -113,9 +115,24 @@ export function priorityRank(rec, order) {
   return i < 0 ? order.length : i;
 }
 
+// Priority inheritance: `rank` (key -> priorityRank) with each ticket ranked as high as the highest
+// unstarted ticket it holds, directly or through any chain of blocker links, among `tickets` (the
+// queue's). A low ticket blocking a high one is then never held behind a ticket between them, which
+// would hold the high one for ever. Memoised: -> key -> rank
+export function inheritedRank(tickets, rank) {
+  const succ = {};
+  for (const t of tickets) if (unstarted(t)) for (const p of blockersOf(t)) (succ[p] ??= []).push(t.key);
+  const memo = new Map();
+  return (k) => {
+    if (!memo.has(k)) memo.set(k, Math.min(rank(k), ...[...reach(k, succ[k] ?? [], succ)].map(rank)));
+    return memo.get(k);
+  };
+}
+
 // What holds unstarted ticket `key` from starting now for a higher-priority one, or null.
 //   mode     strict, soft or off
-//   rank     key -> priorityRank (lower is higher priority)
+//   rank     key -> priorityRank (lower is higher priority), inherited through blocker links
+//            (inheritedRank)
 //   waiting  the keys of the unstarted tickets not started yet: each higher than `key` may hold it
 //   pending  those of them that may still start this pass (spawnable, not yet tried); the rest are held
 //            anyway (a file collision, a blocker, the test lock, an open question)
@@ -125,15 +142,17 @@ export function priorityRank(rec, order) {
 //            never holds it, or neither would start
 // strict: any higher ticket waiting holds it. soft: one only where it would lose time, so `key` may
 // take a slot that would otherwise sit idle: the higher ones that may still start this pass hold it only
-// when they would need its slot, and one held anyway only where `key` shares a file with it.
-// -> { key: the higher ticket, why } or null
+// when they would need its slot, and one held anyway only where `key` shares a file with it. A hold for
+// a slot is `defer`: a higher ticket counted as pending may still be refused at spawn without taking a
+// slot, so the caller tries `key` again once every pending one has been tried (its pending then empty).
+// -> { key: the higher ticket, why, defer? } or null
 export function priorityHold(key, { mode, rank, waiting, pending = new Set(), free = 1, files, blocks = () => false }) {
   if (mode === 'off') return null;
   const higher = [...waiting].filter((h) => h !== key && rank(h) < rank(key) && !blocks(key, h));
   if (!higher.length) return null;
   if (mode === 'strict') return { key: higher[0], why: 'strict: a lower priority never starts first' };
   const before = higher.filter((h) => pending.has(h));
-  if (before.length && before.length >= free) return { key: before[0], why: 'it may start this pass, and needs the slot' };
+  if (before.length && before.length >= free) return { key: before[0], why: 'it may start this pass, and needs the slot', defer: true };
   const mine = new Set(files(key));
   for (const h of higher) {
     if (pending.has(h)) continue;
