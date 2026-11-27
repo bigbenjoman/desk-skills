@@ -253,6 +253,20 @@ const past = F.run('voicepa', 'up', 'VPL-3');
 t('up past a failed ticket reaches the place above it', `${lines(past.out)[0]} | ${unfinishedKeys(readQ(qPath(F, 'voicepa'))).join()}`, 'VPL-3 → position 1 of 2, placed by you. | VPL-3,VPL-1');
 t('a ticket whose worker stopped shows no position, and needs you', /^\s+-\s+VPL-2\s+◆ needs you\s+worker stopped: no reason was recorded/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
+// A row the pass's re-sort moved up (resort_why) is marked ^ with the reason; a placed row
+// keeps its * and no reason, and a ticket that has started is never marked, whatever it still carries.
+const RS = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
+  'VPL-1': { state: 'triaged', open_questions: 0, resort_why: 'gates 4' },
+  'VPL-2': { state: 'triaged', open_questions: 0, placed: true, resort_why: 'gates 1' },
+  'VPL-3': { state: 'triaged', open_questions: 0, resort_why: 'clears desk-checkout chain', spawned_at: '2026-11-27T09:00:00Z' },
+  'VPL-4': { state: 'triaged', open_questions: 0 } } } } });
+const rsOut = lines(RS.run('--plain', 'voicepa').out);
+const rsRow = (k) => rsOut.find((l) => new RegExp(`\\s${k}\\s`).test(l)) ?? '';
+t('#1623 AC4 a re-sorted row is marked ^ and says why it moved up', /^\s+\^1\s+VPL-1\s.*· moved up: gates 4/.test(rsRow('VPL-1')), true);
+t('#1623 AC4 a placed row keeps * and gives no re-sort reason', `${/^\s+\*2\s+VPL-2\s/.test(rsRow('VPL-2'))} ${rsRow('VPL-2').includes('moved up')}`, 'true false');
+t('#1623 AC4 a started row and an unmoved one carry no mark', `${/\^|moved up/.test(rsRow('VPL-3'))} ${/\^|moved up/.test(rsRow('VPL-4'))}`, 'false false');
+t('#1623 AC4 the foot explains ^', rsOut.includes('^ moved up by the pass\'s re-sort, so the whole queue finishes soonest'), true);
+
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
 const pq = qPath(W, 'pranicuk');

@@ -27,13 +27,19 @@ reads as `none`, and the pass report names it.
 SPAWN ORDER under the rule it applies:
 
 <!-- facts: spawn-order -->
-Blockers start first, then the tickets that gate the most others (directly or through any chain of holds), then, among tickets that gate none, the fewest planned files, then the order named.
+Blockers start first, then the tickets that gate the most others (directly or through any chain of holds), then the fewest planned files, then the order named.
 With --keep-order, tickets start in the order named, blockers still first.
 <!-- /facts -->
 
 `pass.mjs` spawns in queue order. Tickets already queued (an epic's children, admitted before its
 plan seeds them) are put in that order too (`queue.mjs order`), apart from one the user placed with
-`queue.mjs move`. If the user asks for a literal chain that would idle a gate,
+`queue.mjs move` or `/desk-admit --front`. A plan that keeps the order named places each seeded
+ticket too (`queue.mjs order --placed`), so that order holds. **Every pass re-sorts the unstarted tickets nobody placed
+by the same rule**, so the order keeps up as tickets merge, park and are admitted. There a ticket
+gates every other unstarted ticket that shares a planned file with it, and every ticket blocked by it
+or by one of those, through any chain. The pass report prints the new order only when it changed,
+and desk-q marks each ticket the re-sort moved ahead with `^` and why (`gates 4`, `clears
+desk-checkout chain`, `fills an idle slot`). If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
 up to that file's per-file budget (`concurrency-and-memory.md`). A ticket added mid-batch is not

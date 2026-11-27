@@ -86,7 +86,8 @@ import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
-import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { resortQueue, resortLine, plannedFiles } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -2896,6 +2897,24 @@ const budgetFiles = (key) => {
   if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
+// The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
+// resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
+// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it.
+const RESORT = resortQueue(Object.values(fresh.tickets), {
+  scope: budgetFiles,
+  fileCount: (k) => plannedFiles(triageRec(k)),
+});
+const orderLines = [];
+if (RESORT.changed) {
+  q('order', ...RESORT.order);
+  const why = new Map(RESORT.moved.map((m) => [m.key, m.why]));
+  for (const t of all) {
+    if (why.has(t.key) && t.resort_why !== why.get(t.key)) q('set', t.key, `resort_why=${why.get(t.key)}`);
+    else if (!why.has(t.key) && t.resort_why != null) q('set', t.key, 'resort_why=null');
+  }
+  layOrder(fresh, RESORT.order);
+  orderLines.push(resortLine(RESORT));
+}
 // The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
 // its batch's queue and triage record, and those handed off there between sessions with `handoff: true`
 // (budgetHolds); a review try there fills none, as here. A queue that does not read counts nothing, and
@@ -5228,7 +5247,7 @@ const OUT_HANDLERS = { ...PHASE_HANDLERS, out: (a) => out.push(a.line) };
 runPhase({
   name: 'report',
   snapshot: () => ({
-    ...baseSnapshot(), report, baseLines, maintLines: MAINT.lines, dateLines, linkLines, epicLines,
+    ...baseSnapshot(), report, baseLines, maintLines: MAINT.lines, dateLines, linkLines, orderLines, epicLines,
     incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, budgetUnread: [...budgetUnread], conflictRecordBad: conflictRecord.bad,
     conflicts: [...conflictsBy].map(([f, times]) => ({ file: f, configured: configuredPlaces(f), now: placesFor(f), recent: recentCount(times, PASS_MS) })),
     unreadableQueues: [...unreadableQueues], portLeaseLines: [...portLeaseLines], concurrency, eligible: eligible.length, queueBin: join(SHOWN_BIN, 'queue.mjs'),
