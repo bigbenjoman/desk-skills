@@ -7,6 +7,7 @@
 import { HELD_PREFIX, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, FEATURE_PLAN_PREFIX } from './batch-state.mjs';
 import { CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { blockersOf } from './queue-states.mjs';
+import { normaliseLine } from './evidence.mjs';
 
 export const CLASSES = Object.freeze(['base red', 'runner or resource', 'application defect', 'missing decision', 'agent mistake', 'dependency wait', 'quota', 'unclassified']);
 // A fix try of one of these classes waits rather than spawns: no worker can supply what it waits for.
@@ -84,9 +85,17 @@ export function runsState(runs) {
 // where there are any }, kept on the ticket as `base_red`) is read again only for its own head: a
 // held check clears once the job's latest completed run on the default branch passes, and stays
 // cleared at that head.
+// A check is judged by the tests failing inside it where both sides can be read: a check red on the base
+// too whose failing tests at this head (read.failingTests) include any the base's failing run of that job
+// (read.baseTests, at the merge base, or its latest run where only that is red) does not fail is not base
+// red. It is the PR's own, goes to its fix try, and carries those tests as `own`. Where either side's
+// tests are unread or the log names none (no FAIL line: a crash, a timeout, a budget), the check is read
+// by its name, as before.
 // read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name, { held }) -> 'fail' | 'pass' | null
 //         (its newest completed run at or since the merge base; null unread or with none; `held` for
-//         a check already held, which may read further back) }
+//         a check already held, which may read further back),
+//         failingTests?(check) -> [test] | null (the check's failing tests at this head),
+//         baseTests?(name, 'merge-base' | 'latest') -> [test] | null (the base's failing tests in that job there) }
 // -> { red, latest (those of red that are not red at the merge base), unknown, mine (the checks a fix
 //      try takes), record (the hold to keep, or null) }
 export function baseSplit(failing, head, held, read) {
@@ -100,9 +109,9 @@ export function baseSplit(failing, head, held, read) {
       continue;
     }
     const state = read.atMergeBase(f.name);
-    if (state === 'fail') { red.push(f); continue; }
+    if (state === 'fail') { const own = ownTests(f, 'merge-base', read); if (own) mine.push({ ...f, own }); else red.push(f); continue; }
     const now = read.latestOnBase(f.name);
-    if (now === 'fail') { red.push(f); latest.push(f); continue; }
+    if (now === 'fail') { const own = ownTests(f, 'latest', read); if (own) mine.push({ ...f, own }); else { red.push(f); latest.push(f); } continue; }
     if (now == null) unknown.push(f);
     mine.push(f);
   }
@@ -110,6 +119,34 @@ export function baseSplit(failing, head, held, read) {
   const late = checks.filter((x) => latest.some((f) => f.name === x) || at?.latest?.includes(x));
   const record = checks.length || cleared.length ? { class: 'base red', head, merge_base: at?.merge_base ?? read.mergeBase(), checks, cleared, ...(late.length ? { latest: late } : {}) } : null;
   return { red, latest, unknown, mine, record };
+}
+
+// A check's failing tests at the PR's head that its job's failing run on the base (`where`) does not
+// fail, or null: none such, or either side unread or naming no test.
+function ownTests(f, where, read) {
+  const ours = read.failingTests?.(f) ?? null;
+  if (!ours?.length) return null;
+  const theirs = read.baseTests?.(f.name, where) ?? null;
+  if (!theirs?.length) return null;
+  const own = ours.filter((x) => !theirs.includes(x));
+  return own.length ? own : null;
+}
+
+// The tests a job's log names failing: each runner `FAIL` line (tests/run.sh's `FAIL <name>: …`, Jest's
+// and Vitest's `FAIL <file>`), with GitHub's timestamp, colour codes, what follows the name (`: got …`,
+// a duration) and what differs between runs (normaliseLine) taken out, once each. [] for none or unread.
+const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
+export function failingTestNames(log) {
+  if (typeof log !== 'string') return [];
+  const out = new Set();
+  for (const raw of log.replace(ANSI, '').split('\n')) {
+    const line = raw.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, '');
+    const m = /^\s*FAIL\b:?\s+(.+)$/.exec(line);
+    if (!m) continue;
+    const name = normaliseLine(m[1].split(/: /)[0].replace(/\s+\([\d.]+ ?m?s\)\s*$/, ''));
+    if (name) out.add(name);
+  }
+  return [...out];
 }
 
 // The base red record a fix call leaves on its ticket (`c.base_red`, null to clear): it keeps the pass its

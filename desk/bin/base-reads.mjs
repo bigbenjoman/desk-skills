@@ -7,7 +7,7 @@
 // makeBaseReads({ gh, repo, branch, cached }): gh(args) -> { ok, out } runs `gh` with args; cached(key,
 // read) memoises a read for the reader's lifetime (the pass gives its own, which its other reads share;
 // unset, memo() over a new Map).
-import { runsState } from './failure-class.mjs';
+import { runsState, failingTestNames, FAILED } from './failure-class.mjs';
 
 const BASE_WALK = 25, HELD_WALK = 100;
 
@@ -21,7 +21,7 @@ export const memo = (cache = new Map()) => (key, read) => {
 
 export function makeBaseReads({ gh, repo, branch, cached = memo() }) {
   const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
-    const r = gh(['api', `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
+    const r = gh(['api', `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion, details_url}]']);
     try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
   });
   // Where a head stands: the default branch's tip and its merge base with it, or null unread.
@@ -53,21 +53,50 @@ export function makeBaseReads({ gh, repo, branch, cached = memo() }) {
   // clear its hold), else at the merge base itself when fewer came since. Null when a read fails (never
   // an older run read past one), or when none of those commits ran it: a job that does not run on the
   // base's pushes is not read commit by commit back to the merge base on every pass.
-  const latestOnBaseOf = (head, name, held = false) => {
+  // -> { state, sha } of that run, or null.
+  const latestRunOf = (head, name, held = false) => {
     const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null, walk = held ? HELD_WALK : BASE_WALK;
     if (!commits) return null;
     for (const sha of commits.slice(0, walk)) {
       const runs = checkRunsAt(sha, name);
       if (runs == null) return null;
-      const state = runsState(runs); if (state) return state;
+      const state = runsState(runs); if (state) return { state, sha };
     }
-    return commits.length > walk ? null : runsState(checkRunsAt(since, name));
+    if (commits.length > walk) return null;
+    const state = runsState(checkRunsAt(since, name));
+    return state ? { state, sha: since } : null;
+  };
+  const latestOnBaseOf = (head, name, held = false) => latestRunOf(head, name, held)?.state ?? null;
+  // A GitHub Actions job's failing tests (failure-class.mjs failingTestNames), by its job id; null unread.
+  const jobTests = (id) => (id ? cached(`job-tests:${id}`, () => {
+    const r = gh(['api', `repos/${repo}/actions/jobs/${id}/logs`]);
+    return r.ok ? failingTestNames(r.out) : null;
+  }) : null);
+  // A PR's red check's failing tests: its job of that name in the run it failed in; null unread.
+  const prTests = (f) => {
+    if (!f?.runId || !f?.name) return null;
+    const id = cached(`run-job:${f.runId}:${f.name}`, () => {
+      const r = gh(['api', `repos/${repo}/actions/runs/${f.runId}/jobs?per_page=100`, '--jq', `[.jobs[] | select(.name == ${JSON.stringify(f.name)}) | .id][0] // empty`]);
+      return r.ok && /^\d+$/.test(r.out.trim()) ? r.out.trim() : null;
+    });
+    return jobTests(id);
+  };
+  // The base's failing tests in a job at one commit: its failed run's job; null unread or not an Actions job.
+  const testsAt = (sha, name) => {
+    const failed = (checkRunsAt(sha, name) ?? []).filter((r) => FAILED.has(String(r?.conclusion ?? '').toLowerCase()));
+    const id = failed.map((r) => /\/job\/(\d+)/.exec(String(r.details_url ?? ''))?.[1]).find(Boolean);
+    return jobTests(id ?? null);
   };
   // failure-class.mjs baseSplit's reads for one head.
   const forHead = (head) => ({
     mergeBase: () => mergeBaseOf(head),
     atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
     latestOnBase: (name, o) => latestOnBaseOf(head, name, o?.held === true),
+    failingTests: (f) => prTests(f),
+    baseTests: (name, where) => {
+      const sha = where === 'latest' ? latestRunOf(head, name)?.sha : mergeBaseOf(head);
+      return sha ? testsAt(sha, name) : null;
+    },
   });
   return { checkRunsAt, baseAtOf, mergeBaseOf, baseCommitsSince, latestOnBaseOf, forHead };
 }
