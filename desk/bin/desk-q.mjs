@@ -3361,15 +3361,27 @@ function countsLine(r, now = Date.now()) {
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY], ...drivers]);
 }
 
-// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a
-// running ticket it collides with, which the pass never starts it beside ("held back by a collision"),
-// or the machine cap, which every repo's workers share.
+// The tickets a ready one shares files with that go first: running ones, which the pass never starts
+// it beside ("held back by a collision"), and ready ones above it in the spawn order. A collision
+// recorded on either ticket counts, as the forecast reads it.
+function sharedFirst(r, t) {
+  const listed = (o) => String(o?.collides_with ?? '').split('|').includes(t.key);
+  const mine = new Set(String(t.collides_with ?? '').split('|').filter(Boolean));
+  const rows = r.rows ?? [];
+  const at = rows.findIndex((x) => x.t.key === t.key);
+  const earlier = new Set(rows.slice(0, Math.max(0, at)).filter((x) => groupOf(x.k) === 'ready').map((x) => x.t.key));
+  return Object.entries(r.q?.tickets ?? {}).filter(([k, o]) => k !== t.key && (mine.has(k) || listed(o)) && (o.state === 'running' || earlier.has(k))).map(([k]) => k);
+}
+
+// What holds a ready ticket back from the next free worker, or null: tickets it shares files with
+// that go first (sharedFirst), whose hold outlasts a free worker, its batch's worker slots, or the
+// machine cap, which every repo's workers share.
 function startWait(r, t) {
   if (r.workers === 0) return 'workers set to 0';
+  const clash = sharedFirst(r, t);
+  if (clash.length) return `waits for ${clash.join(', ')} (shared files)`;
   const busy = workersRunning(r);
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
-  const clash = String(t.collides_with ?? '').split('|').filter((c) => r.q.tickets?.[c]?.state === 'running');
-  if (clash.length) return `waits for ${clash.join(', ')} (collides)`;
   // Every repo's workers count against the machine cap, so a batch with free slots can still wait. A
   // batch with no passes waits for those first, which readyWhy says.
   const m = r.machine;
@@ -3747,10 +3759,23 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
 
 // What each shown state means, for the key line under a Queue.
 const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', merging: 'merges by itself once green', waiting: 'moves by itself',
-  needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes' };
-// The key line: each state on screen in its colour, its meaning grey. Narrower than the line, it
-// breaks between states, each further line indented under the first.
-const stateKey = (ks, width) => keyLine([...shownOf(ks), ...(ks.includes(PUT_OFF) ? [PUT_OFF] : [])].map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
+  needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes',
+  finishing: 'worker done, the next pass records it' };
+// A reason key with a label of its own ("◑ finishing"), which the key explains apart from its group's.
+const ownLabel = (k) => LABEL[k] !== LABEL[groupOf(k)];
+// The key line: each label on screen in its colour, its meaning grey, in the order the Queue groups
+// them; a label no row shows is left out. Narrower than the line, it breaks between labels, each
+// further line indented under the first.
+export function stateKey(ks, width) {
+  const on = new Set(ks);
+  const shown = [...shownOf(ks), ...(on.has(PUT_OFF) ? [PUT_OFF] : [])].flatMap((g) => {
+    const of = [...on].filter((k) => groupOf(k) === g);
+    return [...(of.some((k) => !ownLabel(k)) ? [g] : []), ...of.filter(ownLabel)];
+  });
+  return keyLine(shown.map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
+}
+// Every label desk-q can draw, by state key, for the test that each one shown has key text.
+export const LABELS = Object.freeze({ ...LABEL });
 
 export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
