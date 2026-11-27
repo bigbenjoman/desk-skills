@@ -213,7 +213,7 @@ const start = (task) => {
   const x = spawn(SID, { DESK_CONFIG: BOTH, AUTOPILOT_TASK: task, AUTOPILOT_BRANCH: `feat/${KEY}` });
   // The stub writes levers-env before calls, and writes its call in pieces (printf | tr, then the
   // closing newline): wait for both, and for that newline, or a slow runner reads an empty or a
-  // part-written call (issue #1636: a review try read with no --add-dir yet).
+  // part-written call.
   for (let i = 0; i < 100 && !(seen().length && callWritten()); i++) sleep(100);
   const line = existsSync(runs) ? JSON.parse(readFileSync(runs, 'utf8').trim().split('\n').pop()) : null;
   return { status: x.status, out: x.stdout + x.stderr, levers: line?.levers, env: seen()[0], call: calls()[0] ?? '' };
