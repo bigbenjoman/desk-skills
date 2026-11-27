@@ -22,15 +22,17 @@ const DH = join(H, '.claude', 'desk');
 const env = { HOME: H, DESK_HOME: DH, DESK_CONFIG_ROOT: join(H, '.config', 'desk'), DESK_PLATFORM: 'darwin', PATH: `${join(T, 'bin')}:${process.env.PATH}` };
 mkdirSync(join(T, 'bin'), { recursive: true });
 mkdirSync(H, { recursive: true });
-// launchd: `print` answers while loaded, `bootstrap` loads, `bootout` unloads and fails when not loaded.
+// launchd, one job per label: `print` answers while loaded, `bootstrap` loads, `bootout` unloads and
+// fails when not loaded.
 writeFileSync(join(T, 'bin', 'launchctl'), `#!/bin/sh
 echo "$@" >> "${T}/launchctl.calls"
 case "$1" in
-  print) [ -f "${T}/loaded" ] ;;
-  bootstrap) : > "${T}/loaded" ;;
-  bootout) [ -f "${T}/loaded" ] || exit 3; rm -f "${T}/loaded" ;;
+  print) [ -f "${T}/loaded.\${2##*/}" ] ;;
+  bootstrap) l="\${3##*/}"; : > "${T}/loaded.\${l%.plist}" ;;
+  bootout) [ -f "${T}/loaded.\${2##*/}" ] || exit 3; rm -f "${T}/loaded.\${2##*/}" ;;
 esac
 `, { mode: 0o755 });
+const LOADED = join(T, 'loaded.com.desk-skills.ptyd');
 // npm ci: a stand-in node-pty in its folder, or a native build that fails.
 writeFileSync(join(T, 'bin', 'npm'), `#!/bin/sh
 echo "npm $*" >> "${T}/npm.calls"
@@ -106,14 +108,14 @@ writeFileSync(join(SRC2, 'package-lock.json'), readFileSync(join(SRC, 'package-l
 clear();
 const keep = spawnSync('node', [PTYD, 'install', '--src', SRC2], { env: { ...env, FAKE_NPM_FAIL: '1' }, encoding: 'utf8', timeout: 60000 });
 t('a failed rebuild keeps the previous node-pty and says so', [keep.status, /previous install is still in use/.test(keep.stderr), existsSync(join(PTYDIR, 'node_modules', 'node-pty', 'index.js'))], [1, true, true]);
-t('and leaves the job running', [existsSync(join(T, 'loaded')), calls().filter((c) => c.startsWith('bootout')).length], [true, 0]);
+t('and leaves the job running', [existsSync(LOADED), calls().filter((c) => c.startsWith('bootout')).length], [true, 0]);
 
 // ---- AC6: install.sh --uninstall-ui unloads the job and removes its plist
 clear();
 const un = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 60000 });
 t('AC6 install.sh --uninstall-ui succeeds', [un.status, /removed com\.desk-skills\.ptyd/.test(un.stdout)], [0, true]);
 t('AC6 its launchd job is unloaded', calls().includes(`bootout gui/${UID}/com.desk-skills.ptyd`), true);
-t('AC6 its plist is removed, and node-pty with it', [existsSync(PLIST), existsSync(PTYDIR)], [false, false]);
+t('AC6 its plist is removed, and node-pty with it', [existsSync(PLIST), existsSync(PTYDIR), existsSync(LOADED)], [false, false, false]);
 const twice = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 60000 });
 t('uninstalling again says it was not installed', [twice.status, /com\.desk-skills\.ptyd was not installed/.test(twice.stdout)], [0, true]);
 
