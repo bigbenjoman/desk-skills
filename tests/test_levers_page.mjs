@@ -691,7 +691,7 @@ function filterPage(html) {
   const attrsOf = (s) => Object.fromEntries([...s.matchAll(/([\w-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
   const node = (tag, attrs) => ({ tag, attrs, hidden: false, on: null, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }, setAttribute(k, v) { this.attrs[k] = v; }, addEventListener(_, f) { this.on = f; } });
   const els = [...html.matchAll(/<(\w+)\b([^>]*\bdata-(?:repos?|kind)="[^"]*"[^>]*|[^>]*\bdata-all\b[^>]*)>/g)]
-    .map((m) => node(m[1], { ...attrsOf(m[2]), ...(/\bdata-all\b/.test(m[2]) ? { 'data-all': '' } : {}) }));
+    .map((m) => ({ ...node(m[1], { ...attrsOf(m[2]), ...Object.fromEntries(['data-all', 'data-reading'].filter((k) => new RegExp(`\\b${k}\\b(?!=)`).test(m[2])).map((k) => [k, ''])) }), hidden: /\shidden(\s|$)/.test(m[2]) }));
   const buttons = (k) => [...html.matchAll(new RegExp(`<button type="button" ${k}="([^"]*)" aria-pressed="[^"]*">`, 'g'))].map((m) => node('button', { [k]: m[1] }));
   const repo = buttons('data-pick-repo');
   const kind = buttons('data-pick-kind');
@@ -725,7 +725,10 @@ function filterPage(html) {
   t('DS-1043 AC3 so do the changes', /<div class="change-log" data-kind="other" data-repo="ai-agents"/.test(hLog) && /<details class="change" data-kind="lever" data-repo="desk-skills">/.test(hLog), true);
   t('DS-1043 AC3 and the merge-time and parking groups', ['<tbody data-repo="ai-agents"><tr class="grp">', '<span class="fold-line" data-repo="desk-skills">'].every((s) => section(hLog, 'ms-h').includes(s)) && section(hLog, 'st-h').includes('<tbody data-repo="desk-skills">'), true);
   const f = filterPage(hLog);
+  const reading = (e) => 'data-reading' in e.attrs;
+  t('DS-1043 AC3 on opening, each lever reads across repos alone', f.els.some(reading) && f.els.every((e) => e.hidden === reading(e)), true);
   f.press(f.repo, 'ai-agents');
+  t('DS-1043 AC3 picking a repo shows its own reading of each lever, and no other repo’s', f.els.filter(reading).every((e) => e.hidden === (e.attrs['data-repo'] !== 'ai-agents')), true);
   t('DS-1043 AC3 picking a repo shows only its parts', j([...new Set(f.els.filter((e) => e.attrs['data-repo'] && !e.hidden).map((e) => e.attrs['data-repo']))]), j(['ai-agents']));
   t('DS-1043 AC3 and hides every other repo’s', f.els.filter((e) => e.attrs['data-repo'] && e.attrs['data-repo'] !== 'ai-agents').every((e) => e.hidden), true);
   t('DS-1043 AC3 its button reads pressed', f.repo.map((b) => b.attrs['aria-pressed']).join(), 'false,true,false,false');
@@ -733,13 +736,13 @@ function filterPage(html) {
   t('DS-1043 AC3 a lever row shows only where the repo has a cell', rowsIn.length > 0 && rowsIn.every((e) => e.hidden === !e.attrs['data-repos'].split(' ').includes('ai-agents')), true);
   t('DS-1043 AC3 and the reading across repos gives way to the repo’s own', f.els.filter((e) => 'data-all' in e.attrs).every((e) => e.hidden), true);
   f.press(f.repo, '');
-  t('DS-1043 AC3 All repos shows them all again', f.els.every((e) => !e.hidden), true);
+  t('DS-1043 AC3 All repos shows them all again, each lever read across repos', f.els.every((e) => e.hidden === reading(e)), true);
   {
     // preflight is kept in desk-skills alone: across repos and in desk-skills it reads Kept, in ai-agents not.
     const pre = section(hLog, 'lev-h').split('<tr data-lever="preflight"')[1].split('</tr>')[0];
     const label = (attr) => new RegExp(`<div ${attr}><span class="badge"[^>]*><span class="dot"[^>]*></span>([^<]+)</span>`).exec(pre)?.[1];
-    const ai = label('data-repo="ai-agents"');
-    t('DS-1043 AC3 a lever’s status, result and progress follow the picked repo', j([label('data-all'), label('data-repo="desk-skills"'), ai === undefined ? !/data-repos="[^"]*ai-agents/.test(pre) : ai !== 'Kept']), j(['Kept', 'Kept', true]));
+    const ai = label('data-repo="ai-agents" data-reading hidden');
+    t('DS-1043 AC3 a lever’s status, result and progress follow the picked repo', j([label('data-all'), label('data-repo="desk-skills" data-reading hidden'), ai === undefined ? !/data-repos="[^"]*ai-agents/.test(pre) : ai !== 'Kept']), j(['Kept', 'Kept', true]));
   }
   // AC6: the kind filter.
   f.press(f.kind, 'lever');

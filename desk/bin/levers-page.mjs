@@ -741,7 +741,7 @@ function leverTable(v, today) {
   const names = repoNames(v);
   const inRepo = new Map(names.map((n) => [n, new Map(leverRows(v, n).map((r) => [r.lever, r]))]));
   const per = (r, f) => (names.length
-    ? `<div data-all>${f(r)}</div>${names.filter((n) => inRepo.get(n).has(r.lever)).map((n) => `<div${repoAttr(n)}>${f(inRepo.get(n).get(r.lever))}</div>`).join('')}`
+    ? `<div data-all>${f(r)}</div>${names.filter((n) => inRepo.get(n).has(r.lever)).map((n) => `<div${repoAttr(n)} data-reading hidden>${f(inRepo.get(n).get(r.lever))}</div>`).join('')}`
     : f(r));
   const repos = (cells) => (names.length ? ` data-repos="${esc([...new Set(cells.map((c) => c.repo))].join(' '))}"` : '');
   const badge = (s) => `<span class="badge" style="${STYLE[s].badge}"><span class="dot" style="background:${STYLE[s].dot}"></span>${STYLE[s].label}</span>`;
@@ -1137,12 +1137,14 @@ Array.prototype.forEach.call(copies, function (b) {
 });
 // The repo filter and the change list's kind filter: an element carrying a repo or a kind other than the
 // one picked is hidden; one carrying neither always shows. With a repo picked, a reading across all
-// repos (data-all) hides, and so does a row whose repos (data-repos) leave it out. The change list says
-// so when nothing is left.
+// repos (data-all) hides, and so does a row whose repos (data-repos) leave it out; a lever's reading
+// in one repo (data-reading) shows only while that repo is picked. The change list says so when
+// nothing is left.
 var pick = { repo: '', kind: '' };
 function apply() {
   Array.prototype.forEach.call(document.querySelectorAll('[data-repo],[data-kind],[data-all],[data-repos]'), function (el) {
     var r = el.getAttribute('data-repo');
+    if (el.getAttribute('data-reading') !== null) { el.hidden = r !== pick.repo; return; }
     var k = el.getAttribute('data-kind');
     var rs = el.getAttribute('data-repos');
     var offRepo = r !== null ? r !== pick.repo : el.getAttribute('data-all') !== null || (rs !== null && rs.split(' ').indexOf(pick.repo) < 0);
