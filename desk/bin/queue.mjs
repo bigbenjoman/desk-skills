@@ -30,7 +30,7 @@ import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { isSha } from './ticket-ledger.mjs';
-import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { newPark, parkArgs, FINISHED, unfinished, toFront, layOrder, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -1374,13 +1374,14 @@ switch (cmd) {
   }
 
   // pass.mjs spawns eligible tickets in `.tickets` key order, so a released chain head has to move
-  // to the front or it waits behind every independent ticket. A ticket the user placed stays put.
+  // to the front or it waits behind every independent ticket. A ticket the user placed stays put. With
+  // --placed (the user's own --front) it is placed from then on, so the pass's re-sort leaves it there.
   case 'front': {
-    const key = args[0];
-    ticket(q, key);
+    const key = args.find((a) => a !== '--placed');
+    const t = ticket(q, key);
     const msg = toFront(q, key);
+    if (args.includes('--placed') && t.state !== 'running' && !FINISHED.includes(t.state)) t.placed = true;
     save(q);
-    const t = q.tickets[key];
     const open = questionsOpen(t);
     console.log(`${key} ${msg}${open > 0 ? `; it still has ${open} question(s) open and will not spawn until they are answered: ${answerWith(t)}` : ''}`);
     break;
@@ -1408,13 +1409,12 @@ switch (cmd) {
 
   // plan-batch's spawn order, laid over the slots these tickets already hold: an epic's children are
   // admitted before its plan seeds them, and add leaves a queued ticket where it is. Every other
-  // ticket keeps its slot, and so does one running, finished or placed by the user (move).
+  // ticket keeps its slot, and so does one running, finished or placed by the user (move). With
+  // --placed (plan-batch --keep-order: the user named the order) each ticket laid is placed from then
+  // on, so the pass's re-sort keeps the order named.
   case 'order': {
-    const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
-    const keys = [...new Set(args)].filter(free);
-    const slots = new Set(keys);
-    const next = keys[Symbol.iterator]();
-    reorder(q, unfinished(q).map((k) => (slots.has(k) ? next.next().value : k)));
+    const keys = layOrder(q, args.filter((a) => a !== '--placed'));
+    if (args.includes('--placed')) for (const k of keys) q.tickets[k].placed = true;
     save(q);
     console.log(`spawn order: ${keys.join(' ') || 'nothing to reorder'}`);
     break;

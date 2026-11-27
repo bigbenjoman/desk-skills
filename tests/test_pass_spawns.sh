@@ -1671,7 +1671,9 @@ fbt(){ k=$1 st=$2; shift 2; jq -nc '{files_in_scope: $ARGS.positional}' --args "
 spawned(){ grep -qx "$1" "$T/fb-spawns"; }
 
 fbq fba ''
-fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
+# FB-1 to FB-4 name one file each, so the pass's re-sort (equal gates, then fewer files) keeps
+# them in queue order and the budget, not the sort, decides which start.
+fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts; fbt FB-3 triaged src/big.ts
 fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts; fbt FB-9 triaged src/edge.ts
 fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
 out=$(node "$B/pass.mjs" 2>&1)

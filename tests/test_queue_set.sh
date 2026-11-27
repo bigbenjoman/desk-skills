@@ -112,6 +112,19 @@ q front A-5; order
 check "AC11 a ticket not placed still moves to the front"                 '[ $rc -eq 0 ] && [ "${out%% *}" = A-5 ]'
 q requeue A-3; order
 check "a requeue of a ticket not placed still fronts it"                  '[ "${out%% *}" = A-3 ]'
+# The user's own --front (front --placed) marks it placed, so the pass's re-sort leaves it there; the
+# pass's own front does not.
+check "#1623 a plain front leaves the ticket unplaced"                     '[ "$(placed A-5)" = false ] && [ "$(placed A-3)" = false ]'
+q set A-4 state=running placed=null; q front A-4 --placed; frc=$rc; p=$(placed A-4); q set A-4 state=triaged
+check "#1623 front --placed does not place a running ticket"               '[ $frc -eq 0 ] && [ "$p" = false ]'
+q front A-3 --placed; o=$out; order
+check "#1623 front --placed fronts it and marks it placed"                 '[ $rc -eq 0 ] && [ "${out%% *}" = A-3 ] && [ "$(placed A-3)" = true ] && [ "$o" = "A-3 moved to the front of the spawn order" ]'
+# plan-batch --keep-order lays the order named with order --placed, so the re-sort keeps it.
+q set A-3 placed=null; q order A-5 A-3; order
+check "#1623 a plain order lays the keys and places none"                  '[ $rc -eq 0 ] && [ "${out%% *}" = A-5 ] && [ "$(placed A-5)" = false ] && [ "$(placed A-3)" = false ]'
+q order A-3 A-5 --placed; order
+check "#1623 order --placed lays the keys and places each one"             '[ $rc -eq 0 ] && [ "${out%% *}" = A-3 ] && [ "$(placed A-3)" = true ] && [ "$(placed A-5)" = true ]'
+q set A-3 placed=null; q set A-5 placed=null
 
 # A triaged ticket with a triage question open never spawns, so the table and front say so.
 q render

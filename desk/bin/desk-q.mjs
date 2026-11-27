@@ -52,6 +52,7 @@ import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefus
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
+import { resortable } from './spawn-order.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
@@ -3566,6 +3567,8 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'queued') return [['triaging', null]];
   return [['', null]];
 }
+// Why the pass's re-sort moved an unstarted row ahead (pass.mjs resort_why), or null.
+const resortedWhy = (x) => (!x.pr && resortable(x.t) && x.t.resort_why) || null;
 const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
 // Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
@@ -3808,11 +3811,12 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
   const row = (x) => segRow(x.t.key, cutRuns([
-    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
+    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : resortedWhy(x) ? '^' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
     ...(ww ? [[[pad(wait(x), ww), waitSgr(x)]]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
-    fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
+    fitSegs((gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now))
+      .concat(resortedWhy(x) ? [[` · moved up: ${resortedWhy(x)}`, GREY]] : []), nw - (x.pr ? 1 : 2), nw),
     ...tailCells(w, starts(x), ships(x), tt(summary(x))),
   ], width), { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
   const itemRow = (k) => itemRowOf(r, k, { now, ...w, width });
@@ -3826,6 +3830,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const shownKs = [...list.map(gk), ...items.map(() => 'needs'), ...offItems.map(() => PUT_OFF)];
   const foot = !shownKs.length ? ['  No unfinished tickets.'] : ['', ...stateKey(shownKs, width)];
   if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: letting it start or a requeue leaves it where it is');
+  if (list.some(resortedWhy)) foot.push('', '^ moved up by the pass\'s re-sort, so the whole queue finishes soonest');
   return { head: fit, rows, foot };
 }
 
