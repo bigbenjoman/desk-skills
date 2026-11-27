@@ -105,21 +105,25 @@ export const FALLBACK_SLOT_HOURS = Object.freeze({ XS: 0.5, S: 1, M: 2, L: 4, XL
 // queue order: a ticket starts at the first free slot once every blocker of it in play has finished
 // and none of its files is already held by as many tickets running then as `places(file)` allows (the
 // pass's per-file budget, placesFor). `running` are [{ key, hours }] holding slots now, `hoursOf(key)`
-// a ticket's slot time, `scope(key)` its files, `blockers(key)` the keys holding it.
+// a ticket's slot time, `scope(key)` its files, `blockers(key)` the keys holding it. `held` are
+// [{ key, hours, files }] filling places but no slot of this batch: the repo's other batches' tickets,
+// running or handed off, as spawning counts them (budgetHolds).
 // A ticket that can never start (a blocker cycle) is left out.
-export function projectedFinish(order, { workers, hoursOf, scope, blockers, running = [], places = () => 1 }) {
+export function projectedFinish(order, { workers, hoursOf, scope, blockers, running = [], held = [], places = () => 1 }) {
   const n = Math.max(1, workers);
   const inPlay = new Set([...order, ...running.map((r) => r.key)]);
   const done = new Set();
   let active = running.map((r) => ({ key: r.key, end: Math.max(0, r.hours), files: new Set(scope(r.key)) }));
+  let holding = held.map((h) => ({ end: Math.max(0, h.hours), files: new Set(h.files) }));
   let at = 0;
   let last = Math.max(0, ...active.map((a) => a.end));
   const pending = [...order];
   while (pending.length) {
     active = active.filter((a) => (a.end <= at ? (done.add(a.key), false) : true));
+    holding = holding.filter((h) => h.end > at);
     if (active.length < n) {
       const i = pending.findIndex((k) => blockers(k).every((b) => !inPlay.has(b) || done.has(b))
-        && scope(k).every((f) => active.filter((a) => a.files.has(f)).length < Math.max(1, places(f))));
+        && scope(k).every((f) => [...active, ...holding].filter((a) => a.files.has(f)).length < Math.max(1, places(f))));
       if (i >= 0) {
         const [k] = pending.splice(i, 1);
         const end = at + Math.max(0, hoursOf(k));
@@ -128,8 +132,8 @@ export function projectedFinish(order, { workers, hoursOf, scope, blockers, runn
         continue;
       }
     }
-    if (!active.length) break;
-    at = Math.min(...active.map((a) => a.end));
+    if (!active.length && !holding.length) break;
+    at = Math.min(...[...active, ...holding].map((a) => a.end));
   }
   return last;
 }
@@ -179,6 +183,18 @@ export const placedMoveText = (m) => `from ${m.from} to ${m.to}, the queue finis
 // (placed again at its new place, so only another move past the threshold, said as this one is, moves
 // it again), `line` its entry in the pass's metrics line `queue_moves`, which the check-in digest reads
 // (pass-metrics.mjs readQueueMoves).
+// Which placed tickets' moves reached queue.json, from the write that carried them (queue-writer.mjs
+// flush's result): a move whose write was refused, or whose order or own fields another writer's
+// value kept, was not made. -> { said: the moves made, unnote: keys of moves not made whose
+// placed_move landed, to take off again so desk-q marks no move }.
+export function placedLanded(moves, w) {
+  if (!w.ok) return { said: [], unnote: [] };
+  const theirs = (k, fields) => w.conflicts.some((c) => c.ticket === k && fields.includes(c.field));
+  const orderKept = w.conflicts.some((c) => c.field === 'order');
+  const made = (m) => !orderKept && !theirs(m.key, ['*', 'placed', 'placed_move']);
+  return { said: moves.filter(made), unnote: moves.filter((m) => !made(m) && !theirs(m.key, ['*', 'placed_move'])).map((m) => m.key) };
+}
+
 export function placedMoveRecord(m) {
   const move = { from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60) };
   return { set: ['placed=null', `placed_move=${JSON.stringify(move)}`], replace: ['placed=true'], line: { key: m.key, ...move, text: placedMoveText(m) } };

@@ -87,7 +87,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from './spawn-order.mjs';
+import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, placedLanded, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -2919,7 +2919,7 @@ const countElsewhere = (queues) => {
       if ((t?.state !== 'running' && !handoff) || !t.key || reviewOnlyTry(t)) continue;
       let rec = null;
       try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
-      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec), ...(handoff ? { handoff: true } : {}) });
+      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec), size: sizeIn(rec), ...(handoff ? { handoff: true } : {}) });
     }
   }
 };
@@ -3023,12 +3023,15 @@ const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
   const hoursOf = (k) => sizeHours(sizeIn(triageRec(k)));
   const running = Object.values(fresh.tickets).filter((t) => t.state === 'running' && !reviewOnlyTry(t))
     .map((t) => ({ key: t.key, hours: hoursOf(t.key) - Math.max(0, (now - (Date.parse(t.spawned_at) || now)) / 3_600_000) }));
+  // The other batches' tickets fill this batch's places as spawning counts them (budgetHolds), each
+  // for a whole slot time of its size: how long it has run is in its own batch's queue, not read here.
+  const held = elsewhereRunning.filter((o) => !fresh.tickets[o.key]).map((o) => ({ key: o.key, hours: sizeHours(o.size), files: o.files }));
   const blockers = (k) => blockersOf(fresh.tickets[k] ?? {});
   return placedMoves(Object.values(fresh.tickets), {
     ...resortOpts,
     thresholdH: moveThresholdMin(configOr('move-threshold')) / 60,
     finished: (t) => FINISHED.includes(t.state),
-    finish: (keys) => projectedFinish(keys, { workers: concurrency, hoursOf, scope: budgetFiles, blockers, running, places: placesFor }),
+    finish: (keys) => projectedFinish(keys, { workers: concurrency, hoursOf, scope: budgetFiles, blockers, running, held, places: placesFor }),
   });
 })() : { ...resortQueue(Object.values(fresh.tickets), resortOpts), placedMoved: [] };
 const orderLines = [];
@@ -3051,7 +3054,15 @@ if (RESORT.changed) {
     fresh.tickets[m.key].placed = true;
   }
   orderLines.push(resortLine(RESORT));
-  for (const m of RESORT.placedMoved) orderLines.push(`placed ticket moved (§3b Queue order: placed tickets is move-and-say): ${m.key} ${placedMoveText(m)}`);
+}
+// A placed ticket's move is said, and recorded for the digest, only once its writes are in queue.json,
+// so they are written now (placedLanded). A move not made has its note taken off where it landed.
+let placedSaid = [];
+if (RESORT.changed && RESORT.placedMoved.length) {
+  const landed = placedLanded(RESORT.placedMoved, flushQueue());
+  placedSaid = landed.said;
+  for (const m of placedSaid) orderLines.push(`placed ticket moved (§3b Queue order: placed tickets is move-and-say): ${m.key} ${placedMoveText(m)}`);
+  for (const k of landed.unnote) q('set', k, 'placed_move=null');
 }
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(runningAll.filter(reviewOnlyTry).map((r) => r.key));
@@ -7214,8 +7225,8 @@ if (!DRY) {
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
   // began (this pass's own, above, or another repo's) has already read past PASS_AT.
   if (step.warn) Object.assign(line, { warning: warningText(line, step.streak), warned_at: new Date().toISOString() });
-  if (RESORT.changed && RESORT.placedMoved.length) {
-    Object.assign(line, { queue_moves: RESORT.placedMoved.map((m) => placedMoveRecord(m).line), moved_at: new Date().toISOString() });
+  if (placedSaid.length) {
+    Object.assign(line, { queue_moves: placedSaid.map((m) => placedMoveRecord(m).line), moved_at: new Date().toISOString() });
   }
   const wrote = appendMetrics(STATE, line);
   if (!wrote.ok) lines.push(`metrics: this pass's metrics line was not written to ${metricsPath(STATE)} (${wrote.why})${line.queue_moves ? ', so the check-in digest will not list its placed-ticket moves' : ''}`);

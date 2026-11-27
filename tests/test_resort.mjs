@@ -1,7 +1,7 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
 // covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs
-import { resortQueue, resortLine, chainName, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from '../desk/bin/spawn-order.mjs';
+import { resortQueue, resortLine, chainName, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, placedLanded, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from '../desk/bin/spawn-order.mjs';
 import { layOrder, laidOrder, applySet } from '../desk/bin/queue-writer.mjs';
 import { blockersOf } from '../desk/bin/queue-states.mjs';
 
@@ -160,6 +160,18 @@ t('#1625 a ticket sharing a file with one running waits for it, and a running ti
   projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['b'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }] }), 3);
 t('#1625 a file with two places lets a ticket start beside the one running on it, as the per-file budget does',
   projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['f'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }], places: () => 2 }), 3);
+{
+  const mv = [{ key: 'X', from: 1, to: 4, gainH: 1 }, { key: 'Y', from: 2, to: 5, gainH: 1 }];
+  const show = (r) => `${r.said.map((m) => m.key).join(',') || '-'} ${r.unnote.join(',') || '-'}`;
+  t('#1625 AC4 a move written to the queue is said', show(placedLanded(mv, { ok: true, conflicts: [] })), 'X,Y -');
+  t('#1625 AC4 a refused write says no move, and has no note to take off', show(placedLanded(mv, { ok: false, conflicts: [] })), '- -');
+  t('#1625 AC4 another writer\'s order kept says no move, and takes off the notes that landed',
+    show(placedLanded(mv, { ok: true, conflicts: [{ ticket: null, field: 'order' }, { ticket: 'Y', field: 'placed_move' }] })), '- X');
+  t('#1625 AC4 a ticket another writer placed meanwhile is not said moved; the rest are',
+    show(placedLanded(mv, { ok: true, conflicts: [{ ticket: 'X', field: 'placed' }] })), 'Y X');
+}
+t('#1625 another batch\'s ticket on a file holds it as spawning does, and holds no slot of this batch',
+  `${projectedFinish(['A'], { workers: 1, hoursOf: () => 2, scope: () => ['f'], blockers: () => [], held: [{ key: 'O', hours: 1.5, files: ['f'] }] })} ${projectedFinish(['A'], { workers: 1, hoursOf: () => 2, scope: () => ['b'], blockers: () => [], held: [{ key: 'O', hours: 1.5, files: ['f'] }] })}`, '3.5 2');
 t('#1625 a size reads a fixed slot time when there is no history', `${FALLBACK_SLOT_HOURS.M} ${FALLBACK_SLOT_HOURS.unknown}`, '2 2');
 
 t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainName('desk/bin/pass.mjs')} ${chainName('skills/desk-ticket/SKILL.md')}`, 'pass.mjs desk-ticket');
