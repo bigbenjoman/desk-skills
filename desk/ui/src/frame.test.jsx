@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
+import { json, stubServer as stubWith } from './test-server.js';
 
 const AT = new Date(2026, 10, 26, 10, 8).toISOString();
-const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const repo = (name, more = {}) => ({ id: `owner__${name}`, slug: `owner__${name}`, name, error: null, running: 0, needs_you: 0,
   batches: [], production_broken: [], jira_browse: null, ...more });
 const JIRA = 'https://jira.example.net/browse/';
@@ -27,21 +27,7 @@ const fixture = () => ({
 });
 
 // A desk-ui server with a stream the test drives: `send(event, data)` is the server emitting a change.
-function stubServer(snapshot = fixture()) {
-  const s = { streams: [] };
-  s.get = vi.fn(async (url) => {
-    if (url === '/api/setup') return json({ installed: true, checkout: '~/studia/desk-skills', repos: 4, found: [] });
-    if (url === '/api/snapshot') return json(snapshot);
-    return json({ error: { code: 'not_found' } }, 404);
-  });
-  s.Events = class {
-    constructor(url) { this.url = url; this.on = {}; s.streams.push(this); queueMicrotask(() => this.onopen?.()); }
-    addEventListener(name, f) { this.on[name] = f; }
-    close() {}
-  };
-  s.send = (event, data) => act(() => { for (const es of s.streams) es.on[event]?.({ data: JSON.stringify(data) }); });
-  return s;
-}
+const stubServer = (snapshot = fixture()) => stubWith(snapshot);
 
 const page = (name) => () => <p>{name} page</p>;
 const SOME = { inbox: page('Inbox'), workers: page('Workers') };

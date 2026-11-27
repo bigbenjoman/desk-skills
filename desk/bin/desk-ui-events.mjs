@@ -47,12 +47,13 @@ export function counts(file) {
 // The read model: desk-q's home view for every repo with a batch, each repo's ticket rows as its
 // repo view lists them (their figures and stage, not the screen's line, which carries ages that move
 // with the clock), and each batch's heartbeat liveness, which the clock tick checks.
-async function readModel(now) {
+export async function readModel(now) {
   const Q = await import('./desk-q-model.mjs');
   E.forgetReads(); // the server outlives edits to the machine profile and configs
   const repos = Q.loadRepos(now);
   const { lines, generated_at, ...body } = Q.homeJson(repos, { all: true, now });
-  body.subscriptions = Q.subscriptionsJson(repos, { now });
+  // An unreadable subscriptions file blanks only the Usage & costs figures, never every screen.
+  try { body.subscriptions = Q.subscriptionsJson(repos, { now }); } catch (e) { body.subscriptions = { error: e.message }; }
   const tickets = {};
   for (const s of body.repos ?? []) {
     const r = s.error ? null : Q.repoPlace(repos, s.id);

@@ -99,8 +99,36 @@ t('AC3 desk-skills waits for ben@studia.example with its ready tickets, until th
   s.waiting, [{ email: 'ben@studia.example', name: 'personal', type: 'seven_day', at: at(31, 8, 0) * 1000, repos: [{ name: 'desk-skills', ready: 3 }] }]);
 claudeReading('personal', [0.32, at(26, 13, 10)], [0.88, at(1 + 30, 8, 0)]);
 
-// ---- the change stream carries the figures on home, and a probe's end rebuilds it
+// ---- every Claude login set off: the default is off, so it is never labelled the default, and the
+// repos on it cannot start work
+subscriptions([['claude', 'personal', '~/.claude-logins/personal', 'ben@studia.example', 'off'],
+  ['claude', 'work', '~/.claude-logins/work', 'ops@studia.example', 'off'],
+  ['claude', 'spare', '~/.claude-logins/spare', 'ben@personal.example', 'off']]);
+s = Q.subscriptionsJson(Q.loadRepos(FIXED), { now: FIXED });
+t('an off default reads off, and is still marked as the default', (({ state, is_default }) => ({ state, is_default }))(byEmail(s.claude, 'ben@studia.example')),
+  { state: 'off', is_default: true });
+t('no default email while the default is off', s.default_email, null);
+t('a repo on an off default is not known to start work', s.repos.find((r) => r.name === 'desk-skills')?.known, false);
+subscriptions([['claude', 'personal', '~/.claude-logins/personal', 'ben@studia.example', 'default'],
+  ['claude', 'work', '~/.claude-logins/work', 'ops@studia.example', 'unused'],
+  ['claude', 'spare', '~/.claude-logins/spare', 'ben@personal.example', 'off']]);
+
+// ---- an unreadable subscriptions file blanks only the Usage & costs figures, not the model
 const E = await import(join(BIN, 'desk-ui-events.mjs'));
+{
+  // A folder where the file should be: reading it fails (EISDIR).
+  const unreadable = join(T, 'subscriptions-dir.md');
+  mkdirSync(unreadable);
+  process.env.DESK_SUBSCRIPTIONS = unreadable;
+  let model = null, threw = null;
+  try { model = await E.readModel(FIXED); } catch (e) { threw = e.message; }
+  process.env.DESK_SUBSCRIPTIONS = env.DESK_SUBSCRIPTIONS;
+  t('an unreadable subscriptions file does not fail the read model', threw, null);
+  t('the read model carries the subscriptions error, and still its repos',
+    [/EISDIR/.test(model?.body?.subscriptions?.error ?? ''), Array.isArray(model?.body?.repos)], [true, true]);
+}
+
+// ---- the change stream carries the figures on home, and a probe's end rebuilds it
 let builds = 0;
 const feed = E.makeFeed({ build: async (now) => { builds += 1; return { at: now, body: { repos: [], subscriptions: { n: builds } }, tickets: {}, batches: [] }; },
   roots: () => [], debounceMs: 5, tickMs: 60000 });

@@ -58,7 +58,13 @@ const resetText = (ms, now) => (new Date(ms).toDateString() === new Date(now).to
 function Hero({ subs, now }) {
   const def = defaultSub(subs);
   if (!def) {
-    return <section className="rounded-lg border border-border p-4 text-[13px] text-muted-fg">No Claude subscription is set as this computer's default yet.</section>;
+    const off = (subs.claude ?? []).find((s) => s.is_default) ?? null;
+    return (
+      <section className="rounded-lg border border-border p-4 text-[13px] text-muted-fg" data-hero="">
+        {off ? `This computer's default Claude subscription, ${off.email ?? off.label}, is off, so repos that aren't pinned can't start work.`
+          : "No Claude subscription is set as this computer's default yet."}
+      </section>
+    );
   }
   const week = def.reading?.seven_day ?? null;
   const limit = weekLimit(def);
@@ -157,7 +163,7 @@ function SubCard({ s, codex = false, now }) {
 
 // A repo's "Runs on" cell: the default, the account it is pinned to, or an account no subscription here has.
 function RunsOn({ r }) {
-  if (r.source === 'default') return <span>{`Default (${r.email ?? 'not set'})`}</span>;
+  if (r.source === 'default') return <span className={r.known ? '' : 'text-fail'}>{`Default (${r.email ?? 'not set'})`}</span>;
   if (!r.known) return <span className="inline-flex items-center gap-1.5 text-fail"><Icon name="pin" size={13} />{r.email}</span>;
   return <span className="inline-flex items-center gap-1.5"><Icon name="pin" size={13} />{r.email}</span>;
 }
@@ -203,7 +209,9 @@ function ReposTable({ subs, now }) {
           <td colSpan={4} className="px-3 py-2.5">
             <div role="alert" className="flex items-start gap-2 rounded-md border border-fail-bd bg-fail-bg px-3 py-2.5 text-[13px]" data-unknown={r.name}>
               <span className="mt-px text-fail"><Icon name="circle-x" size={14} /></span>
-              <span>{r.off
+              <span>{r.source === 'default'
+                ? `✕ This computer's default Claude subscription is off, so ${r.name} can't start work. Turn it back on, or pick another subscription for it.`
+                : r.off
                 ? `✕ The only subscription on this computer signed in to ${r.email} is ${r.off}, which is off, so ${r.name} can't start work. Turn ${r.off} back on, or pick another subscription for it.`
                 : `✕ No subscription on this computer is signed in to ${r.email}, so ${r.name} can't start work. Pick another subscription for it, or add one signed in to that account.`}</span>
             </div>
@@ -241,7 +249,7 @@ export function Usage({ snapshot, path = '/usage' }) {
   useEffect(() => {
     if (path === '/usage/subscriptions') document.getElementById('subscriptions')?.scrollIntoView?.({ block: 'start' });
   }, [path]);
-  const stamp = subs ? probeStamp(subs, now) : null;
+  const stamp = subs && !subs.error ? probeStamp(subs, now) : null;
   return (
     <main className="flex flex-col">
       <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-5">
@@ -250,6 +258,10 @@ export function Usage({ snapshot, path = '/usage' }) {
       </div>
       {!subs ? (
         <p className="p-5 text-[13px] text-muted-fg">Waiting for the server's first usage reading.</p>
+      ) : subs.error ? (
+        <p role="alert" className="m-5 rounded-md border border-fail-bd bg-fail-bg px-3 py-2.5 text-[13px]" data-subs-error="">
+          {`desk couldn't read this computer's subscriptions: ${subs.error}`}
+        </p>
       ) : (
         <div className="flex max-w-[1180px] flex-col gap-6 p-5">
           <Hero subs={subs} now={now} />

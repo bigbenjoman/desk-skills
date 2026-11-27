@@ -45,7 +45,8 @@ export function paceOf(w, now) {
 
 // A window's word, beside its colour and never instead of it (screen-spec §11.1).
 export function level(pct, limited) {
-  if (limited || pct >= 100) return { word: 'Limit reached', tone: 'fail' };
+  // Only a limit says Limit reached: a reading rounds 99.6% up to 100 with nothing holding yet.
+  if (limited) return { word: 'Limit reached', tone: 'fail' };
   if (pct >= 90) return { word: 'Tight', tone: 'fail' };
   if (pct >= 70) return { word: 'Watch', tone: 'needs' };
   return { word: 'Fine', tone: 'done' };
@@ -56,7 +57,8 @@ export const weekLimit = (s) => (s?.limit?.type === 'seven_day' ? s.limit : null
 
 // The probe stamp: "Checked 10:05 · next 10:10", or stale once the reading is over two intervals old.
 export function probeStamp(subs, now) {
-  const at = defaultSub(subs)?.reading?.at;
+  // The default's reading, else (with the default off) the first Claude subscription read.
+  const at = defaultSub(subs)?.reading?.at ?? subs?.claude?.find((s) => s.reading?.at != null)?.reading.at;
   const every = subs?.probe_every_ms ?? 5 * 60000;
   if (at == null) return { stale: true, text: '◌ No probe reading yet' };
   if (now - at > 2 * every) return { stale: true, text: `◌ Probe stale: last read ${clock(at)}` };

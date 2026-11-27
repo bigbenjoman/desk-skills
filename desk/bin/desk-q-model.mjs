@@ -4470,14 +4470,16 @@ const msOf = (s) => (s == null ? null : s * 1000);
 const limitJson = (l) => (l ? { type: l.type ?? null, at: msOf(l.at) } : null);
 const windowJson = (w, now) => (w ? ((u) => ({ pct: u.pct, resets_at: w.resetsAt * 1000 }))(windowUse(w, now)) : null);
 const readingJson = (r, now) => (r?.at == null ? null : { five_hour: windowJson(r.five_hour, now), seven_day: windowJson(r.seven_day, now), at: r.at, none: r.none ?? [] });
-const subState = (x) => (x.use?.isDefault ? 'default' : x.login.rule === 'off' ? 'off' : x.use?.pinned?.length ? 'pinned' : 'unused');
+// An off default is off: no repo runs on it, so it is never labelled the default.
+const subState = (x) => (x.login.rule === 'off' ? 'off' : x.use?.isDefault ? 'default' : x.use?.pinned?.length ? 'pinned' : 'unused');
 export function subscriptionsJson(repos, { now = Date.now() } = {}) {
   const u = usageTable(repos, now);
   const email = (x) => accountOf(x.login).email ?? x.login.account ?? null;
-  const sub = (x) => ({ name: x.login.name, email: email(x), label: loginLabel(x.login), plan: x.plan ?? null, folder: x.login.folder ?? null, state: subState(x),
+  const sub = (x) => ({ name: x.login.name, email: email(x), label: loginLabel(x.login), plan: x.plan ?? null, folder: x.login.folder ?? null, state: subState(x), is_default: !!x.use?.isDefault,
     pinned: x.use?.pinned ?? [], workers: x.workers ?? null, reading: readingJson(x.reading, now), limit: limitJson(x.limit ?? (x.tool === 'codex' ? x.out : null)) });
-  const def = u.claude.find((x) => x.use?.isDefault) ?? null;
-  const known = (s) => !!s && (s.source === 'default' || !!s.login);
+  const def = u.claude.find((x) => x.use?.isDefault && x.login.rule !== 'off') ?? null;
+  // A repo on the default while the default is off has no login (logins.mjs repoSubscription): it can't start work.
+  const known = (s) => !!s?.login;
   return {
     claude: u.claude.map(sub),
     codex: u.codex.map(sub),

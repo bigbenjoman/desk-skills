@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { Usage } from './usage.jsx';
-import { paceOf, step, usageBadge } from './usage-figures.js';
+import { level, paceOf, step, usageBadge } from './usage-figures.js';
+import { stubServer } from './test-server.js';
 
 // Sunday 29 November 2026, 20:00 local: 132 h into a 7-day window that resets Tuesday 1 December at
 // 08:00, so 88% used fills it at Monday 14:00, 18 h before the reset.
@@ -10,7 +11,6 @@ const NOW = new Date(2026, 10, 29, 20, 0).getTime();
 const RESET = new Date(2026, 11, 1, 8, 0).getTime();
 const H5 = new Date(2026, 10, 29, 23, 10).getTime();
 const MIN = 60000;
-const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 const reading = (d7, at = NOW - MIN, h5 = 32) => ({ five_hour: { pct: h5, resets_at: H5 }, seven_day: { pct: d7, resets_at: RESET }, at, none: [] });
 const sub = (name, email, more = {}) => ({ name, email, label: email, plan: 'Max 5x', folder: `~/.claude-logins/${name}`, state: 'unused', pinned: [],
@@ -41,21 +41,6 @@ function subscriptions({ d7 = 88, limited = false, at = NOW - MIN } = {}) {
 const snapshotOf = (subs) => ({ at: new Date(NOW).toISOString(), rev: 1, needs_you: { count: 0, put_off: 0, oldest_at: null }, machine: { running: 7, cap: 30, room: 7, avail_gib: 27.5 },
   repos: [], no_batch: [], tickets: {}, subscriptions: subs });
 
-function stubServer(snapshot) {
-  const s = { streams: [] };
-  s.get = vi.fn(async (url) => {
-    if (url === '/api/setup') return json({ installed: true, checkout: '~/studia/desk-skills', repos: 4, found: [] });
-    if (url === '/api/snapshot') return json(snapshot);
-    return json({ error: { code: 'not_found' } }, 404);
-  });
-  s.Events = class {
-    constructor(url) { this.url = url; this.on = {}; s.streams.push(this); queueMicrotask(() => this.onopen?.()); }
-    addEventListener(name, f) { this.on[name] = f; }
-    close() {}
-  };
-  s.send = (event, data) => act(() => { for (const es of s.streams) es.on[event]?.({ data: JSON.stringify(data) }); });
-  return s;
-}
 const ROUTES = { inbox: () => <p>Inbox page</p>, usage: Usage };
 async function open(subs = subscriptions()) {
   window.innerWidth = 1440;
@@ -154,6 +139,33 @@ describe('Usage & costs', () => {
     draw(subscriptions());
     expect(screen.queryAllByRole('button')).toEqual([]);
     expect(screen.queryByRole('tab', { name: 'Bills' })).toBe(null);
+  });
+
+  it('a reading that rounds to 100% with no limit holding reads Tight, never Limit reached', () => {
+    expect(level(100, false).word).toBe('Tight');
+    expect(level(99, true).word).toBe('Limit reached');
+  });
+
+  it('an off default is labelled Off, and the repos on the default cannot start work', () => {
+    const subs = subscriptions();
+    subs.claude[0] = { ...subs.claude[0], state: 'off', is_default: true };
+    subs.repos = subs.repos.map((r) => (r.source === 'default' ? { ...r, known: false } : r));
+    draw(subs);
+    const card = screen.getByRole('article', { name: 'ben@studia.example' });
+    expect(within(card).getByText('Off')).toBeTruthy();
+    expect(within(card).queryByText('Default')).toBe(null);
+    expect(document.querySelector('[data-hero]').textContent)
+      .toBe("This computer's default Claude subscription, ben@studia.example, is off, so repos that aren't pinned can't start work.");
+    expect(document.querySelector('[data-unknown="desk-skills"]').textContent)
+      .toBe("✕ This computer's default Claude subscription is off, so desk-skills can't start work. Turn it back on, or pick another subscription for it.");
+    expect(document.querySelector('[data-stamp]').textContent).toBe('Checked 19:59 · next 20:04');
+  });
+
+  it('subscriptions the server could not read say so, and draw no figures', () => {
+    draw({ error: 'subscriptions.json: Unexpected token' });
+    expect(document.querySelector('[data-subs-error]').textContent).toBe("desk couldn't read this computer's subscriptions: subscriptions.json: Unexpected token");
+    expect(document.querySelector('[data-hero]')).toBe(null);
+    expect(document.querySelector('[data-stamp]')).toBe(null);
   });
 });
 

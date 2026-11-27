@@ -6,9 +6,10 @@
 // ends, since its reading is a quiet .log the stream's watcher leaves out. A desk-q screen that finds the heartbeat fresh (schedulerFresh) leaves the
 // probes to the server and shows the readings it writes; with the heartbeat stale or gone, as when the
 // server has stopped, desk-q probes by itself. The heartbeat is removed on stop.
-import { mkdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import * as E from './desk-env.mjs';
+import { alive as pidAlive, writeJsonAtomic } from './dir-lock.mjs';
 
 export const TICK_MS = 30_000;
 // A heartbeat is fresh while it is younger than two ticks and this much more.
@@ -16,10 +17,8 @@ const SLACK_MS = 15_000;
 
 export const beatPath = () => join(E.HOME, '.desk-autopilot', 'ui', 'scheduler.json');
 
-const alive = (pid) => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
-};
+// Pid 0 (or none) would signal this process's own group, so it is never alive here.
+const alive = (pid) => Number.isInteger(pid) && pid > 0 && pidAlive(pid);
 
 // Whether a server's probe loop is running now: its heartbeat younger than two of its ticks (and
 // SLACK_MS), from a process still alive. A missing or unreadable heartbeat is not fresh.
@@ -38,12 +37,7 @@ export function makeScheduler({ now = Date.now, tickMs = TICK_MS, path = beatPat
   onError = (e) => console.error(`desk-ui: probes: ${e.message}`) } = {}) {
   let timer = null, round = null, stopped = false;
   const beat = () => {
-    try {
-      mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, `${JSON.stringify({ pid: process.pid, at: now(), every_ms: tickMs })}\n`);
-      renameSync(tmp, path);
-    } catch (e) { onError(e); }
+    try { writeJsonAtomic(path, { pid: process.pid, at: now(), every_ms: tickMs }); } catch (e) { onError(e); }
   };
   async function run() {
     let list = [];
