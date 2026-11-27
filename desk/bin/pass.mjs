@@ -80,7 +80,7 @@ import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -2876,8 +2876,8 @@ const SLOTS_SNAP = {
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   machineCeiling: MACHINE_CEILING, weight: WEIGHT,
-  repoWeights: MACHINE_CAP == null || MACHINE_CEILING == null ? {} : Object.fromEntries([...new Set(otherRepos.map((o) => o.slug))]
-    .map((slug) => [slug, workerWeight(slug === REPO_SLUG ? E.configValue('worker-memory') : repoWeightRaw(slug), { ceiling: MACHINE_CEILING, cap: MACHINE_CAP }).gb])),
+  repoWeights: MACHINE_CAP == null || MACHINE_CEILING == null ? {} : repoWeights(otherRepos.map((o) => o.slug), {
+    ceiling: MACHINE_CEILING, cap: MACHINE_CAP, raw: (slug) => (slug === REPO_SLUG ? E.configValue('worker-memory') : repoWeightRaw(slug)) }),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
   batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
   memPool: MEM_POOL,

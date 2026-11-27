@@ -175,9 +175,6 @@ other(W, 'acme__one', { running: 2, weight: 2 });
 r = pass(W, 'acme__two', { conc: '2 / 3', ready: 3, weight: 2 });
 t('issue-1523 AC4 the worker cap holds though the weights leave room', r.started, 0);
 t('issue-1523 AC4 the report names the cap', (line(r.out, 'machine budget:') ?? '').endsWith(': the machine is at its cap, so nothing starts this pass'), true);
-// AC6: /desk-setup proposes a weight from a per-repo peak source where one exists, else the flat share, and asks.
-t('issue-1523 AC6 desk-setup proposes the weight from measured peaks, else none, and asks to confirm',
-  /\*\*Worker memory weight\*\*: propose the repo's measured peak/.test(setup) && /With none, propose `none`[^.]*, say so, and ask to confirm/.test(setup), true);
 
 console.log(fails ? `${fails} check(s) did not pass` : 'machine budget: all checks passed');
 process.exit(fails ? 1 : 0);

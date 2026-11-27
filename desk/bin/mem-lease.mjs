@@ -24,10 +24,9 @@ const memReq = (key, units, ttl, label, pid) => ({ kind: 'mem', key: `worker ${k
 
 // The memory pool as a pass reads it. `cap` is the machine's worker cap (borrow.mjs machineCap), or
 // the repo's §3b "Autopilot worker concurrency" cap where the machine profile sets none; `weight` the
-// repo's GB per worker (borrow.mjs workerWeight), which is the share where given, at most the ceiling;
-// with `take` false (a dry run) nothing is lapsed. A store that cannot be read, or a broker that fails
-// any other way (a lease directory it cannot lock), is `unreadable`, so the pass judges memory by the
-// legacy rules.
+// repo's workerWeight gb (borrow.mjs), which is the share where given; with `take` false (a dry run)
+// nothing is lapsed. A store that cannot be read, or a broker that fails any other way (a lease
+// directory it cannot lock), is `unreadable`, so the pass judges memory by the legacy rules.
 // -> { mode, ceiling, share, reserved, holders: [lease], unreadable } (ceiling null with none set;
 //    unreadable the error, with reserved and holders unset).
 export function memPool({ env, cap, weight = null, take = true }) {
@@ -35,7 +34,7 @@ export function memPool({ env, cap, weight = null, take = true }) {
   try { ({ mode } = kindMode('mem', env)); } catch (e) { return { mode: 'shadow', ceiling: null, share: null, unreadable: e.message }; }
   if (mode === 'off') return { mode, ceiling: null, share: null };
   const ceiling = capacities(env).mem;
-  const share = ceiling > 0 && Number.isInteger(weight) && weight >= 1 ? Math.min(weight, ceiling) : memShare(ceiling, cap);
+  const share = ceiling > 0 && weight != null ? weight : memShare(ceiling, cap);
   if (ceiling == null) return { mode, ceiling, share };
   let leases;
   try { leases = take ? list({ env }) : peek({ env }); } catch (e) { return { mode, ceiling, share, unreadable: e.message }; }
