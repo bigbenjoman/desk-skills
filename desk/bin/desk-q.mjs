@@ -57,7 +57,7 @@ import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
-import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+import { logStage, saidDone, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
@@ -156,7 +156,7 @@ function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
   if (t.state === 'running' && ctx.finished?.(t.key)) return 'finishing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
-  if (doneHandoff(t, ctx)) return 'needs';
+  if (stalledHandoff(t, ctx)) return 'needs';
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   const ph = parkHold(q, t, ctx, seen);
@@ -175,12 +175,19 @@ function stateOf(q, t, ctx, seen) {
 // files, waits for it to free, and is not stalled.
 const slotWait = (t) => handoffWaitText(t) != null;
 const slotWaitText = handoffWaitText;
-// A pending handoff whose worker printed AUTOPILOT_DONE: no pass respawns a ticket whose worker said it
-// finished (pass.mjs alreadyFinished), so it stays put until it is requeued.
-const doneHandoff = (t, ctx) => t?.state === 'triaged' && toHandoff(t) && ctx?.saidDone?.(t.key) === true;
-const doneHandoffText = (t) => `stalled: its worker printed AUTOPILOT_DONE, then handed off to Stage ${t.handoff_stage ?? '?'}, and no pass respawns a ticket whose worker printed DONE`;
+// Why no pass respawns a pending handoff, as { text, requeue }, or null when one will. Its worker
+// printed AUTOPILOT_DONE (pass.mjs alreadyFinished), which a requeue clears; or it is linked in Jira as
+// blocked by a ticket held behind it (pass/eligibility.mjs inCycle), which needs-you asks about.
+function stalledHandoff(t, ctx) {
+  if (t?.state !== 'triaged' || !toHandoff(t)) return null;
+  const to = `handed off to Stage ${t.handoff_stage ?? '?'}`;
+  if (ctx?.printedDone?.(t.key) === true) return { text: `stalled: its worker printed AUTOPILOT_DONE, then ${to}, and no pass respawns a ticket whose worker printed DONE`, requeue: true };
+  const cycle = keysOf(t.cycle_link);
+  if (cycle.length) return { text: `stalled: ${to}, but linked in Jira as blocked by ${listed(cycle)}, which ${cycle.length === 1 ? 'is' : 'are'} held behind it, so no pass respawns it: which comes first is asked in needs-you`, requeue: false };
+  return null;
+}
 
-const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, saidDone: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
+const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, printedDone: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -245,8 +252,9 @@ function holdContext(r) {
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
   // Whether running ticket `key`'s worker said it finished, so only the next pass's record is left.
   const finished = (key) => rowStage(r.stateDir, r.q.tickets[key], r.last).done === true;
-  // Whether ticket `key`'s last worker round printed AUTOPILOT_DONE, whatever its state.
-  const saidDone = (key) => logStage(join(r.stateDir, 'logs', `${key}.log`))?.done === true;
+  // Whether ticket `key`'s log holds a worker's AUTOPILOT_DONE, read as pass.mjs alreadyFinished reads
+  // it before a respawn: the whole log, and no "9/9 done" stage standing in for the marker.
+  const printedDone = (key) => { try { return saidDone(readFileSync(join(r.stateDir, 'logs', `${key}.log`), 'utf8')); } catch { return false; } };
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
   const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
@@ -269,7 +277,7 @@ function holdContext(r) {
   // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
   // relaying its merge lines), not on the person. `mergeHolds`: §4 Merge holds names a path, and only the
   // driver records a PR's hold (merge_blocked), so with none running the words say a hold makes it theirs.
-  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, saidDone, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, printedDone, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -1246,6 +1254,8 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
+  const sh = x.k === 'needs' && stalledHandoff(x.t, r.ctx);
+  if (sh) return sh.text;
   if (x.k === 'needs') return isHeld(x.t) && !heldAsks(x.t) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return outsideText(x.t);
   if (x.k === 'failed') return stoppedText(x.t);
@@ -3569,7 +3579,8 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
   if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
-  if (k === 'needs' && doneHandoff(t, r.ctx)) return [[`${doneHandoffText(t)}: requeue it`, null]];
+  const sh = k === 'needs' && stalledHandoff(t, r.ctx);
+  if (sh) return [[sh.requeue ? `${sh.text}: requeue it` : sh.text, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
   if (k === 'failed') return [[stoppedText(t), null]];
   if (k === 'queued') return [['triaging', null]];
@@ -3893,9 +3904,9 @@ function moveOf(r, row, k, t, h, now) {
   }
   const wb = worktreeBusy(t);
   if (wb) return { text: `Needs you. ${busyPark(t) ? `Its last worker parked: ${busyPark(t).question}. ` : ''}No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
-  if (k === 'needs' && doneHandoff(t, r.ctx)) {
-    return { text: `Needs you. ${capital(doneHandoffText(t))}.`, lead: `Requeue it, in ${r.name}, and it starts again at Stage ${t.handoff_stage ?? '?'}:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
-  }
+  const sh = k === 'needs' && stalledHandoff(t, r.ctx);
+  if (sh && !sh.requeue) return { text: `Needs you. ${capital(sh.text)}.` };
+  if (sh) return { text: `Needs you. ${capital(sh.text)}.`, lead: `Requeue it, in ${r.name}, and it starts again at Stage ${t.handoff_stage ?? '?'}:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
   if (f && groupOf(k) !== 'needs') {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };

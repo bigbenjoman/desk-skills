@@ -18,7 +18,7 @@ import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadab
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, STAGELESS_RAISE, raisedThreshold, sessionThreshold } from './handoff.mjs';
 import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief } from './decisions-change.mjs';
 import { issueChanged, refreshTicket, refreshBrief } from './ticket-refresh.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
+import { workerMarkers, saidDone, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -3061,7 +3061,7 @@ const alreadyFinished = (r) => {
   if (!existsSync(log)) return false;
   // Only what the worker printed, read the way harvest reads it: a tool call or tool result that
   // quotes the marker (a grep for it, say) is not the worker finishing.
-  try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
+  try { return saidDone(readFileSync(log, 'utf8')); } catch { return false; }
 };
 
 // The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The

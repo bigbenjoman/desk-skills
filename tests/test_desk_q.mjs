@@ -2790,12 +2790,19 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
 {
   const h = { key: 'H', state: 'triaged', handoff: 'pending', handoff_stage: '7' };
   const q = { tickets: { H: h } };
-  const ctx = { saidDone: (k) => k === 'H' };
+  const ctx = { printedDone: (k) => k === 'H' };
   const k = Q.shownState(q, h, ctx);
   t('issue-1571 AC3 desk-q shows a handoff after DONE as needing you, stalled, naming why',
     `${k} | ${Q.needText({ q, ctx, live: true }, { t: h, k })}`,
     'needs | stalled: its worker printed AUTOPILOT_DONE, then handed off to Stage 7, and no pass respawns a ticket whose worker printed DONE: requeue it');
-  t('issue-1571 AC3 a handoff whose worker printed no DONE is ready as before', Q.shownState(q, h, { saidDone: () => false }), 'ready');
+  t('issue-1571 AC3 a handoff whose worker printed no DONE is ready as before', Q.shownState(q, h, { printedDone: () => false }), 'ready');
+  // A pending handoff linked in a Jira cycle is one the pass leaves out too (eligibility.mjs inCycle).
+  const c = { ...h, cycle_link: 'B' };
+  const qc = { tickets: { H: c } };
+  const kc = Q.shownState(qc, c, { printedDone: () => false });
+  t('issue-1571 AC3 a handoff linked in a Jira cycle shows as stalled, naming the cycle',
+    `${kc} | ${Q.needText({ q: qc, ctx: { printedDone: () => false }, live: true }, { t: c, k: kc })}`,
+    'needs | stalled: handed off to Stage 7, but linked in Jira as blocked by B, which is held behind it, so no pass respawns it: which comes first is asked in needs-you');
 }
 
 // ---- DS-1005: a park whose question asks the person for a host-side step, on a file only that step
