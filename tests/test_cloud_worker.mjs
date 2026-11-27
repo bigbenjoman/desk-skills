@@ -8,7 +8,8 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
+import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
@@ -294,6 +295,37 @@ t('issue-1553 no follow-up is sent with no session id recorded', sendCloud(null,
   t('issue-1553 the retry follow-up goes as claude -p <msg> --cloud <session> --output-format json', `${JSON.stringify(got)} ${readFileSync(join(d, 'args'), 'utf8').split('\n').slice(2).join(' ').trim()}`, '{"ok":true} --cloud session_01Vy49H7Z4T3CSgAhSxsuhqj --output-format json');
   rmSync(d, { recursive: true, force: true });
 }
+
+// ---- an unfinished cloud PR (issue-1570) -------------------------------------
+t('issue-1570 AC1 a finished PR has no unfinished mark', unfinishedMark({ title: 'feat(w): K-1 save', body: 'Saves the widget.\n\n### Testing\nbash tests/run.sh' }), null);
+t('issue-1570 AC1 WIP in its title marks it unfinished', unfinishedMark({ title: 'WIP: feat(w): K-1 save', body: '' }), 'WIP');
+t('issue-1570 AC1 so does [WIP] in its body', unfinishedMark({ title: 'feat: K-1', body: '[WIP] placeholder selectors' }), 'WIP');
+t('issue-1570 AC1 and a "what is left" section', unfinishedMark({ title: 'feat: K-1', body: '## What\'s left\n- real selectors' }), 'what is left');
+t('issue-1570 AC1 and the prompt\'s step 5 wording', unfinishedMark({ title: 'feat: K-1', body: 'I could not finish the a11y run.' }), 'could not finish');
+t('issue-1570 a word holding the letters WIP is not the mark', unfinishedMark({ title: 'feat: K-1 swipe and wipe', body: 'SWIPED' }), null);
+t('issue-1570 the prompt asks a session that cannot finish for WIP and what is left, and to take both out when it does', ['with WIP in its title and what is left in its body', 'take both out'].every((x) => prompt.includes(x)), true);
+{
+  const M = 60_000, p0 = Date.parse('2026-11-26T22:00:00Z'), pushed = iso(p0);
+  const ok = (name) => ({ name, status: 'completed', conclusion: 'success' });
+  const idle = (o) => cloudIdle({ pr: 31, head: 'aaa', pushedAt: pushed, ...o });
+  t('issue-1570 AC2 while CI runs on its head the session is sent nothing', idle({ checks: [ok('Lint'), { name: 'Tests', status: 'in_progress', conclusion: null }], now: p0 + 10 * M }).act, 'wait');
+  const first = idle({ checks: [ok('Lint'), { name: 'Tests', status: 'completed', conclusion: 'failure' }], now: p0 + 20 * M });
+  t('issue-1570 AC2 once CI on its head finishes it is sent a follow-up', `${first.act} ${first.record.sent} ${first.record.head}`, 'send 0 aaa');
+  const sent1 = { ...first.record, sent: 1, sent_at: iso(p0 + 20 * M) };
+  t('issue-1570 AC2 within the wait of that follow-up nothing more is sent', idle({ prior: sent1, checks: [ok('Lint')], now: p0 + 70 * M }).act, 'wait');
+  t('issue-1570 AC2 an hour after it with no push, a second', idle({ prior: sent1, checks: [ok('Lint')], now: p0 + 81 * M }).act, 'send');
+  const sent2 = { ...sent1, sent: CLOUD_IDLE_FOLLOWUPS, sent_at: iso(p0 + 81 * M) };
+  t('issue-1570 AC2 after the second, within the wait, it waits', idle({ prior: sent2, now: p0 + 120 * M }).act, 'wait');
+  const park = idle({ prior: sent2, now: p0 + 142 * M });
+  t('issue-1570 AC2 after 2 idle follow-ups and the wait past the last, it parks', `${CLOUD_IDLE_FOLLOWUPS} ${park.act}`, '2 park');
+  const pushedAgain = idle({ prior: sent2, head: 'bbb', pushedAt: iso(p0 + 130 * M), checks: [{ name: 'Tests', status: 'queued', conclusion: null }], now: p0 + 142 * M });
+  t('issue-1570 AC2 a push starts the count over, and waits on CI at the new head', `${pushedAgain.act} ${pushedAgain.record.sent} ${pushedAgain.record.head}`, 'wait 0 bbb');
+  t('issue-1570 with no checks at all it waits an hour from the push, then sends', `${idle({ now: p0 + 30 * M }).act} ${idle({ now: p0 + 61 * M }).act}`, 'wait send');
+  const msg = cloudFollowUpMsg({ pr: 31, head: 'abcdef1234', mark: 'WIP', checks: [ok('Lint'), { name: 'Tests', status: 'completed', conclusion: 'failure' }] });
+  t('issue-1570 AC2 the follow-up carries the check results on its head', ['PR #31', 'CI on abcdef1 has finished: Tests failure; 1 of 2 passed.', 'take WIP and what is left out'].every((x) => msg.includes(x)), true);
+}
+t('issue-1570 AC3 desk-q shows it as idle since its last push, PR unfinished', cloudIdleText({ stage: 'cloud', cloud: { unfinished: { pr: 31, pushed_at: '2026-11-26T12:00:00Z' } } })?.replace(/\d\d:\d\d/, 'HH:MM'), 'cloud session idle since Nov 26 HH:MM, PR #31 unfinished');
+t('issue-1570 AC3 a local worker on its PR later is not shown so', cloudIdleText({ stage: '4/9 verify', cloud: { unfinished: { pr: 31 } } }), null);
 
 // ---- finished sessions to archive -------------------------------------------
 const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });

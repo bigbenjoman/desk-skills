@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 import { repoStateOf } from './desk-env.mjs';
+import { FAILED } from './gate.mjs';
 
 export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
@@ -158,7 +159,7 @@ export function cloudPrompt({ key, repo, base, branch, text, tests, rules }) {
     '2. Before you push: where your change branches on a value an API or server state sets (a status, flag, enum or role read from a response or a stored record), read where that value is set, the endpoint, handler or service that assigns it, and check your branch against every value it can set, not only the one the ticket names. If that source is not in this repository, say so in the PR body as a premise: which value, and why it could not be read.',
     `3. Commit on a branch named exactly \`${branch}\`, cut from \`${base}\`, and push it to origin.`,
     `4. Open a draft pull request from \`${branch}\` into \`${base}\` with ${key} in its title, and in its body what changed and how you tested it.`,
-    '5. If you cannot finish, push what you have and open the draft PR anyway, with what is left in its body.',
+    '5. If you cannot finish, push what you have and open the draft PR anyway, with WIP in its title and what is left in its body. When you do finish, take both out: the PR counts as finished only once neither is there.',
     `6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
     ...rulesSection(rules),
     '',
@@ -301,6 +302,58 @@ export function sendCloud(session, msg, { claude = 'claude', timeout = 60_000, e
   if (r.error) return { error: r.error.code === 'ETIMEDOUT' ? `no answer in ${timeout / 1000}s` : r.error.message };
   const got = parseCloudSend(`${r.stdout ?? ''}\n${r.stderr ?? ''}`, session);
   return got.error && r.status ? { error: `${got.error} (exit ${r.status})` } : got;
+}
+
+// ---- an unfinished cloud PR ------------------------------------------------------------------------
+// A session that cannot finish opens its draft anyway, marked as cloudPrompt's step 5 asks: WIP, or what
+// is left. `pr` is { title, body }. -> the first mark found, or null for a PR that reads finished.
+const UNFINISHED_MARKS = [
+  [/(^|[^A-Za-z])WIP([^A-Za-z]|$)/, 'WIP'],
+  [/\bwhat(?: is|'s|’s) (?:still )?left\b/i, 'what is left'],
+  [/\b(?:cannot|can't|can’t|could not|couldn't|couldn’t) finish\b/i, 'could not finish'],
+];
+export function unfinishedMark(pr) {
+  const text = `${pr?.title ?? ''}\n${pr?.body ?? ''}`;
+  return UNFINISHED_MARKS.find(([re]) => re.test(text))?.[1] ?? null;
+}
+
+// An unfinished PR's session is sent a follow-up once CI on its head has settled, and again after
+// CLOUD_IDLE_WAIT_MS with no push since; CLOUD_IDLE_FOLLOWUPS sent with no push, and that wait past the
+// last, it is parked. A push starts the count over.
+export const CLOUD_IDLE_FOLLOWUPS = 2;
+export const CLOUD_IDLE_WAIT_MS = 3_600_000;
+
+// What to do with an unfinished PR this pass. `prior` is the ticket's `cloud.unfinished` ({ pr, head,
+// pushed_at, sent, sent_at }) or null; `head` the PR's head SHA; `pushedAt` when that commit was made;
+// `checks` its checks (gate.mjs latestPerCheck). With no checks at all, CI counts as settled once the
+// wait has passed since the push.
+//   -> { act: 'wait' | 'send' | 'park', why, record } with `record` the `cloud.unfinished` to keep
+export function cloudIdle({ prior = null, pr, head, pushedAt, checks = [], now = Date.now() }) {
+  const same = prior?.head === head && prior?.pr === pr;
+  const record = same ? { ...prior } : { pr, head, pushed_at: pushedAt ?? null, sent: 0, sent_at: null };
+  const sentAt = Date.parse(record.sent_at ?? '');
+  const quiet = (from) => Number.isFinite(from) && now - from > CLOUD_IDLE_WAIT_MS;
+  if (record.sent >= CLOUD_IDLE_FOLLOWUPS) {
+    return quiet(sentAt) ? { act: 'park', why: `no push since ${record.sent} follow-ups, the last at ${record.sent_at}`, record }
+      : { act: 'wait', why: `follow-up ${record.sent} of ${CLOUD_IDLE_FOLLOWUPS} sent at ${record.sent_at}`, record };
+  }
+  if (record.sent > 0) {
+    return quiet(sentAt) ? { act: 'send', why: `no push since follow-up ${record.sent}, sent at ${record.sent_at}`, record }
+      : { act: 'wait', why: `follow-up ${record.sent} of ${CLOUD_IDLE_FOLLOWUPS} sent at ${record.sent_at}`, record };
+  }
+  if (checks.some((c) => c.status !== 'completed')) return { act: 'wait', why: 'CI is still running on its head', record };
+  if (!checks.length && !quiet(Date.parse(record.pushed_at ?? ''))) return { act: 'wait', why: 'no checks on its head yet', record };
+  return { act: 'send', why: checks.length ? 'CI on its head has finished' : 'no checks ran on its head', record };
+}
+
+// The follow-up an unfinished PR's session is sent, with the check results on its head.
+export function cloudFollowUpMsg({ pr, head, mark, checks = [] }) {
+  const failed = checks.filter((c) => FAILED.has(c.conclusion));
+  const ran = checks.length
+    ? `CI on ${String(head ?? '').slice(0, 7)} has finished: ${failed.length ? `${failed.map((c) => `${c.name} ${c.conclusion}`).join(', ')}; ` : ''}${checks.length - failed.length} of ${checks.length} passed.`
+    : `No checks ran on ${String(head ?? '').slice(0, 7)}.`;
+  return `desk reads PR #${pr} as unfinished (${mark}). ${ran} Carry on with the ticket from where you were: fix what failed, push, ` +
+    'and when it is finished take WIP and what is left out of the PR title and body, and say there what changed and how you tested it. If you cannot finish, say why in the PR body.';
 }
 
 // Session start to PR, in ms, or null while there is no PR.

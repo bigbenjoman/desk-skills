@@ -36,7 +36,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -1048,10 +1048,7 @@ function advanceCloud(t) {
     else if (DRY) report.quiet.push(`${t.key}: cloud session ${where}, no PR and ${stuck.why} (dry run: no retry follow-up sent)`);
     else {
       // One follow-up first, which restarts a session that stopped on an error (cloud-worker.mjs cloudStall).
-      // On the login the session started on (spawnCloud), whose account owns it. A session recorded
-      // before its login was kept is sent from the pass's own environment.
-      const env = c.login && 'config_dir' in c.login ? loginEnv({ tool: 'claude', configDir: c.login.config_dir }) : process.env;
-      const sent = sendCloud(c.session, CLOUD_RETRY_MSG, { env });
+      const sent = sendCloud(c.session, CLOUD_RETRY_MSG, { env: cloudEnv(c) });
       if (sent.error) flag(`${stuck.why}; its retry follow-up could not be sent (${sent.error})`);
       else {
         q('set', t.key, `cloud=${JSON.stringify({ ...c, retried_at: new Date().toISOString() })}`);
@@ -1060,7 +1057,19 @@ function advanceCloud(t) {
     }
     return;
   }
-  const cloud = { ...c, pr_at: pr.createdAt };
+  const { unfinished: _was, ...kept } = c;
+  const cloud = { ...kept, pr_at: pr.createdAt };
+  const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments,baseRefName,headRefName,author,title,headRefOid,statusCheckRollup'], { fresh: true });
+  let view = null;
+  try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
+  if (!view) {
+    report.quiet.push(`${t.key}: cloud session ${where} opened PR #${pr.number}, whose commits, body and comments could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}); read again next pass`);
+    return;
+  }
+  // A PR its session marked unfinished (cloudPrompt's step 5) keeps the ticket running on its session,
+  // and nothing of it is rewritten while the session may still push.
+  const mark = unfinishedMark({ title: view.title ?? pr.title, body: view.body });
+  if (mark) { cloudUnfinished(t, c, pr, view, mark, where); return; }
   // The PR is read against the rules its session was told (cloudRules) before the ticket is done: where
   // §5 forbids AI attribution, for that (a cloud session's harness adds a co-author trailer and a session
   // link by default, and no hook here sees its commits), and where an author is known, for commits
@@ -1070,13 +1079,6 @@ function advanceCloud(t) {
   const forbidden = E.attributionForbidden(E.configValue('ai-attribution'));
   const author = cloudAuthor();
   if (forbidden || author) {
-    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments,baseRefName,headRefName,author'], { fresh: true });
-    let view = null;
-    try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
-    if (!view) {
-      report.quiet.push(`${t.key}: cloud session ${where} opened PR #${pr.number}, whose commits, body and comments could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}); read again next pass`);
-      return;
-    }
     const found = [...(forbidden ? attributionFound(view) : []), ...authorMismatches(view, author)];
     if (found.length) {
       const prior = Number(c.scrubbed) || 0;
@@ -1096,7 +1098,7 @@ function advanceCloud(t) {
         return;
       }
       // No pr_at yet: it would make the ticket cloudPrHere, and so never read here again.
-      q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify({ ...c, scrubbed: prior + 1 })}`);
+      q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify({ ...kept, scrubbed: prior + 1 })}`);
       report.advanced.push(`${t.key}: cloud PR #${pr.number} broke this repo's commit and PR rules (${found.join('; ')}): the pass ${s.did.join(', ')}, and reads it again next pass`);
       return;
     }
@@ -1105,6 +1107,48 @@ function advanceCloud(t) {
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
   report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
+}
+
+// The environment a follow-up to cloud session `c` is sent from: the login it started on (spawnCloud),
+// whose account owns it. A session recorded before its login was kept is sent from the pass's own.
+const cloudEnv = (c) => (c.login && 'config_dir' in c.login ? loginEnv({ tool: 'claude', configDir: c.login.config_dir }) : process.env);
+
+// Cloud PR `pr` (its `view`) its session marked unfinished (`mark`): the ticket stays running at stage
+// cloud, recorded in `cloud.unfinished`, with no pr_at, so the next pass reads the PR again. Once CI on
+// its head settles, its session is sent the results (cloud-worker.mjs cloudIdle); after
+// CLOUD_IDLE_FOLLOWUPS with no push it parks on the PR's branch, naming the session.
+function cloudUnfinished(t, c, pr, view, mark, where) {
+  const checks = latestPerCheck(normaliseRollup(view.statusCheckRollup));
+  const last = (view.commits ?? []).at(-1);
+  const head = view.headRefOid ?? last?.oid ?? null;
+  const pushedAt = last?.committedDate ?? last?.authoredDate ?? pr.createdAt ?? null;
+  const d = cloudIdle({ prior: c.unfinished ?? null, pr: pr.number, head, pushedAt, checks });
+  const keep = (record) => q('set', t.key, 'stage=cloud', `branch=${pr.headRefName}`, `cloud=${JSON.stringify({ ...c, unfinished: record })}`);
+  const idle = `idle since ${d.record.pushed_at ?? 'its PR opened'}`;
+  if (d.act === 'park') {
+    const { unfinished: _u, ...rest } = c;
+    const line = `cloud session ${where} left PR #${pr.number} unfinished (${mark}) and has not pushed since ${d.record.pushed_at ?? 'it opened'}, after ${d.record.sent} follow-ups. ` +
+      `Open the session to finish it there, or requeue ${t.key} to finish it in a local worker on ${pr.headRefName}`;
+    q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify({ ...rest, pr_at: pr.createdAt })}`);
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+    return;
+  }
+  if (d.act === 'send' && DRY) { report.waiting.push(`${t.key}: cloud PR #${pr.number} unfinished (${mark}), session ${idle}: ${d.why} (dry run: no follow-up sent)`); return; }
+  if (d.act === 'send') {
+    const sent = sendCloud(c.session, cloudFollowUpMsg({ pr: pr.number, head, mark, checks }), { env: cloudEnv(c) });
+    if (sent.error) {
+      keep(d.record);
+      report.stalled.push(`${t.key}: cloud PR #${pr.number} unfinished (${mark}), session ${where} ${idle}: ${d.why}, but its follow-up could not be sent (${sent.error}); tried again next pass`);
+      return;
+    }
+    const record = { ...d.record, sent: d.record.sent + 1, sent_at: new Date().toISOString() };
+    keep(record);
+    report.advanced.push(`${t.key}: cloud PR #${pr.number} unfinished (${mark}), session ${where} ${idle}: ${d.why}, so it was sent follow-up ${record.sent} of ${CLOUD_IDLE_FOLLOWUPS} with the check results`);
+    return;
+  }
+  keep(d.record);
+  report.waiting.push(`${t.key}: cloud PR #${pr.number} unfinished (${mark}), waiting on its session ${where} (${idle}; ${d.why})`);
 }
 
 // The ETA a cloud ticket's stall check reads (cloud-worker.mjs cloudEta): its saved first estimate, or

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (127 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (136 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI at 124 runs)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -146,6 +146,7 @@ fi
 # A follow-up to a session: recorded, and answered as the CLI queues one.
 if [ "\$1" = -p ] && [ "\$3" = --cloud ]; then
   printf '%s|%s|%s\n' "\$4" "\$5" "\$6" >> "$T/cloud-sent"
+  printf '%s\n' "\$2" >> "$T/cloud-sent-msg"
   printf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "$T/cloud-send-login"
   [ -e "$T/cloud-send-fail" ] && { cat "$S/fixtures/cloud/stream-json-refused.txt" >&2; exit 1; }
   cat "$S/fixtures/cloud/send-json.json"; exit 0
@@ -352,6 +353,41 @@ cp "$T/x1q.bak" "$X1Q"
 check "#1564 AC2 a sibling batch whose queue does not read holds cloud starts under the limit, and the pass says why" \
   '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "cloud sessions: none starts this pass, a sibling batch" && echo "$out" | grep -qF "queue does not read ("'
 q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
+# issue-1570: a cloud PR its session marked unfinished keeps the ticket running on its session. Once CI
+# on its head finishes the session is sent the results; after 2 follow-ups with no push it parks.
+cl_view(){ node -e 'const [title, body, status, conclusion] = process.argv.slice(1); console.log(JSON.stringify({ title, body, headRefOid: "aaaaaaa111", comments: [],
+  commits: [{ oid: "aaaaaaa111", committedDate: new Date(Date.now() - 600e3).toISOString(), messageHeadline: "feat: save", messageBody: "", authors: [{ name: "t", email: "t@example.com" }] }],
+  statusCheckRollup: [{ __typename: "CheckRun", name: "Lint", status: "COMPLETED", conclusion: "SUCCESS" }, { __typename: "CheckRun", name: "Tests", status, conclusion: conclusion || null }] }))' "$@" > "$T/cloud-view.json"; }
+cl_pr(){ node -e 'const [k, n, title] = process.argv.slice(1); const s = Date.parse(process.argv[4]); console.log(JSON.stringify([{ number: +n, title, url: "u", headRefName: `claude/${k.toLowerCase()}-abc`, createdAt: new Date(s + 600e3).toISOString() }]))' "$1" "$2" "$3" "$(field "$1" cloud.started | tr -d '"')" > "$T/cloud-prs.json"; }
+cl_quiet(){ q set "$1" "cloud=$(field "$1" cloud | jq -c '.unfinished.sent_at = (now - 7200 | todate)')"; }
+cloud_ticket CW-13
+out=$(node "$B/pass.mjs" 2>&1)
+cl_pr CW-13 67 "WIP: feat(w): CW-13 save"
+cl_view "WIP: feat(w): CW-13 save" "Placeholder selectors.\n\n## What is left\n- the real selectors" IN_PROGRESS
+rm -f "$T/cloud-sent" "$T/cloud-sent-msg"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC1 AC4 a cloud PR marked unfinished is not recorded done: running at stage cloud, waiting on its session" '[ "$(field CW-13 state)" = "\"running\"" ] && [ "$(field CW-13 stage)" = "\"cloud\"" ] && [ "$(field CW-13 result)" = null ] && [ "$(field CW-13 cloud.pr_at)" = null ] && [ "$(field CW-13 cloud.unfinished.pr)" = 67 ] && echo "$out" | grep -qF "CW-13: cloud PR #67 unfinished (WIP), waiting on its session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
+check "issue-1570 AC2 while CI runs on its head the session is sent nothing" '[ ! -e "$T/cloud-sent" ]'
+cl_view "WIP: feat(w): CW-13 save" "Placeholder selectors." COMPLETED FAILURE
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC2 AC4 once CI on its head finishes, the session is sent a follow-up with the check results" '[ "$(cat "$T/cloud-sent" 2>/dev/null)" = "session_01Vy49H7Z4T3CSgAhSxsuhqj|--output-format|json" ] && grep -qF "CI on aaaaaaa has finished: Tests failure; 1 of 2 passed." "$T/cloud-sent-msg" && [ "$(field CW-13 cloud.unfinished.sent)" = 1 ] && echo "$out" | grep -qF "sent follow-up 1 of 2 with the check results" && [ "$(field CW-13 state)" = "\"running\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC2 the next pass, within the wait, sends no second follow-up" '[ "$(wc -l < "$T/cloud-sent")" -eq 1 ]'
+cl_quiet CW-13; out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC2 an hour on with no push, it is sent a second" '[ "$(wc -l < "$T/cloud-sent")" -eq 2 ] && [ "$(field CW-13 cloud.unfinished.sent)" = 2 ]'
+cl_quiet CW-13; out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC2 after 2 idle follow-ups it parks, naming the session URL, on the PR's branch" '[ "$(field CW-13 state)" = "\"parked\"" ] && field CW-13 park.question | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" && field CW-13 park.question | grep -qF "left PR #67 unfinished (WIP)" && field CW-13 park.question | grep -qF "after 2 follow-ups" && [ "$(field CW-13 branch)" = "\"claude/cw-13-abc\"" ] && [ "$(field CW-13 cloud.unfinished)" = null ] && [ "$(wc -l < "$T/cloud-sent")" -eq 2 ]'
+# Once its session finishes the PR (WIP and what is left taken out), the ticket is recorded done.
+cloud_ticket CW-14
+out=$(node "$B/pass.mjs" 2>&1)
+cl_pr CW-14 68 "feat(w): CW-14 save"
+cl_view "feat(w): CW-14 save" "I could not finish the a11y run." IN_PROGRESS
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC1 the prompt's step 5 wording keeps it running too" '[ "$(field CW-14 state)" = "\"running\"" ] && echo "$out" | grep -qF "CW-14: cloud PR #68 unfinished (could not finish)"'
+cl_view "feat(w): CW-14 save" "Saves the widget.\n\n### Testing\nbash tests/run.sh" COMPLETED SUCCESS
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1570 AC4 once the PR reads finished it is recorded done, its unfinished record dropped" '[ "$(field CW-14 state)" = "\"done\"" ] && [ "$(field CW-14 result.pr)" = 68 ] && [ "$(field CW-14 cloud.unfinished)" = null ] && [ "$(field CW-14 cloud.pr_at)" != null ]'
+rm -f "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-view.json" "$T/cloud-prs.json"
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
 # queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked

@@ -116,7 +116,13 @@ gets no worktree, preflight or local worker: the pass starts `claude --cloud` un
 prompt carrying the ticket's text, and the session pushes a branch and opens a draft PR. The pass
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
-left for you. The session starts on the login a local worker for the repo would get, its §3b
+left for you. A PR the session marked unfinished (WIP in its title or body, "what is left", or "could
+not finish", as the prompt's step 5 asks of a session that cannot finish) is not recorded done: the
+ticket stays running at stage `cloud`, recorded as `cloud.unfinished`, the pass reads the PR again
+each pass, and desk-q shows it as "cloud session idle since <time>, PR #n unfinished". Once CI on its
+head has finished (or an hour passes with no checks), the pass sends the session one follow-up with the
+check results; with no push an hour after that, a second; and an hour after the second, still with no
+push, it parks on the PR's branch naming the session URL. A push starts the count over. The session starts on the login a local worker for the repo would get, its §3b
 Subscription row and never the fallback, and the spawn line and the desk-q row name its account.
 A start that fails parks with the CLI's error and is never run locally without asking; one that does
 not answer within its timeout parks naming the login and the one-time `claude --cloud` to run on it
