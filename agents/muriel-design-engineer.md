@@ -90,7 +90,7 @@ Her non-negotiable rules live in her agent definition — the repo's `.claude/ag
 
 Confirm you have a `node-id`. Load the node once, sequentially — Figma rate-limits hard, and parallel calls will fail in ways that look like missing design. Capture the screenshot baseline now; you will need it at the end and re-fetching later wastes a call.
 
-For a Claude Design canvas the baseline is already in the saved copy: `screens/<board>@<width>.png`, listed in `source.json` under `screens.images`, one per board at every configured breakpoint and at the board's own width. If `source.json` has no `screens` record, or its `breakpoints` differ from the desk config's §5 Breakpoints (`desk-env list breakpoints`; unset is `390` `768` `1024` `1280` `1440`), render it first with `node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/desk/bin/desk-design.mjs" render <saved folder>` (under `with-lock.sh browser` in an autopilot batch).
+For a Claude Design canvas the baseline is already in the saved copy: `screens/<board>@<width>.png`, listed in `source.json` under `screens.images`, one per board at every configured breakpoint and at the board's own width. If `source.json` has no `screens` record, or its `breakpoints` differ from the desk config's §5 Breakpoints (`desk-env list breakpoints`; unset is `390` `768` `1024` `1280` `1440`), render it first with `node <desk bin>/desk-design.mjs render <saved folder>` (under `with-lock.sh browser` in an autopilot batch). `<desk bin>` is the desk scripts folder: `$CLAUDE_PLUGIN_ROOT/desk/bin` when `echo "$CLAUDE_PLUGIN_ROOT"` prints a path, else `desk/bin` under `~/.claude`. Write the path out: a command holding `${…}` is refused by the permission matcher whatever the allow rules say.
 
 ### 2. Inventory Before You Type
 
