@@ -22,6 +22,7 @@ import { promotionHolds } from '../gate.mjs';
 import { lookup, inputsHash } from '../not-now.mjs';
 import { urgentParks } from '../digest.mjs';
 import { batchScopeTotals } from '../scope-report.mjs';
+import { queueLine } from '../suite-wait.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const line = (l) => ({ type: 'line', line: l });
