@@ -215,6 +215,16 @@ fieldtree mem3 'hold: { cause: "memory", numbers: { availGB: 13.51816177368164, 
 cmp "$T/mem1" "$T/mem3"
 check "issue-1598 a memory hold's floor that differs is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 hold.numbers.minAvailGB: base 2, head 4" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
 
+# A test-lock hold whose holder had held the lock a second longer on one tree, as a pass reads its age
+# under load; and one whose holder's age the head could not read.
+fieldtree held1 'hold: { cause: "test-lock", holders: [{ cmd: "bash tests/run.sh", heldS: 8 }], numbers: { queues: [{ holders: [{ heldS: 8 }] }] } }' 'A-1 running'
+fieldtree held2 'hold: { cause: "test-lock", holders: [{ cmd: "bash tests/run.sh", heldS: 9 }], numbers: { queues: [{ holders: [{ heldS: 9 }] }] } }' 'A-1 running'
+cmp "$T/held1" "$T/held2"
+check "issue-1598 a test-lock holder's age that differs between runs is not reported" "$same0"
+fieldtree held3 'hold: { cause: "test-lock", holders: [{ cmd: "bash tests/run.sh", heldS: null }], numbers: { queues: [{ holders: [{ heldS: 9 }] }] } }' 'A-1 running'
+cmp "$T/held1" "$T/held3"
+check "issue-1598 a test-lock holder's age read on one tree only is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 hold.holders.0.heldS: base <STAMP:number>, head null"'
+
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'
 mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
