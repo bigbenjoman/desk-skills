@@ -31,12 +31,19 @@
 // Every command run is appended to ~/.desk-autopilot/ui/audit.jsonl with its free text redacted.
 //   POST /api/repos/<slug>/tickets/<KEY>/record {action, text?}   needs-you.mjs record <repo> <KEY> <action> [text]
 //   POST /api/repos/<slug>/tickets/<KEY>/answer {text, approve?}  answer.mjs <KEY> [--approve] <text>
-// <slug> is the snapshot's repos[].slug; <repo> is that repo's name, as needs-you names it.
+//   POST /api/repos/<slug>/tickets/<KEY>/undo-not-now {}          not-now.mjs clear "<question>", in that batch's
+//                                 state: the newest entry the not-now register holds for <KEY>, put off in
+//                                 the last UNDO_MS; none is 400 and runs nothing
+// <slug> is the snapshot's repos[].slug; <repo> is that repo's name, as needs-you names it. For record
+// and undo-not-now <KEY> is needs-you's item key (a ticket key, usage-limit, step:…), which needs-you
+// must list for the repo; for answer it is a ticket key.
 // DESK_UI_TEST_BIN names the folder those commands run from, read only under a test HOME.
 //
 // The Inbox: GET /api/inbox is needs-you.mjs list --json --no-settle, which writes nothing, with
 // `settled_at` (the last settling list's time), `github` (what the last check of GitHub found:
-// { ok } or { ok: false, reason: 'down' | 'signin', detail }) and `next_pass_at` / `next_checkin_at`.
+// { ok } or { ok: false, reason: 'down' | 'signin', detail }), `next_pass_at` / `next_checkin_at`, and
+// `recorded`: the answers needs-you's records log holds from the last RECORDED_MS, wherever they were
+// recorded ({ at, batch, key, action, line }, at most MAX_RECORDED, newest last).
 // ?settle=1 first checks GitHub, then, while it answers, runs the settling list: at most once a
 // minute, and a request while one runs gets that one's answer.
 //
@@ -119,7 +126,14 @@ const bearerOf = (req) => { const m = /^Bearer (\S+)$/.exec(String(req.headers.a
 // ---- writes ----------------------------------------------------------------------------------
 
 const KEY = /^[A-Z][A-Z0-9]+-\d+$/;
+// A needs-you item key: printable, starting with a letter or digit (never a flag or a path), and
+// still only one the repo's list holds.
+const ITEM_KEY = /^[A-Za-z0-9][^\p{Cc}]{0,199}$/u;
 const VERB = /^[a-z][a-z-]*$/;
+// How recent a put-off undo-not-now takes back: the Inbox's toast offers it for 10 s.
+const UNDO_MS = 2 * 60 * 1000;
+const RECORDED_MS = 6 * 60 * 60 * 1000;
+const MAX_RECORDED = 200;
 // Taken with an argument of their own that this route does not send: their own routes add them.
 const NOT_HERE = new Set(['override', 'move']);
 // answer.mjs reads a leading argument equal to one of these as its flag, so such text is refused.
@@ -129,7 +143,7 @@ const MAX_TEXT = 2000;
 const MAX_WRITE_BODY = 6 * MAX_TEXT + 1024;
 const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
 const READ_TIMEOUT_MS = 60 * 1000;
-const WRITES = { record: 'needs-you.mjs', answer: 'answer.mjs' };
+const WRITES = { record: 'needs-you.mjs', answer: 'answer.mjs', 'undo-not-now': 'not-now.mjs' };
 const STATUS = { 0: 200, 10: 202, 11: 409 };
 const binDir = () => (testHome() && process.env.DESK_UI_TEST_BIN) || HERE;
 const auditFile = () => join(logDir(), 'audit.jsonl');
@@ -350,7 +364,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const at = { env: E.otherRepoEnv() };
     const listed = await run(join(HERE, 'needs-you.mjs'), ['list', '--json', '--no-settle', repo], at, READ_TIMEOUT_MS);
     let items;
-    try { items = JSON.parse(listed.stdout).items.filter((i) => i.ticket === key); } catch { items = null; }
+    try { items = JSON.parse(listed.stdout).items.filter((i) => i.key === key); } catch { items = null; }
     if (listed.exit !== 0 || !items) throw new Error(`needs-you list ${repo} exited ${listed.exit}: ${listed.stderr.trim().slice(0, 300)}`);
     const offered = [...new Set(items.flatMap((i) => i.actions.map((a) => a.action)))];
     const item = items.find((i) => i.actions.some((a) => a.action === action));
@@ -376,13 +390,35 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       at: { cwd: at.cwd, env: { ...at.env, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath } } };
   }
 
+  // The newest not-now entry for the key across the repo's batches, put off in the last UNDO_MS: cleared
+  // in the state of the batch that holds it, by its question as the register keeps it.
+  async function planUndo(batches, repo, key) {
+    const { readRegister } = await import('./not-now.mjs');
+    const now = clock();
+    let best = null;
+    for (const r of batches) {
+      if (!r.stateDir) continue;
+      const reg = readRegister(r.stateDir);
+      if (!reg.ok) continue;
+      for (const e of reg.entries.values()) {
+        const at = Date.parse(e.at);
+        if (e.ticket !== key || e.dismissed || !(now - at <= UNDO_MS) || !e.question) continue;
+        if (!best || at > best.at) best = { at, e, stateDir: r.stateDir };
+      }
+    }
+    if (!best) return { refuse: [400, 'undo', `${repo} ${key} has nothing put off in the last ${UNDO_MS / 60000} minutes to take back.`] };
+    return { args: ['clear', best.e.question], shown: ['clear', '<redacted>'],
+      at: { env: { ...E.otherRepoEnv(), DESK_AUTOPILOT_STATE: best.stateDir } } };
+  }
+
   async function write(req, res, path, kind, slugPart, keyPart) {
     const body = await jsonOnly(req, res, '', null, MAX_WRITE_BODY);
     if (!body) return;
     let slug, key;
     try { slug = decodeURIComponent(slugPart); key = decodeURIComponent(keyPart); }
     catch { return refuse(res, 400, 'body', 'Send the request as JSON.'); }
-    if (!KEY.test(key)) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
+    if (!(kind === 'answer' ? KEY : ITEM_KEY).test(key)) return refuse(res, 400, 'ticket', kind === 'answer' ? 'That is not a ticket key.' : 'That is not a needs-you item key.');
+    if (kind === 'undo-not-now' && Object.keys(body).length) return refuse(res, 400, 'body', 'Send {} and nothing else.');
     const { text } = body;
     if (text !== undefined && (typeof text !== 'string' || text.length > MAX_TEXT)) return refuse(res, 400, 'text', `The text must be a string of at most ${MAX_TEXT} characters.`);
     if (kind === 'record' && (typeof body.action !== 'string' || !VERB.test(body.action) || NOT_HERE.has(body.action))) return refuse(res, 400, 'action', 'That action is not one this route records.');
@@ -401,7 +437,8 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
         const batches = all.filter((r) => r.slug === slug);
         // needs-you names a repo by its name, the standing batch's.
         const repo = (batches.find((r) => r.batch == null) ?? batches[0]).repo;
-        const plan = kind === 'record' ? await planRecord(repo, key, body) : await planAnswer(Q, batches, slug, repo, key, body);
+        const plan = kind === 'record' ? await planRecord(repo, key, body)
+          : kind === 'undo-not-now' ? await planUndo(batches, repo, key) : await planAnswer(Q, batches, slug, repo, key, body);
         if (plan.refuse) return plan;
         const ran = await run(join(binDir(), WRITES[kind]), plan.args, plan.at);
         audit(path, [WRITES[kind], ...plan.shown], ran.exit);
@@ -455,8 +492,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       const now = clock();
       const passes = all.filter((r) => r.live && Number.isFinite(Number(r.next)) && Number(r.next) > now).map((r) => Number(r.next));
       const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
+      const { readRecords } = await import('./needs-you.mjs');
+      const recorded = readRecords({ since: now - RECORDED_MS }).slice(-MAX_RECORDED)
+        .map(({ at, batch, key, action, line }) => ({ at, batch, key, action, line }));
       return send(res, 200, { ...list, settled_at: inboxState.settledAt, github: inboxState.github,
-        next_pass_at: iso(passes.length ? Math.min(...passes) : null), next_checkin_at: iso(await nextCheckinOf(all.map((r) => r.slug), now)) });
+        next_pass_at: iso(passes.length ? Math.min(...passes) : null), next_checkin_at: iso(await nextCheckinOf(all.map((r) => r.slug), now)), recorded });
     } catch (e) { console.error(`desk-ui: inbox: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
   }
 
@@ -587,7 +627,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const s = session(req);
     if (path.startsWith('/api/')) {
       if (!s || !same(String(req.headers[LOAD_HEADER] ?? ''), s.load)) return refuse(res, 401, 'unauthorized', 'Not signed in.');
-      const w = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)\/(record|answer)$/);
+      const w = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)\/(record|answer|undo-not-now)$/);
       if (w) return method === 'POST' ? write(req, res, path, w[3], w[1], w[2]) : refuse(res, 405, 'method', 'POST only.');
       if (path === '/api/terminal') return method === 'POST' ? openFolder(req, res, query) : refuse(res, 405, 'method', 'POST only.');
       if (path === '/api/sessions') {

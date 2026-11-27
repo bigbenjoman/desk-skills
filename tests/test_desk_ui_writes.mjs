@@ -46,6 +46,12 @@ const SW_ROOT = repo('acme__studia-web', 3700, {
   'SV-3846': { key: 'SV-3846', state: 'queued' },
 });
 repo('acme__desk-skills', 3800, { 'DS-1': { key: 'DS-1', state: 'queued', open_questions: 1 } });
+// DS-737: the standing batch is held on a usage limit too, so needs-you lists its usage-limit item.
+const RESETS = Math.floor(Date.now() / 1000) + 2 * 86400;
+{
+  const q = join(env.DESK_HOME, 'repos', 'acme__desk-skills', 'queue.json');
+  writeFileSync(q, JSON.stringify({ ...JSON.parse(readFileSync(q, 'utf8')), usage_hold: { since: new Date().toISOString(), type: 'seven_day', resets_at: RESETS, paused: [] } }));
+}
 // DS-7 is archived done in the standing batch and parked live, awaiting approval, in batch E-1.
 const DS_HOME = join(env.DESK_HOME, 'repos', 'acme__desk-skills');
 writeFileSync(join(DS_HOME, 'queue.archive.json'), JSON.stringify({ tickets: { 'DS-7': { key: 'DS-7', state: 'done', result: { pr: 1 } } } }));
@@ -64,12 +70,12 @@ let c = {};
 try { c = JSON.parse(readFileSync(dir + '/ctl.json', 'utf8'))[key] ?? {}; } catch {}
 const start = Date.now();
 if (c.sleep) await new Promise((r) => setTimeout(r, c.sleep));
-appendFileSync(dir + '/calls.jsonl', JSON.stringify({ file: process.argv[1].split('/').pop(), argv, cwd: process.cwd(), queue: process.env.DESK_QUEUE ?? null, start, end: Date.now() }) + '\\n');
+appendFileSync(dir + '/calls.jsonl', JSON.stringify({ file: process.argv[1].split('/').pop(), argv, cwd: process.cwd(), queue: process.env.DESK_QUEUE ?? null, state: process.env.DESK_AUTOPILOT_STATE ?? null, start, end: Date.now() }) + '\\n');
 process.stdout.write(c.stdout ?? 'recorded\\n');
 process.stderr.write(c.stderr ?? '');
 process.exit(c.exit ?? 0);
 `;
-for (const f of ['needs-you.mjs', 'answer.mjs']) writeFileSync(join(STUBS, f), stub);
+for (const f of ['needs-you.mjs', 'answer.mjs', 'not-now.mjs']) writeFileSync(join(STUBS, f), stub);
 const ctl = (o) => writeFileSync(join(T, 'ctl.json'), JSON.stringify(o));
 const calls = () => (existsSync(join(T, 'calls.jsonl')) ? readFileSync(join(T, 'calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 ctl({});
@@ -231,6 +237,45 @@ t('AC11 a ticket live in a named batch is approved there, not as its archived co
   [r11c.status, last()?.argv, realpathSync(last()?.queue ?? T)], [200, ['DS-7', '--approve', 'approved'], realpathSync(E1_QUEUE)]);
 const r11d = await record('desk-skills', 'DS-7', { action: 'resume', text: 'go on' });
 t('a record for a ticket live in a named batch names that batch to needs-you', [r11d.status, last()?.argv.slice(0, 4)], [200, ['record', 'desk-skills:E-1', 'DS-7', 'resume']]);
+
+// ---- DS-737: the record route takes needs-you's item keys, not only ticket keys, while it lists them
+const rUsage = await record('desk-skills', 'usage-limit', { action: 'not-now' });
+t('DS-737 an item key needs-you lists is recorded', [rUsage.status, last()?.argv], [200, ['record', 'desk-skills', 'usage-limit', 'not-now']]);
+const before737 = calls().length;
+for (const [name, p, body] of [
+  ['an item key the repo does not list', '/api/repos/acme__desk-skills/tickets/step%3Anope/record', { action: 'done' }],
+  ['an item key that starts with a dash', '/api/repos/acme__desk-skills/tickets/-usage-limit/record', { action: 'not-now' }],
+  ['an item key with a control character', '/api/repos/acme__desk-skills/tickets/usage%0Alimit/record', { action: 'not-now' }],
+  ['an item key on the answer route', '/api/repos/acme__desk-skills/tickets/usage-limit/answer', { text: 'a' }],
+]) t(`DS-737 ${name} is refused with 400`, (await post(p, body)).status, 400);
+t('DS-737 no command ran for any of them', calls().length - before737, 0);
+
+// ---- DS-737: undo-not-now clears the newest entry put off in the last 2 minutes, in its batch's state
+const DS_STATE = join(env.HOME, '.desk-autopilot', 'acme__desk-skills');
+const E1_STATE = join(DS_STATE, 'batches', 'E-1');
+const undo = (key, body = {}) => post(`/api/repos/acme__desk-skills/tickets/${key}/undo-not-now`, body);
+const putOff = (dir, entry) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'not-now.jsonl'), `${entry.map((e) => JSON.stringify(e)).join('\n')}\n`); };
+const ago = (ms) => new Date(Date.now() - ms).toISOString();
+putOff(DS_STATE, [{ key: 'a1', question: 'is DS-1 still wanted?', ticket: 'DS-1', at: ago(10 * 60_000), inputs: {}, hash: 'x' }]);
+const before737u = calls().length;
+const stale = await undo('DS-1');
+t('DS-737 an entry put off 10 minutes ago is not taken back: 400, nothing runs', [stale.status, calls().length - before737u], [400, 0]);
+putOff(DS_STATE, [{ key: 'a1', question: 'is DS-1 still wanted?', ticket: 'DS-1', at: ago(60_000), inputs: {}, hash: 'x' }]);
+putOff(E1_STATE, [{ key: 'b1', question: 'DS-1 in E-1: start it?', ticket: 'DS-1', at: ago(5_000), inputs: {}, hash: 'y' },
+  { key: 'c1', question: 'DS-9 something else', ticket: 'DS-9', at: ago(1_000), inputs: {}, hash: 'z' }]);
+const fresh = await undo('DS-1');
+t('DS-737 undo-not-now runs not-now.mjs clear with the newest entry\'s question for that key', [fresh.status, last()?.file, last()?.argv], [200, 'not-now.mjs', ['clear', 'DS-1 in E-1: start it?']]);
+t('DS-737 it runs in the state of the batch holding that entry', realpathSync(last()?.state ?? T), realpathSync(E1_STATE));
+t('DS-737 undo-not-now with a body is refused', (await undo('DS-1', { text: 'x' })).status, 400);
+t('DS-737 undo-not-now for a key with nothing put off is refused', (await undo('DS-2')).status, 400);
+
+// ---- DS-737: the Inbox's list carries a usage item's reset, and the recent records log
+const RECORDS = join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl');
+writeFileSync(RECORDS, [{ at: ago(7 * 3600_000), batch: 'studia-web', key: 'SV-1', action: 'done', line: 'old' },
+  { at: ago(60_000), batch: 'studia-web', key: 'SV-3952', action: 'done', line: 'recorded studia-web SV-3952 done' }].map((e) => JSON.stringify(e)).join('\n') + '\n');
+const inbox737 = await call('GET', '/api/inbox?settle=0', { headers: { Cookie: auth.Cookie, 'X-Desk-Load': auth['X-Desk-Load'] } });
+t('DS-737 the usage item carries resets_at as an ISO time', inbox737.json?.items?.find((i) => i.key === 'usage-limit')?.resets_at, new Date(RESETS * 1000).toISOString());
+t('DS-737 recorded holds the last 6 hours of the records log', inbox737.json?.recorded?.map((e) => [e.key, e.line]), [['SV-3952', 'recorded studia-web SV-3952 done']]);
 
 // ---- any text the length limit allows gets an HTTP answer, however many bytes it takes
 const wide = '漢'.repeat(2000);
