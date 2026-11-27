@@ -1690,7 +1690,7 @@ check "DS-575 AC1 the last starts once the second stops" 'spawned RK-181'
 # ---- #1515: a ticket handed off between sessions keeps its files' places against new tickets, and
 # a handoff a running ticket's files hold back is said as that collision, not a deadline stall.
 # hot <KEY> <files...>: a ticket handed off to Stage 4b, with its worktree, branch and briefing.
-hot(){ k=$1; fbt "$@"; git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q set "$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; }
+hot(){ k=$1; shift; fbt "$k" triaged "$@"; git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q set "$k" lane=A "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; }
 fbq hoa '1'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"; q set-batch concurrency=1
 fbt HO-0 running src/solo.ts; q set HO-0 session_id=live-1
 hot HO-1 src/big.ts; fbt HO-2 triaged src/big.ts
