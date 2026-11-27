@@ -191,6 +191,7 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import { remember, runOnce, outOrNull } from './build-memo.mjs';
+import { parsePs, psRows as readPs, runPs } from './ps-rows.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import { unbounded as unboundedRun } from './run-bounds.mjs';
@@ -1618,32 +1619,11 @@ export function rssGiB() {
   try { return psRows('rss=').reduce((s, r) => s + (r.rss || 0), 0) * 1024 / GiB; } catch { return NaN; }
 }
 
-// Every process's command line can carry a worker's whole prompt, so the list runs to megabytes.
-const PS_MAX_BUFFER = 64 * 1024 * 1024;
-const PS_NUMERIC = new Set(['pid', 'ppid', 'rss']);
-// `ps` output for `columns` (e.g. 'pid=,args=') as one object per process keyed by column name:
-// every column but the last is one word, the last runs to the end of the line. pid, ppid and rss
-// are numbers. A line of another shape is skipped.
-export function parsePs(text, columns) {
-  const names = columns.split(',').map((c) => c.replace(/=.*$/, ''));
-  const re = new RegExp(`^\\s*${names.slice(0, -1).map(() => '(\\S+)\\s+').join('')}(.*?)\\s*$`);
-  const rows = [];
-  for (const line of String(text).split('\n')) {
-    const m = re.exec(line);
-    if (!m || !line.trim()) continue;
-    rows.push(Object.fromEntries(names.map((n, i) => [n, PS_NUMERIC.has(n) ? Number(m[i + 1]) : m[i + 1]])));
-  }
-  return rows;
-}
-// Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
-// partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+// Every process, read whole from one `ps` (ps-rows.mjs psRows), memoised within a build run.
+// Throws when ps cannot be read. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+export { parsePs };
 export function psRows(columns, env = {}) {
-  const r = remember(['ps', columns, env], () => spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }));
-  if (r.error || r.status !== 0) {
-    const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
-    throw new Error(`ps could not be read (${why})`);
-  }
-  return parsePs(r.stdout, columns);
+  return readPs(columns, env, (c, e) => remember(['ps', c, e], () => runPs(c, e)));
 }
 // The `mem status` line, which `queue.mjs watch` prints under its table too.
 export function memStatusLine() {

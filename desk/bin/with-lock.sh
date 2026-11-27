@@ -80,6 +80,12 @@
 #
 # With the machine profile's job-tokens row on, the light lock takes no slot at all: a run is bounded
 # by the job tokens (job-token.mjs) it takes, one per suite for tests/run.sh, one for any other command.
+#
+# A granted run never outlives its caller: lock-caller-watch.mjs, started as the slot is granted, ends
+# the run's process group (or, where the group holds anything else, the run and its descendants) once
+# the caller that started it exits, so the lock is freed with it. A holder that escapes that (an older
+# copy of this script) is named, and reclaimed under config §3 autopilot-reclaim, by the pass
+# (lock-orphans.mjs).
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -178,6 +184,15 @@ if [ "${DESK_AUTOPILOT_WORKER:-}" = 1 ] && { [ "$name" = test ] || [ "$name" = l
     export TMPDIR="$runs/$$"
   fi
 fi
+# Once granted, the run ends when its caller does (lock-caller-watch.mjs, in the background with the
+# lock's descriptor and its output closed), so a run whose worker died cannot keep the lock. A run
+# inside another locked run (DESK_LOCK_HELD already set) ends with that one, and starts no watch.
+outer="${DESK_LOCK_HELD:-}"; watching=""
+watch_caller() {
+  [ -z "$outer" ] && [ -z "$watching" ] || return 0
+  watching=1
+  node "$here/lock-caller-watch.mjs" "$$" 9>&- </dev/null >/dev/null 2>&1 &
+}
 # The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
 # (tests/related.sh) does not wait for a second one behind its own.
 export DESK_LOCK_HELD="$name"
@@ -222,6 +237,7 @@ if [ "$name" = light ] && [ "$(node "$here/job-token.mjs" lever 2>/dev/null)" = 
          # Given back before run.sh's suites ask for theirs. A release that fails leaves it held by this
          # pid, run.sh once it execs, where a suite could wait on it until run.sh ends: so run.sh then
          # takes none, and runs in the light slot below, as with the row off.
+         watch_caller
          [ -n "$per_suite" ] && node "$here/job-token.mjs" release "$token" --pid "$$" >/dev/null </dev/null && exec "$@"
          export TEST_JOB_TOKENS=held
          [ -n "$per_suite" ] || exec "$@"
@@ -327,8 +343,8 @@ if [ "$lease_mode" = on ]; then
   rc=$?
   unwatch
   case $rc in
-    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; run_cmd "$@" ;;
-    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; run_cmd "$@" ;;
+    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; watch_caller; run_cmd "$@" ;;
+    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; watch_caller; run_cmd "$@" ;;
     75) exit 75 ;;
     *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off
   esac
@@ -420,6 +436,7 @@ if command -v flock >/dev/null 2>&1; then
     fi
     holder 1
     held; granted "$$" "$@"
+    watch_caller
     run_cmd "$@"
   fi
   # Several slots, or admission on: try each without blocking, and wait 2 s between rounds. A run let
@@ -428,13 +445,13 @@ if command -v flock >/dev/null 2>&1; then
   while :; do
     for i in $(slot_order); do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; run_cmd "$@"; }
+      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; watch_caller; run_cmd "$@"; }
       exec 9>&-
     done
     admit_round && continue
     if [ -n "$express" ]; then
       exec 9>>"$elock" || exit 2
-      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; run_cmd "$@"; }
+      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; watch_caller; run_cmd "$@"; }
       exec 9>&-
     fi
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
@@ -506,6 +523,7 @@ held
 ${measure[@]+"${measure[@]}"} "$@" <&0 &
 child=$!
 echo "$$ $child" > "$ldir/pid"
+watch_caller
 # On INT/TERM, pass it on and keep holding the lock until the command has actually exited. Set before
 # the shadow lease below, so a signal while it is taken still reaches the command.
 on_signal() { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; release; exit "$1"; }
