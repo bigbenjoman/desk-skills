@@ -58,6 +58,12 @@ t('AC5 the next check-in does not list it again', readFileSync(d2.page, 'utf8').
 appendMetrics(state, { ...idle, at: '2026-11-17T08:04:00.000Z', warned_at: '2026-11-17T08:06:00.000Z', warning: warningText(idle, 10) });
 const d3 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T17:05:00'), dir, list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
 t('AC4 a warning written after a check-in its pass began before is listed in the next one', readFileSync(d3.page, 'utf8').includes('H-1 (behind R-1 on src/a.ts)'), true);
+// issue-1549 AC2: a ticket whose follow_on= did not read is listed under Warnings, with its raw text.
+writeFileSync(queue, JSON.stringify({ batch: 'b', tickets: { 'F-3': { key: 'F-3', state: 'done', follow_on_unreadable: { raw: '{"x": 1}', error: 'not a JSON array', at: '2026-11-17T12:00:00.000Z' } } } }));
+const d4 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T17:05:00'), dir: join(root, 'digest-f'), list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
+const page4 = readFileSync(d4.page, 'utf8');
+t('issue-1549 AC2 the digest lists an unreadable follow-on under Warnings', page4.slice(page4.indexOf('### Warnings')).includes('F-3: follow-on unreadable: {"x": 1}'), true);
+writeFileSync(queue, JSON.stringify({ batch: 'b', tickets: {} }));
 // DS-698: setup-worktree.sh's steps line, and a repo's medians per step over its new worktrees.
 t('DS-698 AC1 the steps line reads as seconds per step', JSON.stringify(parseSetupSteps('[setup-worktree] done\n[setup-worktree] steps=config:1,checkout:3,install:40\n[setup-worktree] worktree=/w')), '{"config":1,"checkout":3,"install":40}');
 t('DS-698 output with no steps line reads as null', parseSetupSteps('[setup-worktree] worktree=/w'), null);
