@@ -422,6 +422,7 @@ such thing.
 | PR-description checks | `TODO` (the script CI runs on a PR's description, so it can run before the PR is opened or edited, e.g. `node scripts/check-pr-body.mjs`; desk-pr runs each span with the draft body's file path appended, so the script must accept one; or `none`) |
 | Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |
 | Test sign-in | `TODO` (one span per app a worker signs in to for screenshots, in the Dev server form: the email of an existing user in that app's development auth instance who already holds the app's grant, e.g. `` `dev-user@example.test` `apps/portal/apps/web: portal-dev@example.test` ``; never a password, and never a production user. Read with `desk-env cmds test-signin`; `desk-env drift --app <dir>` names an app with a Dev server item and none here. `none` where no app needs signing in to) |
+| Test sign-in permissions | `TODO` (one span per app whose signed-in pages need a permission, in the Dev server form: the names its Test sign-in user must hold in its Clerk `public_metadata.services`, comma-separated, e.g. `` `apps/portal/apps/web: HELP_ARTICLES, ADMIN` ``. `desk-env drift --app <dir>` reads that user from Clerk with the CLERK_SECRET_KEY of the app's first Env files item that holds one, a development key (`sk_test_`) only, and names each permission it lacks. `none` where no app's pages need one) |
 
 ### Environments and services
 

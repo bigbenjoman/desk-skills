@@ -439,6 +439,11 @@ How to turn what you find into rows:
   fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
   a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
   included.
+- **Test sign-in permissions.** For each app with a Test sign-in item, ask which permissions its
+  signed-in pages need that user to hold in its Clerk `public_metadata.services`, as
+  `` `<dir>: <PERM>, <PERM>` ``; the names are the user's to give, never guessed from the code.
+  `none` (the default) skips the check. `desk-env drift --app <dir>` reads the user with the app's
+  development key and names each one it lacks `NOPERM`.
 - **Database URL variable.** **Every** variable name in those env files (and `.env.example`) that
   holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
   one span each, from the name scan above; never read a value. Missing one matters: a worker's
