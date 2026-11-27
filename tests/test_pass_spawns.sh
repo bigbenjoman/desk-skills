@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (125 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (126 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -297,6 +297,12 @@ cloud_ticket CS-2; rm -f "$T/cloud-prompt"
 out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
 check "#1564 AC5 at the cloud limit a ready cloud ticket does not start, and the pass names the limit" \
   '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "CS-2: waits for a cloud session (1 of 1 running"'
+# A sibling batch whose queue does not read may be running cloud sessions the count cannot see.
+cp "$X1Q" "$T/x1q.bak"; echo 'not json' > "$X1Q"
+out=$(node "$B/pass.mjs" 2>&1)
+cp "$T/x1q.bak" "$X1Q"
+check "#1564 AC2 a sibling batch whose queue does not read holds cloud starts under the limit, and the pass says why" \
+  '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "cloud sessions: none starts this pass, a sibling batch" && echo "$out" | grep -qF "queue does not read ("'
 q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.

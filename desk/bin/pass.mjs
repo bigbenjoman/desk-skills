@@ -3046,13 +3046,18 @@ const CEILING = E.memoryCeiling();
 // this computer's. A row that does not read starts none, and says so.
 const CLOUD = E.cloudSessions();
 if (CLOUD.bad && spawnable.length > spawnableLocal.length) report.stalled.push(CLOUD.bad);
-const cloudRunning = runningCloud.length + otherRepos.filter((o) => o.slug === REPO_SLUG && o.q)
+const siblingQueues = otherRepos.filter((o) => o.slug === REPO_SLUG);
+const cloudRunning = runningCloud.length + siblingQueues.filter((o) => o.q)
   .reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter((r) => r?.state === 'running' && runsInCloud(r)).length, 0);
 // The lock a cloud start wanted and could not take holds it this pass, as an unlocked repo cap holds a
 // local one: counted unlocked, two batches' passes could start past the limit together.
 const cloudUnlocked = cloudLockWanted && !borrowLock;
 if (cloudUnlocked) report.waits.push(`cloud sessions: none starts this pass, its sibling batches' count read without the borrow lock (${lockWhy ?? 'not taken'})`);
-const cloudHeld = !!(ELIG_CLOUD_HELD || MAINT.hold || CLOUD.bad || cloudUnlocked);
+// A sibling batch whose queue does not read may have cloud sessions running that the count above
+// misses, so it holds cloud starts as an unread count does.
+const cloudUnread = spawnable.length > spawnableLocal.length ? siblingQueues.filter((o) => o.error) : [];
+if (cloudUnread.length && !cloudUnlocked) report.waits.push(`cloud sessions: none starts this pass, a sibling batch's queue does not read (${cloudUnread.map((o) => o.error).join('; ')})`);
+const cloudHeld = !!(ELIG_CLOUD_HELD || MAINT.hold || CLOUD.bad || cloudUnlocked || cloudUnread.length);
 const cloudSlots = cloudHeld ? 0 : Math.max(0, CLOUD.n - cloudRunning);
 let cloudAttempts = 0;
 // The cloud sessions this pass started: in report.spawned, but holding none of the local room counted above.
