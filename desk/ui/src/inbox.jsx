@@ -63,8 +63,11 @@ const MERGE_HOLD = /merge it on GitHub|only a person merges/i;
 const mergeHold = (item) => item.kind === 'pr' && item.pr != null && item.actions.some((a) => a.action === 'done') && MERGE_HOLD.test(item.question);
 const ANSWERS = new Set(['answer', 'resume']);
 // needs-you record's words for an answer it took as an instruction to run elsewhere, recording nothing:
-// admit and plan-first's open ("nothing recorded."), and a session item's open ("not requeued (…").
-const NOTHING_RECORDED = /(^|: )(nothing recorded\.|not requeued \()/;
+// admit and plan-first's open ("nothing recorded."), a session item's open ("not requeued (…"), and a
+// noted item's done ("…; done records nothing.").
+const NOTHING_RECORDED = /(^|: )(nothing recorded\.|not requeued \()|records nothing\.$/;
+// A put-off needs-you keeps listing while tickets wait behind it: recorded, and its row stays.
+const STILL_LISTED = /It is still listed while/;
 const UNDO_MS = 10_000;
 const READ_MS = 1000;
 
@@ -646,9 +649,10 @@ export function Inbox({ get, snapshot, go }) {
   const figures = JSON.stringify([snapshot?.needs_you, (snapshot?.repos ?? []).map((r) => [r.slug, r.needs_you, r.production_broken])]);
   useEffect(() => { load(false); }, [load, figures]);
 
-  // An item Desk recorded leaves the list at once, before needs-you's next read drops it. Once a read
-  // has dropped it (`left`), a later read that lists it again is a new question, and it shows.
-  const items = useMemo(() => (data?.items ?? []).filter((i) => !(results[i.id]?.phase === 'done' && !results[i.id].left)), [data, results]);
+  // An item Desk recorded leaves the list at once, before needs-you's next read drops it, unless
+  // needs-you said it stays listed. Once a read has dropped it (`left`), a later read that lists it
+  // again is a new question, and it shows.
+  const items = useMemo(() => (data?.items ?? []).filter((i) => !(results[i.id]?.phase === 'done' && !results[i.id].left && !results[i.id].stays)), [data, results]);
   const shown = useMemo(() => {
     let out = items.filter((i) => (!repoF || i.repo === repoF) && (!kindF || i.kind === kindF));
     if (sort === 'held') out = [...out].sort((a, b) => (b.behind ?? 0) - (a.behind ?? 0));
@@ -737,6 +741,7 @@ export function Inbox({ get, snapshot, go }) {
       res = await resultOf(r);
       // An instruction (admit, a plan-first start) exits 0 having recorded nothing: the item stays.
       if (res.phase === 'done' && NOTHING_RECORDED.test(res.out.split('\n')[0])) res = { ...res, phase: 'nothing' };
+      if (res.phase === 'done' && STILL_LISTED.test(res.out)) res = { ...res, stays: true };
     } catch { res = { phase: 'failed', out: '', message: "Desk couldn't reach its server, so nothing was recorded. Try again once it's back." }; }
     const at = new Date().toISOString();
     setResults((r) => ({ ...r, [item.id]: { ...r[item.id], ...res, at, next } }));

@@ -345,6 +345,14 @@ describe('answering from the Inbox', () => {
     expect(row('SV-3844')).toBeTruthy();
   });
 
+  it('a noted item\'s done, which ends "done records nothing.", shows Nothing changed and keeps the row', async () => {
+    const s = await open();
+    s.answer = { exit: 0, stdout: 'studia-web SV-3844: noted: this item goes once a pass runs again; done records nothing.\n', stderr: '' };
+    await sendResume(s);
+    await waitFor(() => expect(detail().querySelector('[data-outcome="nothing"]')).toBeTruthy());
+    expect(row('SV-3844')).toBeTruthy();
+  });
+
   it('AC5 exit 11 shows "Desk didn\'t record that" with stdout under the action bar, keeps the text, and Choose another answer focuses the options', async () => {
     const s = await open();
     const refusal = "SV-3844's worktree holds work origin does not have (3 unpushed commits): push or discard it first.";
@@ -449,6 +457,19 @@ describe('answering from the Inbox', () => {
 describe('put off and taken back', () => {
   afterEach(() => { vi.useRealTimers(); });
   const SV3957 = item('SV-3957', 'studia-web', 2, { question: 'SV-3957 needs a lane' });
+
+  it('a put-off needs-you keeps listing while tickets wait behind it keeps its row, through later reads', async () => {
+    const s = await open({ list: listOf([SV3957, ...ITEMS.slice(0, 2)]) });
+    s.answer = { exit: 0, stdout: 'studia-web SV-3957: put off (until its inputs change). It is still listed while 3 or more tickets wait behind it (4 do now).\n', stderr: '' };
+    fireEvent.click(row('SV-3957'));
+    key('e');
+    await waitFor(() => expect(document.querySelector('[data-toast]')).toBeTruthy());
+    expect(row('SV-3957')).toBeTruthy();
+    const reads = s.calls.length;
+    key('r');
+    await waitFor(() => expect(s.calls.length).toBeGreaterThan(reads));
+    expect(row('SV-3957')).toBeTruthy();
+  });
 
   it('AC10 e puts SV-3957 off at once and the toast offers Undo (⌘Z) for 10 s', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
