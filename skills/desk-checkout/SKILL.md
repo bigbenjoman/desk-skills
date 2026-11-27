@@ -23,26 +23,22 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-`EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`. Otherwise read only
-the rows this skill uses, one line each (never the `CONFIG` file whole, nor whole sections):
+`EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`. Otherwise read
+only these rows, never the `CONFIG` file:
 
 ```bash
 desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
 ```
 
-A row printed as `UNSET` (a `TODO`, or missing from the file) is named to the user with
-`/desk-setup`; an unset §3 row is a `no`.
-§1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
-§4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who (and who has
-left, never to be asked), §5 Messages to colleagues, AI attribution and Repo instructions bind the
-draft as they bind any message, and **§4 Check-out destination** says where the draft goes:
+Name any `UNSET` row and offer `/desk-setup`; an unset §3 row is a `no`. Never ask a
+former member, §5 binds the draft, and **§4 Check-out destination** says where it goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
 | a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as step 5 says. **Never sent** |
 | a file path | Written to that file (a directory gets `<YYYY-MM-DD>.md` inside it). If the file already exists, show what is there and ask before replacing or appending |
 | `none` | Printed and copied. Nothing is written anywhere |
-| `TODO` or missing | Ask where it goes, print it meanwhile, and offer `/desk-setup` |
+| `UNSET` | Ask where it goes and print it meanwhile |
 
 Then read `references/style.md` before drafting.
 
@@ -83,9 +79,8 @@ python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; py
 `references/sources.md` covers the newer collectors: `worklog_activity.py`,
 `claude_activity.py --window-turns`, issues in `github_activity.py`.
 
-`claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself, and nor does the one that drafted an earlier check-out that
-day.
+`claude_activity.py` cuts each session off where it loads this skill, so neither the drafting
+session nor one that drafted an earlier check-out that day reports itself.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
