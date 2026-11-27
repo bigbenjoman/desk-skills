@@ -2768,15 +2768,20 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
 }
 
 // With accounts pinned, the lines under the key: that desk's sign-ins are its own, the selected
-// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds.
+// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds: removed, and
+// when, where the file's Removed table names ~/.claude.
 function accountLines(t, rows, selected, w) {
   if (!t.claude.some((x) => x.multi)) return [];
   const x = rows.find((r) => r.id != null && r.id === selected) ?? rows.find((r) => r.id != null);
   const own = accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null;
   const unpinned = own && !t.claude.some((c) => c.login.account === own) ? own : null;
+  let gone = null;
+  try { gone = readSubscriptions(subscriptionsPath()).removed.find((r) => r.tool === 'claude' && r.dir === defaultLogin('claude').dir) ?? null; } catch { /* unreadable: said as not added */ }
+  const said = !gone ? `${unpinned} isn't one of desk's accounts yet. Press `
+    : `${unpinned} was removed from desk's accounts ${gone.at ? `on ${ymdText(gone.at)}` : '(the date was not recorded)'}, when accounts were pinned. Press `;
   return [...leadLines('  ', [['Desk keeps its own sign-ins, so switching account in your own Claude Code changes nothing here.', GREY]], w),
     ...(x?.login?.tool === 'claude' && x.login.account ? leadLines('  ', [[`${x.login.account} signs in for desk through ${x.login.folder}.`, GREY]], w) : []),
-    ...(unpinned ? leadLines('  ', [[`${unpinned} isn't one of desk's accounts yet. Press `, GREY], ['a', BOLD], [' to add it.', GREY]], w) : [])];
+    ...(unpinned ? leadLines('  ', [[said, GREY], ['a', BOLD], [gone ? ' to add it again.' : ' to add it.', GREY]], w) : [])];
 }
 
 // The note for a row desk won't use: what is wrong and the command that puts it right, which y copies.
@@ -4481,6 +4486,12 @@ function systemCopier(text, out = null) {
 // login's CLI, or a rule change that checks first, never holds the screen. done({ code, out, err }).
 const DESK_ENV_MJS = join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs');
 const deskEnvLogins = (args, done) => deskEnvRun(['logins', ...args], done);
+// What a desk-env logins run that migrated the file printed (the dated backup, each row's before and
+// after, why ~/.claude moved), as lines for the message, or [] when it moved and changed nothing.
+function migrationSaid(r) {
+  const out = String(r?.code === 0 ? r.out ?? '' : '').split('\n').filter((l) => l.trim());
+  return out.some((l) => / -> | moved to Removed: /.test(l)) ? out.filter((l) => / -> | moved to Removed: |\(previous copy: /.test(l)) : [];
+}
 const deskEnvSubscription = (args, done) => deskEnvRun(['subscription', ...args], done);
 function deskEnvRun(args, done) {
   const p = spawn(process.execPath, [DESK_ENV_MJS, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -4927,8 +4938,11 @@ export function interactive({
     if (!args) return;
     tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
     saveStarted();
-    loginsWith(args, () => {
+    loginsWith(args, (r) => {
       lastLogins = null;
+      // A migration (or a pin that moved ~/.claude to Removed) shows what it printed in the terminal.
+      const said = migrationSaid(r);
+      if (said.length) msg = said.join('\n');
       saveEnded(true);
     });
   }
@@ -4992,15 +5006,16 @@ export function interactive({
     saveStarted();
     msg = 'Saving…';
     const fail = (r) => { stopAdding(); msg = notSaved(r); saveEnded(); if (!done) draw(); };
-    const next = () => {
+    const next = (r) => {
       lastLogins = null;
       adding = { tool: a.tool, login: a.first.next, label: null };
       selId = 'adding';
-      msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
+      // The pin moved ~/.claude to Removed: what that migration printed comes first.
+      msg = [...migrationSaid(r), `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`].join('\n');
       saveEnded(true);
       if (!done) draw();
     };
-    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
+    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next(r)));
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.

@@ -148,7 +148,8 @@
 //   node desk-env.mjs logins list [--json]    print the Claude and Codex logins in ~/.config/desk/subscriptions.md,
 //                                             each with its folder and default or unused; a missing file is
 //                                             ~/.claude and ~/.codex. A file in the older rules (in rotation,
-//                                             standby, off) is rewritten once as each tool's default and unused
+//                                             standby, off) is rewritten once as each tool's default and unused,
+//                                             printing each row's before and after and keeping a dated backup
 //   node desk-env.mjs logins default <claude|codex> <name|account>
 //                                             make one login its tool's default and its old default unused,
 //                                             keeping the previous file as .bak
@@ -641,13 +642,15 @@ export function admitInRepo(p, key, { by }) {
   return { ok: false, why, cmd };
 }
 
-// The per-computer files' write: the previous copy kept beside it as <path>.bak.
-function writeWithBackup(path, text) {
+// The per-computer files' write: the previous copy kept beside it as <path>.bak, or with `dated` (a
+// migration's write) as <path>.bak-<time>, which no later write overwrites.
+function writeWithBackup(path, text, { dated = false } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   const had = existsSync(path);
-  if (had) copyFileSync(path, `${path}.bak`);
+  const bak = dated ? `${path}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}` : `${path}.bak`;
+  if (had) copyFileSync(path, bak);
   writeFileSync(path, text);
-  return `wrote ${path}${had ? ` (previous copy: ${path}.bak)` : ''}`;
+  return `wrote ${path}${had ? ` (previous copy: ${bak})` : ''}`;
 }
 
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
@@ -3175,8 +3178,10 @@ if (isMain) {
           const was = subs;
           subs = L.migrateSubscriptions(was);
           if (L.needsMigration(was) && !was.errors.length && process.env.DESK_AUTOPILOT_WORKER !== '1') {
-            writeWithBackup(path, L.renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed));
-            console.error(`${path}: now records one default per tool and every other login as unused; the previous copy is ${path}.bak`);
+            const text = L.renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed);
+            const wrote = writeWithBackup(path, text, { dated: true });
+            console.error(`${path}: now records one default per tool and every other login as unused; ${wrote}`);
+            for (const l of L.migrationLines(was, text)) console.error(l);
           }
           if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
           else for (const l of L.listLines(subs, path)) console.log(l);
@@ -3214,7 +3219,8 @@ if (isMain) {
         }
         if (sub === 'pin' && rest.length === 2 && rest[0] === 'claude') {
           const r = L.pinLogin(subs, { tool: 'claude', name: rest[1], check: () => L.checkLogins(subs) });
-          console.log(writeWithBackup(path, r.text));
+          console.log(writeWithBackup(path, r.text, { dated: r.migrated }));
+          if (r.migrated) for (const l of L.migrationLines(subs, r.text)) console.log(l);
           console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${L.ruleWord(r.login)}`);
           break;
         }
@@ -3229,7 +3235,8 @@ if (isMain) {
           if (!L.needsPinMigration(subs)) { console.log('nothing to migrate'); break; }
           const r = L.migratePins(subs, () => L.checkLogins(subs));
           if (r.text === null) { console.log('nothing to migrate'); break; }
-          console.log(writeWithBackup(path, r.text));
+          console.log(writeWithBackup(path, r.text, { dated: true }));
+          for (const l of L.migrationLines(subs, r.text)) console.log(l);
           if (r.hint) console.log(`add ${r.hint} with a in view 6`);
           break;
         }
