@@ -95,7 +95,9 @@ export function logMarkers(h, t) {
   const lastReboot = reboots.length > (t.reboot_stops ?? 0) && !lastDone ? reboots.at(-1) : null;
   const reboot = lastReboot && [lastPark, lastHandoff].every((m) => !m || lastReboot.index > m.index)
     ? (lastReboot[1].trim() || 'no reason given') : undefined;
-  const handoffLast = !reboot && !!lastHandoff && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
+  // A DONE naming its PR has finished: a handoff after it (the context hook firing late) starts nothing.
+  const doneWithPr = !!lastDone && /\bpr=\d+/.test(lastDone[1]);
+  const handoffLast = !reboot && !!lastHandoff && !doneWithPr && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
   const handoff = handoffLast ? lastHandoff[1].trim() : undefined;
   const park = handoff || reboot || parkSupersededByDone ? undefined : lastPark?.[1];
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
