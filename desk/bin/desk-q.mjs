@@ -2865,7 +2865,7 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
   // notStarted), with no fix worker running, and why the last pass did not start it.
   const bs = r.q?.base_fix?.start;
   if (bs && (bs.passes ?? 0) >= BASE_FIX_WAIT_PASSES && !r.q.base_fix.running) {
-    out.push(note(`${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s conflict fix has not started for ${bs.passes} passes: ${String(bs.why ?? 'no reason recorded').replace(/\.$/, '')}.`));
+    out.push(note(`${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s ${bs.check ? 'merged-tree' : 'conflict'} fix has not started for ${bs.passes} passes: ${String(bs.why ?? 'no reason recorded').replace(/\.$/, '')}.`));
   }
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {

@@ -2802,7 +2802,7 @@ function endTry(outcome, path, extra = {}) {
   const n = bf.tries.length;
   const last = bf.tries[n - 1];
   const kept = !DRY && path && cleanedTry(last) ? keepUnpushed({ path, base: BASE, ref: keptRef(n, last) }) : null;
-  bf = { tries: bf.tries.map((x, i) => (i === n - 1 ? { ...x, outcome, ...extra, ...(kept ? { kept } : {}) } : x)), running: null, port: null };
+  bf = { tries: bf.tries.map((x, i) => (i === n - 1 ? { ...x, outcome, ...extra, ...(kept ? { kept } : {}) } : x)), running: null, port: null, ...(bf.start ? { start: bf.start } : {}) };
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   if (path) dropTryMerge(path, bf.tries[n - 1]);
@@ -3604,6 +3604,22 @@ async function spawnHandoff(t, pick) {
 // not start counts as one made at this head, and the next pass at the same head puts it to the person.
 // A merge try that does not start spends no try: it goes on base_fix.start (base-fix.mjs notStarted),
 // and the next pass tries again until START_TRIES_MAX spawns have failed or been refused.
+//
+// sharedRoom takes the lock the slots were counted without and counts them again under it, with the
+// other queues read afresh, for one base worker: why none may start, or null where one may.
+async function sharedRoom() {
+  const l = await takeBorrowLock();
+  if (!l.ok) return `the repo's batches share its §3b cap, and ${l.why}`;
+  borrowLock = l;
+  process.on('exit', l.release);
+  const queues = otherQueues({ self: QUEUE_FILE });
+  const [again] = decideSlots({
+    ...SLOTS_SNAP, lockWhy: null, baseWanted: true, otherRepos: queues,
+    repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(queues.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
+    repoBatches: otherBatches({ self: QUEUE_FILE, queues: queues.filter((o) => o.slug === REPO_SLUG) }),
+  });
+  return again.machine.room <= 0 ? again.machine.line : again.baseRepo.room <= 0 ? again.baseRepo.line : null;
+}
 async function spawnBaseFix({ wt, fix: asked }) {
   let fix = asked;
   const review = !mergeTry(fix);
@@ -3615,6 +3631,12 @@ async function spawnBaseFix({ wt, fix: asked }) {
     bf = notStarted(bf, asked, why, { failed, at: PASS_AT });
     q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   };
+  // A conflict the sync met with nothing else wanting the lock was counted against the shared budgets
+  // without it, so two passes could each take the same last slot: take it now and count again under it.
+  if (!review && !DRY && !borrowLock && lockWhy == null && (BORROW.on || MACHINE_CAP != null || SIBLINGS)) {
+    const none = await sharedRoom();
+    if (none) { out.push(`base ${tryWhat(fix)}: starts once a worker may (none may this pass: ${none})`); waited(none); return; }
+  }
   // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
   // first: with room for one, a pass starts the base try or a ticket, not both.
   if (takeLockRoom(['test', 'light'])) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); waited(LOCK_QUEUE.line); return; }
@@ -3647,7 +3669,9 @@ async function spawnBaseFix({ wt, fix: asked }) {
   writeFileSync(join(STATE, 'tickets', `${key}.md`), texts.ticket({ key, ...ctx }));
   const made = [...(bf?.tries ?? []), review ? { kind: fix.kind, try: fix.try, head: fix.head, pr: fix.pr, ...(fix.failing ? { failing: fix.failing } : {}), at: PASS_AT }
     : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, ...start, at: PASS_AT }];
-  const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
+  // A review or check try keeps the merge try's start; a merge try that starts drops it.
+  const kept = review && bf?.start ? { start: bf.start } : {};
+  const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...kept, ...rest })}`);
   const failed = (outcome, line) => {
     if (!review) {
       unstart();

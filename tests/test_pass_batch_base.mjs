@@ -174,6 +174,13 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('DS-1034 a dry run writes nothing', batchWrites(sync(snap({}, { fixRoom: false, dry: true }), { sync: conflict })).length, 0);
   const landed = sync(snap({ base_fix: { tries: [], running: null, port: null, start: start1 } }));
   t('DS-1034 a sync that lands drops the start', j(batchWrites(landed)), j(['base_fix=null']));
+  const byHand = sync(snap({ base_fix: { tries: [], running: null, port: null, start: { ...start1, failed: 3 } } }, { willSpawn: false }), { behind: 0, sync: { ok: true, merged: 0 } });
+  t('DS-1034 a start is synced for with nothing else to sync, so a base resolved by hand drops it', j([types(byHand).includes('sync'), batchWrites(byHand)]), j([true, ['base_fix=null']]));
+  const gate = { state: 'failed', conflict: ['src/a.ts'], sha: HEAD };
+  const atHead = sync(snap({ gate, base_fix: { tries: [], running: null, port: null, start: start1 } }, { fixRoom: false, noFixRoom: why }), { sync: { ok: true, merged: 0 } });
+  t('DS-1034 a gate conflict still at the base\'s head keeps its start counting', j(batchWrites(atHead)), j([`base_fix=${j({ tries: [], running: null, port: null, start: { ...start1, passes: 2 } })}`]));
+  const checkStart = sync(snap({}, { fixRoom: false, noFixRoom: why }), { sync: { ok: false, reason: 'check', files: [], check: { command: 'make check', output: 'a' } } });
+  t('DS-1034 a merged-tree fix\'s start names its check', j(batchWrites(checkStart)), j([`base_fix=${j({ tries: [], running: null, port: null, start: { try: 1, files: [], check: 'make check', since: start1.since, passes: 1, failed: 0, why } })}`]));
   const failedOut = { tries: [], running: null, port: null, start: { ...start1, passes: 3, failed: 3, why: 'failed its spawn: no seat' } };
   const person = sync(snap({ feature: true, base_fix: failedOut }), { sync: conflict });
   t('DS-1034 AC2 three failed starts are the person\'s, naming the files and why', waiting(person)[0],

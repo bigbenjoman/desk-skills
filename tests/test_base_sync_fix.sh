@@ -179,7 +179,8 @@ check "DS-958 with room for one on the test lock, the base fix starts and the re
   'grep -q "^base-feat-x " "$T/spawns" && ! grep -q "^T-1 " "$T/spawns" && [[ "$out" == *"Stage 4 (T-1), past the 1 this pass had room for"* ]]'
 
 # DS-1034 AC1: the sync meets the conflict with no ticket to spawn and no failed gate, beside a sibling
-# batch with a worker running: under the lock there is room under the repo's cap, so the fix starts.
+# batch with a worker running: the fix takes the lock nothing else wanted, counts again under it, finds
+# room under the repo's cap and starts.
 : > "$T/spawns"; fresh broom; feature; fixrow yes; conflict; node "$B/queue.mjs" set T-1 state=done >/dev/null
 SIB="$DESK_HOME/repos/acme__widgets/queue.json"; mkdir -p "$(dirname "$SIB")" "$T/locks-room"
 echo '{"tickets":{"S-1":{"key":"S-1","state":"running"}}}' > "$SIB"; age_probes

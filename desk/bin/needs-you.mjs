@@ -1836,7 +1836,9 @@ function itemOf(r, x, reads = null, finds = reads) {
     const s = r.q.base_fix.start;
     const base = r.q.base ?? 'the batch base';
     const files = s.files?.length ? s.files.join(', ') : 'files not listed';
-    return { kind: 'base-fix-start', need: `the conflict fix worker for ${base} in ${r.name ?? r.slug} could not be started in ${s.failed} tries, so ${base} stays in conflict with ${defaultOf(r)} (${files}). The last try: ${s.why}. Resolve the conflict by hand in the base worktree and push ${base}`,
+    const stays = s.check ? `merging ${defaultOf(r)} into ${base} still fails §4 Merged-tree check (${s.check})` : `${base} stays in conflict with ${defaultOf(r)} (${files})`;
+    const fixIt = s.check ? 'Merge it by hand in the base worktree, fix what the check fails' : 'Resolve the conflict by hand in the base worktree';
+    return { kind: 'base-fix-start', need: `the ${s.check ? 'merged-tree' : 'conflict'} fix worker for ${base} in ${r.name ?? r.slug} could not be started in ${s.failed} tries, so ${stays}. The last try: ${s.why}. ${fixIt} and push ${base}`,
       actions: [['done', `once ${base} is pushed, the next pass finds it current and drops this item`], ['not-now']] };
   }
   if (x.basePush) {

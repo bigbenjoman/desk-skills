@@ -2219,6 +2219,10 @@ t('DS-1034 AC2 it names the batch, the base, the files and the reason', bf1034[0
 t('DS-1034 AC2 its age is the first wait\'s', Math.round((NOW - bf1034[0]?.since) / 60000), 30);
 t('DS-1034 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.name === 'rho1034')).shown, 1);
 t('DS-1034 done records nothing', N.record({ word: 'rho1034', ticket: 'base-fix-start', action: 'done' }).line.includes('drops this item once it is current'), true);
+const check1034 = start1034(3); check1034.start = { ...check1034.start, files: [], check: 'make check' };
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: check1034 }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-1034 a merged-tree fix that could not start names its check, not a conflict', N.collect({ word: 'rho1034' }).items[0]?.need,
+  'the merged-tree fix worker for feat/x in rho1034 could not be started in 3 tries, so merging main into feat/x still fails §4 Merged-tree check (make check). The last try: failed its spawn: spawn refused: no seat. Merge it by hand in the base worktree, fix what the check fails and push feat/x');
 put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: start1034(2) }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-1034 under 3 failed starts there is no item', N.collect({ word: 'rho1034' }).items.length, 0);
 

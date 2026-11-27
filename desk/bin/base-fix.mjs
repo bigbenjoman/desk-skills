@@ -9,7 +9,7 @@
 // started from, `kept_stale` why the kept merge could not be, and `lock_wait` a try that parked only
 // on the busy test lock, which counts against no try.
 // A merge try that is due and does not start is kept as `start` (notStarted), never as a try:
-//   { try, files, since, passes, failed, why }
+//   { try, files, check, since, passes, failed, why }   (check: the §4 Merged-tree check's command, for a merged-tree fix)
 // `passes` counts the passes it waited, `failed` the spawns that failed or were refused, and `why` the
 // last reason. A sync that lands drops it, and so does a try that starts.
 // and asks baseFixCall what to do whenever the sync, or the base gate, meets the conflict:
@@ -63,7 +63,7 @@ export const START_TRIES_MAX = 3;
 // its spawn failed or was refused rather than waited. `at` is when the pass began.
 export function notStarted(rec, fix, why, { failed = false, at }) {
   const was = rec?.start ?? null;
-  const start = { try: fix.try, files: fix.files ?? null, since: was?.since ?? at, passes: (was?.passes ?? 0) + 1, failed: (was?.failed ?? 0) + (failed ? 1 : 0), why };
+  const start = { try: fix.try, files: fix.files ?? null, ...(fix.check ? { check: fix.check.command } : {}), since: was?.since ?? at, passes: (was?.passes ?? 0) + 1, failed: (was?.failed ?? 0) + (failed ? 1 : 0), why };
   return { ...(rec ?? { tries: [], running: null, port: null }), start };
 }
 
