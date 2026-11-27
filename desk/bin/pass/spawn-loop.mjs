@@ -57,7 +57,7 @@
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
 
-import { set, say, runsInCloud } from './shared.mjs';
+import { set, say, runsInCloud, startsInCloud } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
@@ -66,7 +66,8 @@ export function* decideSpawn(s) {
   const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
   if (s.stop) return yield { ...skip, stop: true };
   // A cloud session takes none of the local slots, only one of its own limit; a resume or handoff runs here.
-  const cloud = runsInCloud(t) && !s.resume && !s.handoff;
+  // (pass/shared.mjs startsInCloud, the rule pass.mjs counts the cloud and local candidates by.)
+  const cloud = startsInCloud(t);
   if (cloud && !((s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0))) {
     // Held by a hold on every spawn, the pass says that hold; only the limit itself is said here.
     if (!s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: waits for a cloud session (${s.cloudRunning} of ${s.cloudLimit} running, §3b "Cloud sessions at once"). The next pass looks again`);
@@ -141,7 +142,7 @@ export function* decideSpawn(s) {
   yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
-  if (runsInCloud(t)) return yield { type: 'start', key, how: 'cloud' };
+  if (cloud) return yield { type: 'start', key, how: 'cloud' };
   // An earlier setup in this pass found the local database down: no other worktree is set up on it.
   if (s.dbDown) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');
