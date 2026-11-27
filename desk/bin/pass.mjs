@@ -36,7 +36,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -4064,6 +4064,26 @@ function cloudRules() {
     noAttribution: E.attributionForbidden(E.configValue('ai-attribution')),
   };
 }
+// The review rows a cloud session's desk-review reads from DESK_CONFIG_FILE (desk-review's own
+// `desk-env get` and `list` calls), each as this repo's config holds it; a row unset or unreadable is
+// left out, and reads as unset there. The review account is not passed: it names a login on this
+// computer, and the session posts as its own.
+const CLOUD_REVIEW_VALUES = ['review-bar', 'review-asks', 'clean-verdict', 'tracker', 'ticket-pattern'];
+const CLOUD_REVIEW_LISTS = ['review-experts', 'required-checks', 'work-id-patterns'];
+function cloudReviewRows() {
+  const out = {};
+  const read = (id, f) => { try { const v = f(id); if (v != null && !(Array.isArray(v) && !v.length)) out[id] = v; } catch { /* unread */ } };
+  for (const id of CLOUD_REVIEW_VALUES) read(id, E.configValue);
+  for (const id of CLOUD_REVIEW_LISTS) read(id, E.configValues);
+  return out;
+}
+// The review a cloud session runs at its pushed head (cloud-worker.mjs cloudPrompt's `review`):
+// set where the base branch the session clones enables the desk plugin in `.claude/settings.json`,
+// else null, and the brief is as before.
+function cloudReview() {
+  const settings = sh('git', ['-C', MAIN, 'show', `origin/${DEFAULT_BRANCH}:.claude/settings.json`], { tolerant: true });
+  return deskReviewEnabled(settings) ? { config: cloudReviewRows() } : null;
+}
 function spawnCloud(t, pick) {
   const park = (why) => {
     const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
@@ -4093,7 +4113,7 @@ function spawnCloud(t, pick) {
   const who = email ? `${email} (login ${login.name})` : `login ${login.name}`;
   // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
   const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
-  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules() }), { name, env });
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview() }), { name, env });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
     park(s.timedOut ? `claude --cloud on ${who} gave ${s.error}. A first cloud start on a login asks whether the session may use the environment's variables, and nothing answers that in the background: run this once in a terminal and answer it: ${cloudStartCommand(login)}` : s.error);

@@ -19,3 +19,6 @@ Verification section. `tests/test_cloud_worker.mjs` reads them.
 
 No route found gives a cloud session's tokens or cost: `claude --teleport <session-id>` replays the
 conversation, but `/cost` then shows only local turns, and no local transcript is written.
+- `prompt-no-review.txt`: `cloudPrompt`'s brief for a fixture ticket (K-1, no repo rules) as `main`
+  wrote it before issue-1555, generated from that commit's `cloud-worker.mjs`. A brief with no
+  desk-review must still equal it.
