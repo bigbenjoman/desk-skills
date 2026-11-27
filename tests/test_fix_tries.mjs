@@ -1230,12 +1230,15 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
 }
 
-// #1640: every path a failed log names, past the five error lines, less GitHub's echo of the step script.
+// Every path a failed log names, past the five error lines, less GitHub's echo of the step script; and the
+// error lines keep the one naming the failing file ahead of the runner's headings.
 {
   const J = (s) => `shard 6/6\tRun tests\t2026-11-20T16:29:00.000Z ${s}`;
   const LOG = [J('##[group]Run bash tests/ci_shard.sh 6 6'), J('failed=$(grep -c FAIL tests/out.txt)'), J('##[endgroup]'),
     ...['a', 'b', 'c', 'd', 'e', 'f'].map((x) => J(`== suite ${x} errors ==`)), J('ok   ./desk/bin/queue.mjs loads.'), J('FAIL tests/test_new_holds.mjs: holds a PR')].join('\n');
-  t('#1640 the failing file is past the five error lines errorLinesIn keeps', errorLinesIn(LOG).some((l) => l.includes('test_new_holds')), false);
+  t('#1640 AC1 the fix try\'s error lines lead with the one naming the failing file, past six headings', errorLinesIn(LOG)[0], 'FAIL tests/test_new_holds.mjs: holds a PR');
+  t('#1640 and leave out the echoed step script', errorLinesIn(LOG).some((l) => l.includes('grep -c FAIL')), false);
+  t('#1640 the headings fill the rest, five lines at most', errorLinesIn(LOG).slice(1).join('|'), '== suite a errors ==|== suite b errors ==|== suite c errors ==|== suite d errors ==');
   t('#1640 pathsIn reads it, the error lines\' paths first, less ./ and a trailing dot', pathsIn(LOG).join(' '), 'tests/test_new_holds.mjs desk/bin/queue.mjs');
   t('#1640 pathsIn skips the echoed step script', pathsIn(LOG).includes('tests/ci_shard.sh') || pathsIn(LOG).includes('tests/out.txt'), false);
   t('#1640 with failing, only the error lines\' paths', pathsIn(LOG, { failing: true }).join(' '), 'tests/test_new_holds.mjs');

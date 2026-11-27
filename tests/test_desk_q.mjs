@@ -2764,7 +2764,7 @@ r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
 
-// ---- #1640 AC4: a draft whose red checks' logs name no file it changes, re-run once, waits on checks.
+// ---- A draft whose red checks' logs name no file it changes, re-run once, waits on checks.
 const rerun1640 = { call: 'rerun', why: 'its "CI (shard 6/6)" check\'s failed log names no file this PR changes, so its run is re-run once at this head, every job, before any fix worker' };
 put(I.T, I.env, 'rerun1640', { port: 5691, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'rerun1640', concurrency: 3, supervised: true, tickets: {
   'V-1640': { ...prOn(1640, [okCheck('tests'), { name: 'CI (shard 6/6)', status: 'completed', conclusion: 'failure' }], { isDraft: true }), undraft: rerun1640 },

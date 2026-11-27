@@ -1351,18 +1351,17 @@ const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${
 // Beyond those lines, every path the failed log names (log_paths, pass.mjs withErrors, read past the first
 // few error lines) is matched against each changed file, added, renamed or edited alike, by its file name, a
 // generic one too: the same repo path, or one ending in the other, has the same file name. A path the
-// failure itself names (on an error line, or an annotation's) also counts under a changed file's own folder,
-// as a suite's file sits beside the module it tests, or a repo-wide check names the folder's files. Only
-// the file's own folder, not its ancestors, so a change in `desk/bin/` does not make all of `desk/` related;
-// a file directly in `tests/` has `tests/` as its own folder, so any failing suite there is related.
+// failure itself names (on an error line, or an annotation's) also counts when it sits directly in a changed
+// file's own folder, as a suite's file sits beside the module it tests, or a repo-wide check names the
+// folder's files. Only that folder, as the repo names it or a package runner prints it: not its ancestors
+// or subfolders, and not a folder of the same name elsewhere (`packages/x/src/` for a change in `src/`); a
+// file directly in `tests/` has `tests/` as its own folder, so any failing suite there is related.
 const base = (p) => p.split('/').pop();
 const sameName = (p, ch) => base(p) === base(ch);
+const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
 // A path as the repo names it, and less leading folders while two segments are left.
 const pathTails = (p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; };
-const underDir = (p, ch) => {
-  const dir = ch.includes('/') ? ch.slice(0, ch.lastIndexOf('/')) : '';
-  return !!dir && pathTails(dir).some((d) => p.startsWith(`${d}/`) || p.includes(`/${d}/`));
-};
+const inDir = (p, ch) => !!dirOf(ch) && pathTails(dirOf(ch)).includes(dirOf(p));
 function namesChanged(c, changed) {
   const lines = errorLines(c);
   const text = [...lines, ...(c?.error_paths ?? [])];
@@ -1371,7 +1370,7 @@ function namesChanged(c, changed) {
   if (text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)))) return true;
   const failing = [...pathsIn(lines.join('\n')), ...(c?.error_paths ?? []), ...(c?.log_fail_paths ?? [])];
   const all = [...failing, ...(c?.log_paths ?? [])];
-  return all.some((p) => changed.some((ch) => sameName(p, ch))) || failing.some((p) => changed.some((ch) => underDir(p, ch)));
+  return all.some((p) => changed.some((ch) => sameName(p, ch))) || failing.some((p) => changed.some((ch) => inDir(p, ch)));
 }
 // A `rerun` call while a rerun is left at this head, a `wait` while another job of a run to re-run is still
 // going (GitHub refuses a run in progress, and a refusal counts as a rerun tried) and the run is inside

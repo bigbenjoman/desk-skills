@@ -254,9 +254,8 @@ t('#805 with the lever on, a runner fault keeps its words and reruns only the fa
 t('#805 with the lever off, a runner fault naming no changed file is re-run as such a check', draftOf([red('Lint', '9')], [spaced('Lint', '9')], off805())?.gate?.full, true);
 }
 
-// ---- #1640: every path the failed log names is matched against the PR's files, not only its first
-// five error lines (PR #1634's shard 6/6 named its added test at log line 1042, after the step's echoed
-// script and the suite headings had filled them).
+// ---- Every path the failed log names is matched against the PR's files, not only its first five error
+// lines, which a runner's headings can fill.
 {
 const CHANGED = ['tests/test_new_holds.mjs', 'desk/bin/holds.mjs'];
 const shard = (n, o = {}) => ({ ...red(`CI (shard ${n}/6)`, '9'), errors: [], log_errors: ['failed=$(grep -c FAIL out.txt)', '== suite: merge errors ==', '== suite: fix tries failed ==', '== suite: queue errors ==', '== suite: pass failed =='], ...o });
@@ -273,10 +272,15 @@ t('#1640 AC2 so is one on an error line, as the package runner prints it', draft
 t('#1640 AC2 a sibling folder is not', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['desk/lib/queue.mjs'] })], off1640())?.call, 'rerun');
 t('#1640 AC2 nor an ancestor folder', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['desk/queue.mjs'] })], off1640())?.call, 'rerun');
 t('#1640 AC2 a file directly in tests/ has tests/ as its own folder', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['tests/test_queue.mjs'] })], off1640())?.call, 'requeue');
+t('#1640 AC2 nor a subfolder of it', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['desk/bin/pass/queue.mjs'] })], off1640())?.call, 'rerun');
+t('#1640 AC2 nor a folder of the same name elsewhere', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['apps/admin/tests/queue.spec.ts', 'packages/desk/bin/queue.mjs'] })], off1640())?.call, 'rerun');
+t('#1640 AC2 nor a dependency\'s stack frame through a folder named like a changed file\'s', draftOf([red('Unit', '9')], [{ ...red('Unit', '9'), errors: ['TypeError: x at /home/runner/work/r/r/node_modules/zod/src/types.js:12'] }], off1640({ changed: ['src/holds.ts'] }))?.call, 'rerun');
 t('#1640 AC2 nor a path in the folder printed only on a passing line', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_paths: ['desk/bin/queue.mjs'], log_fail_paths: [] })], off1640())?.call, 'rerun');
 const away = draftOf([red('CI (shard 6/6)', '9')], [shard(2, { conclusion: 'success' }), shard(6, { log_paths: ['tests/test_queue.mjs', 'desk/lib/queue.mjs'], log_fail_paths: ['tests/test_queue.mjs'] })], off1640({ changed: ['desk/bin/holds.mjs'] }));
 t('#1640 AC1 a failure naming only untouched files is re-run', away?.call, 'rerun');
 t('#1640 AC3 the rerun names the shard that failed, not one that passed', `${away?.why.includes('"CI (shard 6/6)"')} ${away?.why.includes('shard 2/6')}`, 'true false');
+const rerunRed = draftOf([red('CI (shard 2/6)', '9')], [shard(6, { conclusion: 'success' }), shard(2, { log_paths: ['desk/lib/queue.mjs'], log_fail_paths: ['desk/lib/queue.mjs'] })], off1640({ changed: ['desk/bin/holds.mjs'] }));
+t('#1640 AC3 and when another shard fails at the next attempt, it names that one', `${rerunRed?.why.includes('"CI (shard 2/6)"')} ${rerunRed?.why.includes('shard 6/6')}`, 'true false');
 }
 
 // The base red record a fix call leaves: when its hold began, and whether the call holds the PR.
