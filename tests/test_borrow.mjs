@@ -436,5 +436,18 @@ t('DS-308 pass AC6: and prints no repo workers line', /repo workers/.test(out), 
   t('#1359 one written outside a session names none', B.lastBeat(dir, qp)?.session, null);
 }
 
+// #1544 AC4: borrowed slots left unused because the lock gate held tickets: the borrowing line names it.
+{
+  const p = { slots: 4, own: 2, borrow: 2, line: null, count: 'machine 3 of 10' };
+  t('#1544 AC4 none started: the borrowing line names the lock gate and how many it held',
+    B.borrowedLine(p, { share: 2, running: 2, spawned: 0, lockHeld: 17 }), 'borrowing: 2 may be borrowed, none started: the lock gate held 17 (machine 3 of 10)');
+  t('#1544 AC4 some borrowed: the line says how many were left unused and names the lock gate',
+    B.borrowedLine(p, { share: 2, running: 0, spawned: 3, lockHeld: 4 }), 'borrowing: 1 worker borrowed this pass, 1 above the batch\'s own number of 2, 1 left unused: the lock gate held 4 (machine 3 of 10)');
+  t('#1544 AC4 every borrowed slot used: the line does not name the gate',
+    /lock gate/.test(B.borrowedLine(p, { share: 2, running: 0, spawned: 4, lockHeld: 4 })), false);
+  t('#1544 AC4 nothing held by the gate: the line reads as before',
+    B.borrowedLine(p, { share: 2, running: 2, spawned: 0, lockHeld: 0 }), 'borrowing: 2 may be borrowed, none started (machine 3 of 10)');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all borrow checks passed');
 process.exit(fails ? 1 : 0);
