@@ -9,8 +9,8 @@ and what the user last did is how they left the work, not how it stands.
 commented or did on a ticket is how they left it, not how it stands now: a teammate may have fixed
 it since. For every ticket the post mentions, read its current status in its tracker (§4 Tracker
 `jira`: `desk-jira get <KEY>` for that ticket's repo, run as
-`DESK_REPO_DIR=<its main checkout> desk-jira get <KEY>` (the checkout is that repo's §0 Repo root,
-`repo-root`), since desk-jira takes its site and project from the repo it runs in and ignores
+`DESK_REPO_DIR=<its main checkout> desk-jira get <KEY>` (the checkout is that repo's §2 Primary repo
+root, `repo-root`), since desk-jira takes its site and project from the repo it runs in and ignores
 `DESK_SLUG`; `none`: `gh issue view <n> --repo <owner/name> --json state,closedAt`) and every PR naming it,
 by any author, open or merged:
 
