@@ -111,6 +111,9 @@ For a page behind real auth, on a development instance only. It needs §4 Env fi
 who already holds the app's grant: §4 Test sign-in (`desk-env cmds test-signin`) gives one per app as
 `DIR<TAB>EMAIL`, so take the line whose directory is the app's, exactly as for the dev server. An
 app with no line there has no user to sign in as: `desk-env drift --app <dir>` names it `NOSIGNIN`.
+Where §4 Test sign-in permissions (`desk-env list test-signin-permissions`) names what the app's
+pages need, the same call reads the user from Clerk and names each permission it lacks `NOPERM`, or
+`PERMREAD` where it could not read them.
 
 1. **Start the right app.** `desk-env cmds dev-cmd` gives one `DIR<TAB>CMD` line per app, so in a
    multi-app repo pick the line whose directory holds the page. Run it through `with-lock.sh nolock
@@ -133,11 +136,14 @@ app with no line there has no user to sign in as: `desk-env drift --app <dir>` n
 ```js
 import { readFileSync, chmodSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+// desk's own reading of the key and the user, the same `desk-env drift --app` checks permissions with
+const { clerkSecretKeyIn, isClerkDevKey, clerkUsersByEmail } = await import(resolve(homedir(), '.claude/desk/bin/desk-env.mjs'));
 
 const [port, path, out, email, envFile] = process.argv.slice(2);
-const key = /^CLERK_SECRET_KEY="?([^"\n]+)"?$/m.exec(readFileSync(envFile, 'utf8'))?.[1] ?? '';
-if (!key.startsWith('sk_test_')) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
+const key = clerkSecretKeyIn(readFileSync(envFile, 'utf8'));
+if (!isClerkDevKey(key)) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
 const clerk = async (method, p, body) => {
   const r = await fetch(`https://api.clerk.com/v1${p}`, {
     method,
@@ -147,7 +153,7 @@ const clerk = async (method, p, body) => {
   if (!r.ok) throw new Error(`clerk ${p}: ${r.status}`);
   return r.json();
 };
-const [user] = await clerk('GET', `/users?email_address=${encodeURIComponent(email)}`);
+const [user] = await clerkUsersByEmail(key, email);
 const { token } = await clerk('POST', '/sign_in_tokens', { user_id: user.id, expires_in_seconds: 300 });
 
 const { chromium } = createRequire(resolve('package.json'))('playwright');

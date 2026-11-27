@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues, rowStates } from './desk-env.mjs';
 import { auditP0Replay } from './levers-audit.mjs';
-import { KEPT_STATES, REGISTRY, isValued } from './lever-registry.mjs';
+import { KEPT_STATES, REGISTRY, decideChoices, isValued } from './lever-registry.mjs';
 import { appendChecked, isStateChange, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
 import { leverStatesIn } from './levers-auto.mjs';
 import { CATEGORY, VALUES, choicesOf, recordLeverDecision } from './lever-changes.mjs';
@@ -31,7 +31,6 @@ import { appendDecisions } from './decisions.mjs';
 import { readDecisions } from './digest.mjs';
 import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q.mjs';
 
-export const CHOICES = Object.freeze(['off', 'trial']);
 const BY_HAND = 'ben';
 
 export class LeversRefusal extends Error {}
@@ -63,9 +62,6 @@ export function resolveRepo(want, root = deskConfigRoot()) {
 function checkLever(lever, registry = REGISTRY) {
   if (!Object.hasOwn(registry, lever)) refuse(`levers: ${lever} is not a lever the registry declares; declared: ${Object.keys(registry).join(', ')}`);
 }
-// The choices `levers decide` takes for a lever: off or trial, or a lever with more than two arms'
-// values or trial.
-const decideChoices = (lever, registry) => (isValued(registry[lever]) ? [...registry[lever].values, 'trial'] : CHOICES);
 
 // Admission reads the lever log only for a lever the repo's Phase 0 levers row leaves to `auto`
 // (levers-auto.mjs assignPin), so a call on any other would change nothing it does.
@@ -121,7 +117,7 @@ export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now
   const r = resolveRepo(repo, configRoot);
   checkLever(lever, registry);
   const choices = decideChoices(lever, registry);
-  if (!choices.includes(choice)) refuse(`levers decide: the choice ${isValued(registry[lever]) ? `for ${lever}, which has more than two arms, is one of its values or trial (${choices.join(', ')})` : `is ${CHOICES.join(' or ')}`}, not "${choice}"`);
+  if (!choices.includes(choice)) refuse(`levers decide: the choice ${isValued(registry[lever]) ? `for ${lever}, which has more than two arms, is one of its values or trial (${choices.join(', ')})` : `is ${choices.join(' or ')}`}, not "${choice}"`);
   if (choice === 'trial' && !registry[lever].trialled) refuse(`levers decide: ${lever} is not trialled; name it in the repo's Phase 0 levers row to turn it on`);
   checkRow(r, lever, configRoot);
   const state = batchPaths(r.slug).state;

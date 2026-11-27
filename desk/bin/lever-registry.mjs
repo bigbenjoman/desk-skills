@@ -297,6 +297,9 @@ export const REGISTRY = loadRegistry();
 export const lever = (name, registry = REGISTRY) => registry[name] ?? null;
 // Whether a registry lever has more than two arms, each a value.
 export const isValued = (l) => Array.isArray(l?.values);
+// The choices `levers decide` takes for a lever: off or trial, or a lever with more than two arms'
+// values or trial.
+export const decideChoices = (name, registry = REGISTRY) => (isValued(registry[name]) ? [...registry[name].values, 'trial'] : ['off', 'trial']);
 
 // Which levers in a repo's levers row (its items, read as desk-env's parseLevers reads them) may be
 // trialled: the ones the registry declares. Every other name is refused, and `message` names each

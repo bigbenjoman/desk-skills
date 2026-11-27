@@ -71,7 +71,8 @@ import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './revie
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, readBaseRed, readGreen, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
 import { decideSupersededRepairs } from './pass/repair-superseded.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges, holdersText } from './suite-wait.mjs';
+import { reclaimOrphans } from './lock-orphans.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -79,7 +80,7 @@ import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, hold
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
-import { listBatches, prState as batchPrState } from './batches.mjs';
+import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
@@ -117,7 +118,7 @@ import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli, ledgerStarts, releasePreviews, slotPools } from './leases.mjs';
+import { claudeAncestor, kindMode, leaseCli, ledgerStarts, releasePreviews, slotPools } from './leases.mjs';
 import { liveWaiters } from './admit-ledger.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLogged } from './asks.mjs';
@@ -2361,6 +2362,45 @@ const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
 const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
 const concurrency = CONC.n;
+// Orphaned lock holders: a test or light lock holder whose caller has gone (lock-orphans.mjs
+// orphanReason) is named each pass with its age and why. One working in this repo's checkout or
+// worktrees that passes have found orphaned for ORPHAN_GRACE_MS is ended, its process group with it,
+// where config §3 autopilot-reclaim is yes; with the row anything else it is only named, and one
+// elsewhere is its own repo's pass's. Either way nothing reaches needs-you. Each orphan's first
+// sighting is kept in lock-orphans.json. This pass's lock queue reading below still counts one it ended.
+// AUTOPILOT_LOCK_QUEUE=off skips it with that reading, as the test runner sets it: its passes must not
+// judge, or end, this machine's real holders (a suite that turns the reading back on runs with a scratch
+// HOME and lock dir, where no real holder shows).
+const ORPHAN_GRACE_MS = 5 * 60_000;
+const ORPHANS_FILE = join(STATE, 'lock-orphans.json');
+if (process.env.AUTOPILOT_LOCK_QUEUE !== 'off') (() => {
+  let seen = {};
+  try { seen = JSON.parse(readFileSync(ORPHANS_FILE, 'utf8')) ?? {}; } catch { /* none seen yet */ }
+  const held = lockHolderRuns({ procs: processList(), holders: lockHolders(E.lockDir(), { locks: 'both' }), cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir(), { locks: 'both' }), locks: 'both' });
+  if (!held.length && !Object.keys(seen).length) return;
+  let rows, tickets;
+  try {
+    rows = processRows();
+    tickets = new Map();
+    for (const t of repoTickets(E.repoSlug())) if (tickets.get(t.key) !== 'running') tickets.set(t.key, t.state);
+  } catch (e) {
+    report.recovered.push(`lock holders: not judged for orphans this pass (${String(e?.message ?? e).split('\n')[0]})`);
+    return;
+  }
+  let reclaim = null;
+  try { reclaim = E.permission('autopilot-reclaim'); } catch { /* unread: a no */ }
+  const { seen: next, lines } = reclaimOrphans({
+    held, rows, tickets, main: MAIN, worktrees: WORKTREES, reclaim, seen, graceMs: ORPHAN_GRACE_MS, dry: DRY,
+    claudeAbove: (pid) => claudeAncestor(rows, pid) != null, text: (run) => holdersText([run]),
+    end: (target) => endProcs(target, { graceMs: 5000 }),
+  });
+  report.recovered.push(...lines);
+  if (DRY) return;
+  try {
+    if (Object.keys(next).length) writeJsonAtomic(ORPHANS_FILE, next);
+    else if (existsSync(ORPHANS_FILE)) unlinkSync(ORPHANS_FILE);
+  } catch { /* the next pass sees each orphan afresh */ }
+})();
 // Test lock gate: each repo gets a share of the machine-wide queue on the test lock, and a repo whose
 // §4 Suite weight is light, of the light lock's queue too, which its suites take; each pool is read
 // against its own hold point, its current slots (the floor plus the runs admission let in above it,
