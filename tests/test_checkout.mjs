@@ -35,7 +35,7 @@ const config = (slug, rows, perms) => {
   ].join('\n'));
 };
 const jira = (project, dest) => ({ Tracker: 'jira', 'Jira site': 'acme.atlassian.net', 'Jira project': project, 'Ticket key pattern': `${project}-[0-9]+`, Priority: 'customfield_10207', 'Check-out destination': dest });
-config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
+config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes', 'read-others': 'yes' });
 config('acme__lib', jira('LIB', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'ask' });
 config('acme__other', jira('OTH', '#elsewhere'), { 'read-transcripts': 'no', 'read-own-work': 'no' });
 config('acme__side', { Tracker: 'none', 'Check-out destination': 'none' }, { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
@@ -60,7 +60,9 @@ ${body}
 };
 fake('gh', `
 if (args[0] === 'api' && args[1] === 'user') { console.log('me'); process.exit(0); }
-if (args[0] === 'api' && args.includes('search/issues')) out(args.find((a) => a.startsWith('q=')).includes('reviewed-by') ? 'reviewed' : 'mine');
+const q = args.find((a) => a.startsWith('q=')) || '';
+if (args[0] === 'api' && args.includes('search/issues') && q.includes('is:merged')) out('merged_' + q.match(/repo:(\\S+)/)[1].replace('/', '_'));
+else if (args[0] === 'api' && args.includes('search/issues')) out(q.includes('reviewed-by') ? 'reviewed' : 'mine');
 else if (args[0] === 'api') out(args[1].replace(/[^A-Za-z0-9]+/g, '_'));
 else if (args[0] === 'pr' && args[1] === 'view') out('pr_' + args[4].replace('/', '_') + '_' + args[2]);
 else process.exit(1);`);
@@ -299,6 +301,14 @@ put('pr_acme_side_14', { reviewDecision: 'REVIEW_REQUIRED', isDraft: true, statu
 put('reviewed', { items: [pr('acme/app', 20, 'Alice\'s change', { user: { login: 'alice' } }), pr('acme/app', 21, 'Reviewed last week', { user: { login: 'bob' } })] });
 put('repos_acme_app_pulls_20_reviews', [{ user: { login: 'me' }, state: 'CHANGES_REQUESTED', submitted_at: at(14) }, { user: { login: 'carol' }, state: 'APPROVED', submitted_at: at(14) }]);
 put('repos_acme_app_pulls_21_reviews', [{ user: { login: 'me' }, state: 'APPROVED', submitted_at: before }]);
+// #1534: merged PRs in the window per repo, split by author; one merged before the window is not counted.
+put('merged_acme_app', { items: [
+  pr('acme/app', 10, 'Fix the redirect', { state: 'closed', pull_request: { merged_at: at(15) } }),
+  pr('acme/app', 30, 'Alice merged', { state: 'closed', user: { login: 'alice' }, pull_request: { merged_at: at(11) } }),
+  pr('acme/app', 31, 'Bob merged', { state: 'closed', user: { login: 'bob' }, pull_request: { merged_at: at(12) } }),
+  pr('acme/app', 32, 'Merged last week', { state: 'closed', pull_request: { merged_at: before } }),
+] });
+put('merged_acme_side', { items: [pr('acme/side', 40, 'Side merged', { state: 'closed', pull_request: { merged_at: at(16) } })] });
 const github = script('github_activity.py', '--day', DAY);
 t('github: exits 0', github.status, 0);
 const go = github.stdout;
@@ -309,8 +319,14 @@ has('github: pushed commits, less merges and older ones', go, '- nobody/x#12 A p
 lacks('github: a PR nothing happened to is left out', go, 'Untouched today');
 has('github: a review given on the day', go, "## Reviews you gave (1)\n- acme/app#20 Alice's change (by alice) — you: changes requested");
 lacks('github: a review from before the day is left out', go, 'Reviewed last week');
-has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__other: §3 read-own-work is no - skipped');
+has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees\n- acme__other: §3 read-own-work is no - skipped');
 lacks('github: and none of it shows', go, 'Other thing');
+has('#1534 merged PRs in the window are counted per repo, yours and everyone\'s', go, '## Merged PRs in the window, by author (yours / everyone\'s)\n- acme/app: 1 mine / 3 all\n');
+has('#1534 everyone\'s count needs read-others; without it only yours is given', go, '- acme/side: 1 mine / all not counted (acme__side: §3 read-others is no) [Side project]');
+lacks('#1534 a repo whose read-own-work is no is not counted', go, '- acme/other:');
+const ghCalls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('is:merged'));
+t('#1534 without read-others the search asks only for your PRs', ghCalls.some((l) => l.includes('repo:acme/side') && l.includes('author:me')), true);
+t('#1534 with it, everyone\'s', ghCalls.some((l) => l.includes('repo:acme/app') && !l.includes('author:')), true);
 
 // jira_activity.py: what the user did in each in-scope repo's Jira project.
 put('api_3_myself', { accountId: 'me-id', displayName: 'Me Person' });
@@ -361,6 +377,11 @@ has('the window is said to the user, not in the post', skill, 'Say the window in
 has('a day only when posted on a later day than the work', skill, 'Add a day\n  only when the post is made on a later day than the work, naming the day the work happened');
 has('every figure covers the post\'s window', skill, '**Every count or figure covers the post\'s window**, from the previous post onwards (step 1), not\n  since midnight');
 has('figures are filtered on the window start', skill, 'Compute each one from its source, with timestamps\n  filtered on the window start');
+const styleText = readFileSync(join(REPO, 'skills/desk-checkout/references/style.md'), 'utf8');
+has('#1534 a merged-PR count is the user\'s own', skill, '**A merged-PR count is the user\'s own** (the collector\'s `mine`)');
+has('#1534 style: never everyone\'s merged PRs as the user\'s', styleText, 'Don\'t give everyone\'s merged PRs as the user\'s.');
+has('#1534 style: everyone\'s only when the line says it includes others', styleText, 'Everyone\'s figure goes in only with words saying it includes others ("35 in\n  all, 16 mine")');
+has('#1534 style: "more" only against the same author scope', styleText, 'Write "more" only when the previous post\'s count had the same author scope');
 has('Check before posting names each figure\'s query and window', skill, 'Each count or figure in the post, with the query and window behind it');
 has('a setting is read from its source before its timing is stated', skill, '**A setting, config row or other change that is not a PR is read from its source too**');
 has('a change in effect is never from tomorrow', skill, 'a change already in effect is in the past\n  or present tense ("now 20%, since today"), never "from tomorrow"');

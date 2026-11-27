@@ -4,7 +4,9 @@
 Uses the `gh` CLI (already authenticated), so no token handling here. Lists PRs you
 opened, merged, closed or pushed to, and other people's PRs you reviewed, across every
 repo. Open PRs carry their review decision and check state, which is what "waiting on
-approval" claims need.
+approval" claims need. For each repo it also counts the PRs merged in the window, yours and
+everyone's (the latter only where that repo's §3 read-others allows), so a post's merged count
+says whose PRs it means.
 
 Rows are grouped by scope (see desk_repos.py): this check-out (the current repo and any
 configured desk repo sharing its §4 Check-out destination), side projects
@@ -43,6 +45,25 @@ def search(query):
     if raw is None:
         raise SystemExit(f"gh search failed for {query!r}")
     return json.loads(raw).get("items", [])
+
+
+def merged_counts(repo, login, since, until, day, everyone):
+    """(mine, all) PRs merged into repo in the window; all is None when not everyone's are read."""
+    query = f"is:pr is:merged repo:{repo} merged:>={day}" + ("" if everyone else f" author:{login}")
+    mine = total = 0
+    for page in range(1, 11):  # the search API stops at 1000 results
+        raw = gh("api", "-X", "GET", "search/issues", "-f", f"q={query}", "-f", "per_page=100", "-f", f"page={page}")
+        if raw is None:
+            return None
+        items = json.loads(raw).get("items", [])
+        for pr in items:
+            merged_at = (pr.get("pull_request") or {}).get("merged_at")
+            if merged_at and since <= parse_time(merged_at) < until:
+                total += 1
+                mine += (pr.get("user") or {}).get("login") == login
+        if len(items) < 100:
+            break
+    return mine, (total if everyone else None)
 
 
 def pr_state(repo, number):
@@ -152,6 +173,25 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         reviews = [r for r in pool.map(describe_review, reviewed) if r]
 
+    side = [s.strip() for s in os.environ.get("DESK_CHECKOUT_SIDE_REPOS", "").split(",") if s.strip()]
+    names = {n.lower(): n for n in side + [r.gh_repo for r in repos if r.gh_repo]}.values()
+
+    def describe_merged(repo):
+        sc = scope(repo)
+        if sc is None:
+            return None
+        everyone, note = desk_repos.allowed(desk_repos.scope_for_repo_name(repo, repos)[1], "read-others")
+        counts = merged_counts(repo, login, since, until, day, everyone)
+        label = "" if sc == "this" else f" [{desk_repos.SCOPE_LABELS[sc]}]"
+        if counts is None:
+            return sc, f"- {repo}: not counted (gh search failed){label}"
+        mine, total = counts
+        rest = f"{total} all" if total is not None else f"all not counted ({note.replace(' - skipped', '')})"
+        return sc, f"- {repo}: {mine} mine / {rest}{label}"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        merged = sorted((r for r in pool.map(describe_merged, sorted(names, key=str.lower)) if r), key=lambda r: desk_repos.SCOPE_ORDER[r[0]])
+
     print(f"# GitHub activity for {login}, {window.label(start, end)}\n")
     for group in sorted(desk_repos.SCOPE_ORDER, key=desk_repos.SCOPE_ORDER.get):
         items = [line for g, line in rows if g == group]
@@ -162,6 +202,8 @@ def main():
         print("No PRs of yours moved in the window.\n")
     print(f"## Reviews you gave ({len(reviews)})")
     print("\n".join(reviews) if reviews else "none")
+    print("\n## Merged PRs in the window, by author (yours / everyone's)")
+    print("\n".join(line for _, line in merged) if merged else "none")
     if skipped:
         print("\n## Skipped by permission")
         print("\n".join(f"- {n}" for n in sorted(skipped)))
