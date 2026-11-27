@@ -138,11 +138,17 @@ const operatorStuck = (notMine, ctx) => checksStuck(null, [], notMine, ctx);
 // against the base (againstBase), it also names the checks red on the base too, and those whose base
 // state is unknown.
 const checksFix = (mine, notMine, repo, base = null) => ({
-  kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}${base?.unknown.length ? `; base state unknown for ${base.unknown.map((f) => f.name).join(', ')} (no run of it read on ${base.branch} at the merge base or since)` : ''}`,
-  checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })),
+  kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}${ownOf(mine, base)}${base?.unknown.length ? `; base state unknown for ${base.unknown.map((f) => f.name).join(', ')} (no run of it read on ${base.branch} at the merge base or since)` : ''}`,
+  checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId), ...(f.own?.length ? { own_tests: f.own } : {}) })),
   not_mine: notMine.map(({ name, command, state }) => ({ name, command, ...(state ? { state: true } : {}) })),
   ...(base ? { base: base.branch, base_red: base.red.map((f) => f.name), ...(base.latest?.length ? { base_latest: base.latest.map((f) => f.name) } : {}) } : {}),
 });
+// The checks red on the base too whose failing tests are not all the base's (failure-class.mjs
+// baseSplit's `own`), each with the tests that are this PR's own, for a fix's `what`.
+const ownOf = (mine, base) => {
+  const own = mine.filter((f) => f.own?.length);
+  return own.length ? `; red on ${base?.branch ?? 'the base'} too, but failing its own tests there: ${own.map((f) => `${f.name} (${f.own.join(', ')})`).join('; ')}` : '';
+};
 // The red checks a worker would fix, read against the base (ctx.baseRead, failure-class.mjs
 // baseSplit): -> null with no read, a `held` call when every one is red on the base too, at the PR's
 // merge base or on the job's latest run since (no try is spent: the hold clears once the job passes
@@ -1646,7 +1652,7 @@ export function fixBrief(t, review = null) {
     lines.push(f.draft
       ? `Your PR #${f.pr} is a draft on this branch, and these required checks are red at ${String(f.head).slice(0, 12)}, so it cannot leave draft:`
       : `Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
-    for (const c of f.checks) lines.push(`- ${c.name}: ${c.url ?? 'no run URL reported'}`);
+    for (const c of f.checks) lines.push(`- ${c.name}: ${c.url ?? 'no run URL reported'}${c.own_tests?.length ? `. It is red on ${f.base ?? 'the base'} too, but these of its failing tests are not failing there, so they are yours: ${c.own_tests.join(', ')}` : ''}`);
     for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}.${c.state ? ' Leave it red.' : ' A person runs that; leave it red.'}`);
     for (const name of f.builds ?? []) lines.push(`- ${name} is red too, and it is not yours to fix: §4 Check builds names it, so the pass builds your head once the rest are green. Do not run that build yourself; leave it red.`);
     for (const name of f.base_red ?? []) lines.push(`- ${name} is red too, and on ${f.base} ${f.base_latest?.includes(name) ? 'in its latest run of that job' : 'at your merge base'} as well, so it is not yours to fix: leave it red.`);

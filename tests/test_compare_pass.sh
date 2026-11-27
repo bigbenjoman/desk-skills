@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: compare_pass (a fixture comparison lists what a head's pass.mjs does differently from its base's)
+# budget: 150 (main 2200) GH-1598 a pull request's smoke replay ran 61-81 CPU s, a main push's full one 1442-1822
 # layer: L3
 # tests/compare_pass.sh over scratch trees whose stand-in pass.mjs writes one queue field and prints one
 # line: a head that matches lists nothing; one that writes a field or prints a line differently lists
@@ -8,7 +9,6 @@
 # changed. Then the real pass suite against itself lists nothing: all of it on a main push or the
 # nightly run, otherwise only test_pass_other_repo.sh. Scratch dirs only.
 # covers: tests/test_pass*.sh
-# budget: 60 (main 1500) DS-942 a pull request's smoke replay ran 28 CPU s, a main push's full one 1004
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -213,6 +213,16 @@ check "#1567 a held pass's availGB that differs between runs is not reported" "$
 fieldtree mem3 'hold: { cause: "memory", numbers: { availGB: 2.9478759765625, minAvailGB: 6 } }' 'A-1 running'
 cmp "$T/mem1" "$T/mem3"
 check "#1567 its spawn gate (minAvailGB) is still compared" '[ $rc = 1 ] && echo "$out" | grep -qF "minAvailGB: base 4, head 6"'
+
+# A test-lock hold whose holder had held the lock a second longer on one tree, as a pass reads its age
+# under load; and one whose holder's age the head could not read.
+fieldtree held1 'hold: { cause: "test-lock", holders: [{ cmd: "bash tests/run.sh", heldS: 8 }], numbers: { queues: [{ holders: [{ heldS: 8 }] }] } }' 'A-1 running'
+fieldtree held2 'hold: { cause: "test-lock", holders: [{ cmd: "bash tests/run.sh", heldS: 9 }], numbers: { queues: [{ holders: [{ heldS: 9 }] }] } }' 'A-1 running'
+cmp "$T/held1" "$T/held2"
+check "issue-1598 a test-lock holder's age that differs between runs is not reported" "$same0"
+fieldtree held3 'hold: { cause: "test-lock", holders: [{ cmd: "bash tests/run.sh", heldS: null }], numbers: { queues: [{ holders: [{ heldS: 9 }] }] } }' 'A-1 running'
+cmp "$T/held1" "$T/held3"
+check "issue-1598 a test-lock holder's age read on one tree only is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 hold.holders.0.heldS: base <STAMP:number>, head null"'
 
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'

@@ -500,11 +500,16 @@ rm -f "$T/state/health.json"
 unset DESK_SUBSCRIPTIONS
 
 # ---- DS-589: the local Postgres container ------------------------------------------------------
-# docker answers pg_isready per $T/mode.docker (ok or down) and logs each call.
+# docker answers pg_isready per $T/mode.docker (ok, down, or hang: the engine does not answer) and logs
+# each call. `docker ps` answers unless hung; `docker context show` always answers, $T/ctx.docker or orbstack.
 cat > "$T/stub/docker" <<EOF
 #!/bin/sh
 echo "\$@" >> "$T/calls.docker"
-[ "\$(cat "$T/mode.docker" 2>/dev/null || echo ok)" = down ] && { echo "/var/run/postgresql:5432 - no response"; exit 2; }
+[ "\$1 \$2" = "context show" ] && { cat "$T/ctx.docker" 2>/dev/null || echo orbstack; exit 0; }
+m=\$(cat "$T/mode.docker" 2>/dev/null || echo ok)
+[ "\$m" = hang ] && { sleep 5; exit 0; }
+[ "\$1" = ps ] && exit 0
+[ "\$m" = down ] && { echo "/var/run/postgresql:5432 - no response"; exit 2; }
 echo "/var/run/postgresql:5432 - accepting connections"
 EOF
 chmod +x "$T/stub/docker"
@@ -518,8 +523,24 @@ DBROW="postgres container acme-pg" config yes yes
 q add H-7; q set H-7 state=triaged branch=fix/H-7
 mode docker down
 pj
-check "DS-589 AC1 the container not answering holds the spawn" '[ "$(field H-7 state)" = triaged ] && [ "$(calls docker)" = 1 ] && grep -q "health: 1 check(s) failing — database — holding new spawns" <<< "$out"'
+check "DS-589 AC1 the container not answering holds the spawn" '[ "$(field H-7 state)" = triaged ] && [ "$(calls docker)" = 2 ] && grep -q "health: 1 check(s) failing — database — holding new spawns" <<< "$out"'
 check "DS-589 AC1 one item naming the container, told at once" 'grep -qF "health: local database (docker exec acme-pg pg_isready) failed:" <<< "$out" && grep -qF "start Docker and the container acme-pg" <<< "$out" && [[ "$(pushes)" =~ ^health:.+:database$ ]]'
+check "DS-1028 AC2 docker answering with no container: no Docker-not-responding hint" 'grep -q "^ps -q$" "$T/calls.docker" && ! grep -q "Docker not responding" <<< "$json"'
+# DS-1028: the engine itself hangs, pg_isready and docker ps both, past a 500 ms timeout.
+mode docker hang
+t0=$(date +%s)
+DESK_HEALTH_TIMEOUT_MS=500 pj
+t1=$(date +%s)
+check "DS-1028 AC3 the hung probe is ended at its timeout and the pass carries on" '[ $((t1 - t0)) -lt 5 ] && [ "$(field H-7 state)" = triaged ] && grep -q "health: 1 check(s) failing — database — holding new spawns" <<< "$out"'
+check "DS-1028 AC1 the health line names the engine"  'grep -q "health: 1 check(s) failing — database — .*Docker not responding: restart OrbStack" <<< "$out"'
+check "DS-1028 AC1 the stall and the alert name it"    'grep -qF "fix: Docker not responding: restart OrbStack (docker ps timed out)" <<< "$out" && [[ "$(pushes)" =~ ^health:.+:database$ ]] && [[ "$json" == *"Fix: Docker not responding: restart OrbStack"* ]] && ! grep -qF "start Docker and the container" <<< "$json"'
+echo colima > "$T/ctx.docker"
+DESK_HEALTH_TIMEOUT_MS=500 pj
+check "DS-1028 AC1 another engine is named by its context" 'grep -qF "Docker not responding: restart colima" <<< "$out" && ! grep -q OrbStack <<< "$out"'
+echo default > "$T/ctx.docker"
+DESK_HEALTH_TIMEOUT_MS=500 pj
+check "DS-1028 AC1 the default context, which names no engine, says Docker" 'grep -qF "Docker not responding: restart Docker" <<< "$out" && ! grep -qF "restart default" <<< "$out"'
+rm -f "$T/ctx.docker"
 mode docker ok
 pj
 check "DS-589 AC2 once it answers the ticket spawns, no answer needed" '[ "$(field H-7 state)" = running ] && grep -q "health: all checks pass (checked now; recovered: database)" <<< "$out" && [ -z "$(pushes)" ]'

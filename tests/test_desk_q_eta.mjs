@@ -419,6 +419,12 @@ repo('cloudsib', 4660, { batch: 'side', tickets: { 'D-3': { state: 'triaged', lo
 const sideBatch = Q.loadRepos(FIXED).find((r) => r.repo === 'cloudsib' && r.batch === 'side');
 t('#1564 AC2: a named batch\'s ready cloud ticket waits on the cloud sessions its sibling batch holds',
   /\sD-3\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(Q.repoScreen(sideBatch, { now: FIXED, width: 200 }), 'D-3')), true);
+// #1581: a running cloud session's row names the account it started under; back for a local try, it does not.
+repo('cloudy', 4670, { tickets: { 'C-1': { state: 'running', stage: 'cloud', location: 'cloud', cloud: { started: iso(FIXED - 5 * MIN), login: { name: 'studia', email: 'ops@acme.test' } } },
+  'C-2': { state: 'running', stage: '3/9', location: 'cloud', result: { pr: 7 }, cloud: { pr_at: iso(FIXED - 9 * MIN), login: { name: 'studia', email: 'ops@acme.test' } } } },
+  sizes: { 'C-1': 'M', 'C-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN });
+const cloudy = Q.repoScreen(repoAt('cloudy'), { now: FIXED, width: 200 });
+t('#1581 AC2 a cloud session\'s row names its account', [/\sC-1\s+● running\s+stage cloud as of \d\d:\d\d · on ops@acme\.test\s/.test(bRow(cloudy, 'C-1')), / on ops@acme\.test/.test(bRow(cloudy, 'C-2'))], [true, false]);
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);
@@ -833,6 +839,9 @@ t('#1487 AC7: a size with its own five uses them alone, and no size uses all uns
 const fewM = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(2, () => ({ size: 'M', h: 4, w: 1 }))];
 t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))], E.poolFor(fewM, 'M').scaled], [2, [4], true]);
 t('#1487 AC7: with one size alone there is no ratio, and the pool says its borrowed times are unscaled', E.poolFor(range(6, () => ({ size: 'S', h: 2, w: 1 })), 'M').scaled, false);
+// issue-1553 AC2: a cloud ticket with no saved estimate is judged by the typical slot time for its size.
+t('issue-1553 AC2 the typical slot time for a size is its pool\'s median, borrowed and scaled as the forecast does',
+  [E.typicalSlotHours({ history: [...histOf(6, 'S', 2), ...histOf(6, 'M', 4)], size: 'M', now: FIXED }), E.typicalSlotHours({ history: [...histOf(6, 'S', 2), ...histOf(6, 'M', 4)], size: 'L', now: FIXED }), E.typicalSlotHours({ history: [], size: 'M', now: FIXED })], [4, 8, null]);
 
 // ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
 // Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.
@@ -870,6 +879,26 @@ t('#1487 AC3: ships dates it from now, marked overdue, with the first estimate i
 t('#1487 AC3: so does its ticket page', field(Q.ticketScreen(repoAt('behind'), 'O-1', { now: FIXED }).split('\n'), 'Ships'),
   `Ships     ▲${when(behindF.T['O-1'].likely, FIXED)} overdue: first estimate Mon 19 Oct 16:51, re-forecast from now could run to ${when(behindF.T['O-1'].late, FIXED)} (1 run in 5 is later)`);
 t('#1487 AC3: and the Timeline\'s key says what the mark means', Q.timelineScreen(Q.loadRepos(FIXED), 'acme__behind', { now: FIXED }).includes('▲ overdue: its first estimate passed, re-forecast from now'), true);
+
+// ---- issue-1553 AC3: cloud tickets on the forecast and on Costs ----------------
+// A cloud ticket is dated with the local ones and marked cloud before its title; Costs lists it as
+// cost unknown (cloud) with its session URL, and leaves the local one off that list.
+repo('cloudy', 4790, {
+  tickets: { 'CL-1': { state: 'running', stage: '3/9', location: 'cloud', cloud: { session: 'session_9', url: 'https://claude.ai/code/session_9', started: new Date(FIXED - HOUR).toISOString() } }, 'CL-2': { state: 'triaged' } },
+  sizes: { 'CL-1': 'M', 'CL-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+const cloudyTl = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__cloudy', { now: FIXED }).split('\n');
+const cloudyDays = Q.daysScreen(Q.loadRepos(FIXED), 'acme__cloudy', { now: FIXED }).split('\n');
+const cloudRow = (lines, k) => lines.find((l) => new RegExp(`\\s${k}\\s`).test(l)) ?? '';
+t('issue-1553 AC3 the timeline dates the cloud ticket and marks it cloud; the local one is not marked',
+  [cloudRow(cloudyTl, 'CL-1').includes('cloud · CL-1 title'), cloudRow(cloudyTl, 'CL-2').includes('CL-2 title'), cloudRow(cloudyTl, 'CL-2').includes('cloud ·')], [true, true, false]);
+t('issue-1553 AC3 so does the by-day view', [cloudRow(cloudyDays, 'CL-1').includes('cloud · CL-1 title'), cloudRow(cloudyDays, 'CL-2').includes('cloud ·')], [true, false]);
+const cloudyCosts = Q.costsScreen(Q.loadRepos(FIXED), { now: FIXED, costs: { exists: false, entries: [] }, cache: {}, use: null, subs: { logins: [] }, pinUsage: true }).split('\n');
+t('issue-1553 AC3 Costs lists the cloud ticket as cost unknown (cloud) with its session URL', /CL-1\s+cost unknown \(cloud\)\s+https:\/\/claude\.ai\/code\/session_9$/.test(cloudRow(cloudyCosts, 'CL-1')), true);
+t('issue-1553 AC3 and says why, leaving the local ticket off it', [cloudyCosts.some((l) => l.includes('Claude Code reports no tokens or cost for a cloud session')), cloudRow(cloudyCosts, 'CL-2')], [true, '']);
+const cloudyJson = JSON.parse(JSON.stringify(Q.costsJson(Q.loadRepos(FIXED), {}, { now: FIXED, costs: { exists: false, entries: [] }, cache: {} })));
+t('issue-1553 AC3 desk-q --json costs carries it too', JSON.stringify((cloudyJson.data?.cloud ?? cloudyJson.cloud ?? []).find((x) => x.key === 'CL-1')),
+  JSON.stringify({ repo: 'cloudy', key: 'CL-1', cost: null, why: 'cost unknown (cloud)', url: 'https://claude.ai/code/session_9' }));
 
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 

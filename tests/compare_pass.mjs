@@ -354,8 +354,10 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // the pass last wrote a ticket or started its worker, lands wherever the load of the machine put that
 // write in its run, so it is compared as set or not, and by its type: <STAMP:string> when it holds a
 // string. The memory a held pass read (pass.hold.numbers.availGB) is the machine's, as a printed
-// avail= is, so it is compared as <MEM>.
-const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started)$/;
+// avail= is, so it is compared as <MEM>. How long a test-lock holder had held it (the hold's `heldS`,
+// each holder's under holders and under numbers.queues) is a stamp as well: its age when the pass read
+// it, which the load of the machine moves.
+const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started|heldS)$/;
 const flatten = (rec, norm, rn) => flattenQueue(rec, {
   key: (k) => rn(norm(k)),
   leaf: (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'

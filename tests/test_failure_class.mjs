@@ -1,6 +1,7 @@
 // suite: failure class (every park and fix try records one class; a red check is read against the base)
 // layer: L1
-import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold } from '../desk/bin/failure-class.mjs';
+import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold, failingTestNames } from '../desk/bin/failure-class.mjs';
+import { makeBaseReads } from '../desk/bin/base-reads.mjs';
 import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks, staleCall } from '../desk/bin/fix-tries.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -289,6 +290,90 @@ t('#805 with the lever off, a runner fault naming no changed file is re-run as s
   t('#1330 and so is the refresh', JSON.stringify(staleCall({ key: 'T-1' }, HEAD, ['Lint'], read({ Lint: 'fail' }, { Lint: 'pass' }), { base: 'main' })?.checks), '["Lint"]');
   const d = draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Lint')] }, { repo: 'acme/widgets', base: 'main', refreshBase: true, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) });
   t('#1327 a draft is updated the same way', `${d?.call} ${JSON.stringify(d?.checks)}`, 'refresh ["Lint"]');
+}
+
+// issue-1605: base red is judged by the failing tests inside a check, not by its name alone.
+{
+  const tests = (prT, baseT) => ({ failingTests: (f) => prT[f.name] ?? null, baseTests: (n, where) => baseT[`${n}@${where}`] ?? null });
+  const SHARD = 'shard 1/6';
+  // The job's latest run on the base passes: the merge base's failing set alone is compared.
+  const GREEN_NOW = { [SHARD]: 'pass' };
+  // AC4: the same check name with a different failing set: not base red, the fix try targets its own tests.
+  const diff = fixCall({ key: 'T-1' }, pr([ok('tests'), red(SHARD)]), ctx({ baseRead: { ...read({ [SHARD]: 'fail' }, GREEN_NOW), ...tests(
+    { [SHARD]: ['DS-226 AC1 FileVault on is reported', 'DS-226 AC4 fdesetup missing is unknown'] },
+    { [`${SHARD}@merge-base`]: ['DS-763 AC4 the whole pass shell suite', 'DS-763 AC4 the stub that never exits is ended by the watch'] }) } }));
+  t('issue-1605 AC1 same check red on the base, different failing tests: not base red, a fix try', `${diff?.call} ${diff?.base_red}`, 'requeue null');
+  t('issue-1605 AC3 the pass line names the PR\'s own failing tests', diff?.fix.what, 'red: shard 1/6; red on main too, but failing its own tests there: shard 1/6 (DS-226 AC1 FileVault on is reported, DS-226 AC4 fdesetup missing is unknown)');
+  t('issue-1605 AC1 the try\'s brief names them as the worker\'s', fixBrief({ fix: diff.fix }).includes('these of its failing tests are not failing there, so they are yours: DS-226 AC1 FileVault on is reported, DS-226 AC4 fdesetup missing is unknown'), true);
+  // One shared test beside one of its own is still not base red; only the own one is named.
+  const some = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }, GREEN_NOW), ...tests({ [SHARD]: ['A', 'B'] }, { [`${SHARD}@merge-base`]: ['A'] }) });
+  t('issue-1605 AC1 any test not failing at the merge base makes it the PR\'s, naming only that one', `${some.red.length} ${JSON.stringify(some.mine.map((f) => f.own))} ${some.record}`, '0 [["B"]] null');
+  // AC2/AC4: the same failing set: base red, held, as today.
+  const same = fixCall({ key: 'T-1' }, pr([ok('tests'), red(SHARD)]), ctx({ baseRead: { ...read({ [SHARD]: 'fail' }, GREEN_NOW), ...tests({ [SHARD]: ['A', 'B'] }, { [`${SHARD}@merge-base`]: ['B', 'A', 'C'] }) } }));
+  t('issue-1605 AC2 the same failing tests (or fewer) as the base: base red, held', `${same?.call} ${same?.class} ${JSON.stringify(same?.base_red?.checks)}`, 'held base red ["shard 1/6"]');
+  // The base went red after the merge base: compared with the base's latest failing run of that job.
+  const late2 = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'pass' }, { [SHARD]: 'fail' }), ...tests({ [SHARD]: ['X'] }, { [`${SHARD}@latest`]: ['Y'] }) });
+  t('issue-1605 AC1 red on the base\'s latest run with other tests: the PR\'s', `${late2.red.length} ${JSON.stringify(late2.mine[0]?.own)}`, '0 ["X"]');
+  // Either side unread, or naming no test: read by check name, as before.
+  for (const [label, prT, baseT] of [['the PR\'s tests unread', {}, { [`${SHARD}@merge-base`]: ['A'] }], ['the base\'s tests unread', { [SHARD]: ['A'] }, {}],
+    ['the base\'s log names no test', { [SHARD]: ['A'] }, { [`${SHARD}@merge-base`]: [] }]]) {
+    const r = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }, GREEN_NOW), ...tests(prT, baseT) });
+    t(`issue-1605 ${label}: base red by check name, as before`, `${r.red.length} ${r.mine.length}`, '1 0');
+  }
+  // The FAIL lines a job log gives, as the test names compared.
+  const log = ['2026-11-27T10:00:00.1234567Z \x1b[31mFAIL\x1b[0m DS-226 AC1 FileVault on is reported: got on (want off)',
+    '2026-11-27T10:00:01.0000000Z FAIL DS-226 AC1 FileVault on is reported: got 12 (want off)', 'FAIL src/a.test.ts (5.2 s)', 'ok   DS-1 passes', 'FAILURES above (3 checks passed)'].join('\n');
+  t('issue-1605 AC1 a log\'s runner failure lines give its failing tests, once each, without what differs between runs', JSON.stringify(failingTestNames(log)), '["DS-226 AC1 FileVault on is reported","src/a.test.ts"]');
+  t('issue-1605 an unread log names none', JSON.stringify(failingTestNames(null)), '[]');
+  // Red at the merge base and on the base's latest run since: both failing sets are the base's.
+  const both = { [`${SHARD}@merge-base`]: ['A'], [`${SHARD}@latest`]: ['A', 'X'] };
+  const later = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }), ...tests({ [SHARD]: ['A', 'X'] }, both) });
+  t('issue-1605 red at the merge base, a test the base broke since fails in the PR\'s run too: base red, held', `${later.red.length} ${later.mine.length} ${JSON.stringify(later.record?.checks)}`, '1 0 ["shard 1/6"]');
+  const laterOwn = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }), ...tests({ [SHARD]: ['A', 'X', 'B'] }, both) });
+  t('issue-1605 red at the merge base and since, a test neither fails: the PR\'s, naming only that one', `${laterOwn.red.length} ${JSON.stringify(laterOwn.mine[0]?.own)}`, '0 ["B"]');
+  const latestUnread = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }), ...tests({ [SHARD]: ['A', 'X'] }, { [`${SHARD}@merge-base`]: ['A'] }) });
+  t('issue-1605 red at the merge base, the latest run\'s tests unread: base red by check name', `${latestUnread.red.length} ${latestUnread.mine.length}`, '1 0');
+  const latestNone = baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }, { [SHARD]: null }), ...tests({ [SHARD]: ['A', 'X'] }, { [`${SHARD}@merge-base`]: ['A'] }) });
+  t('issue-1605 red at the merge base, the latest run on the base unread: base red by check name', `${latestNone.red.length} ${latestNone.mine.length}`, '1 0');
+  // A suite tests/run.sh retried: its first run's failures are not this run's.
+  const retried = ['== tests/test_a.mjs', 'ok: 3', 'retried: failed its first run, passed its retry', '-- first run', 'FAIL flaky one: got x', 'FAIL 1 check(s) failed',
+    '== tests/test_b.mjs', 'ok: 2', '-- first run', 'FAIL b first only: got y', '-- retry', 'FAIL b both: got z', '2026-11-27T10:00:00.1Z FAIL 3 check(s) failed', 'FAIL 2 check(s)', 'FAIL: 4 checks failed'].join('\n');
+  t('issue-1605 P0 a retried suite\'s first run and a suite\'s count line name no failing test', JSON.stringify(failingTestNames(retried)), '["b both"]');
+  const counts = (n) => baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }, GREEN_NOW), failingTests: () => failingTestNames(`FAIL A: x\nFAIL ${n} check(s) failed`), baseTests: () => failingTestNames('FAIL A: x\nFAIL B: y\nFAIL 2 check(s) failed') });
+  t('issue-1605 P0 a PR failing fewer of the base\'s tests, with its own count line: base red', `${counts(1).red.length} ${counts(1).mine.length}`, '1 0');
+  // Other runners' failure lines, and junit cases a log prints.
+  const runners = ['2026-11-27T10:00:00.1Z FAILED tests/test_x.py::test_one - AssertionError: no', '--- FAIL: TestParse (0.01s)', 'FAIL\tgithub.com/acme/parse\t0.012s',
+    '@acme/web:test: FAIL src/b.test.ts (2.1 s)', '<testsuite name="s"><testcase classname="pkg.Mod" name="it works" time="0.1"><failure message="x"/></testcase>',
+    '<testcase classname="pkg.Mod" name="passes" time="0.1"/><testcase classname="pkg.Mod" name="errs" time="0.2">', '<error message="boom"/></testcase></testsuite>'].join('\n');
+  t('issue-1605 gap pytest, go, task-prefixed Jest lines and junit failure and error cases give failing tests', JSON.stringify(failingTestNames(runners)),
+    '["tests/test_x.py::test_one","TestParse","github.com/acme/parse","src/b.test.ts","pkg.Mod.it works","pkg.Mod.errs"]');
+  // The reads, through gh: the PR's job by name in its failed run, the base's by the job in its check run's URL.
+  const R = 'acme/widgets', JOB_PR = '140393593637', JOB_BASE = '777';
+  const answers = {
+    [`repos/${R}/compare/main...${HEAD}`]: `${'c'.repeat(40)}\t${MB}`,
+    [`repos/${R}/commits/${MB}/check-runs?check_name=${encodeURIComponent(SHARD)}&filter=latest&per_page=100`]: JSON.stringify([{ status: 'completed', conclusion: 'failure', details_url: `https://github.com/${R}/actions/runs/1/job/${JOB_BASE}` }]),
+    [`repos/${R}/compare/${MB}...main?per_page=100`]: '',
+    [`repos/${R}/actions/runs/45965634008/jobs?per_page=100`]: JOB_PR,
+    [`repos/${R}/actions/jobs/${JOB_PR}/logs`]: 'FAIL DS-226 AC1 FileVault on is reported: got x\n',
+    [`repos/${R}/actions/jobs/${JOB_BASE}/logs`]: 'FAIL DS-763 AC4 the whole pass shell suite: got y\n',
+    [`repos/${R}/actions/runs/1/jobs?per_page=100`]: `${JOB_BASE}\n888\n889\n`,
+    [`repos/${R}/actions/jobs/888/logs`]: 'FAIL DS-9 another shard\'s test: got z\n',
+    [`repos/${R}/actions/jobs/889/logs`]: 'one or more shards failed\n',
+  };
+  const calls = [];
+  const gh = (args) => { calls.push(args); const out = answers[args[1]]; return out == null ? { ok: false, out: '' } : { ok: true, out }; };
+  const br = makeBaseReads({ gh, repo: R, branch: 'main' }).forHead(HEAD);
+  t('issue-1605 the PR\'s failing tests are read from its job of that name', JSON.stringify(br.failingTests(red(SHARD, '45965634008'))), '["DS-226 AC1 FileVault on is reported"]');
+  t('issue-1605 the job is picked by its name', calls.find((a) => a[1].includes('/runs/45965634008/jobs'))?.[3], `[.jobs[] | select(.name == "${SHARD}") | .id][0] // empty`);
+  t('issue-1605 the base\'s failing tests are read from every failed job of its failed run at the merge base', JSON.stringify(br.baseTests(SHARD, 'merge-base')), '["DS-763 AC4 the whole pass shell suite","DS-9 another shard\'s test"]');
+  t('issue-1605 the run\'s failed jobs are picked by conclusion', calls.find((a) => a[1] === `repos/${R}/actions/runs/1/jobs?per_page=100`)?.[4], '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure") | .id');
+  // A test the base fails in another shard of that run is the base's, whichever shard the PR ran it in.
+  const moved = baseSplit([red(SHARD, '45965634008')], HEAD, null, { ...br, failingTests: () => ['DS-9 another shard\'s test'] });
+  t('issue-1605 a base test that ran in another shard on the base: base red, held', `${moved.red.length} ${moved.mine.length}`, '1 0');
+  const crashed = makeBaseReads({ gh: (args) => (args[1] === `repos/${R}/actions/jobs/${JOB_BASE}/logs` ? { ok: true, out: 'Error: the runner lost its connection\n' } : gh(args)), repo: R, branch: 'main' }).forHead(HEAD);
+  t('issue-1605 the base\'s job of that name naming no test (a crash): none, so read by name', JSON.stringify(crashed.baseTests(SHARD, 'merge-base')), '[]');
+  const split = baseSplit([red(SHARD, '45965634008')], HEAD, null, br);
+  t('issue-1605 AC1 end to end through the reads: not base red', `${split.red.length} ${JSON.stringify(split.mine[0]?.own)}`, '0 ["DS-226 AC1 FileVault on is reported"]');
 }
 
 if (fails) { console.log(`${fails} check(s) failed`); process.exit(1); }
