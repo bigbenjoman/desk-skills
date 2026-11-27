@@ -4,7 +4,7 @@
 # A stub ps prints over 2 MB of rows ahead of the real list, as a dozen workers' prompts in their
 # command lines do, or fails outright. heavyProcesses, suite-wait's processList and upload-images'
 # profile check must each read the whole list, and say ps could not be read rather than act on a
-# partial or empty one. Every ps call under desk/bin goes through desk-env's psRows. Scratch HOME only.
+# partial or empty one. Every ps call under desk/bin goes through ps-rows.mjs psRows. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -84,7 +84,7 @@ check "parsePs: the last column runs to the end of the line, ids and rss are num
 
 # ---- AC5: every ps call under desk/bin goes through psRows ------------------------------------
 out=$(grep -rnE "(spawnSync|execFileSync|execSync|spawn|execFile|exec)\([[:space:]]*['\"\`]ps['\"\` ]" "$B")
-check "AC5: the only ps call under desk/bin is psRows's" '[ "$(printf "%s\n" "$out" | grep -c .)" = 1 ] && grep -q "/desk-env.mjs:.*maxBuffer: PS_MAX_BUFFER" <<< "$out"'
+check "AC5: the only ps call under desk/bin is psRows's" '[ "$(printf "%s\n" "$out" | grep -c .)" = 1 ] && grep -q "/ps-rows.mjs:.*maxBuffer: PS_MAX_BUFFER" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
