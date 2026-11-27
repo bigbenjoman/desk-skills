@@ -1,6 +1,7 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
 // layer: L1
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, lockHeldLine, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, holdOf, heldText, lockHeldLine, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
+import { lockGate, lockQueue } from '../desk/bin/suite-wait.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -189,6 +190,14 @@ const vsnap = (tickets, fields = {}) => {
   return { tickets: queue.tickets, queue, report: emptyReport(), blocked: [], putOff: new Set(), parkNotes: new Map(), prStates: {},
     gatePending: false, epicPending: false, promotionPending: false, spawned: 0, slug: 'o__r', ...fields, queue };
 };
+// issue-1491 AC5: what waits on a slot or the next pass is listed as waiting, apart from WAITING ON YOU, and notifies nobody.
+{
+  const report = { ...emptyReport(), waits: ['held for the next pass, not a stall (A, B): …', 'H: waiting for a slot (held by A, B) — …'] };
+  t('issue-1491 AC5 tickets held for the next pass or a slot are listed under waiting, not WAITING ON YOU', j(lines(decideReportLines(after({ report })))),
+    j(['waiting, nothing for you to do:\n  held for the next pass, not a stall (A, B): …\n  H: waiting for a slot (held by A, B) — …']));
+  const v = vsnap([{ key: 'R-1', state: 'running' }], { report });
+  t('issue-1491 AC5 and set off no NOTIFY', j([verdictOf(v).needsYou, verdictOf(v).status, decideVerdict(v)]), j([[], 'nothing_yet', []]));
+}
 {
   const tickets = [
     { key: 'P-1', state: 'parked', park: { question: 'Which copy?' } },
@@ -268,24 +277,85 @@ const vsnap = (tickets, fields = {}) => {
 }
 {
   const free = { spawned: 0, eligible: 2, held: null, baseHold: false, baseLag: null, lowMemory: false, availGB: 9, minAvailGB: 6,
-    lockQueueHeldText: null, machine: { room: 1, line: 'm' }, repoUnlocked: false, repoLine: 'r', repo: { room: 1, line: 'R' }, concurrency: 2 };
+    lockHold: null, machine: { room: 1, line: 'm' }, repoUnlocked: false, repoLine: 'r', repo: { room: 1, line: 'R' }, concurrency: 2,
+    bins: { queue: '/b/queue.mjs', pass: '/b/pass.mjs' } };
+  // The pass record's held, as pass.mjs writes it.
+  const heldWhyOf = (s) => heldText(holdOf(s));
+  const lock = lockHeldLine({ gate: lockGate([lockQueue({ waiting: 1, slots: 1, factor: 2 })]), held: ['A'], running: 1, concurrency: 2 });
   t('a spawn, or nothing eligible, holds nothing', j([heldWhyOf({ ...free, spawned: 1 }), heldWhyOf({ ...free, eligible: 0 })]), '[null,null]');
   t('the first hold that applied names why', j([
     heldWhyOf({ ...free, held: 'usage' }), heldWhyOf({ ...free, baseHold: true, baseLag: '30 behind' }), heldWhyOf({ ...free, lowMemory: true, availGB: 3.21 }),
-    heldWhyOf({ ...free, lockQueueHeldText: 'the lock queue' }), heldWhyOf({ ...free, machine: { room: 0, line: 'm 9/9' } }),
+    heldWhyOf({ ...free, lockHold: lock.hold }), heldWhyOf({ ...free, machine: { room: 0, line: 'm 9/9' } }),
     heldWhyOf({ ...free, repoUnlocked: true }), heldWhyOf({ ...free, repo: { room: 0, line: 'R 3/3' } }), heldWhyOf({ ...free, concurrency: 0 }), heldWhyOf(free),
-  ]), j(['usage', 'the batch base sync holds every spawn: 30 behind', 'memory: 3.2G available, under the 6G spawn gate', 'the lock queue',
+  ]), j(['usage', 'the batch base sync holds every spawn: 30 behind', 'memory: 3.2G available, under the 6G spawn gate', lock.line,
     'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3', 'the batch\'s worker count is 0', null]));
   t('a harm signal is named rather than avail', heldWhyOf({ ...free, lowMemory: true, harmWhy: 'memory harm: OOM-KILL within the last 10m (…)' }), 'memory harm: OOM-KILL within the last 10m (…)');
+
+  // DS-1047: the hold behind each of those words, as the pass record keeps it.
+  const harm = 'memory harm: OOM-KILL within the last 10m (…)';
+  const back = ['C'];
+  const causes = [
+    { ...free, held: 'the maintenance window holds every spawn' }, { ...free, held: '7-day usage ahead of pace holds every spawn' },
+    { ...free, held: 'the batch budget holds every spawn' }, { ...free, held: 'a failing health check (gh) holds every spawn' },
+    { ...free, held: 'config §3b "Usage pacing" holds every spawn' }, { ...free, held: harm, harmWhy: harm },
+    { ...free, baseHold: true }, { ...free, harmWhy: harm }, { ...free, lowMemory: true, availGB: 3.21 }, { ...free, lockHold: lock.hold },
+    { ...free, machine: { room: 0, line: 'm 9/9' } }, { ...free, repoUnlocked: true }, { ...free, repo: { room: 0, line: 'R 3/3' } },
+    { ...free, concurrency: 0 }, { ...free, eligible: 0, heldBack: back },
+  ].map(holdOf);
+  t('DS-1047 AC2 each hold names its cause and what it holds', j(causes.map((h) => `${h.cause} ${h.scope}`)), j([
+    'maintenance machine', 'usage machine', 'budget batch', 'health repo', 'config repo', 'harm machine', 'base batch', 'harm machine', 'memory machine',
+    'test-lock machine', 'machine machine', 'repo-cap repo', 'repo-cap repo', 'concurrency batch', 'collision batch']));
+  t('DS-1047 AC4 the held string is the hold\'s words', j(causes.slice(0, -1).map(heldText)), j([
+    'the maintenance window holds every spawn', '7-day usage ahead of pace holds every spawn', 'the batch budget holds every spawn',
+    'a failing health check (gh) holds every spawn', 'config §3b "Usage pacing" holds every spawn', harm, 'the batch base sync holds every spawn', harm,
+    'memory: 3.2G available, under the 6G spawn gate', lock.line, 'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3',
+    'the batch\'s worker count is 0']));
+  t('DS-1047 AC2 AC4 a collision holds the pass only when nothing is eligible, naming its tickets, and its held stays null as before',
+    j([causes.at(-1).tickets, heldText(causes.at(-1)), holdOf({ ...free, heldBack: back })]), j([['C'], null, null]));
+  t('DS-1047 AC3 a hold the person can clear names the exact command', j([
+    holdOf({ ...free, held: 'the batch budget holds every spawn' }).action, holdOf({ ...free, held: 'config §3 autopilot-workers is "ask"' }).action,
+    holdOf({ ...free, held: 'config §3b "Worker models" holds every spawn' }).action, holdOf({ ...free, concurrency: 0 }).action,
+  ]), j([
+    { text: 'lift the batch budget (or set budget_usd to a higher figure in its place)', cmd: 'node /b/queue.mjs set-batch budget_usd=none' },
+    { text: 'confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1', cmd: 'AUTOPILOT_USER_APPROVED=1 node /b/pass.mjs' },
+    { text: 'fix the config row with /desk-setup', cmd: '/desk-setup' },
+    { text: 'set the batch\'s worker count above 0', cmd: 'node /b/queue.mjs set-batch concurrency=1 concurrency_by=user' }]));
+  t('DS-1047 AC3 a hold that clears by itself has no action', j(causes.filter((h) => !['budget', 'config', 'concurrency'].includes(h.cause)).map((h) => h.action).filter(Boolean)), '[]');
+}
+// DS-1047 AC1, AC4 and AC5: the 2026-11-26 test-lock hold (8 runs waiting on 3 slots, factor 2), as the
+// structured hold and as the string the pass wrote that day.
+{
+  const held = [
+    { pid: 11, cwd: '/w/studia-web-worktrees/AA-267', args: 'pnpm vitest run --maxWorkers=2', seconds: 1500, repo: 'studia-web', expectedS: 900 },
+    { pid: 12, cwd: '/w/studia-web-worktrees/SV-4505', args: 'pnpm tsc --noEmit', seconds: 300, repo: 'studia-web', expectedS: null },
+    { pid: 13, cwd: '/w/desk-skills-worktrees/base-feat-DS-691-desk-app', args: 'bash tests/run.sh', seconds: 4000, repo: 'desk-skills', expectedS: null },
+  ];
+  const q = lockQueue({ waiting: 8, slots: 3, factor: 2, held, counts: new Map([['studia-web', 5], ['desk-skills', 3]]), self: 'desk-skills' });
+  const l = lockHeldLine({ gate: lockGate([q]), held: ['SV-4139', 'SV-3643'], running: 2, concurrency: 3 });
+  const h = l.hold;
+  t('AC1 a test-lock hold holds the machine, with no action', j([h.cause, h.scope, h.action, h.tickets]), j(['test-lock', 'machine', null, ['SV-4139', 'SV-3643']]));
+  t('AC1 its numbers are the runs waiting, the slots and the hold factor', j([h.numbers.waiting, h.numbers.slots, h.numbers.factor]), '[8,3,2]');
+  t('AC1 AC5 each holder has its repo, where, command, hold and usual hold (null with no history)', j(h.holders), j([
+    { repo: 'studia-web', where: '/w/studia-web-worktrees/AA-267', cmd: 'pnpm vitest run --maxWorkers=2', heldS: 1500, expectedS: 900 },
+    { repo: 'studia-web', where: '/w/studia-web-worktrees/SV-4505', cmd: 'pnpm tsc --noEmit', heldS: 300, expectedS: null },
+    { repo: 'desk-skills', where: '/w/desk-skills-worktrees/base-feat-DS-691-desk-app', cmd: 'bash tests/run.sh', heldS: 4000, expectedS: null }]));
+  const that = 'test lock queue: 8 run(s) waiting on its 3 slot(s), at or over the hold at 3 x 2 = 6; runs by repo: studia-web 5, desk-skills 3; '
+    + 'this repo\'s share ceil(6 / 2) = 3, 3 its own; held by /w/studia-web-worktrees/AA-267: pnpm vitest run --maxWorkers=2, held 25m; '
+    + '/w/studia-web-worktrees/SV-4505: pnpm tsc --noEmit, held 5m; /w/desk-skills-worktrees/base-feat-DS-691-desk-app: bash tests/run.sh, held 1h 6m: '
+    + 'holding new workers and resumes into Stage 4 (SV-4139, SV-3643), past the 0 this pass had room for';
+  t('AC4 its held string is the one the pass wrote that day, built from the hold', heldText(h), that);
+  t('AC4 and the report\'s line is the same', j([l.stall, l.line]), j([true, that]));
+  t('AC4 the hold survives the pass record\'s JSON and gives the same words', heldText(JSON.parse(j(h))), that);
 }
 // #1480: the tickets the lock-queue gate held read as a stall only while a run waits on a queue.
 {
-  const q = (lock, waiting) => ({ lock, waiting, line: `${lock} lock queue: ${waiting} run(s) waiting on its 1 slot(s)` });
+  const q = (lock, waiting) => lockQueue({ waiting, slots: 1, factor: 2, lock });
   const gate = (...queues) => ({ ...queues[0], room: 1, queues });
+  const sl = (x) => j(x && { stall: x.stall, line: x.line });
   t('#1480 nothing held, no line', lockHeldLine({ gate: gate(q('test', 3)), held: [], running: 2, concurrency: 3 }), null);
-  t('#1480 AC2 with live waiters the stall names the lock queue and its live count', j(lockHeldLine({ gate: gate(q('light', 1), q('test', 0)), held: ['A', 'B'], running: 2, concurrency: 3 })),
-    j({ stall: true, line: 'light lock queue: 1 run(s) waiting on its 1 slot(s): holding new workers and resumes into Stage 4 (A, B), past the 1 this pass had room for' }));
-  t('#1480 with no run waiting on any lock, the hold is no stall: it names this pass\'s own starts and the workers against the cap', j(lockHeldLine({ gate: gate(q('light', 0), q('test', 0)), held: ['A'], running: 2, concurrency: 5 })),
+  t('#1480 AC2 with live waiters the stall names the lock queue and its live count', sl(lockHeldLine({ gate: gate(q('light', 1), q('test', 0)), held: ['A', 'B'], running: 2, concurrency: 3 })),
+    j({ stall: true, line: 'light lock queue: 1 run(s) waiting on its 1 slot(s), under the hold at 1 x 2 = 2; whose runs they are is unknown (working directories could not be read): holding new workers and resumes into Stage 4 (A, B), past the 1 this pass had room for' }));
+  t('#1480 with no run waiting on any lock, the hold is no stall: it names this pass\'s own starts and the workers against the cap', sl(lockHeldLine({ gate: gate(q('light', 0), q('test', 0)), held: ['A'], running: 2, concurrency: 5 })),
     j({ stall: false, line: 'held for the next pass, not a stall (A): no run is waiting on the lock, and this pass already let through as many suite-bound sessions as one pass may; 2 worker(s) running against the batch\'s cap of 5' }));
 }
 

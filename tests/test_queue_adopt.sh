@@ -83,6 +83,15 @@ out=""
 check "#807 adopts made at once both land" '[ "$(f para-one result.pr)" = "\"57\"" ] && [ "$(f para-two result.pr)" = "\"58\"" ]'
 q adopt missing 99
 check "#807 a PR gh cannot read is refused, saying why" '[ $rc -eq 11 ] && [[ "$out" == *"gh could not read PR #99 on acme/widgets (no pull requests found for #99)"* ]]'
+# #1532 AC5: a done red-base repair gives its branch up to the fix PR adopted from it; a live one does not.
+q add base-red-main-20261126175511; q set base-red-main-20261126175511 branch=fix/base-red-main-20261126175511 state=done
+pr 59 OPEN fix/base-red-main-20261126175511 main "Guard subscription-access-ending-soon"
+q adopt ABC-13 59 --filed
+check "#1532 AC5 a done repair's branch is taken over by the adopted fix PR, saying so" '[ $rc -eq 0 ] && [[ "$out" == *"base-red-main-20261126175511 is a done red-base repair, so it gave up its branch fix/base-red-main-20261126175511"* ]] && [ "$(f ABC-13 branch)" = "\"fix/base-red-main-20261126175511\"" ] && [ "$(f base-red-main-20261126175511 branch)" = null ]'
+q add base-red-main-20261126190000; q set base-red-main-20261126190000 branch=fix/base-red-live state=parked
+pr 60 OPEN fix/base-red-live main "Still the repair's"
+q adopt ABC-14 60 --filed
+check "#1532 AC5 a repair that is not done keeps its branch: refused as before" '[ $rc -eq 11 ] && [[ "$out" == *"branch fix/base-red-live is already base-red-main-20261126190000'"'"'s: nothing adopted"* ]]'
 
 rm -rf "$T"
 echo "queue adopt: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

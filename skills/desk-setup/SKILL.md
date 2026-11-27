@@ -66,7 +66,7 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
 | `/desk-setup` | where → start point → detect → interview → connectors → harness rules → write → summary |
 | `/desk-setup permissions` | reads this repo's config, then straight to the interview |
 | `/desk-setup plugins` | reads this repo's config, then only §4b (which plugins this repo needs); changes nothing else. `/desk-update` offers it too |
-| `/desk-setup costs` | only where each repo is billed: which GitHub repos, Vercel teams and projects, AWS profiles and Neon orgs and projects bill which name, the Actions budget and any credit balance, in `~/.config/desk/costs.md` for the whole computer; changes nothing else. Read `references/mode-costs.md` |
+| `/desk-setup costs` | only where each repo is billed: which GitHub repos, Vercel teams and projects, AWS profiles and Neon orgs and projects bill which name, the Actions budget and any credit balance, in `~/.config/desk/costs.md` for the whole computer, and each Claude and Codex subscription's plan and monthly fee in `subscriptions.md`; changes nothing else. Read `references/mode-costs.md` |
 | `/desk-setup from <owner__name>` | as `/desk-setup`, starting from that repo's §1, §3 and §3b answers |
 | `/desk-setup list` | lists every configured repo (`ls ~/.config/desk/repos/*/config.md`) with its tracker, Jira project and how many §3 rows are `yes`; changes nothing |
 | config already exists | re-run: current values are the starting point; ask what to change |
@@ -199,6 +199,10 @@ location: a path only, never the token.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
+- An `UNBOUND` line from `desk-env drift` names a §4 Unit tests or Typecheck item that starts Jest
+  with no worker cap or `turbo run` with no `--concurrency`, so one locked run can take the whole
+  machine. Offer the bounded form it prints in its place, whether or not the user asked to change the
+  row.
 - A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
   step 1's *Dev server* proposes it, whether or not the user asked to change the row. Each app a
   §4 Dev server item names with no §4 Test sign-in item (`desk-env drift --app <dir>` prints

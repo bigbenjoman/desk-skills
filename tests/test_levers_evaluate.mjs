@@ -3,7 +3,7 @@
 // covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -15,7 +15,7 @@ for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) del
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });
 
-const { evaluate, evaluateDue, decide } = await import('../desk/bin/levers-evaluate.mjs');
+const { evaluate, evaluateDue, decide, handoffReport } = await import('../desk/bin/levers-evaluate.mjs');
 const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
 const { assignPin } = await import('../desk/bin/levers-auto.mjs');
 const { reasonWording, DECISION_RULE } = await import('../desk/bin/lever-registry.mjs');
@@ -105,7 +105,7 @@ t('AC14 the evidence file holds every row the evaluation read, with the excluded
 t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
 t('AC14 the transition cites the same evaluation and file', [e.eval_id, e.evidence_file, e.evidence_sha256], [a1.eval_id, a1.evidence_file, a1.evidence_sha256]);
 const a1all = evalsOf(A1);
-t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
+t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
 t('AC13 a quality-risk lever with no state recorded is on trial and weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample']]);
 const pre = a1all.find((x) => x.lever === 'preflight');
 t('AC13 a hold carries its reason code and what would change it next', [pre.decision, pre.reason_code, pre.next.needs], ['hold', 'below_min_sample', '30 more tickets in the smaller arm']);
@@ -291,6 +291,17 @@ t('AC16 the same missing file is not recorded again the next day', eventsOf(A12,
 const A12b = 'acme__nopostmerge';
 run([repo(A12b, arms(A12b, initial(A12b), 30, better.on, better.off), { postMerge: false })]);
 t('AC12 a missing post-merge.jsonl adopts nothing', [wrappersRow(A12b).decision, wrappersRow(A12b).missing], ['hold', [join(stateOf(A12b), 'post-merge.jsonl')]]);
+// A reason names a file under the state folder by its path there, never the folder's absolute path.
+const a12event = eventsOf(A12, 'evidence_incomplete').find((x) => x.lever === 'wrappers');
+t('an evidence_incomplete event names the missing file under the state folder', [a12event.reason.includes(stateOf(A12)), a12event.reason.endsWith(`: workers/${a12rows[0].key}.findings.jsonl`)], [false, true]);
+t('the evaluation rows name no absolute path either', [...evalsOf(A12), ...evalsOf(A12b)].filter((x) => x.reason.includes(join(T, 'home'))).map((x) => x.reason), []);
+t('the row names the missing file by the same short path', wrappersRow(A12b).reason.endsWith(': post-merge.jsonl'), true);
+const A12d = 'acme__unreadablelog';
+const a12d = repo(A12d, []);
+symlinkSync(logFile(A12d), logFile(A12d));
+run([a12d]);
+const a12dRows = evalsOf(A12d).filter((x) => x.reason_code === 'state_unreadable');
+t('a lever log that cannot be read is named by its file name', [a12dRows.length > 0, a12dRows.filter((x) => x.reason.includes(stateOf(A12d))).length, a12dRows[0]?.reason], [true, 0, 'its lever log, levers.jsonl, cannot be read (ELOOP)']);
 
 // ---- AC15: once a day across every repo, under the machine-wide lock --------------------------------------------------------------------
 const configRoot = join(T, 'config');
@@ -314,7 +325,7 @@ t('AC15 the first of four passes evaluates; the rest find today done', passes, [
 const pooled = jsonl(join(T, 'home', '.desk-autopilot', 'levers', 'pooled-evals.jsonl'));
 t('AC15 the pooled estimates are written once that day, across the four repos', [pooled.filter((p) => p.lever === 'wrappers').length, pooled.find((p) => p.lever === 'wrappers')?.n, pooled.find((p) => p.lever === null)?.repos.length], [1, { on: 32, off: 32 }, 4]);
 t('AC15 every repo got its rows from that one run', ['one', 'two', 'three', 'four'].map((n) => evalsOf(`acme__${n}`).filter((x) => x.lever === 'wrappers').length), [1, 1, 1, 1]);
-t('AC15 its line names what it did', /^levers evaluate: 36 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
+t('AC15 its line names what it did', /^levers evaluate: 40 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
 t('AC15 the next day it runs again', evaluateDue({ now: NOW + DAY, configRoot, tz: 'UTC', rowsFor }).status, 'ran');
 
 // ---- review findings: each guarded -------------------------------------------------------------------------------------------------------------------
@@ -787,6 +798,23 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('question handling: a step read incomplete leaves the ticket out of that step and the dollars, never as 0', [r3.tickets, r3.steps.raise.tickets, r3.steps.act.tickets, r3.steps.raise.usd_per_ticket], [30, 25, 30, 0.4104]);
   t('question handling: and the mechanism weighs only the tickets whose asks cost is whole', Math.round(qhRow(QA3).values['one-at-a-time'].mechanism.est * 100), -50);
   t('question handling: only those count toward the sample, so 25 priced of 30 asking tickets is below the minimum', [qhRow(QA3).values['one-at-a-time'].n.off, qhRow(QA3).values['one-at-a-time'].decision, qhRow(QA3).values['one-at-a-time'].reason_code], [25, 'hold', 'below_min_sample']);
+}
+
+// ---- DS-1037 AC5: the handoff threshold's per-value report on its evaluation line ----------------------
+{
+  const HT = 'handoff-threshold';
+  const hrow = (slug, v, cost, handoffs) => row(slug, v, null, { cost, handoffs, pin: { set: v === 'config' ? [] : [HT], arms: { [HT]: v }, trial_ids: { [HT]: `${slug}/${HT}/initial` }, fp: null } });
+  const HS = 'acme__ht-report';
+  const rows = ['config', '20', '30', '45'].flatMap((v, k) => Array.from({ length: 4 }, (_, i) => hrow(HS, v, 10 - k + (i % 2) * 0.5, k + (i % 2))));
+  run([repo(HS, rows)]);
+  const line = evalsOf(HS).filter((e) => e.lever === HT).at(-1);
+  const rep = line?.handoff_report ?? {};
+  t('AC5 the handoff threshold\'s evaluation line carries a report keyed by value', Object.keys(rep), ['20', '30', '45', 'config']);
+  t('AC5 each value: its tickets, dollars per ticket and handoffs per ticket', [rep.config?.tickets, rep.config?.usd_per_ticket, rep.config?.handoffs_per_ticket, rep['45']?.usd_per_ticket, rep['45']?.handoffs_per_ticket], [4, 10.25, 0.5, 7.25, 3.5]);
+  t('no other lever\'s line carries one', evalsOf(HS).filter((e) => e.lever !== HT && e.handoff_report).length, 0);
+  // In a holdback the arms are adopted and holdback: read as the adopted value and the baseline.
+  const held = handoffReport([{ lever: HT, cost: 6, handoffs: 2, pin: { arms: { [HT]: 'adopted' } } }, { lever: HT, cost: 8, handoffs: 1, pin: { arms: { [HT]: 'holdback' } } }], '30', 'config');
+  t('in a holdback, the report is keyed by the adopted value and the baseline, not on and off', JSON.stringify(held), JSON.stringify({ 30: { tickets: 1, usd_per_ticket: 6, handoffs_per_ticket: 2 }, config: { tickets: 1, usd_per_ticket: 8, handoffs_per_ticket: 1 } }));
 }
 
 rmSync(T, { recursive: true, force: true });

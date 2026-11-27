@@ -72,11 +72,12 @@ and the tighter binds; a heavy repo is never held by the light queue. A pool's h
 current slots (its floor plus the runs headroom admission let in above it) × `test-lock-queue-factor` (1 × 2 with no profile).
 The light floor is §3b "Light lock slots" (else the machine profile's `light-lock-slots`, else 1), 1
 while available memory is under the spawn gate's start. With `lock-admission` on, the light ceiling
-is the larger of it and `light-lock-max`, and runs above the floor come only through an admit. A full light queue holds only what would run a suite next; a new worker, which
-starts at triage, is held by the test lock's queue alone. At or over it, each repo with a
+is the larger of it and `light-lock-max`, and runs above the floor come only through an admit. A new worker, which
+starts at triage, takes none of a queue's room, as its first suite is counted when it reaches one; it
+is held only while the test lock's queue already has no room for this repo. At or over the hold, each repo with a
 run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass starts
 at most its share less its own runs; below it, at most the hold less the runs waiting. That room covers
-new local workers, fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4
+fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4
 or 4b, and a base try (conflict fix, epic review, promotion checks), which takes its unit first; the
 ones past it are held, and the STALLED line names the queue depth, each repo's runs and the share. A
 resume at any other stage goes ahead. So
@@ -109,10 +110,12 @@ off, and the line says why. Borrowed workers are not a reason to lower the count
 the batch's own number as it is.
 
 **Tickets that name one file share it up to a per-file budget**, config §3b "Per-file collision
-budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 1; serial: none`: up to
+budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 2; serial: none`: up to
 three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
-once, one for any other file, and one for any file the `serial:` globs name, whatever its length. A
-bare `1` restores one at a time everywhere. A pass works the budget out at spawn time from the triage
+once, two for any other file, and one for any file the `serial:` globs name, whatever its length. A
+bare `1` restores one at a time everywhere. A file the test globs cover (`*.test.*`, `*.spec.*`,
+`test/`, `tests/`) has no limit and, like a §4 Append-only path, is no collision when a batch is
+planned: tickets add cases to it, and the conflict-fix worker settles the rare conflict. A pass works the budget out at spawn time from the triage
 records of the tickets running then in every batch of the repo, its own and the others, so a
 finished ticket holds nothing, and a ready ticket with any file at its budget waits, in queue order.
 The report's `held back by a collision:` line names each such file and the running tickets filling
@@ -195,4 +198,7 @@ and these are a PR's.
 **Test runners ignore the cap unless it is on the command line**, so seed the worker-count flag
 (`--maxWorkers=<cap>`, appended **only** to a Jest or Vitest command; never to pytest or another
 runner, which rejects it) into `batch-notes.md` (the header does) and `SendMessage` any worker seen
-over it.
+over it. Under the test lock, `with-lock.sh` adds it itself to a Jest the command starts, directly or
+through a package.json script, and `--concurrency=<turbo-concurrency>` to a `turbo run` (the machine
+profile's row, 1 on WSL where it is unset), unless the command sets its own. Dependency installs
+take `with-lock.sh install`, one at a time machine-wide.

@@ -146,6 +146,17 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/question-arms.mjs')],
     preconditions: [Object.freeze({ id: 'ledger', want: 'on', status: 'needs ledger on', why: 'its asks and what they cost are read from the ticket ledger' })],
   },
+  // The context share at which a worker hands off mid-stage (hooks/desk-handoff.py's worker mode): `config`
+  // hands off at config §2's Handoff at context % rows, one for a 200k window and one for 1M; any other
+  // value is that percentage on both windows. Weighed on dollars per ticket; the levers page shows the
+  // handoffs per ticket beside it. Cloud workers run no hooks, so only local workers take it.
+  'handoff-threshold': {
+    layer: 'low-risk', trialled: true, values: ['config', '20', '30', '45'], baseline: 'config',
+    mechanism: metric('dollars per ticket', 0.1),
+    trips: [POST_MERGE_REVERT, ownStepError('handoff.mjs write')],
+    code: [code('hooks/desk-handoff.py'), code('desk/bin/handoff.mjs')],
+    preconditions: [Object.freeze({ id: 'worker-location', want: 'local', status: 'needs local workers', why: 'the handoff hook runs in a local worker; a cloud worker never takes it' })],
+  },
   // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
   // trialled: it is pinned on where a repo wants the log.
   ledger: {
@@ -286,6 +297,9 @@ export const REGISTRY = loadRegistry();
 export const lever = (name, registry = REGISTRY) => registry[name] ?? null;
 // Whether a registry lever has more than two arms, each a value.
 export const isValued = (l) => Array.isArray(l?.values);
+// The choices `levers decide` takes for a lever: off or trial, or a lever with more than two arms'
+// values or trial.
+export const decideChoices = (name, registry = REGISTRY) => (isValued(registry[name]) ? [...registry[name].values, 'trial'] : ['off', 'trial']);
 
 // Which levers in a repo's levers row (its items, read as desk-env's parseLevers reads them) may be
 // trialled: the ones the registry declares. Every other name is refused, and `message` names each

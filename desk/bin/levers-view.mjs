@@ -23,17 +23,17 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, localDay, repoConfigValues, shownNames } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
-import { spendsNeedsYou } from './lever-log.mjs';
+import { isStateChange, spendsNeedsYou } from './lever-log.mjs';
 import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
-import { excludedWhy } from './levers-evaluate.mjs';
+import { excludedWhy, priorRevertsOf, revertTarget } from './levers-evaluate.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -381,6 +381,45 @@ function mergePerLever(events, tz) {
   return out;
 }
 
+// A trip's own-step error as levers-trips.mjs writes it: "<step> exited <n>", then anything after a colon.
+const STEP_ERROR = /^(.+?) exited (\d+)(?::|$)/;
+const LEVER_OFF = Object.freeze(['reverted', 'frozen']);
+
+// What the person decides on lever needs-you item `e`, given the repo's log events `before` it and `all`
+// of them: the lever's state change that raised it where that turned the lever off (with the step and
+// exit of a failed own step), its evidence file relative to the repo's state folder `base`, how many
+// times desk has turned the lever off there and whether one more would freeze it, the sample a new test
+// starts towards, and each `levers decide` choice with its command. Empty for a lever the registry lacks.
+function decisionView({ e, before, all, repo, base }) {
+  const reg = REGISTRY[e.lever];
+  if (!reg) return {};
+  const last = before.filter((x) => isStateChange(x, e.lever)).at(-1);
+  const off = LEVER_OFF.includes(last?.to) ? last : null;
+  const step = off?.kind === 'trip' ? STEP_ERROR.exec(String(off.error ?? '')) : null;
+  const file = e.evidence_file ?? off?.evidence_file ?? null;
+  const reverts = priorRevertsOf(all, e.lever);
+  return {
+    reason_code: e.reason_code ?? null, ticket: e.ticket ?? off?.ticket ?? null,
+    turned_off: off ? { at: off.at, to: off.to } : null,
+    step: step ? { step: step[1], exit: Number(step[2]) } : null,
+    evidence: file ? { file: file.startsWith(base) ? file.slice(base.length) : file, line: e.evidence_line ?? off?.evidence_line ?? null } : null,
+    reverts, freezes_next: revertTarget(reverts) === 'frozen',
+    min: DECISION_RULE.min_per_arm[reg.layer] ?? null, baseline: isValued(reg) ? reg.baseline : null,
+    choices: decideChoices(e.lever).map((choice) => ({ choice, command: `levers decide ${repo} ${e.lever} ${choice}` })),
+  };
+}
+
+// Each lever's latest state change in a repo's log `rows`: lever -> event.
+function latestChanges(rows) {
+  const out = new Map();
+  for (const x of rows) {
+    if (!isStateChange(x) || Number.isNaN(Date.parse(x.at))) continue;
+    const had = out.get(x.lever);
+    if (!had || Date.parse(had.at) <= Date.parse(x.at)) out.set(x.lever, x);
+  }
+  return out;
+}
+
 const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
@@ -449,7 +488,8 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
       if (e.kind !== 'needs_you') return;
       const spent = evs.slice(i + 1).some((x) => spendsNeedsYou(e, x));
       if (spent) return;
-      leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}` });
+      leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}`,
+        ...decisionView({ e, before: evs.slice(0, i), all: evs, repo: r.name, base: `${join(root, r.slug)}/` }) });
       if (e.reason_code === 'state_unreadable') unassignable = true;
     });
     // A log that cannot be opened, or stops at a line that does not parse, also stops an auto repo's
@@ -461,7 +501,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }
   const waiting = panel(waitingItems.length || leverItems.length ? 'ok' : 'empty', { count: waitingItems.length + leverItems.length, items: [...leverItems, ...waitingItems] }, errs(repos.map((r) => r.log)));
 
-  // P5 lever board.
+  // P5 lever board. A trip newer than a lever's latest evaluation sets its cell's state, since the
+  // evaluation's row still reads the state before it.
+  const changesBy = new Map(repos.map((r) => [r.slug, latestChanges(r.log.rows)]));
   const cells = Object.keys(REGISTRY).map((lever) => {
     const reg = REGISTRY[lever];
     const min = DECISION_RULE.min_per_arm[reg.layer];
@@ -491,8 +533,10 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         const { effect, cost, guardrails } = evalEvidence(e, min);
         const chip = {};
         for (const g of guardrails) chip[g.status] = (chip[g.status] ?? 0) + 1;
+        const last = changesBy.get(r.slug).get(lever);
+        const tripped = last?.kind === 'trip' && Date.parse(last.at) > Date.parse(e.at) ? last : null;
         return {
-          repo: r.name, state: e.state ?? null, as_of: e.at, stale: col.column === 'stale' || age(e.at, now, MAX_AGE_S.evals).stale,
+          repo: r.name, state: tripped ? tripped.to : e.state ?? null, ...(tripped ? { turned_off_at: tripped.at } : {}), as_of: e.at, stale: col.column === 'stale' || age(e.at, now, MAX_AGE_S.evals).stale,
           arm_share_7d: e.arm_share_7d ?? null,
           sample: { n, min: minN, max: e.max_n ?? DECISION_RULE.max_per_arm, on: e.n?.on ?? null, off: e.n?.off ?? null, pooled_on: e.n?.pooled_on ?? null, pooled_off: e.n?.pooled_off ?? null },
           effect, cost,
@@ -609,7 +653,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest) },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
     line,
   };
 }
@@ -626,13 +670,14 @@ function mergeStagesPanel(configured, root) {
   return { repos };
 }
 
-// Each repo's latest per-arm ask report (levers-evaluate.mjs: tokens and dollars per ticket by step,
-// pushes and digests per ticket, the share defaulted, the median answer latency), for each lever whose
-// evaluation carries one: { repos: [{ name, lever, at, state, arms: { <arm>: report } }] }.
-function asksPanel(repos, latest) {
+// Each repo's latest per-arm report under `key` (levers-evaluate.mjs: `ask_report`, the asks' tokens and
+// dollars per ticket by step, pushes, digests, the share defaulted and the median answer latency;
+// `handoff_report`, tickets, dollars and handoffs per ticket), for each lever whose evaluation carries
+// one, with that lever's baseline arm: { repos: [{ name, lever, at, state, baseline, arms: { <arm>: report } }] }.
+function armPanel(repos, latest, key) {
   return {
-    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.ask_report && Object.keys(e.ask_report).length)
-      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, arms: e.ask_report }))),
+    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e[key] && Object.keys(e[key]).length)
+      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, baseline: REGISTRY[e.lever]?.baseline ?? null, arms: e[key] }))),
   };
 }
 

@@ -6,7 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
 import { undraftWrite } from '../desk/bin/pass/undraft.mjs';
-import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK, doneVerdictLine } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
@@ -1099,6 +1099,20 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   t('#752 a pass within the limit writes nothing and keeps it', `${p2.wrote} ${p2.c.call} ${p2.c.unknown_since}`, 'false wait 2026-11-20T10:00:00.000Z');
   const p3 = pass(p2.t, '2026-11-20T11:05:00.000Z');
   t('#752 a pass past the limit is the person\'s', `${p3.c.call} ${p3.wrote}`, 'person true');
+}
+
+// issue-1477: what a finished ticket's done line says of its review, read from its PR.
+{
+  const at = (reviews, head = HEAD) => doneVerdictLine({ headRefOid: head, reviews }, 'ben');
+  const r2 = marker('p0=0 p1=1 p2=2 deferred=0 gaps=0 unrefuted=0 partial=0').replace('round=1', 'round=2');
+  t('issue-1477 AC1 a verdict at the head gives its round, SHA and counts', at([review(marker(ALL_ZERO, OLD), OLD), review(r2)]),
+    'review read from the PR: round 2 at aaaaaaaaa, p0=0 p1=1 p2=2 deferred=0 gaps=0 unrefuted=0 partial=0');
+  t('issue-1477 AC1 a verdict marker abbreviated to the head\'s short SHA is at the head', at([review(marker(ALL_ZERO, HEAD.slice(0, 7)))]),
+    'review read from the PR: round 1 at aaaaaaa, p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0');
+  t('issue-1477 AC2 a verdict for an older commit says the head has none, naming the latest', at([review(marker(ALL_ZERO, OLD), OLD)]),
+    'review read from the PR: the head aaaaaaaaa has no review verdict (the latest, round 1, is at bbbbbbbbb)');
+  t('issue-1477 AC2 a PR with no verdict says the head has none', at([review(CLEAN_TEXT)]), 'review read from the PR: the head aaaaaaaaa has no review verdict');
+  t('issue-1477 AC2 another account\'s verdict at the head is not the person\'s', at([review(marker(ALL_ZERO), HEAD, 'mallory')]), 'review read from the PR: the head aaaaaaaaa has no review verdict');
 }
 
 process.exit(fails ? 1 : 0);

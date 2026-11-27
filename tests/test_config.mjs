@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, appPermissionGaps, appGapLines, parseConfigFile, clerkSecretKeyIn, isClerkDevKey } from '../desk/bin/desk-env.mjs';
 import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -349,6 +349,22 @@ t('DS-437 AC1 the root is never a gap, though its package.json has a dev script'
 rmSync(join(repoDir, 'package.json'), { force: true });
 rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 
+// #1526 AC4: a Unit tests or Typecheck item starting Jest with no worker cap, or turbo run with no
+// --concurrency, directly or through its package.json script, is named UNBOUND with its bounded form.
+writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ scripts: { test: 'jest --ci', typecheck: 'turbo run typecheck', both: 'jest && eslint .' } }));
+const UNBOUND = (row, item, why, bounded) => `UNBOUND  §4 ${row} item "${item}" ${why}, so one locked run can take the whole machine: set it to \`${bounded}\``;
+d = drift(`${conf()}| Unit tests | \`bun run test\` \`npm test\` |\n| Typecheck | \`bun run typecheck\` \`apps/web: turbo run typecheck\` |\n`);
+t('#1526 AC4 each unbounded Unit tests and Typecheck item is named with its bounded form', d.out, [
+  UNBOUND('Unit tests', 'bun run test', 'runs the test script, which starts Jest with no worker cap', 'bun run test --maxWorkers=4'),
+  UNBOUND('Unit tests', 'npm test', 'runs the test script, which starts Jest with no worker cap', 'npm test -- --maxWorkers=4'),
+  UNBOUND('Typecheck', 'bun run typecheck', 'runs the typecheck script, which starts turbo run with no --concurrency', 'bun run typecheck --concurrency=1'),
+  UNBOUND('Typecheck', 'apps/web: turbo run typecheck', 'starts turbo run with no --concurrency', 'apps/web: turbo run typecheck --concurrency=1'),
+].join('\n'));
+t('#1526 AC4 and exits 1', d.code, 1);
+t('#1526 AC4 items that bound themselves, or whose script is not one simple command, are not drift',
+  drift(`${conf()}| Unit tests | \`bun run test --maxWorkers=2\` \`bun run both\` |\n| Typecheck | \`turbo run typecheck --concurrency=2\` |\n`).out, 'no drift');
+rmSync(join(repoDir, 'package.json'), { force: true });
+
 // One app's setup gaps, each §4 row it lacks with the value to add, in one call.
 mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
 writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
@@ -381,6 +397,68 @@ rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 t('no env files in the checkout proposes none', drift(appRows('`none`', '`apps/web/.env.local`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
 t('DS-804 a Test sign-in item that is not an email is INVALID', drift(`${conf()}| Test sign-in | \`apps/portal: hunter2\` |\n`).out,
   'INVALID  §4 Test sign-in: "apps/portal: hunter2" is not `[<app dir>: ]<email>`');
+
+// DS-1026: the app's Test sign-in user is read from Clerk for the permissions §4 Test sign-in
+// permissions names, with a stubbed Clerk users response.
+{
+  mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
+  const envOf = (key) => writeFileSync(join(repoDir, 'apps/portal/.env.local'), `NEXT_PUBLIC_APP=portal\nCLERK_SECRET_KEY="${key}"\n`);
+  const permRows = (perms) => `| Env files | \`apps/portal/.env.local\` |\n| Test sign-in | \`apps/portal: portal-dev@example.test\` |\n${perms == null ? '' : `| Test sign-in permissions | ${perms} |\n`}`;
+  let n = 0;
+  const cfg = (perms) => { const c = join(T, `perm-${n++}.md`); writeFileSync(c, `${conf()}${permRows(perms)}`); return parseConfigFile(c); };
+  const calls = [];
+  const clerk = (res) => async (url, init) => {
+    calls.push({ url, auth: init?.headers?.Authorization });
+    if (res instanceof Error) throw res;
+    return { ok: (res.status ?? 200) < 400, status: res.status ?? 200, json: async () => res.body };
+  };
+  const holding = (services) => ({ body: [{ id: 'user_1', public_metadata: { services } }] });
+  const run = async (perms, res, dir = 'apps/portal') => appGapLines(await appPermissionGaps(cfg(perms), repoDir, dir, { fetch: clerk(res) }), dir).join('\n');
+  const NEED = '`apps/portal: HELP_ARTICLES, ADMIN`';
+  const PERMREAD = (why, need = 'HELP_ARTICLES, ADMIN') => `PERMREAD §4 Test sign-in user portal-dev@example.test for apps/portal: could not read its Clerk permissions (${why}), so whether it holds ${need} is unknown`;
+  envOf('sk_test_abc');
+  t('DS-1026 AC1 a user holding only ADMIN where HELP_ARTICLES is needed is named NOPERM with the user, the app and the permission', await run(NEED, holding(['ADMIN'])),
+    'NOPERM   §4 Test sign-in user portal-dev@example.test for apps/portal lacks HELP_ARTICLES in its Clerk public_metadata.services, which §4 Test sign-in permissions names: a worker signed in as it cannot see the pages that need it');
+  t('DS-1026 AC1 the user is looked up by its email with the app\'s development key', JSON.stringify(calls.at(-1)),
+    JSON.stringify({ url: 'https://api.clerk.com/v1/users?email_address=portal-dev%40example.test', auth: 'Bearer sk_test_abc' }));
+  t('DS-1026 AC1 each missing permission is named', (await run('`apps/portal: HELP_ARTICLES, BILLING, ADMIN`', holding(['ADMIN']))).includes(' lacks HELP_ARTICLES, BILLING in its Clerk'), true);
+  t('DS-1026 AC1 a user with no services holds none of them', (await run(NEED, { body: [{ id: 'user_1', public_metadata: {} }] })).includes(' lacks HELP_ARTICLES, ADMIN in its Clerk'), true);
+  t('DS-1026 AC2 a user holding every permission named has no finding', await run(NEED, holding(['ADMIN', 'HELP_ARTICLES', 'BILLING'])), 'no setup gaps for apps/portal');
+  t('DS-1026 AC2 services as an object of flags count where set', await run(NEED, holding({ ADMIN: true, HELP_ARTICLES: true, BILLING: false })), 'no setup gaps for apps/portal');
+  const before = calls.length;
+  t('DS-1026 AC3 the row unset is no finding', await run(null, holding([])), 'no setup gaps for apps/portal');
+  t('DS-1026 AC3 the row none is no finding', await run('`none`', holding([])), 'no setup gaps for apps/portal');
+  t('DS-1026 AC3 a row naming another app only is no finding for this one', await run('`apps/web: HELP_ARTICLES`', holding([])), 'no setup gaps for apps/portal');
+  t('DS-1026 AC3 and none of them calls Clerk', calls.length, before);
+  envOf('sk_live_abc');
+  t('DS-1026 AC4 a key that is not a development one reads nothing and says so', await run(NEED, holding(['ADMIN'])),
+    PERMREAD('apps/portal/.env.local\'s CLERK_SECRET_KEY is not a development instance\'s (sk_test_), so desk read nothing'));
+  t('DS-1026 AC4 and calls no Clerk', calls.length, before);
+  t('DS-1026 AC4 drift --app prints it and exits 1', JSON.stringify(drift(`${conf()}${permRows(NEED)}`, '--app', 'apps/portal')),
+    JSON.stringify({ code: 1, out: PERMREAD('apps/portal/.env.local\'s CLERK_SECRET_KEY is not a development instance\'s (sk_test_), so desk read nothing'), err: '' }));
+  envOf('sk_test_abc');
+  t('DS-1026 AC5 Clerk unreachable is could not read, not lacks', await run(NEED, new Error('fetch failed')), PERMREAD('Clerk could not be reached: fetch failed'));
+  t('DS-1026 AC5 Clerk refusing is could not read', await run(NEED, { status: 401, body: {} }), PERMREAD('Clerk answered 401'));
+  t('DS-1026 AC5 no such user is could not read', await run(NEED, { body: [] }), PERMREAD('Clerk has no user with that email'));
+  const SHAPE = PERMREAD('its public_metadata.services is neither a list of names nor an object of flags');
+  t('DS-1026 AC5 services as a string is could not read, not lacks', await run(NEED, holding('ADMIN')), SHAPE);
+  t('DS-1026 AC5 services as a list of objects is could not read, not lacks', await run(NEED, holding([{ name: 'ADMIN' }])), SHAPE);
+  t('DS-1026 AC1 an item written ./apps/portal/ is the app\'s', (await run('`./apps/portal/: HELP_ARTICLES`', holding(['ADMIN']))).includes(' lacks HELP_ARTICLES in its Clerk'), true);
+  envOf('sk_test_abc\u0001');
+  t('DS-1026 AC4 a key holding a control character is not a development key, and is never printed', await run(NEED, holding(['ADMIN'])),
+    PERMREAD('apps/portal/.env.local\'s CLERK_SECRET_KEY is not a development instance\'s (sk_test_), so desk read nothing'));
+  envOf('sk_test_abc');
+  // the reading desk-pr's sign-in capture recipe imports, so drift and the capture agree on a file
+  t('DS-1026 the key is read through export, quotes and a trailing comment', JSON.stringify(['export CLERK_SECRET_KEY=sk_test_a', "CLERK_SECRET_KEY='sk_test_b'", 'CLERK_SECRET_KEY=sk_test_c # dev', 'OTHER=1'].map(clerkSecretKeyIn)),
+    JSON.stringify(['sk_test_a', 'sk_test_b', 'sk_test_c', null]));
+  t('DS-1026 only an sk_test_ key is a development one', JSON.stringify(['sk_test_abc', 'sk_live_abc', '', null].map(isClerkDevKey)), JSON.stringify([true, false, false, false]));
+  writeFileSync(join(repoDir, 'apps/portal/.env.local'), 'NEXT_PUBLIC_APP=portal\n');
+  t('DS-1026 no env file under the app holding the key is could not read', await run(NEED, holding(['ADMIN'])),
+    PERMREAD('no §4 Env files item under apps/portal holds a CLERK_SECRET_KEY in the primary checkout'));
+  t('DS-1026 a permissions item that is not names is INVALID', drift(`${conf()}| Test sign-in permissions | \`apps/portal: help articles\` |\n`).out,
+    'INVALID  §4 Test sign-in permissions: "apps/portal: help articles" is not `[<app dir>: ]<PERMISSION>[, <PERMISSION>…]`');
+  rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
+}
 
 // A §4 Pre-merge steps item keyed to a job of several steps is named JOBKEY, with the step it is for.
 mkdirSync(join(repoDir, '.github/workflows'), { recursive: true });
@@ -691,6 +769,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'plan-first-wait|3b|Plan-first wait before needs-you (hours)', // issue-1384
     'slot-candidates|3b|Propose candidates for a free slot', // #1394
     'light-lock-slots|3b|Light lock slots',
+    'test-signin-permissions|4|Test sign-in permissions', // DS-1026
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');
@@ -735,7 +814,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
-    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['signin-permissions', 'apps/portal: HELP_ARTICLES, ADMIN', 'apps/portal: help articles', false],['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],

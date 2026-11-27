@@ -56,17 +56,20 @@ EOF
 cat > "$T/stub/uv" <<EOF
 #!/bin/sh
 echo "uv \$* in \$PWD" >> "$T/tools.log"
+echo "uv \${DESK_LOCK_CLASS:-unlocked}" >> "$T/locks.log"
 mkdir -p .venv/bin && printf '*\n' > .venv/.gitignore && : > .venv/bin/python
 EOF
 # pnpm.fails: how many more runs fail, as a registry dropping a request does.
 cat > "$T/stub/pnpm" <<EOF
 #!/bin/sh
 echo "pnpm \$* in \$PWD" >> "$T/tools.log"
+echo "pnpm \${DESK_LOCK_CLASS:-unlocked}" >> "$T/locks.log"
 n=\$(cat "$T/pnpm.fails" 2>/dev/null || echo 0)
 if [ "\$n" -gt 0 ]; then echo \$((n - 1)) > "$T/pnpm.fails"; echo "ERR_PNPM_FETCH failed, \$n left" >&2; exit 1; fi
 EOF
 chmod +x "$T/stub/uv" "$T/stub/pnpm"
-export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json"
+export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json" DESK_LOCK_DIR="$T/locks" DESK_LEASE_DIR="$T/leases"
+mkdir -p "$DESK_LOCK_DIR"
 cd "$T/repo" || exit 1
 
 out=$(bash "$B/setup-worktree.sh" --for-worker T-1 fix/T-1 2>&1); rc=$?
@@ -74,7 +77,8 @@ W="$T/wt/T-1"
 check "AC3 setup succeeds with a JS and a backend Install item"   '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$W"* ]]'
 check "AC3 the JS item runs at the worktree root"                 'grep -qxF "pnpm install --frozen-lockfile in $W" "$T/tools.log"'
 check "AC3 the backend item runs in backend/"                     'grep -qxF "uv sync --frozen in $W/backend" "$T/tools.log"'
-check "AC3 backend/.venv exists before the worker spawns"         '[ -f "$W/backend/.venv/bin/python" ] && [ ! -e "$W/.venv" ]'
+check "#1526 AC3 each Install item runs holding the install lock" '[ "$(cat "$T/locks.log")" = "$(printf "pnpm install\nuv install")" ]'
+check "AC3 backend/.venv exists before the worker spawns"       '[ -f "$W/backend/.venv/bin/python" ] && [ ! -e "$W/.venv" ]'
 st=$(git -C "$W" status --porcelain 2>&1)
 check "AC3 the worktree is clean after the install"               '[ -z "$st" ]'
 check "DS-698 AC1 a new worktree names one duration per step, in the order run" \

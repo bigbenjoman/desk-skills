@@ -140,7 +140,7 @@ say "AUTOPILOT_STAGE: 9/9 cleanup" "AUTOPILOT_DONE: pr=10 jira=none" > "$T/state
 out=$(node "$B/pass.mjs" 2>&1)
 gone=no; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SPID" 2>/dev/null || { gone=yes; break; }; sleep 0.2; done
 check "a DONE log with a live session records the ticket done" '[ "$(field T-10 state)" = "\"done\"" ] && [ "$(field T-10 result.pr)" = 10 ]'
-check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: pr=10 jira=none (session still live after DONE — stopped pid $SPID)"'
+check "the finished worker's hung session is stopped"   '[ "$gone" = yes ] && echo "$out" | grep -q "T-10: review read from the PR: [^;]*; its worker said: pr=10 jira=none (session still live after DONE — stopped pid $SPID)" && ! echo "$out" | grep -q "T-10: review read from the PR: unread ("'
 kill "$SPID" 2>/dev/null
 
 # P-1: a live worker that opens its draft PR at Stage 7 and carries on. The stub gh has it open.
@@ -219,6 +219,7 @@ all_done
 out=$(node "$B/pass.mjs" 2>&1)
 check "AC3 an idle batch gives the scope total"         'echo "$out" | grep -q "^IDLE" && echo "$out" | grep -q "scope: 1 of 2 checked ticket(s) changed files outside their triaged scope, 2 file(s) in all"'
 check "DS-122 an idle batch gives each worker's cost, unknown where its log has no result event" 'echo "$out" | grep -q "^WORKER COST" && echo "$out" | grep -qE "^  T-15 +1 +unknown +unknown +unknown +none +unknown" && echo "$out" | grep -qE "^  total .*not counted\)$"'
+check "#1486 an idle pass records it in the pass record, at the pass's own time" '[ "$(jq -r ".pass.idle_at != null and .pass.idle_at == .pass.at" "$DESK_QUEUE")" = true ]'
 
 # T-17 advances a stage while a live process holds the queue lock past its wait: the refused write is
 # in the report, naming the ticket and the change, not dropped.
@@ -866,15 +867,15 @@ printf '#!/bin/sh\ncase "$*" in *"--head fix/Y-"[678]*) echo 88 ;; esac\n' > "$T
 killed Y-7 sess-y7
 killed Y-8 sess-y8; result_event >> "$T/state-k/logs/Y-8.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
-check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
+check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: .*PR #88"'
+check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: review read from the PR: .*; PR #88 (no marker printed"'
 q set Y-7 state=done
 # The same exits on the person's instruction: an open PR does not show it was carried out, and a ticket
 # recorded done has its fix closed in that pass, which frees the merge.
 instruction_fix='fix={"try":1,"of":1,"kind":"instruction","pr":88,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
 killed Y-61 sess-y61; q set Y-61 "$instruction_fix"; result_event >> "$T/state-k/logs/Y-61.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: PR #88 (no marker printed"'
+check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: .*PR #88 (no marker printed"'
 q requeue Y-61
 check "DS-501 a requeue of that park keeps the instruction for its next worker" '[ "$(field Y-61 state)" = "\"triaged\"" ] && [ "$(field Y-61 fix.answer)" = "\"rename it\"" ] && [ "$(field Y-61 fix.finished)" = null ]'
 q set Y-61 state=done
@@ -885,11 +886,11 @@ q set Y-62 state=done
 # DS-493: a migration rename try holds the merge the same way, and done would spend its one try.
 killed Y-64 sess-y64; q set Y-64 'fix={"try":1,"of":2,"extra":true,"kind":"renames","pr":88,"head":null,"renames":[{"old":"0007_a.sql","new":"0008_a.sql","to":"main","files":["src/x.ts"]}]}'; result_event >> "$T/state-k/logs/Y-64.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-493 a worker on a rename try that ended with no marker parks, its fix left open" '[ "$(field Y-64 state)" = "\"parked\"" ] && [ "$(field Y-64 fix.finished)" = null ] && [ "$(field Y-64 result)" = null ] && field Y-64 park.question | grep -q "the migrations PR #88 names may not be updated to their base.s new names (0007_a.sql → 0008_a.sql)" && ! echo "$out" | grep -q "Y-64: PR #88 (no marker printed"'
+check "DS-493 a worker on a rename try that ended with no marker parks, its fix left open" '[ "$(field Y-64 state)" = "\"parked\"" ] && [ "$(field Y-64 fix.finished)" = null ] && [ "$(field Y-64 result)" = null ] && field Y-64 park.question | grep -q "the migrations PR #88 names may not be updated to their base.s new names (0007_a.sql → 0008_a.sql)" && ! echo "$out" | grep -q "Y-64: .*PR #88 (no marker printed"'
 q set Y-64 state=done
 killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
+check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: .*PR #88 (no marker printed"'
 probe_says limited $(( $(date +%s) + 3600 ))
 killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)
@@ -1050,11 +1051,39 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 AC6 a handoff whose worktree is gone parks naming the worktree, and spawns nothing" '[ "$(field H-2 state)" = "\"parked\"" ] && field H-2 park.question | grep -qF "handoff to Stage 4b: its worktree $T/wt/H-2-gone no longer exists, so no session was spawned" && ! spawned_for H-2'
 check "DS-155 AC6 a handoff whose branch is gone parks naming the branch, and spawns nothing" '[ "$(field H-3 state)" = "\"parked\"" ] && field H-3 park.question | grep -qF "its branch fix/H-3-gone no longer exists" && ! spawned_for H-3'
 # A stage no session starts at, and a handoff with no briefing written.
-handing H-5; hlog H-5 "AUTOPILOT_HANDOFF: 5"
+handing H-5; hlog H-5 "AUTOPILOT_HANDOFF: 2"
 handing H-6; hlog H-6 "AUTOPILOT_HANDOFF: 4b"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qE "5\\\\\", which no session starts at \(only Stage (4b or 7|7 or 4b)\), so no session was spawned" && ! spawned_for H-5'
+check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qE "2\\\\\", which no session starts at \(only Stage 3, 4, 4b, 5, 6, 7, 8, 9\), so no session was spawned" && ! spawned_for H-5'
 check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(field H-6 state)" = "\"parked\"" ] && field H-6 park.question | grep -qF "its handoff briefing $T/state-h/handoffs/H-6.json does not exist" && ! spawned_for H-6'
+
+# DS-1037 AC3: a worker that handed off partway through Stage 5 on context is followed by a fresh one
+# starting at Stage 5 from the briefing; a third such handoff in a row at that stage parks.
+midfile(){ node -e 'const [k, s = "5"] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: s, criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$@"; }
+handing H-10; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 AC3 a mid-stage handoff at Stage 5 is followed by a fresh session at Stage 5" 'echo "$out" | grep -qF "H-10 handed off partway through Stage 5 on context (31% used; handoff-threshold 30): queued for a fresh session from Stage 5" && [ "$(spawned_for H-10 | tail -1 | grep -o "stage=[^ ]*")" = stage=5 ] && [ "$(field H-10 state)" = "\"running\"" ]'
+check "DS-1037 AC3 its briefing says so and lists what is left of the stage" 'b=$(brief H-10); grep -qF "## Handoff: this session starts at Stage 5" <<< "$b" && grep -qF "handed off partway through Stage 5" <<< "$b" && grep -qF "handoff-threshold 30" <<< "$b" && grep -qF "### Left of Stage 5" <<< "$b" && grep -qxF -- "- capture the after screenshot" <<< "$b"'
+midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 a second mid-stage handoff at the same stage still spawns" '[ "$(spawned_for H-10 | wc -l | tr -d " ")" = 2 ] && [ "$(field H-10 handoff_repeats)" = 1 ]'
+check "DS-1037 each handoff that queues a fresh session is counted on the ticket" '[ "$(field H-10 handoffs)" = 2 ]'
+midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 the third in a row at one stage parks, spawning nothing" '[ "$(field H-10 state)" = "\"parked\"" ] && field H-10 park.question | grep -qF "handed off partway through Stage 5 3 times in a row on context" && [ "$(spawned_for H-10 | wc -l | tr -d " ")" = 2 ]'
+check "DS-1037 and the parked one is not counted as a handoff" '[ "$(field H-10 handoffs)" = 2 ]'
+q set H-10 state=done
+# The streak counts one stage only: a mid-stage handoff at the next stage starts it again, and a
+# stage-boundary handoff ends it.
+handing H-11; midfile H-11 5; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+out=$(node "$B/pass.mjs" 2>&1)
+midfile H-11 6; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 6')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 a mid-stage handoff at another stage starts the streak again, and spawns" '[ "$(spawned_for H-11 | tail -1 | grep -o "stage=[^ ]*")" = stage=6 ] && [ "$(field H-11 handoff_repeats)" = 0 ] && [ "$(field H-11 handoff_mid)" = 6 ]'
+hfile H-11 7 "typecheck: pass"; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1037 a stage-boundary handoff ends the streak" '[ "$(spawned_for H-11 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-11 handoff_mid)" = null ] && [ "$(field H-11 handoff_repeats)" = null ]'
+q set H-11 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"
@@ -1131,6 +1160,41 @@ respawn R-6
 check "DS-339 AC2 a worker's resume file in the state dir on another branch starts at Stage 0, saying why" 'spawned_for R-6 | grep -q "stage= " && brief R-6 | grep -qF "its resume file is for branch fix/R-6-old, not the queue'"'"'s fix/R-6"'
 check "DS-339 the not-resumed briefing names the state-dir file it rejected" 'brief R-6 | grep -qF "do not resume from its resume file $DESK_AUTOPILOT_STATE/resume/R-6.json"'
 check "DS-339 a round started at Stage 0 moves the stale state-dir resume file aside" '[ ! -e "$DESK_AUTOPILOT_STATE/resume/R-6.json" ] && [ -f "$DESK_AUTOPILOT_STATE/resume/R-6.json.old" ]'
+q set R-6 state=done
+
+# ---- #1465: a requeue after the ticket file's Decisions change restarts at Stage 3 ---------------
+# Each ticket has a PR, opened 2026-11-01 with no desk review, and a ticket file. Q-1 and Q-2 handed off
+# to Stage 7 and parked there; Q-3 parked at Stage 5. Q-2's only entry predates the PR.
+mkdir -p "$T/state-h/tickets"
+decided(){ printf '# %s\n\n## Decisions\n* %s ben: %s\n' "$1" "$2" "$3" > "$T/state-h/tickets/$1.md"; }
+printf '#!/bin/sh\ncase "$*" in *createdAt,reviews*) echo "{\\"createdAt\\":\\"2026-11-01T09:00:00Z\\",\\"reviews\\":[]}" ;; esac\nexit 0\n' > "$T/stub/gh"
+for k in Q-1 Q-2; do handing "$k"; hfile "$k" 7 "typecheck: pass"; q set "$k" handoff_stage=7 result.pr=61; q park "$k" "which reviewer?"; done
+decided Q-1 2026-11-24 "widen it to the list page"; decided Q-2 2026-10-20 "the badge is green"
+respawn Q-1
+check "#1465 AC1 a handed-off ticket whose Decisions gained an entry after its PR's last review restarts at Stage 3" 'spawned_for Q-1 | grep -q "stage=3 " && [ "$(field Q-1 stage)" = 3 ] && echo "$out" | grep -qF "Q-1 fresh session from Stage 3 (handed off at Stage 7; restarted at Stage 3: 1 Decisions entry dated after PR #61'"'"'s last review"'
+check "#1465 AC1 its briefing lists the new entry ahead of the handoff, and says to start at Stage 3" 'b=$(brief Q-1); grep -qF "## New decisions since PR #61'"'"'s last review: this session starts at Stage 3" <<< "$b" && grep -qxF -- "- 2026-11-24 ben: widen it to the list page" <<< "$b" && grep -qF "## Handoff: this session starts at Stage 7" <<< "$b"'
+check "#1465 AC2 the briefing has the worker check the branch first and name the commit that meets it" 'brief Q-1 | grep -qF "Where a commit on it already meets a decision, say so, naming that commit and the decision"'
+check "#1465 the restart records when it was delivered" 'field Q-1 decisions_seen | grep -qE "^\"20[0-9]{2}-"'
+hfile Q-1 4b "typecheck: pass"; hlog Q-1 "$(printf 'AUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1465 the restarted session's own handoff goes on to Stage 4b, not back to Stage 3" '[ "$(spawned_for Q-1 | tail -1 | grep -o "stage=[^ ]*")" = stage=4b ] && ! brief Q-1 | grep -q "## New decisions"'
+q set Q-1 state=done
+respawn Q-2
+check "#1465 AC3 a requeue with no Decisions change resumes at the stage its handoff named" 'spawned_for Q-2 | grep -q "stage=7 " && ! brief Q-2 | grep -q "## New decisions"'
+q set Q-2 state=done
+parking Q-3 "5/9 evidence" "which page shows it?"
+out=$(node "$B/pass.mjs" 2>&1)
+q set Q-3 result.pr=63; decided Q-3 2026-11-24 "and the empty state"
+respawn Q-3
+check "#1465 AC1 a requeue resuming its last round restarts at Stage 3, keeping the round's summary" 'spawned_for Q-3 | grep -q "stage=3 " && brief Q-3 | grep -qF "## New decisions since PR #63" && brief Q-3 | grep -qF "## Last round: this session resumes at Stage 5" && echo "$out" | grep -q "Q-3 .*restarted at Stage 3"'
+q set Q-3 state=done
+parking Q-4 "5/9 evidence" "which page shows it?"
+out=$(node "$B/pass.mjs" 2>&1)
+q set Q-4 result.pr=64; decided Q-4 2026-11-24 "and the empty state"; stateresume Q-4 fix/Q-4-old
+respawn Q-4
+check "#1465 a restart whose resume file is for another branch starts at Stage 0 with the entries, and moves that file aside" 'spawned_for Q-4 | grep -q "stage= " && brief Q-4 | grep -qF "## New decisions since PR #64'"'"'s last review: this session starts at Stage 0" && brief Q-4 | grep -qF "do not resume from its resume file" && [ -f "$DESK_AUTOPILOT_STATE/resume/Q-4.json.old" ] && echo "$out" | grep -q "Q-4 .*restarted at Stage 0"'
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+for k in Q-1 Q-2 Q-3 Q-4; do q set "$k" state=done; done
 
 # ---- DS-742: a worker queue.mjs stop ended stays held until the person lets it start -------------
 all_done

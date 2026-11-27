@@ -668,6 +668,15 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const bad = planned('messages and the locales', ['AO-1', 'AO-2']);
   t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
 
+  // A file the test globs cover is no collision, with no Append-only paths row.
+  aoRec('TF-1', ['tests/test_agent/test_prompts.py', 'src/a.test.ts', 'src/one.ts']);
+  aoRec('TF-2', ['tests/test_agent/test_prompts.py', 'src/a.test.ts', 'src/two.ts']);
+  aoRec('TF-3', ['tests/test_agent/test_prompts.py', 'src/one.ts']);
+  const tf = planned(null, ['TF-1', 'TF-2']);
+  t('DS-1032 AC1 plan-batch lists no collision between tickets sharing only test files', `${tf.includes('QUESTIONS')} ${tf.includes('COLLISIONS')}`, 'true false');
+  t('DS-1032 AC1 two tickets sharing only test files are no collision at admit', admitBoth(null, 'TF-1', 'TF-2').got, '0 0 triaged null null');
+  t('DS-1032 AC1 a shared non-test file still collides, and the test file is not named', planned(null, ['TF-1', 'TF-3']).split('\n').includes('  TF-1 ~ TF-3: src/one.ts'), true);
+
   // DS-755 AC8: a ticket admitted sharing a file with unfinished tickets is held behind none of them,
   // even when admit is passed the retired --hold-collisions flag: the collision is recorded for the
   // plan and desk-q, and the pass's per-file budget decides at spawn time.

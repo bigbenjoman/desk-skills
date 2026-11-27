@@ -85,7 +85,7 @@ export function logMarkers(h, t) {
   const lastPark = [...h.matchAll(/AUTOPILOT_PARK:\s*(.+)/g)].pop();
   const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
   const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
-  // A handoff (AUTOPILOT_HANDOFF: 4b or 7) ends this session so the next stage starts in a fresh one.
+  // A handoff (AUTOPILOT_HANDOFF: <stage>) ends this session so that stage starts in a fresh one.
   // It counts only as the last marker: a session that hands off has neither parked nor finished.
   const lastHandoff = [...h.matchAll(/AUTOPILOT_HANDOFF:\s*(.+)/g)].pop();
   // A stop for a planned reboot (AUTOPILOT_REBOOT) is resumed by the pass after the boot, never parked.
@@ -291,9 +291,10 @@ export function* decideAdvance(s) {
     'advanced', `${t.key} stopped for a planned reboot (${reboot}): queued to resume in its own session after the restart${stopped}`);
   } else if (built) {
     const checks = built.checks.map((x) => `"${x}"`).join(', ');
+    const review = yield { type: 'pr-verdict', key: t.key, pr: String(built.pr) };
     yield {
       type: 'done', key: t.key, pr: String(built.pr), summary: `parked only on ${checks}, which §4 Check builds clears: recorded done`,
-      line: `PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`,
+      line: `${review ? `${review}; ` : ''}PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`,
       // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
       sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
     };
@@ -302,9 +303,10 @@ export function* decideAdvance(s) {
     // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
     // for the person once the PR merges (needs-you), never a reason to hold it.
     const n = mergeOnly.pr;
+    const review = yield { type: 'pr-verdict', key: t.key, pr: String(n) };
     yield {
       type: 'done', key: t.key, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
-      line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${mergeOnly.grant}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
+      line: `${review ? `${review}; ` : ''}PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${mergeOnly.grant}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
       sets: [parkFollowOn(park, t.follow_on), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     };
     yield* linksOnDone(t, n);
@@ -373,7 +375,10 @@ export function* decideAdvance(s) {
     // Steps that wait on the merge (follow_on=), kept for needs-you once the PR merges.
     const follow = followOnIn(done);
     if (follow.error) yield say(t.key, 'inputs', `${t.key}: unreadable follow_on on its DONE marker (${follow.error}), nothing kept: ${done.trim()}`);
-    yield { type: 'done', key: t.key, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: [
+    // The review the line states is the verdict on the PR at its head, whatever the marker says; the
+    // worker's own words follow it.
+    const review = pr ? yield { type: 'pr-verdict', key: t.key, pr } : null;
+    yield { type: 'done', key: t.key, pr, summary: done.trim(), line: `${review ? `${review}; its worker said: ` : ''}${done.trim()}${stopped}`, sets: [
       ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
       ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),
     ] };
@@ -437,7 +442,8 @@ export function* decideAdvance(s) {
     // the merge (merge-driver.sh instruction_held) and, for a rename, spend its one try (renamesFix).
     const held = !t.fix?.finished && ['instruction', 'renames'].includes(t.fix?.kind) ? t.fix.kind : null;
     if (prOpen && !held) {
-      yield { type: 'done', key: t.key, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`, sets: [] };
+      const review = yield { type: 'pr-verdict', key: t.key, pr };
+      yield { type: 'done', key: t.key, pr, summary: 'completed without printing a marker', line: `${review ? `${review}; ` : ''}PR #${pr} (no marker printed — PR exists on GitHub; verify its merge state)`, sets: [] };
     } else {
       yield { type: 'decisions', key: t.key, pr: null };
       if (prOpen) {
@@ -501,7 +507,8 @@ function* linksOnDone(t, pr) {
 //   holds      the workers the advance step found paused: { key, limit, was, login }
 //   stored     the queue's usage_hold, or null
 //   preLogin   the login a stored preflight hold ran on
-//   repoLogin  the repo's own login: only a limit there holds the batch
+//   repoLogin  the login new sessions start on: only a limit there holds the batch
+//   fallback   that login's name while it is the fallback (fallback-login.mjs), else null
 //   now        the time, in ms
 //
 // Actions, beside `set` and `report`:
@@ -541,7 +548,7 @@ export function* decideUsageLimit(s) {
     if (sameLogin(s.repoLogin, h.login) && !(yield { type: 'lifted', limit: h.limit, login: h.login })) { holding = h; break; }
   }
   if (holding) yield { type: 'usage-hold', hold: { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: holding === pre ? pre.key : null, login: holding.login } };
-  else if (pre && !sameLogin(s.repoLogin, pre.login)) yield say(null, 'advanced', `${limitName(pre.limit.type)} on login ${pre.login.name} no longer holds the batch, as this repo's subscription is another: spawns go ahead`);
+  else if (pre && !sameLogin(s.repoLogin, pre.login)) yield say(null, 'advanced', `${limitName(pre.limit.type)} on login ${pre.login.name} no longer holds the batch, as ${s.fallback ? `new workers start on fallback login ${s.fallback}` : 'this repo\'s subscription is another'}: spawns go ahead`);
   else if (pre) yield say(null, 'advanced', `${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit, s.now)}): spawns and resumes go ahead`);
 }
 

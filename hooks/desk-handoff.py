@@ -56,9 +56,24 @@ CLAUDE_CODE_DISABLE_1M_CONTEXT is set) or a `[1m]` model (SessionStart's model i
 `model` for the same family, since that id drops the suffix; or once usage has passed 200,000,
 which no smaller window allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
 added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session id>.json, which is
-also the marker that stops a second injection or a second Stop block.
+also the marker that stops a second injection or a second Stop block, and records the threshold and
+window the session runs under (`arm`), which handoff-report.mjs reads.
 
 Never fails a session: any error exits 0 with no output.
+
+Worker mode: in an autopilot worker (DESK_AUTOPILOT_WORKER=1 with DESK_HANDOFF_FILE, which
+spawn-worker.sh exports and worker-settings.mjs registers this hook for, on PostToolUse, Stop and
+SessionStart), the threshold is the handoff-threshold lever's value from the worker's pin
+(DESK_LEVER_VALUES `handoff-threshold=<pct>`, on both windows), else the §2 rows as above. Past it,
+partway through a stage a session can start at (the last `AUTOPILOT_STAGE:` line the worker printed
+names Stage 3 or later), inject once: commit, write the handoff briefing with `handoff.mjs write
+--stage <stage> --left …`, print `AUTOPILOT_HANDOFF: <stage>` and end the turn; pass.mjs then starts
+a fresh worker at that stage from the briefing. Stop blocks once while DESK_HANDOFF_FILE is unwritten
+since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
+on a compaction, makes the next crossing a new one.
+
+Any other worker (a fix or base try: AUTOPILOT_TASK, or no DESK_HANDOFF_FILE) never hands off, and
+the hook is silent in it.
 
 Run as `desk-handoff.py offer-1m [--asked] [<dir>]` (not a hook event), it is /desk-update's one-time
 offer to lower a 1M threshold of 45 to 20: see offer_1m.
@@ -203,9 +218,17 @@ def family(model):
     return ""
 
 
-# The oldest version of each family whose default window is 1M, with no [1m] (Claude Code's model
-# configuration docs). An older version reaches 1M only through its [1m] variant.
-DEFAULT_1M_SINCE = {"fable": (0, 0), "sonnet": (5, 0), "haiku": (5, 5), "opus": (4, 7)}
+def load_default_1m_since():
+    """The oldest version of each family whose default window is 1M, with no [1m]: desk's
+    bin/model-windows.json, which handoff-report.mjs reads too. Unreadable, no model is 1M by default."""
+    try:
+        with open(os.path.join(DESK_HOME, "bin", "model-windows.json")) as f:
+            return {k: tuple(v) for k, v in json.load(f)["default_1m_since"].items()}
+    except Exception:
+        return {}
+
+
+DEFAULT_1M_SINCE = load_default_1m_since()
 
 
 def version(model):
@@ -492,6 +515,7 @@ def on_context(event, data, session, root):
     if not pct:
         save_state(session, state)
         return
+    state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     if now < pct:
         save_state(session, state)
@@ -531,6 +555,143 @@ def on_context(event, data, session, root):
         "`node ~/.claude/desk/bin/needs-you.mjs ask <SLUG from desk-env where> \"<what to do>\"`, "
         f"so desk-q lists it. {tail}"))
     return True
+
+
+# ---- worker mode ---------------------------------------------------------------------------------
+# The stages a fresh worker can start at (config-schema.mjs RESUME_STAGES), and a worker's stage line.
+RESUME_STAGES = ("3", "4", "4b", "5", "6", "7", "8", "9")
+# Read as desk/bin/harvest.mjs reads them: a text line, its decoration allowed, or a Bash command that
+# starts by echoing the stage.
+STAGE_LINE = re.compile(r"^[\s`>*#-]*AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b", re.I | re.M)
+ECHO_STAGE = re.compile(r"""^\s*echo\s+(["'])AUTOPILOT_STAGE:[ \t]*(4b|\d)(?:/9)?\b""", re.I)
+
+
+def worker_file():
+    """An autopilot worker's handoff briefing path (DESK_HANDOFF_FILE), or None in any other session."""
+    if os.environ.get("DESK_AUTOPILOT_WORKER") != "1" or os.environ.get("AUTOPILOT_TASK"):
+        return None
+    return os.environ.get("DESK_HANDOFF_FILE") or None
+
+
+def lever_value():
+    """The handoff-threshold lever's value in the worker's pin (DESK_LEVER_VALUES), or `config`."""
+    for word in os.environ.get("DESK_LEVER_VALUES", "").split():
+        k, _, v = word.partition("=")
+        if k == "handoff-threshold" and v:
+            return v
+    return "config"
+
+
+def lever_pct():
+    """The lever's value as a percentage, or None for `config` or a value that is not one."""
+    try:
+        pct = float(lever_value())
+    except ValueError:
+        return None
+    return pct if 0 < pct < 100 else None
+
+
+def current_stage(transcript):
+    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None."""
+    try:
+        lines = transcript_lines(transcript)
+    except Exception:
+        return None
+    for raw in reversed(lines):
+        if b"AUTOPILOT_STAGE" not in raw:
+            continue
+        try:
+            e = json.loads(raw)
+        except Exception:
+            continue
+        if e.get("type") != "assistant" or e.get("isSidechain"):
+            continue
+        for c in reversed((e.get("message") or {}).get("content") or []):
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text":
+                found = STAGE_LINE.findall(c.get("text") or "")
+                if found:
+                    return found[-1].lower()
+            elif c.get("type") == "tool_use" and c.get("name") == "Bash":
+                m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
+                if m:
+                    return m.group(2).lower()
+    return None
+
+
+def on_worker_context(event, data, session, root, path):
+    state = load_state(session)
+    if state.get("fired_at"):
+        return
+    pin = lever_pct()
+    pct, pct_1m = (pin, pin) if pin else session_threshold(state, root)
+    transcript = data.get("transcript_path") or ""
+    used = context_used(transcript)
+    if used is None:
+        save_state(session, state)
+        return
+    w = window(state, used)
+    if w >= LARGE_WINDOW:
+        pct = pct_1m
+    if pct:
+        state["arm"] = {"pct": pct, "window": w}
+    now = used * 100.0 / w
+    stage = current_stage(transcript) if pct and now >= pct else None
+    # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
+    if stage not in RESUME_STAGES:
+        save_state(session, state)
+        return
+    state.update(fired_at=time.time(), stage=stage, worker_file=path)
+    save_state(session, state)
+    key = os.path.splitext(os.path.basename(path))[0]
+    value = lever_value()
+    source = (f"handoff-threshold {value}" if pin else
+              "config §2 Handoff at context %" + (" on a 1M window" if w >= LARGE_WINDOW else ""))
+    inject(event, (
+        f"desk handoff: context is at {now:.0f}% of a {w:,}-token window, past this worker's "
+        f"threshold of {pct:g}% ({source}), partway through Stage {stage}. Finish the tool step "
+        "you are on and start nothing new. Then hand off to a fresh session at the same stage: "
+        "1. commit what you have on your branch (work in progress is fine; do not push), so "
+        "git status --porcelain is clean. 2. Update your resume file ($DESK_STATE/resume/"
+        f"{key}.json). 3. Write the briefing in one line, one flag per item: "
+        f"`~/.claude/desk/bin/handoff.mjs write {key} --stage {stage} --context {now:.0f} "
+        "--left '<each piece of this stage still to do, and the next step>' --lane '<lane>' "
+        "--criterion '<each acceptance criterion, verbatim>' --verification '<each check run so "
+        "far: command, scope, result>'` (add --review and --evidence as the Stage 4 file's "
+        "Handing off says, when there are any). 4. Print "
+        f"`AUTOPILOT_HANDOFF: {stage}` at the start of a line in your reply text, not in a code "
+        "fence, and end your turn. Print no AUTOPILOT_DONE."))
+    return True
+
+
+def on_worker_stop(data, session, path):
+    if data.get("stop_hook_active"):
+        return
+    state = load_state(session)
+    fired = state.get("fired_at")
+    if not fired or state.get("blocked"):
+        return
+    if os.path.exists(path) and os.path.getmtime(path) >= fired - 1:
+        return
+    state["blocked"] = True
+    save_state(session, state)
+    stage = state.get("stage") or "<stage>"
+    print(json.dumps({"decision": "block", "reason": (
+        f"desk handoff: write the handoff briefing first. Context passed the threshold partway "
+        f"through Stage {stage}: commit, run handoff.mjs write with --stage {stage} and --left, "
+        f"then print AUTOPILOT_HANDOFF: {stage} and end the turn.")}))
+
+
+def on_worker_session_start(data, session):
+    state = load_state(session)
+    if data.get("model"):
+        m = data["model"]
+        state["model"] = m.get("id") if isinstance(m, dict) else str(m)
+    if data.get("source") == "compact":
+        for k in ("fired_at", "blocked", "stage"):
+            state.pop(k, None)
+    save_state(session, state)
 
 
 def on_stop(data, session, root):
@@ -832,6 +993,17 @@ def main():
     root = git(cwd, "rev-parse", "--show-toplevel")
     session = data.get("session_id")
     if not root or not session:
+        return
+    worker = worker_file()
+    if os.environ.get("DESK_AUTOPILOT_WORKER") == "1" and not worker:
+        return  # a task worker, which never hands off: no interactive handoff either
+    if worker:
+        if event in ("UserPromptSubmit", "PostToolUse"):
+            on_worker_context(event, data, session, root, worker)
+        elif event == "Stop":
+            on_worker_stop(data, session, worker)
+        elif event == "SessionStart":
+            on_worker_session_start(data, session)
         return
     if event in ("UserPromptSubmit", "PostToolUse"):
         if not on_context(event, data, session, root):

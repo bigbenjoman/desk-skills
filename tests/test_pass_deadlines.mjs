@@ -27,18 +27,19 @@ const ids = (lines) => deciderItems({ waiting: lines, parked: [] }).map((i) => i
 const writes = (p) => p.actions.filter((x) => x.type === 'set').length;
 
 // One pass of the sweep over `tickets` at `mins`, its writes laid back onto the tickets as the queue
-// would keep them. -> { actions, lines (the waiting lines), failed }
-function pass(tickets, mins, { dry = false } = {}) {
-  const report = { failed: [], waiting: [] };
+// would keep them. `slotHeld` is pass.mjs's: the handoffs full slots held, with their holders.
+// -> { actions, lines (the waiting lines), waits (the lines that are nobody's), failed }
+function pass(tickets, mins, { dry = false, slotHeld = {} } = {}) {
+  const report = { failed: [], waiting: [], waits: [] };
   const byKey = Object.fromEntries(tickets.map((x) => [x.key, x]));
   const actions = runPhase({
-    name: 'deadlines', snapshot: () => ({ tickets: byKey, at: at(mins), dry }), decide: decideDeadlines, report,
+    name: 'deadlines', snapshot: () => ({ tickets: byKey, at: at(mins), dry, slotHeld }), decide: decideDeadlines, report,
     handlers: {
       set: (a) => { for (const f of a.fields) { const i = f.indexOf('='); byKey[a.key][f.slice(0, i)] = JSON.parse(f.slice(i + 1)); } },
       report: (a) => report[a.list].push(a.line),
     },
   });
-  return { actions, lines: report.waiting, failed: report.failed };
+  return { actions, lines: report.waiting, waits: report.waits, failed: report.failed };
 }
 
 t('the deadlines: a mergeability answer has the undraft limit before its repair and again after, to the person; a handoff 15 minutes, to a requeue; progress 45 minutes, to the person', j(WAITS),
@@ -157,6 +158,32 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   Object.assign(h, { state: 'running', handoff: null });
   const started = pass([h], 31);
   t('AC5 once its session starts, the wait ends and its line goes', j([h.waits, started.lines.length]), j([null, 0]));
+}
+
+// A handoff full slots hold waits for a slot, naming the holders, with no deadline until one frees.
+{
+  const full = { slotHeld: { H: ['A-1', 'A-2'] } };
+  const SLOT = 'H: waiting for a slot (held by A-1, A-2) — its Stage 4b session starts once one frees, and its 15-minute deadline runs from then';
+  const h = handedOff('H');
+  pass([h], 0, full);
+  const held = pass([h], 26, full);
+  t('issue-1491 AC1 26 minutes after its handoff with every slot held, it waits for a slot, naming the holders, and is not past its deadline',
+    j([held.waits, held.lines]), j([[SLOT], []]));
+  t('issue-1491 AC1 its wait records the holders and no deadline, and stays open while held', j(h.waits), j({ handoff: { since: at(0), escalate_to: 'requeue', stage: '4b', held_by: ['A-1', 'A-2'] } }));
+  const freed = pass([h], 30);
+  t('issue-1491 AC2 once a slot frees, its clock starts then, unescalated', j([h.waits, freed.lines, freed.waits]),
+    j([{ handoff: { since: at(30), deadline: at(45), escalate_to: 'requeue', stage: '4b' } }, [], []]));
+  t('issue-1491 AC2 within 15 minutes of the slot freeing nothing is escalated', pass([h], 44).lines.length, 0);
+  t('issue-1491 AC3 past its deadline with a slot free, it is past its deadline as before', pass([h], 46).lines[0]?.startsWith('H: HANDOFF NOT STARTED — its Stage 4b session has not started 16 minutes after its handoff'), true);
+
+  const e = handedOff('E');
+  pass([e], 0);
+  pass([e], 16);
+  const now = pass([e], 20, { slotHeld: { E: ['A-1'] } });
+  t('issue-1491 an escalated handoff later held by full slots waits for a slot instead, and leaves WAITING ON YOU', j([now.lines.length, now.waits.length, e.waits.handoff.escalated ?? null]), j([0, 1, null]));
+  const late = handedOff('L');
+  pass([late], 0);
+  t('issue-1491 AC3 a handoff with no slot hold is past its deadline as today', pass([late], 26).lines.length, 1);
 }
 
 // DS-902: a running worker's progress (a stage change, commit or push, kept as progress_at by the advance

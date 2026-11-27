@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (122 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -164,8 +164,8 @@ check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(f
 node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 31, title: "feat(w): CW-1 save", url: "u", headRefName: "claude/cw-1-abc", createdAt: new Date(s + 2400e3).toISOString() }]))' "$(field CW-1 cloud.started)" > "$T/cloud-prs.json"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1 state)" = "\"done\"" ] && [ "$(field CW-1 result.pr)" = 31 ] && [ "$(field CW-1 branch)" = "\"claude/cw-1-abc\"" ]'
-check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
-check "its tracker steps are the pass's to make, and with no tracker there are none" 'echo "$out" | grep -qF "CW-1: PR #31 from cloud session" && echo "$out" | grep -qF "its tracker steps are made by the pass" && [ "$(field CW-1 tracker_steps)" = "\"none\"" ]'
+check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: review read from the PR: .*; PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
+check "its tracker steps are the pass's to make, and with no tracker there are none" 'echo "$out" | grep -F "CW-1: review read from the PR: " | grep -qF "; PR #31 from cloud session" &&echo "$out" | grep -qF "its tracker steps are made by the pass" && [ "$(field CW-1 tracker_steps)" = "\"none\"" ]'
 all_done; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
 cloud_ticket CW-2; : > "$T/cloud-fail"
@@ -181,7 +181,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "a cloud ticket back for a fix try on its PR runs as a local worker, not parked" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)"'
 check "and no new cloud session starts for it" '[ ! -e "$T/cloud-prompt" ]'
 out=$(node "$B/pass.mjs" 2>&1)
-check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: PR #40 from cloud session"'
+check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: .*PR #40 from cloud session"'
 q set CW-3 state=done
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
@@ -321,16 +321,19 @@ lq_pass
 check "a fix try last parked at Stage 7 is held by the deep queue, as its task runs suites" '[ "$(spawns_of LQ-8)" = 0 ] && echo "$out" | grep -q "Stage 4 (.*LQ-8"'
 q set LQ-8 state=done session_id=null
 # One waiter drains: below the hold at 2 with 1 waiting, each pass starts at most 2 - 1 = 1 of the held
-# three (the listing stays as it is, so each pass has the same room).
+# suite-bound two (the listing stays as it is, so each pass has the same room). The fresh LQ-1 takes no
+# room (#1544): its first suite is a stage away, so it starts on the first pass beside one of them.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 # Each one started is marked done before the next pass, so the repo's worker cap never holds the others.
 lq_started(){ echo $(( $(spawns_of LQ-1) + $(spawns_of LQ-2) + $(spawns_of LQ-3) )); }
 lq_retire(){ for k in LQ-1 LQ-2 LQ-3; do [ "$(field "$k" state)" = '"running"' ] && q set "$k" state=done session_id=null; done; :; }
 lq_pass
-check "DoD5 below the hold, a pass starts at most the hold less those waiting: one of the three, the rest held past a room of 1" \
-  '[ "$(lq_started)" = 1 ] && echo "$out" | grep -qF "under the hold at 1 x 2 = 2" && echo "$out" | grep -qF "past the 1 this pass had room for"'
+check "DoD5 below the hold, a pass starts at most the hold less those waiting: one of the suite-bound two, the other held past a room of 1" \
+  '[ $(( $(spawns_of LQ-2) + $(spawns_of LQ-3) )) = 1 ] && echo "$out" | grep -qF "under the hold at 1 x 2 = 2" && echo "$out" | grep -qF "past the 1 this pass had room for"'
+check "#1544 AC1 below the hold, the fresh Stage 0 start takes no lock-queue room and starts on the first pass" \
+  '[ "$(spawns_of LQ-1)" = 1 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-1"'
 lq_retire; lq_pass
-check "DoD5 the next pass starts one more" '[ "$(lq_started)" = 2 ]'
+check "DoD5 the next pass starts one more" '[ "$(lq_started)" = 3 ]'
 lq_retire; lq_pass
 check "DS-662 AC3 below the hold, the held resume, handoff and new ticket all start in time, and then nothing names the lock queue" \
   'grep -qx "LQ-2 resume=yes stage=" "$T/rr-spawns" && grep -qx "LQ-3 resume= stage=4b" "$T/rr-spawns" && [ "$(spawns_of LQ-1)" = 1 ] && ! echo "$out" | grep -q "test lock queue"'
@@ -362,18 +365,23 @@ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-queue-fa
   for p in 9301 9302 9303; do printf 'p%s\ncbash\nfcwd\nn/elsewhere\n' "$p"; done; } > "$T/lsof.out"
 # A worker cap of 8 leaves the lock gate as the only limit.
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; } > "$T/config-lq.md"
-for k in LQ-10 LQ-11 LQ-12; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+# The three are handoffs to 4b, whose next step is a suite; two fresh Stage 0 starts beside them take no
+# lock-queue room (#1544), so both start whatever the share.
+for k in LQ-10 LQ-11 LQ-12; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; done
+for k in LQ-16 LQ-17; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
 check "DoD1 with the queue deep and three repos on it, this repo with no run starts its share of 2 of 3 ready tickets" \
   '[ $(( $(spawns_of LQ-10) + $(spawns_of LQ-11) + $(spawns_of LQ-12) )) = 2 ]'
 check "DoD4 the held note names the runs of each active repo, and this repo share, and the third ticket" \
   'echo "$out" | grep -q "Stage 4 (LQ-1[012]), past the 2" && echo "$out" | grep -qF "6 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 6 = 6; runs by repo: api 4, other 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && echo "$out" | grep -qF "past the 2 this pass had room for"'
-for k in LQ-10 LQ-11 LQ-12; do q set "$k" state=done session_id=null; done
+check "#1544 AC2 with this repo waiting on no lock and free slots, every fresh start begins and only the suite-bound handoff past the room is held" \
+  '[ "$(spawns_of LQ-16)" = 1 ] && [ "$(spawns_of LQ-17)" = 1 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-1[67]"'
+for k in LQ-10 LQ-11 LQ-12 LQ-16 LQ-17; do q set "$k" state=done session_id=null; done
 # Two configured repos of one name under different owners are two repos, each named owner/name as
 # desk-q names them: the three runs in /elsewhere are now beta/api's, not merged into acme's api.
 mkdir -p "$T/cfg-lq/repos/beta__api"
 printf '## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | `/elsewhere` |\n' > "$T/cfg-lq/repos/beta__api/config.md"
-for k in LQ-13 LQ-14 LQ-15; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+for k in LQ-13 LQ-14 LQ-15; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k" "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; done
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
@@ -716,7 +724,7 @@ check "DS-397 AC5 a refused push with its PR body in the log is pushed" '[ "$(gi
 check "DS-397 AC5 and its draft opened from that body, with the title its worker gave" \
   'grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/P-2 --title fix\(p\): P-2 make p --body-file .*/state-rc/pr-bodies/P-2.md$" "$T/rc-gh.log" && [ "$(cat "$T/state-rc/pr-bodies/P-2.md")" = "$(printf "## Summary\nMakes p.")" ]'
 check "DS-397 AC5 the ticket is recorded done on the draft, naming what its park left" \
-  '[ "$(field P-2 state)" = "\"done\"" ] && [ "$(field P-2 result.pr)" = 91 ] && [ "$(field P-2 draft_pr)" = 91 ] && echo "$out" | grep -qF "P-2: PR #91 pushed and opened as a draft by the pass from its worker'"'"'s PR body; what else its park named is not done: git push origin fix/P-2 was refused"'
+  '[ "$(field P-2 state)" = "\"done\"" ] && [ "$(field P-2 result.pr)" = 91 ] && [ "$(field P-2 draft_pr)" = 91 ] && echo "$out" | grep -F "P-2: review read from the PR: " | grep -qF "; PR #91 pushed and opened as a draft by the pass from its worker'"'"'s PR body; what else its park named is not done: git push origin fix/P-2 was refused"'
 check "DS-948 AC1 a body with a closing keyword mid-line is not pushed or opened, and the park says which line" \
   '[ "$(field P-8 state)" = "\"parked\"" ] && ! grep -q "fix/P-8" "$T/rc-gh.log" && echo "$out" | grep -qF "P-8: parked on a refused push or draft PR with its PR body in the log, but its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line 3: Close #1090): left parked"'
 check "DS-397 AC3 a take call with a recommended option is answered with it and requeued" \
@@ -730,6 +738,19 @@ check "DS-496 AC2 a 5xx on the pass's own push records the push as what clears t
   '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"fix/P-3\"}" ] && echo "$first" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it" && echo "$out" | grep -qF "P-3: waiting on \"git push origin fix/P-3 succeeds\" (GitHub still answers 5xx): left parked"'
 rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 AC2 and the next pass pushes it and requeues it for the steps its park named" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" != "\"parked\"" ] && [ "$(field P-3 state)" != "\"done\"" ] && echo "$out" | grep -qF "P-3: \"git push origin fix/P-3 succeeds\" holds: requeued"'
+# #1532 AC4: the live red spell's repair, its worker failed with the fix committed and not pushed while main
+# is still red, has its branch pushed and its draft opened by the pass (pushRepairFix), not asked about.
+RK="base-red-main-20261126175511"; MS=$(git -C "$T/repo" rev-parse main)
+git -C "$T/repo" worktree add -q -b "fix/$RK" "$T/wt/$RK" main
+echo g > "$T/wt/$RK/guard.txt"; git -C "$T/wt/$RK" add guard.txt; git -C "$T/wt/$RK" commit -q -m "fix(guards): $RK add the missing guard"
+printf '{"branch":"main","sha":"%s","checks":[{"name":"tests","sha":"%s","url":null}],"merges":[],"repair_key":"%s","since":"2026-11-26T17:55:11Z","at":"%s"}\n' "$MS" "$MS" "$RK" "$(node -e 'console.log(new Date().toISOString())')" > "$T/state-rc/base-red.json"
+q add "$RK"; q set "$RK" state=failed lane=A "branch=fix/$RK" "worktree=$T/wt/$RK"
+: > "$T/rc-gh.log"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1532 AC4 a red spell's repair left with an unpushed fix is pushed and opened as its draft, titled by its commit" \
+  '[ "$(git -C "$T/rc-origin.git" rev-parse "refs/heads/fix/$RK")" = "$(git -C "$T/wt/$RK" rev-parse HEAD)" ] && grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/$RK --title fix\(guards\): $RK add the missing guard --body-file .*/state-rc/pr-bodies/$RK.md$" "$T/rc-gh.log" && grep -qF "Repairs the red main: \"tests\" failed on its latest run there." "$T/state-rc/pr-bodies/$RK.md"'
+check "#1532 AC4 and it is recorded done on that draft, and the pass says so" \
+  '[ "$(field "$RK" state)" = "\"done\"" ] && [ "$(field "$RK" result.pr)" = 91 ] && [ "$(field "$RK" draft_pr)" = 91 ] && echo "$out" | grep -qF "$RK: its worker left an unpushed fix while main is still red: pushed fix/$RK and opened draft PR #91"'
+rm -f "$T/state-rc/base-red.json"
 
 # ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
 # acme/web's default branch is not main, and this repo's origin says where its neighbours are. Each
@@ -875,7 +896,7 @@ check "DS-557 AC1 with §3 jira-edit yes, the pass makes the link, read back, an
 check "DS-557 AC1 a worker that parks has its link made too, and its question is its own" \
   'grep -qx "link L-6 relates-to L-2" "$T/jira-calls" && [ "$(field L-6 state)" = "\"parked\"" ] && [ "$(field L-6 park.question)" = "\"Which empty state copy?\"" ] && [ "$(field L-6 follow_on)" = null ]'
 check "DS-557 AC3 a link to another project is not made: the ticket parks on its PR with why and the command" \
-  '! grep -q "^link L-3" "$T/jira-calls" && kept L-3 "OT-9 is not in L-3'"'"'s project L, so the pass does not link it: desk-jira link L-3 relates-to OT-9" && [ "$(field L-3 result.pr)" = 43 ] && [ "$(field L-3 park.clears_when.pr)" = 43 ] && echo "$out" | grep -qF "L-3: Issue links not made: OT-9" && echo "$out" | grep -qF "records L-3 done again on PR #43 once it reads them on Jira" && ! echo "$out" | grep -qF "L-3: pr=43 jira=In Review"'
+  '! grep -q "^link L-3" "$T/jira-calls" && kept L-3 "OT-9 is not in L-3'"'"'s project L, so the pass does not link it: desk-jira link L-3 relates-to OT-9" && [ "$(field L-3 result.pr)" = 43 ] && [ "$(field L-3 park.clears_when.pr)" = 43 ] && echo "$out" | grep -qF "L-3: Issue links not made: OT-9" && echo "$out" | grep -qF "records L-3 done again on PR #43 once it reads them on Jira" && ! echo "$out" | grep -qF "its worker said: pr=43 jira=In Review"'
 check "DS-557 AC3 a link to a ticket that does not exist keeps desk-jira's reason" \
   'kept L-4 "desk-jira refused it (desk-jira: Issue Does Not Exist (404)): desk-jira link L-4 relates-to L-404"'
 check "DS-557 a Blocks link is never made by the pass, and is kept for the person" \
@@ -895,7 +916,7 @@ check "DS-557 AC2 with §3 jira-edit ask, nothing is linked and the ticket parks
 echo '[{"type":{"name":"Relates","inward":"relates to","outward":"relates to"},"outwardIssue":{"key":"L-2"}}]' > "$T/jira-links-L-7.json"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-557 AC2 once the person has made the link, the parked ticket goes back to done on its PR" \
-  '[ "$(field L-7 state)" = "\"done\"" ] && [ "$(field L-7 park)" = null ] && [ "$(field L-7 result.pr)" = 47 ] && echo "$out" | grep -qF "L-7: issue links L-7 relates-to L-2 made, each read on Jira: recorded done again on PR #47" && [ "$(field L-3 state)" = "\"parked\"" ]'
+  '[ "$(field L-7 state)" = "\"done\"" ] && [ "$(field L-7 park)" = null ] && [ "$(field L-7 result.pr)" = 47 ] && echo "$out" | grep -F "L-7: review read from the PR: " | grep -qF "; issue links L-7 relates-to L-2 made, each read on Jira: recorded done again on PR #47" && [ "$(field L-3 state)" = "\"parked\"" ]'
 check "DS-557 AC2 a worker's own park carries the command in its question, and keeps it past the park" \
   '[ "$(field L-8 state)" = "\"parked\"" ] && field L-8 park.question | grep -qF "Which empty state copy?. Issue links not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2" && field L-8 follow_on | grep -qF "Issue link not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2"'
 # linkThere on five links, in order. A function, as bash brace-expands the object literals in a check's eval.
@@ -1145,7 +1166,7 @@ check "DS-796 an owner the pass does not read for itself is given its criteria b
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
-{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n'; } > "$T/config-mx.md"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n| Per-file collision budget | x | `1` |\n'; } > "$T/config-mx.md"
 export DESK_CONFIG="$T/config-mx.md" DESK_QUEUE="$T/queue-mx.json" DESK_AUTOPILOT_STATE="$T/state-mx"; mkdir -p "$T/state-mx/logs" "$T/state-mx/triage"
 printf '{"files_in_scope":["src/a.ts","src/b.ts"]}\n' > "$T/state-mx/triage/MX-1.json"
 printf '{"files_in_scope":["src/a.ts"]}\n' > "$T/state-mx/triage/MX-2.json"
@@ -1420,15 +1441,15 @@ spawned(){ grep -qx "$1" "$T/fb-spawns"; }
 
 fbq fba ''
 fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
-fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts
+fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts; fbt FB-9 triaged src/edge.ts
 fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC1 with no budget row, three ready tickets naming a file over 1,000 lines on the base all start" \
   'spawned FB-1 && spawned FB-2 && spawned FB-3'
 check "DS-755 AC2 a fourth naming it does not start, and the report names the file and the three running" \
   '! spawned FB-4 && [ "$(field FB-4 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-4 (src/big.ts has 3 running of its 3: FB-1, FB-2, FB-3)"'
-check "DS-755 AC3 AC9 of two naming a 1,000-line file, the first in queue order starts and the other waits" \
-  'spawned FB-5 && ! spawned FB-6 && echo "$out" | grep -qF "FB-6 (src/edge.ts has 1 running of its 1: FB-5)"'
+check "DS-755 AC3 AC9 DS-1032 AC3 of three naming a 1,000-line file, the first two in queue order start and the third waits" \
+  'spawned FB-5 && spawned FB-6 && ! spawned FB-9 && echo "$out" | grep -qF "FB-9 (src/edge.ts has 2 running of its 2: FB-5, FB-6)"'
 check "DS-755 AC5 a ticket naming two files, one at its budget, does not start" '! spawned FB-7 && [ "$(field FB-7 state)" = "\"triaged\"" ]'
 check "DS-755 AC7 an admission-time collides_with naming a running ticket that shares no file in the triage records holds nothing" 'spawned FB-8'
 check "DS-755 the metrics line names each held ticket's files at their budget and the running tickets filling them" \
@@ -1443,6 +1464,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC2 with three already running that name the file, a fourth does not start, and the report names them" \
   '! spawned FB-14 && echo "$out" | grep -qF "FB-14 (src/big.ts has 3 running of its 3: FB-11, FB-12, FB-13)"'
 check "DS-755 AC3 AC7 once the first has stopped running, the other starts: a done ticket its collides_with names holds nothing" 'spawned FB-16'
+
+# A test file takes no place, under a row of 1 too; a shared non-test file still holds.
+fbq fbt '1'
+fbt FB-61 triaged tests/test_prompts.py src/c.test.ts; fbt FB-62 triaged tests/test_prompts.py src/c.test.ts; fbt FB-63 triaged tests/test_prompts.py src/c.test.ts
+fbt FB-64 triaged tests/test_prompts.py src/solo.ts; fbt FB-65 triaged tests/test_prompts.py src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1032 AC2 a test file takes no place: three ready tickets whose only shared files are test files all start" \
+  'spawned FB-61 && spawned FB-62 && spawned FB-63 && ! echo "$out" | grep "^held back by a collision:" | grep -qE "FB-6[123] \("'
+check "DS-1032 AC2 negative control: tickets also sharing a non-test file are held on that file alone" \
+  'spawned FB-64 && ! spawned FB-65 && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-65 (src/solo.ts has 1 running of its 1: FB-64)"'
 
 fbq fbc '3 over 1000 lines, else 1; serial: src/hot.ts, docs/*.md'
 fbt FB-21 triaged src/hot.ts; fbt FB-22 triaged src/hot.ts; fbt FB-23 triaged src/big.ts; fbt FB-24 triaged src/big.ts

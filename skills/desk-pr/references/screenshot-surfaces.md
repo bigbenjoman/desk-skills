@@ -111,6 +111,9 @@ For a page behind real auth, on a development instance only. It needs §4 Env fi
 who already holds the app's grant: §4 Test sign-in (`desk-env cmds test-signin`) gives one per app as
 `DIR<TAB>EMAIL`, so take the line whose directory is the app's, exactly as for the dev server. An
 app with no line there has no user to sign in as: `desk-env drift --app <dir>` names it `NOSIGNIN`.
+Where §4 Test sign-in permissions (`desk-env list test-signin-permissions`) names what the app's
+pages need, the same call reads the user from Clerk and names each permission it lacks `NOPERM`, or
+`PERMREAD` where it could not read them.
 
 1. **Start the right app.** `desk-env cmds dev-cmd` gives one `DIR<TAB>CMD` line per app, so in a
    multi-app repo pick the line whose directory holds the page. Run it through `with-lock.sh nolock
@@ -122,18 +125,25 @@ app with no line there has no user to sign in as: `desk-env drift --app <dir>` n
    ./<script>.mjs <port> <path> <out.png> <test user email> <env file holding the instance's keys>`. A script elsewhere, or an argument holding `..`, is
    refused. Delete the script afterwards.
 3. **Refuse any key but a development one.** Mint the token server-side, sign in from a page where
-   ClerkJS has loaded, and print what the session token carries before looking at the page. A
-   refusal is the end of it: stop and report the env file and the reason it names (an autopilot
+   ClerkJS has loaded, and print what the session token carries before looking at the page.
+   Sign-in is done when the `__session` cookie is set, not when `setActive` resolves: where the
+   app's middleware 401s the server action `setActive` fires before that cookie is sent, it never
+   resolves (`@clerk/testing`'s `clerk.signIn` hangs the same way). No cookie within 30 seconds
+   stops the script, naming it; a first page load that fails is tried again, three loads in all. A
+   refused key is the end of it: stop and report the env file and the reason it names (an autopilot
    worker parks on it), and never look for another key:
 
 ```js
 import { readFileSync, chmodSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+// desk's own reading of the key and the user, the same `desk-env drift --app` checks permissions with
+const { clerkSecretKeyIn, isClerkDevKey, clerkUsersByEmail } = await import(resolve(homedir(), '.claude/desk/bin/desk-env.mjs'));
 
 const [port, path, out, email, envFile] = process.argv.slice(2);
-const key = /^CLERK_SECRET_KEY="?([^"\n]+)"?$/m.exec(readFileSync(envFile, 'utf8'))?.[1] ?? '';
-if (!key.startsWith('sk_test_')) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
+const key = clerkSecretKeyIn(readFileSync(envFile, 'utf8'));
+if (!isClerkDevKey(key)) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
 const clerk = async (method, p, body) => {
   const r = await fetch(`https://api.clerk.com/v1${p}`, {
     method,
@@ -143,7 +153,7 @@ const clerk = async (method, p, body) => {
   if (!r.ok) throw new Error(`clerk ${p}: ${r.status}`);
   return r.json();
 };
-const [user] = await clerk('GET', `/users?email_address=${encodeURIComponent(email)}`);
+const [user] = await clerkUsersByEmail(key, email);
 const { token } = await clerk('POST', '/sign_in_tokens', { user_id: user.id, expires_in_seconds: 300 });
 
 const { chromium } = createRequire(resolve('package.json'))('playwright');
@@ -153,17 +163,26 @@ const page = await ctx.newPage();
 const base = `http://localhost:${port}`;
 await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded', timeout: 180000 });
 await page.waitForFunction(() => window.Clerk?.loaded, null, { timeout: 60000 });
-const signedIn = await page.evaluate(async (ticket) => {
+const status = await page.evaluate(async (ticket) => {
   const si = await window.Clerk.client.signIn.create({ strategy: 'ticket', ticket });
-  await window.Clerk.setActive({ session: si.createdSessionId });
-  const jwt = await window.Clerk.session.getToken();
-  const claims = JSON.parse(atob(jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-  return { status: si.status, claims: Object.keys(claims) };
+  window.Clerk.setActive({ session: si.createdSessionId }).catch(() => {}); // can hang where middleware 401s it; the cookie is the signal
+  return si.status;
 }, token);
-console.log('sign-in', JSON.stringify(signedIn));
+let session;
+for (const end = Date.now() + 30000; !session && Date.now() < end; await page.waitForTimeout(500)) {
+  session = (await ctx.cookies(base)).find((c) => c.name === '__session');
+}
+if (!session) throw new Error(`sign-in ${status}: no __session cookie was set within 30s, so no session`);
+const claims = JSON.parse(Buffer.from(session.value.split('.')[1], 'base64url').toString());
+console.log('sign-in', JSON.stringify({ status, claims: Object.keys(claims) }));
 await ctx.storageState({ path: `${out}.state.json` }); // the token is single-use; this is what you reuse
 chmodSync(`${out}.state.json`, 0o600);
-await page.goto(`${base}${path}`, { waitUntil: 'networkidle', timeout: 180000 });
+for (let tries = 1; ; tries++) {
+  const res = await page.goto(`${base}${path}`, { waitUntil: 'networkidle', timeout: 180000 }).catch((e) => e);
+  if (!(res instanceof Error) && (!res || res.ok())) break;
+  if (tries === 3) throw new Error(`${path}: ${res instanceof Error ? res.message : res.status()} on all 3 loads`);
+  await page.waitForTimeout(3000);
+}
 console.log('landed', page.url().replace(base, ''));
 await page.screenshot({ path: out, fullPage: true });
 await browser.close();

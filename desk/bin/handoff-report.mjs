@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-// Which context-handoff threshold costs least, measured on interactive sessions from their transcripts.
-// The handoff hook (hooks/desk-handoff.py) runs only in interactive sessions, so this reads those: each
-// session's arm is the threshold T within window W its hook injection names ("desk handoff: context is
-// at N% of a W-token window (threshold T%)"), or that of the session whose handoff it resumed; a
-// session with neither is `unknown`, shown and never recommended. Per arm: sessions, handoffs per
+// Which context-handoff threshold costs least, measured on session transcripts: this repo's primary
+// root's project folder and each of its worktrees' (§2 Worktrees directory), where autopilot workers run.
+// Each session's arm is the threshold T within window W its hook injection names ("desk handoff: context
+// is at N% of a W-token window (threshold T%)", or a worker's "…, past this worker's threshold of T%"),
+// else the one the hook stamped in its per-session state (<DESK_HOME>/handoff/<session>.json: `arm`, or
+// the §2 rows `pct`/`pct_1m` it read at the session's first check, on the window its model and peak
+// context give), else that of the session whose handoff it resumed; a session with none is `unknown`,
+// shown and never recommended. An arm whose threshold, in tokens, is below the mean resume overhead
+// measured on its window is flagged as below start-up cost and never recommended. Per arm: sessions, handoffs per
 // session (compactions, and sessions that start from a .handoffs/*.md file), the resume overhead of
 // each (the input tokens of the first request after it), and the primary metric, API-equivalent
 // dollars per active hour (cache-report.mjs requestUsd, at worker-cost.mjs MODEL_PRICES).
@@ -108,7 +112,11 @@ const GUIDANCE = [
 ];
 const GAP = 'No source measures a handoff at 20-30%; on a 1M window the absolute tokens re-read each turn matter more than the share.';
 
-const FIRE = /desk handoff: context is at \d+% of a ([\d,]+)-token window \(threshold ([\d.]+)%\)/;
+const FIRE = /desk handoff: context is at \d+% of a ([\d,]+)-token window(?: \(threshold |, past this worker's threshold of )([\d.]+)%/;
+const SMALL_WINDOW = 200_000;
+const LARGE_WINDOW = 1_000_000;
+// The oldest version of each family whose default window is 1M, shared with desk-handoff.py.
+const DEFAULT_1M_SINCE = JSON.parse(readFileSync(new URL('./model-windows.json', import.meta.url), 'utf8')).default_1m_since;
 const NAMED = /\(repo-relative: (\.handoffs\/[^\s)]+\.md)\)/;
 const HANDOFF_FILE = /\.handoffs\/[A-Za-z0-9._-]+\.md/;
 
@@ -218,6 +226,8 @@ function sessionOf(file, text) {
   const bash = new Map();
   const calls = new Set();
   let errors = 0;
+  let peak = 0;
+  const models = new Map();
   const work = { prs: [], pushed: [] };
   for (const { d, raw } of lines) {
     const content = Array.isArray(d.message?.content) ? d.message.content : [];
@@ -254,6 +264,8 @@ function sessionOf(file, text) {
       resumedFrom ??= HANDOFF_FILE.exec(raw)[0];
     }
     if (!r) continue;
+    peak = Math.max(peak, inputOf(r));
+    if (r.model) models.set(r.model, (models.get(r.model) ?? 0) + 1);
     if (!seenRequest && resumed) overheads.push(inputOf(r));
     if (afterBoundary) { overheads.push(inputOf(r)); afterBoundary = false; }
     seenRequest = true;
@@ -272,14 +284,46 @@ function sessionOf(file, text) {
     unpriced: [...requests.values()].filter((r) => !requestUsd(r)).length,
     active_hours: active / 3_600_000, start: times[0] ?? null, end: times.at(-1) ?? null, branch: [...branches].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
     branches: [...branches.keys()], prs: work.prs, pushed: [...new Set(work.pushed)], tool_calls: calls.size, tool_errors: errors,
+    peak, model: [...models].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
   };
 }
 
-// The transcripts to read: each projects folder's own folder for this repo's primary root, or every one.
-function transcriptFiles(roots, project) {
+// Whether a model's default window is 1M with no [1m], parsed as desk-handoff.py's default_1m does.
+function default1m(model) {
+  const parts = String(model ?? '').toLowerCase().replace('[1m]', '').split('-');
+  const since = DEFAULT_1M_SINCE[parts.find((p) => p && p !== 'claude' && !/^\d+$/.test(p))];
+  const nums = parts.filter((p) => /^\d{1,2}$/.test(p)).map(Number);
+  if (!since || !nums.length) return false;
+  const [major, minor = 0] = nums;
+  return major > since[0] || (major === since[0] && minor >= since[1]);
+}
+
+// The arm the hook stamped in a session's state, or null: its `arm` where it recorded one, else the
+// §2 rows it cached at the session's first check, on the window the hook gives the session's model
+// and peak context. A row of 0 (handoff off) is no arm.
+function stampedArm(state, s) {
+  if (!state || typeof state !== 'object') return null;
+  const a = state.arm;
+  if (a && Number(a.pct) > 0 && Number(a.window) > 0) return { pct: Number(a.pct), window: Number(a.window) };
+  if (typeof state.pct !== 'number') return null;
+  const window = s.peak > SMALL_WINDOW || default1m(state.model ?? s.model) || /\[1m\]/i.test(String(state.model ?? '')) ? LARGE_WINDOW : SMALL_WINDOW;
+  const pct = window >= LARGE_WINDOW && typeof state.pct_1m === 'number' ? state.pct_1m : state.pct;
+  return pct > 0 ? { pct, window } : null;
+}
+
+// The hook's per-session state for a transcript, or null.
+function hookState(dir, id) {
+  const safe = id.replace(/[^A-Za-z0-9_-]/g, '') || 'unknown';
+  try { return JSON.parse(readFileSync(join(dir, `${safe}.json`), 'utf8')); } catch { return null; }
+}
+
+// Claude Code's project folder name for a directory.
+const projectName = (dir) => dir.replace(/[^A-Za-z0-9]/g, '-');
+
+// The transcripts to read: in each projects folder, the folders `mine` accepts (every one without it).
+function transcriptFiles(roots, mine) {
   const dirs = roots.flatMap((root) => {
-    if (project) return [join(root, project)];
-    try { return readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(root, e.name)); } catch { return []; }
+    try { return readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && (!mine || mine(e.name))).map((e) => join(root, e.name)); } catch { return []; }
   });
   return dirs.flatMap((dir) => {
     try { return readdirSync(dir).filter((f) => f.endsWith('.jsonl')).map((f) => join(dir, f)); } catch { return []; }
@@ -436,6 +480,8 @@ function ticketGuardrails(arm, base) {
   });
 }
 
+const belowText = (b) => `below start-up cost: its threshold, ${fmt(b.threshold_tokens)} tokens, is under the ${fmt(b.overhead)}-token mean resume overhead on this window (${b.samples} resume(s))`;
+
 // Per window: the cheapest arm whose guardrails hold, or why there is not enough data.
 function recommend(arms) {
   const windows = [...new Set(arms.filter((a) => a.window).map((a) => a.window))].sort((x, y) => x - y);
@@ -458,15 +504,23 @@ function recommend(arms) {
           + `${b.rates[g].toFixed(2)} on the baseline so far (margin ${PR_CHECKED[g].margin}x; provisional, the verdict waits for the windows to close)`);
       return { arm: a.arm, baseline: a === base, prs: p.prs, open: p.open, elapsed_hours: p.elapsed_hours, rates: p.rates, flags };
     });
-    const out = { window, row: rowName(window), counts, mapping, samples, provisional };
+    // Start-up cost: the mean resume overhead over every arm on this window. An arm whose threshold, in
+    // tokens, is below it hands off before a resumed session has done any work: flagged, never recommended.
+    const n = here.reduce((x, a) => x + a.resume_samples, 0);
+    const overhead = n ? here.reduce((x, a) => x + (a.resume_overhead_mean ?? 0) * a.resume_samples, 0) / n : null;
+    const below = overhead == null ? [] : here.filter((a) => (a.pct / 100) * window < overhead)
+      .map((a) => ({ arm: a.arm, threshold_tokens: Math.round((a.pct / 100) * window), overhead: Math.round(overhead), samples: n }));
+    const isBelow = (a) => below.some((b) => b.arm === a.arm);
+    const startupWhy = (a) => belowText(below.find((b) => b.arm === a.arm));
+    const out = { window, row: rowName(window), counts, mapping, samples, provisional, startup: { overhead: overhead == null ? null : Math.round(overhead), samples: n, below } };
     if (!base || base.sessions < MIN_SESSIONS || base.usd_per_active_hour == null) {
       return { ...out, verdict: 'not enough data', why: `the ${BASELINE_PCTS.join('/')}% baseline has ${base?.sessions ?? 0} session(s); needs ${MIN_SESSIONS}` };
     }
     if (base.unpriced) return { ...out, baseline: base.arm, verdict: 'not enough data', why: `the ${base.arm} baseline has ${base.unpriced} request(s) on a model with no price` };
     const others = here.filter((a) => a !== base && a.sessions >= MIN_SESSIONS && a.usd_per_active_hour != null);
     if (!others.length) return { ...out, baseline: base.arm, verdict: 'not enough data', why: `no other arm has ${MIN_SESSIONS} session(s)` };
-    const refused = [];
-    const eligible = [base];
+    const refused = isBelow(base) ? [{ arm: base.arm, why: startupWhy(base) }] : [];
+    const eligible = isBelow(base) ? [] : [base];
     for (const a of others) {
       const g = guardrailsAgainst(a, base);
       a.guardrail_status = g;
@@ -482,12 +536,13 @@ function recommend(arms) {
       const family = (names) => names.every((k) => g[k].status !== 'not measured');
       const measured = family(CHECKED) || family(Object.keys(PR_CHECKED));
       // Dollars are compared on complete data only: an unpriced request adds hours but no dollars.
-      const bad = [...(a.unpriced ? [`${a.unpriced} request(s) on a model with no price`] : []),
+      const bad = [...(isBelow(a) ? [startupWhy(a)] : []), ...(a.unpriced ? [`${a.unpriced} request(s) on a model with no price`] : []),
         ...Object.entries(g).filter(([, v]) => v.status === 'breach' || (!measured && v.status === 'not measured')).map(([k, v]) => `${k} ${v.status}: ${v.why}`),
         ...(rw.status === 'breach' ? [`rework breach: ${rw.why}`] : [])];
       if (bad.length) refused.push({ arm: a.arm, why: bad.join('; ') });
       else eligible.push(a);
     }
+    if (!eligible.length) return { ...out, baseline: base.arm, verdict: 'not enough data', refused, why: 'every arm with enough sessions is refused, the baseline below its start-up cost' };
     const best = eligible.reduce((x, y) => (y.usd_per_active_hour < x.usd_per_active_hour ? y : x));
     const save = 1 - best.usd_per_active_hour / base.usd_per_active_hour;
     return {
@@ -545,6 +600,7 @@ function reportText(rep) {
       ? `  §2 "${r.row}": ${r.pct} (${r.arm}): ${r.why}${r.refused.length ? `; not ${r.refused.map((x) => `${x.arm} (${x.why})`).join(', ')}` : ''}`
       : `  §2 "${r.row}" (${r.window.toLocaleString('en-US')}-token window): not enough data: ${r.why} (sessions per arm: ${Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join(', ')})`,
     sampleText(r),
+    ...r.startup.below.map((b) => `    ${b.arm} is ${belowText(b)}: never recommended`),
     ...provisionalText(r),
     // Where a window lacks data: what its sessions reached, and what would map the rest.
     ...(r.verdict !== 'recommend' || r.refused.some((x) => x.why.includes('not measured')) ? [mappingText(r.mapping)] : [])])
@@ -566,16 +622,23 @@ if (isMain) {
   const opt = (k) => { const i = argv.indexOf(k); return i < 0 ? undefined : argv[i + 1]; };
   const now = Date.now();
   let project = null;
+  let mine = null;
   if (!argv.includes('--all')) {
-    try { project = E.repoRoot().replace(/[^A-Za-z0-9]/g, '-'); }
+    try { project = projectName(E.repoRoot()); }
     catch (e) { console.error(`handoff-report: ${e.message}; pass --all to read every project`); process.exit(2); }
+    let worktrees = null;
+    try { worktrees = `${projectName(E.worktreesDir())}-`; } catch { /* no worktrees directory: the primary root only */ }
+    mine = (name) => name === project || (!!worktrees && name.startsWith(worktrees));
   }
   const roots = opt('--root') ? [opt('--root')] : projectsDirs();
+  const stateDir = join(E.deskHome(), 'handoff');
   const sessions = [];
-  for (const f of transcriptFiles([...new Set(roots)], project)) {
+  for (const f of transcriptFiles([...new Set(roots)], mine)) {
     let text = '';
     try { text = readFileSync(f, 'utf8'); } catch { continue; }
-    sessions.push(sessionOf(f, text));
+    const s = sessionOf(f, text);
+    s.arm ??= stampedArm(hookState(stateDir, s.id), s);
+    sessions.push(s);
   }
   // A resumed session with no injection of its own ran under the arm of the session that named its handoff.
   const namer = new Map(sessions.filter((s) => s.named).map((s) => [`${s.project}|${s.named}`, s.arm]));
@@ -610,7 +673,7 @@ if (isMain) {
   }
   const arms = armRows(sessions, now);
   const rep = {
-    scope: project ? `project ${project}` : 'every project', sessions: sessions.map(({ named, resumed_from, map, ...s }) => s), arms,
+    scope: project ? `project ${project} and its worktrees'` : 'every project', sessions: sessions.map(({ named, resumed_from, map, ...s }) => s), arms,
     recommendations: recommend(arms), ticket_note: tickets.note,
     pr_read: { offline, reads: outcomes.reads, cached: outcomes.cached, note: outcomes.note ?? (cachePath ? null : 'no repo state, so PR outcomes are not cached') }, guidance: GUIDANCE.map(([title, url]) => ({ title, url })), gap: GAP,
   };

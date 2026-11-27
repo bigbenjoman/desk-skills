@@ -266,9 +266,9 @@ t('DS-161 AC10: could run to is no earlier than ships', F.T['A-3'].late >= F.T['
 t('DS-161 AC10: then how many merged tickets of its size the history holds', field(a3, 'Based on').startsWith('Based on  6 merged size M tickets in alpha · typical '), true);
 const beta = Q.loadRepos(FIXED).find((r) => r.name === 'beta');
 const histLine = (key) => field(Q.ticketScreen(beta, key, { now: FIXED }).split('\n'), 'Based on');
-t('DS-161 AC10: a size the history has none of still names its count, 0', histLine('B-1').startsWith('Based on  13 merged tickets in beta (0 of size L) · typical '), true);
+t('DS-161 AC10 (#1487 AC7): a size the history has none of still names its count, 0, and the sizes it borrowed', histLine('B-1').startsWith('Based on  13 merged tickets in beta (0 of size L; sizes M, S scaled to L) · typical '), true);
 t('DS-161 AC10: a ticket triage gave no size says so', histLine('B-2').startsWith('Based on  13 merged tickets in beta (triage recorded no size) · typical '), true);
-t('DS-161 AC10: a size with too few to use alone names its count', histLine('B-3').startsWith('Based on  13 merged tickets in beta (3 of size M, too few to use alone) · typical '), true);
+t('DS-161 AC10 (#1487 AC7): a size with too few to use alone names its count, and the sizes it borrowed', histLine('B-3').startsWith('Based on  13 merged tickets in beta (3 of size M; sizes S scaled to M) · typical '), true);
 
 // ---- forecast AC11: the same files and clock give the same dates
 const rows = alpha.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: String(tk.collides_with ?? '').split('|').filter(Boolean) }));
@@ -301,7 +301,7 @@ t('DS-161 AC12: c again takes the dates away', note().endsWith(UNDATED) && /no d
 ui.finish(0);
 
 // ==== DS-162: each ticket's first estimate, kept beside its merge, and how often it held.
-const { readEstimates } = await import('../desk/bin/desk-q-eta.mjs');
+const { readEstimates, ESTIMATE_MODEL } = await import('../desk/bin/desk-q-eta.mjs');
 const stateOf = (name) => join(zenv.HOME, '.desk-autopilot', `acme__${name}`);
 const repoAt = (name, now = FIXED) => Q.loadRepos(now).find((r) => r.name === name);
 const iso = (ms) => new Date(ms).toISOString();
@@ -314,8 +314,8 @@ repo('gamma', 3600, {
 });
 const gF = Q.forecastOf(repoAt('gamma'), { now: FIXED });
 const g1 = readEstimates(stateOf('gamma')).get('G-1');
-t('DS-162 AC1: the first forecast saves its starts, ships and could-run-to times', g1 && [g1.at, g1.starts, g1.ships, g1.could_run_to],
-  [iso(FIXED), iso(gF.T['G-1'].start), iso(gF.T['G-1'].likely), iso(gF.T['G-1'].late)]);
+t('DS-162 AC1: the first forecast saves its starts, ships and could-run-to times, and the model that made them', g1 && [g1.at, g1.starts, g1.ships, g1.could_run_to, g1.model],
+  [iso(FIXED), iso(gF.T['G-1'].start), iso(gF.T['G-1'].likely), iso(gF.T['G-1'].late), ESTIMATE_MODEL]);
 const gFile = () => readFileSync(join(stateOf('gamma'), 'eta.jsonl'), 'utf8');
 const gBefore = gFile();
 const gLater = Q.forecastOf(repoAt('gamma', FIXED + 10 * MIN), { now: FIXED + 10 * MIN });
@@ -336,14 +336,14 @@ t('DS-162 AC2: a second merged call keeps the first merge time', readEstimates(s
 // Saved estimates, oldest merge first: [shipped before could-run-to?] per ticket.
 const saved = (name, hits) => writeFileSync(join(stateOf(name), 'eta.jsonl'), hits.flatMap((hit, i) => {
   const merged = FIXED - (hits.length - i) * HOUR;
-  return [{ key: `E-${i}`, at: iso(merged - 5 * HOUR), starts: iso(merged - 5 * HOUR), ships: iso(merged - HOUR), could_run_to: iso(merged + (hit ? HOUR : -HOUR / 2)) },
+  return [{ key: `E-${i}`, at: iso(merged - 5 * HOUR), starts: iso(merged - 5 * HOUR), ships: iso(merged - HOUR), could_run_to: iso(merged + (hit ? HOUR : -HOUR / 2)), model: ESTIMATE_MODEL },
     { key: `E-${i}`, merged_at: iso(merged) }];
 }).map((l) => `${JSON.stringify(l)}\n`).join(''));
 
 // ---- AC3: 31 of the last 40 merged before their could-run-to time; 5 older misses do not count
 repo('hits', 3700, { tickets: { 'X-1': { state: 'triaged' } }, sizes: { 'X-1': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]) });
 saved('hits', [...range(5, () => false), ...range(40, (i) => i % 40 >= 9)]);
-const RATE = '78% shipped before their could-run-to time (last 40 tickets)';
+const RATE = '78% shipped before their could-run-to time (last 40 tickets) · median error +1.0 h late, 1.0 h either way';
 t('DS-162 AC3 (DS-218 AC8): the Timeline\'s forecast line, under the Queue\'s header, gives the hit rate',
   Q.timelineScreen(Q.loadRepos(FIXED), 'acme__hits', { now: FIXED }).split('\n')[3].endsWith(` │ hit rate  ${RATE}`), true);
 t('DS-162 AC3: and so does --plain', Q.run(['ships', 'hits', '--plain'], { now: FIXED }).split('\n').slice(0, 3).includes(RATE), true);
@@ -719,7 +719,8 @@ t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics',
 
 // ---- Long keys and short, in every view at 60, 80 and 120 columns. Each ticket row keeps a
 // space between its key and its state, every row's state starts in one column (the STATE heading's, where
-// the view has one), a row's title is whole or cut with an ellipsis, and every row and heading fits
+// the view has one), a row's title is whole, cut with an ellipsis or (where a Queue drops TITLE) not
+// shown at all, and every row and heading fits
 // the width. A repo name longer than its column is cut with an ellipsis too.
 const MIXED = ['issue-1484', 'SV-12', 'issue-1480', 'SV-7', 'issue-1479'];
 repo('mixed-up-repo', 4870, {
@@ -742,7 +743,11 @@ repo('mixed-up-repo', 4870, {
       rows: rows.filter(mixedRow).length,
       apart: rows.every((l, i) => l[at[i] - 1] === ' '),
       aligned: new Set([...at, ...(head ? [head.indexOf('STATE')] : [])]).size === 1,
-      cut: rows.filter(mixedRow).every((l) => /(title|…)$/.test(l)),
+      // A Queue narrower than every column drops TITLE whole (DS-1046 AC3): its heading has no TITLE,
+      // and no row shows any of its title, which starts with the row's own key.
+      cut: head && !/\sTITLE$/.test(head.trimEnd())
+        ? rows.filter(mixedRow).every((l) => { const k = MIXED.find((x) => new RegExp(`^[ ›]*\\S+ +${x} `).test(l)); return l.split(k).length === 2 && !/title$/.test(l); })
+        : rows.filter(mixedRow).every((l) => /(title|…)$/.test(l)),
       fits: [...rows, ...ls.filter((l) => /\bSTARTS\b/.test(l))].every((l) => [...l].length <= width),
     };
   };
@@ -765,6 +770,85 @@ repo('mixed-up-repo', 4870, {
   const { rows, apart, aligned, fits } = layoutOf(Q.shipsScreen(rs, slug, { now: FIXED }));
   t('issue-1485 AC1: desk-q ships keeps a space between a long key and its state', { rows, apart, aligned, fits }, { rows: 5, apart: true, aligned: true, fits: true });
 }
+
+// ==== The external review drawn apart, recency weights, borrowed sizes, and the forecast
+// calibrated from its own saved estimates.
+const E = await import('../desk/bin/desk-q-eta.mjs');
+// `n` merged tickets of `size`, `hours` each, merged `ago` hours before FIXED, one an hour apart.
+const histOf = (n, size, hours, ago = 1) => range(n, (i) => {
+  const merged = FIXED - (ago + i) * HOUR;
+  return { key: `${size}${hours}-${ago}-${i}`, size, spawned_at: iso(merged - hours * HOUR), merged_at: iso(merged), hours };
+});
+const two = [{ key: 'K-1', k: 'ready', size: 'M', held: [], collides: [] }, { key: 'K-2', k: 'ready', size: 'M', held: [], collides: [] }];
+
+// ---- AC1: the slot is held to the undraft; the outside review and merge after it hold none
+const hist10 = histOf(12, 'M', 10);
+const undrafted = hist10.map((l) => ({ key: l.key, ready: Date.parse(l.merged_at) - 8 * HOUR, merged: Date.parse(l.merged_at) }));
+const split = E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted });
+t('#1487 AC1: one ticket ships after its 2 h slot and its 8 h outside review', split.T['K-1'].likely - FIXED, 10 * HOUR);
+t('#1487 AC1: the next ticket takes the slot at the first one\'s undraft, not its merge', [split.T['K-2'].start - FIXED, split.T['K-2'].likely - FIXED], [2 * HOUR, 12 * HOUR]);
+t('#1487 AC1: with too few merge stages read, spawn to merge is drawn whole as before',
+  E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted.slice(0, 4) }).T['K-2'].start - FIXED, 10 * HOUR);
+const down = E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted, outageFrom: FIXED - 5 * HOUR });
+t('#1487 AC1: an open outage 5 h old holds every outside review back 5 h more, from its start', [down.T['K-1'].likely - FIXED, down.T['K-2'].start - FIXED], [13 * HOUR, 2 * HOUR]);
+const clash = [two[0], { ...two[1], collides: ['K-1'] }];
+t('#1487 AC1: a colliding ticket waits for the other\'s worker to finish at its undraft, not for its merge',
+  E.forecast({ rows: clash, workers: 2, history: hist10, now: FIXED, stages: undrafted }).T['K-2'].start - FIXED, 2 * HOUR);
+const outageWaits = undrafted.map((e, i) => (i < 8 ? { ...e, ready: e.merged - 30 * HOUR, outage: true } : e));
+t('#1487 AC1: a wait recorded inside a reviewer outage is not drawn as an outside review',
+  E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: outageWaits }).T['K-2'].start - FIXED, 10 * HOUR);
+
+// ---- AC5: recent merges count most
+t('#1487 AC5: a merge a week old weighs half as much', [E.weightOf(FIXED - 7 * 86_400_000, FIXED), E.weightOf(iso(FIXED), FIXED), E.weightOf(undefined, FIXED)], [0.5, 1, 1]);
+const paced = E.forecast({ rows: two.slice(0, 1), workers: 1, history: [...histOf(6, 'M', 2), ...histOf(6, 'M', 10, 20 * 24)], now: FIXED });
+t('#1487 AC5: six 2 h merges from today outweigh six 10 h merges from 20 days ago', paced.T['K-1'].likely - FIXED, 2 * HOUR);
+
+// ---- AC7: a size with too few merges borrows its neighbours, scaled by their ratio
+const slots = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(6, () => ({ size: 'M', h: 4, w: 1 }))];
+t('#1487 AC7: each size up takes twice as long here', E.sizeStep(slots), 2);
+t('#1487 AC7: size L, with none, borrows M doubled', [E.poolFor(slots, 'L').v.map((l) => l.h), E.poolFor(slots, 'L').from, E.poolFor(slots, 'L').own], [range(6, () => 8), ['M'], false]);
+t('#1487 AC7: size XS borrows S halved', [...new Set(E.poolFor(slots, 'XS').v.map((l) => l.h))], [1]);
+t('#1487 AC7: a size with its own five uses them alone, and no size uses all unscaled', [E.poolFor(slots, 'S').own, E.poolFor(slots, 'unknown').v.length], [true, 12]);
+const fewM = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(2, () => ({ size: 'M', h: 4, w: 1 }))];
+t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))], E.poolFor(fewM, 'M').scaled], [2, [4], true]);
+t('#1487 AC7: with one size alone there is no ratio, and the pool says its borrowed times are unscaled', E.poolFor(range(6, () => ({ size: 'S', h: 2, w: 1 })), 'M').scaled, false);
+
+// ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
+// Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.
+const scoredOf = (lates, span = 1, applied = null, model = E.ESTIMATE_MODEL) => new Map(lates.map((late, i) => {
+  const merged = FIXED - (lates.length - i) * HOUR, ships = merged - late * HOUR;
+  const at = applied ? { ships: iso(ships + applied.shift_h * HOUR), could_run_to: iso(ships + applied.shift_h * HOUR + span * applied.stretch * HOUR), ...applied }
+    : { ships: iso(ships), could_run_to: iso(ships + span * HOUR) };
+  return [`C-${i}`, { key: `C-${i}`, at: iso(merged - 9 * HOUR), starts: iso(merged - 9 * HOUR), ...at, ...(model == null ? {} : { model }), merged_at: iso(merged) }];
+}));
+const errs = E.hitRate(scoredOf([-6, -4, 1, 2, 3, 5, 7, 8, 9, 10]));
+t('#1487 AC4: the median signed and absolute error, in hours, beside the hit rate', [errs.signed, errs.abs, errs.pct], [4, 5.5, 20]);
+const lates = range(10, (i) => i + 1);
+const cal = E.calibration(scoredOf(lates));
+t('#1487 AC6: ships moves by the median error, and the range stretches until 8 of the 10 merged inside it', cal, { n: 10, shift: 5.5 * HOUR, stretch: 2.5, holds: 80 });
+t('#1487 AC6: an estimate\'s own calibration is taken off before fitting', E.calibration(scoredOf(lates, 1, { shift_h: 2, stretch: 2 })), cal);
+t('#1487 AC6: fewer than 10 merged estimates give no calibration', E.calibration(scoredOf(lates.slice(1))), null);
+const mixedModels = new Map([...scoredOf(lates, 1, null, null)].map(([k, e]) => [`old-${k}`, { ...e, merged_at: iso(Date.parse(e.merged_at) - 20 * HOUR) }]).concat([...scoredOf(lates.slice(1))]));
+t('#1487 AC6: estimates an older forecast model made are not fitted, though the hit rate still counts them',
+  [E.calibration(scoredOf(lates, 1, null, null)), E.calibration(mixedModels), E.hitRate(mixedModels).n], [null, null, 19]);
+t('#1487 AC6: an early correction never takes more than half the time left',
+  E.calibrated({ start: FIXED, likely: FIXED + 4 * HOUR, late: FIXED + 6 * HOUR }, { shift: -10 * HOUR, stretch: 1 }, FIXED), { start: FIXED, likely: FIXED + 2 * HOUR, late: FIXED + 4 * HOUR, shift: -2 * HOUR, stretch: 1 });
+const shifted = E.forecast({ rows: two, workers: 1, history: hist10, now: FIXED, stages: undrafted, calib: cal });
+t('#1487 AC6: the forecast\'s ships times move by the shift, its starts do not', [shifted.T['K-1'].likely - split.T['K-1'].likely, shifted.T['K-2'].start === split.T['K-2'].start], [5.5 * HOUR, true]);
+t('#1487 AC2: desk-q shows the calibrated share on the forecast line', Q.run(['ships', 'hits', '--plain'], { now: FIXED }).split('\n')[0].endsWith(' · 2 workers · range holds 100% of the last 10 merges'), true);
+const hitsSaved = readFileSync(join(stateOf('hits'), 'eta.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((l) => l.key === 'X-1');
+t('#1487 AC6: a calibrated estimate is saved with the calibration applied to it', [hitsSaved?.shift_h, hitsSaved?.stretch], [1, 1]);
+
+// ---- AC3: a ticket past its first estimate is re-forecast from now and marked overdue
+repo('behind', 4880, { tickets: { 'O-1': { state: 'triaged' } }, sizes: { 'O-1': 'M' }, history: hist12 });
+writeFileSync(join(stateOf('behind'), 'eta.jsonl'), `${JSON.stringify({ key: 'O-1', at: iso(FIXED - 9 * HOUR), starts: iso(FIXED - 9 * HOUR), ships: iso(FIXED - 2 * HOUR), could_run_to: iso(FIXED - HOUR) })}\n`);
+const behindF = Q.forecastOf(repoAt('behind'), { now: FIXED });
+const behindRow = Q.run(['ships', 'behind', '--plain'], { now: FIXED }).split('\n').find((l) => l.startsWith('  O-1 ')) ?? '';
+t('#1487 AC3: ships dates it from now, marked overdue, with the first estimate it missed',
+  [behindF.T['O-1'].likely > FIXED, behindRow.endsWith(`▲${when(behindF.T['O-1'].likely, FIXED)}`.padEnd(14) + 'overdue: first estimate Mon 19 Oct 16:51, re-forecast from now')], [true, true]);
+t('#1487 AC3: so does its ticket page', field(Q.ticketScreen(repoAt('behind'), 'O-1', { now: FIXED }).split('\n'), 'Ships'),
+  `Ships     ▲${when(behindF.T['O-1'].likely, FIXED)} overdue: first estimate Mon 19 Oct 16:51, re-forecast from now could run to ${when(behindF.T['O-1'].late, FIXED)} (1 run in 5 is later)`);
+t('#1487 AC3: and the Timeline\'s key says what the mark means', Q.timelineScreen(Q.loadRepos(FIXED), 'acme__behind', { now: FIXED }).includes('▲ overdue: its first estimate passed, re-forecast from now'), true);
 
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 

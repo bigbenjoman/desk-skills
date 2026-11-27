@@ -66,7 +66,7 @@ function lastReading(text, fallbackAt = null) {
 // A plain log's last TAIL_BYTES from its first whole line, or the whole log when that holds no reading;
 // a compressed one whole. '' when it cannot be read (a .zst on a Node without zstd included).
 const TAIL_BYTES = 1024 * 1024;
-function logText(path, size, whole = false) {
+export function logText(path, size, whole = false) {
   let fd;
   try {
     if (path.endsWith('.zst')) return zlib.zstdDecompressSync ? zlib.zstdDecompressSync(readFileSync(path)).toString('utf8') : '';

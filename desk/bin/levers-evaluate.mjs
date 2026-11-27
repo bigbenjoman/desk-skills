@@ -41,7 +41,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints, isValued } from './lever-registry.mjs';
 import { appendWith, read, stampAfter } from './lever-log.mjs';
@@ -94,6 +94,7 @@ export const MECHANISMS = Object.freeze({
   'finder-model': { num: (r) => r.cost, den: (r) => r.starts },
   // Dollars at list prices over every measured step of the ticket's asks (withAsks), per asking ticket.
   'question-handling': { num: (r) => r.ask_usd, den: () => 1 },
+  'handoff-threshold': { num: (r) => r.cost, den: () => 1 },
 });
 
 // The tickets a lever is weighed on, by the registry's `rows`: every ticket unless it names some.
@@ -228,13 +229,17 @@ function withAsks(rows, batches) {
 // and how they reached the person: tokens and dollars per ticket by step (over the tickets whose step
 // was whole), pushes and digest presentations per ticket, the share of answered asks answered by
 // default, and the median answer latency in seconds.
-function askReport(rows) {
+// `rows` by arm (its `arm`, else on or off), sorted, each arm's rows given to `report`; and a mean per ticket.
+function byArm(rows, report) {
   const by = new Map();
   for (const r of rows) { const k = r.arm ?? (r.on ? 'on' : 'off'); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
-  const per = (rs, f) => (rs.length ? r4(rs.reduce((n, r) => n + f(r), 0) / rs.length) : null);
-  return Object.fromEntries([...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([arm, rs]) => {
+  return Object.fromEntries([...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([arm, rs]) => [arm, report(rs)]));
+}
+const per = (rs, f) => (rs.length ? r4(rs.reduce((n, r) => n + f(r), 0) / rs.length) : null);
+function askReport(rows) {
+  return byArm(rows, (rs) => {
     const answered = rs.reduce((n, r) => n + (r.answered ?? 0), 0);
-    return [arm, {
+    return {
       tickets: rs.length, asks: rs.reduce((n, r) => n + (r.asks ?? 0), 0),
       steps: Object.fromEntries(ASK_TOKEN_STEPS.map((k) => {
         const whole = rs.filter((r) => r.ask_steps?.[k]?.usd != null);
@@ -243,8 +248,19 @@ function askReport(rows) {
       pushes_per_ticket: per(rs, (r) => r.pushes ?? 0), digests_per_ticket: per(rs, (r) => r.digests ?? 0),
       defaulted_share: answered ? r4(rs.reduce((n, r) => n + (r.defaulted ?? 0), 0) / answered) : null,
       median_latency_s: quantile(rs.flatMap((r) => r.latencies ?? []), 0.5),
-    }];
-  }));
+    };
+  });
+}
+
+// Per value of `rows` (a valued lever's tickets, each with its `arm`; in a holdback, `adopted` read as the
+// adopted `value` and `holdback` as the `baseline`), the tickets, dollars per ticket and handoffs to a
+// fresh session per ticket: what the handoff-threshold lever's row shows for each value.
+export function handoffReport(rows, value, baseline) {
+  const named = rows.map((r) => {
+    const a = r.pin?.arms?.[r.lever] ?? r.arm;
+    return a === 'adopted' && value ? { ...r, arm: value } : a === 'holdback' ? { ...r, arm: baseline } : r;
+  });
+  return byArm(named, (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)) }));
 }
 
 // ---- outcome files -----------------------------------------------------------------------------------
@@ -516,6 +532,12 @@ function commitRange(rows) {
   return starts.length ? [starts[0].desk_commit.slice(0, 12), starts.at(-1).desk_commit.slice(0, 12)] : null;
 }
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+// An outcome file as a reason names it: by its path under the repo's state folder `state`, or by its
+// file name where it sits outside it. The `missing` lists keep the full paths.
+const shortName = (state, p) => {
+  const rel = relative(state, p);
+  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : basename(p);
+};
 const excludedCounts = (rows) => {
   const out = { pin_mismatch: 0, cost_incomplete: 0, fp_reset: 0 };
   for (const r of rows) if (r.excluded) out[r.excluded] += 1;
@@ -539,7 +561,7 @@ export function evaluate({
   const prepared = repos.filter((r) => Object.values(r.states).includes('auto')).map((r) => {
     let log = null;
     let unreadable = null;
-    try { log = read(r.slug); if (log.bad.length) unreadable = `line ${log.bad.map((b) => b.line).join(', ')} of its lever log does not parse`; } catch (e) { unreadable = e.message; }
+    try { log = read(r.slug); if (log.bad.length) unreadable = `line ${log.bad.map((b) => b.line).join(', ')} of its lever log does not parse`; } catch (e) { unreadable = `its lever log, levers.jsonl, cannot be read (${e.code ?? e.message})`; }
     const outcomes = withOutcomes(r.rows, r.batches, now);
     // A lever weighed on asks reads the repo's ticket ledger, once.
     if (levers.some((l) => registry[l].rows === ASKING)) outcomes.rows = withAsks(outcomes.rows, r.batches);
@@ -612,6 +634,7 @@ export function evaluate({
         n: { ...counts(rs), pooled_on: (pl?.n ?? counts(rs)).on, pooled_off: (pl?.n ?? counts(rs)).off, excluded: excludedCounts(p.rows) },
       });
       const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
+      const named = incomplete.map((f) => shortName(r.state, f));
       const priorReverts = priorRevertsOf(r.log.events, lever);
       const changedAt = s.at ? Date.parse(s.at) : null;
       // A quality-risk lever on trial, or reverted from one, adopts only on audit evidence from this repo
@@ -619,7 +642,7 @@ export function evaluate({
       const quality = reg.layer === 'quality-risk' && ['trial', 'reverted'].includes(s.state);
       const audits = quality ? auditCount(r.audits, s.state === 'trial' ? trialId(r.slug, lever, s) : p.rows[0]?.pin?.trial_ids?.[lever] ?? null) : null;
       const auditP0 = quality && s.state === 'reverted' && (r.log.events ?? []).filter((e) => e.lever === lever && e.id === s.id).some((e) => e.reason_code === 'audit_p0');
-      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
+      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete: named, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
       // A valued lever's values are weighed at once: each clears the rule's probability shared among them.
       const others = isValued(reg) ? reg.values.filter((v) => v !== reg.baseline) : [];
       const pRequired = r4(1 - (1 - DECISION_RULE.probability) / Math.max(1, others.length));
@@ -665,7 +688,7 @@ export function evaluate({
         const lastIncomplete = (r.log.events ?? []).filter((e) => e.kind === 'evidence_incomplete' && e.lever === lever).at(-1);
         const lastRow = r.prior.filter((x) => x.lever === lever).at(-1);
         const same = lastIncomplete && lastRow?.reason_code === 'evidence_incomplete' && JSON.stringify(lastIncomplete.missing) === JSON.stringify(incomplete);
-        if (!same) append({ kind: 'evidence_incomplete', lever, actor: ACTOR, reason_code: 'evidence_incomplete', at, ...evidence, missing: incomplete, reason: `${lever} in ${r.name}: nothing adopts while outcome files are missing: ${incomplete.join(', ')}` });
+        if (!same) append({ kind: 'evidence_incomplete', lever, actor: ACTOR, reason_code: 'evidence_incomplete', at, ...evidence, missing: incomplete, reason: `${lever} in ${r.name}: nothing adopts while outcome files are missing: ${named.join(', ')}` });
       }
 
       let to = null;
@@ -699,6 +722,7 @@ export function evaluate({
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
         ...(reg.rows === ASKING ? { ask_report: askReport(used) } : {}),
+        ...(lever === 'handoff-threshold' ? { handoff_report: handoffReport(used.map((x) => ({ ...x, lever })), s.value ?? null, reg.baseline) } : {}),
         ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });
@@ -740,7 +764,7 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
   const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
   const audits = auditCount(r.audits, pt.id);
   const kept = pt.levers.map((l) => Date.parse(r.byLever[l]?.at)).filter(Number.isFinite);
-  const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, guardrails, frozen, incomplete,
+  const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, guardrails, frozen, incomplete: incomplete.map((f) => shortName(r.state, f)),
     changedAt: kept.length ? Math.max(...kept) : null, now, holdbackWeeks: registry[pt.levers[0]].ramp.holdback_weeks, audits, pair: true });
   const evidence = writeEvidence(r.state, evalId, rows);
   let to = null;

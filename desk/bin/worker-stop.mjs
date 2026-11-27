@@ -1,15 +1,15 @@
 // Ending one worker session's processes, for queue.mjs stop. spawn-worker.sh records no pid it can
 // trust (setsid may fork), so the session id on the command line is the handle: the claude CLI and the
 // wrapper spawn-worker.sh runs it under both carry `--session-id <sid>` or `--resume <sid>`.
-import { psRows } from './desk-env.mjs';
 import { sleepSync } from './dir-lock.mjs';
+import { readRows, treeTarget } from './lock-orphans.mjs';
 
-const COLUMNS = 'pid=,ppid=,pgid=,stat=,args=';
-
-// Every live process as { pid, ppid, pgid, args }; a zombie is already gone. Throws when ps cannot be read.
-export function processRows(read = () => psRows(COLUMNS)) {
-  return read().map((r) => ({ pid: Number(r.pid), ppid: Number(r.ppid), pgid: Number(r.pgid), stat: String(r.stat ?? ''), args: String(r.args ?? '') }))
-    .filter((r) => Number.isInteger(r.pid) && Number.isInteger(r.pgid) && !r.stat.startsWith('Z'));
+// Every live process as { pid, ppid, pgid, stat, tty, args } (lock-orphans.mjs readRows); a zombie is
+// already gone. Throws when ps cannot be read.
+export function processRows() {
+  const rows = readRows();
+  if (!rows) throw new Error('ps could not be read');
+  return rows;
 }
 
 // Whether command line `args` starts session `sid`: the flag and the id as two whole words.
@@ -20,25 +20,11 @@ export function startsSession(args, sid) {
 }
 
 // What to end for session `sid`, from `rows` (processRows): { groups, pids }. Every process starting the
-// session and every descendant of one is ended. `groups` are the process groups such a process leads
-// (setsid makes the wrapper a leader; a detached child leads its own), signalled whole, so a child that
-// outlived its parent still goes with its group; `pids` are the rest, outside any such group (no setsid:
-// the group is the spawner's). Never `self`, its ancestors, or a group any of them is in.
+// session and every descendant of one is ended (lock-orphans.mjs treeTarget): the groups such a process
+// leads (setsid makes the wrapper a leader; a detached child leads its own) whole, the rest by pid (no
+// setsid: the group is the spawner's). Never `self`, its ancestors, or a group any of them is in.
 export function workerProcs(sid, rows, self = process.pid) {
-  const byPid = new Map(rows.map((r) => [r.pid, r]));
-  const mine = new Set();
-  for (let p = byPid.get(self); p && !mine.has(p.pid); p = byPid.get(p.ppid)) mine.add(p.pid);
-  const myGroups = new Set([...mine].map((p) => byPid.get(p)?.pgid));
-  const tree = new Set();
-  const walk = (r) => {
-    if (mine.has(r.pid) || tree.has(r.pid)) return;
-    tree.add(r.pid);
-    for (const c of rows) if (c.ppid === r.pid) walk(c);
-  };
-  rows.filter((r) => startsSession(r.args, sid)).forEach(walk);
-  const procs = [...tree].map((p) => byPid.get(p));
-  const groups = new Set(procs.filter((r) => r.pgid === r.pid && !myGroups.has(r.pgid)).map((r) => r.pgid));
-  return { groups: [...groups], pids: procs.filter((r) => !groups.has(r.pgid)).map((r) => r.pid) };
+  return treeTarget(rows.filter((r) => startsSession(r.args, sid)).map((r) => r.pid), rows, self);
 }
 
 // The pids still alive of what `target` names, read from `rows`.

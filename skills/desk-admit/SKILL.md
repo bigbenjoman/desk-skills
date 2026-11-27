@@ -27,15 +27,20 @@ node ~/.claude/desk/bin/candidates.mjs
 
 It lists §4 Jira project's unstarted Bugs and self-contained Tasks (no open "is blocked by" link, and
 not a child of an epic whose feature batch is running): first those already assigned to the person
-§1 names (§1 Jira account id, else the signed-in Jira user) with no open PR naming their key, under
+§1 names (§1 Jira account id, else the signed-in Jira user), under
 `your unstarted assigned tickets … ready to admit`, then the unassigned ones, each by §4 Priority, then
 Bugs before Tasks, then newest, clean unassigned ones first. A ticket assigned to anyone else is never
 listed. One whose summary or labels read as a decision, or as access, key
 or infrastructure work outside the repo, is left out naming the word.
 A ticket a merged PR or a commit on the default branch already names is shown as `already on main (PR
-#n)` and not offered; one missing its Acceptance criteria or Design section says so, and one naming a
+#n)` and not offered. One an open PR names is left out as `open PR #n by <author>` when someone but
+§1 GitHub handle opened it, and offered flagged `open PR #n` when the person did, with
+`node ~/.claude/desk/bin/queue.mjs adopt <KEY> <n> --filed`, which takes it in on that PR for the
+merge driver (admitting it would open a second PR). With the open PRs unread, each says it is
+unchecked. One missing its Acceptance criteria or Design section says so, and one naming a
 file a PR merged in the last 7 days changed names that PR as possible overlap. Show the list and ask
-which to admit, then run step 0 and step 1 for the ones chosen. It admits nothing itself. Exit 3 means
+which to admit, then run step 0 and step 1 for the ones chosen, or that adopt command for one
+flagged so. It admits nothing itself. Exit 3 means
 the repo has no Jira tracker or project to list from: say so. While a slot stays free, the pass prints
 the person's own under `free slot:`, and with config §3b "Propose candidates for a free slot" on, the
 whole list.
@@ -120,6 +125,10 @@ Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to
 plan (step 1b). Print its lines, less the progress, and stop unless there is an epic to plan or a blocker to admit next.
+**A `restart this session's loop now` line** comes after a `--session` admit into a batch whose loop
+this session stopped (a pass found it idle) or lost: run the pass it names and restart the loop as
+`desk-autopilot` Stage 4 runs it, recording the next pass, before you end the turn. Without it nothing
+picks the tickets up.
 
 A ticket blocked by one in no batch is admitted held by it (`waiting for <B>, outside the batch, until
 it is Done and on <base>`), and one blocked by a ticket in another live batch joins that batch. **An
@@ -238,7 +247,7 @@ below as `(Recommended)`, with its reason as the description:
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` (or `to its own slot <S>, named after its branch`, for a batch spanning several epics) | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
 | `is run by a session, not the supervisor` | If this session runs that batch, run the command the line names (`… --session`), never `queue.mjs admit` and never a message to yourself. Otherwise send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session admits them | Admit nothing here unless this session runs it |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
-| `no supervisor runs this repo's batches` (config §3b Batches run by is `session`) | If this session runs the repo's batches, run step 1 again with `--session`, which joins the finished batch. Otherwise start one: `/desk-autopilot <TICKET>...` in a session. The line is on `/desk-needs-you` until the ticket is admitted. Run in the session whose pass last ran the batch, admit says `this session runs this repo's batches` instead and puts nothing on needs-you: run its `--session` command | |
+| `no supervisor runs this repo's batches` (config §3b Batches run by is `session`) | If this session runs the repo's batches, run step 1 again with `--session`, which joins the finished batch. Otherwise, where an `ask session <id>` line follows and `ListAgents` shows that session, `SendMessage` it the command the line names, which joins the batch and restarts its loop. Otherwise start one: `/desk-autopilot <TICKET>...` in a session. The line is on `/desk-needs-you` until the ticket is admitted. Run in the session whose pass last ran the batch, admit says `this session runs this repo's batches` instead and puts nothing on needs-you: run its `--session` command | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
 
 A `not triaged (usage limit, resets <time>): <TICKET>...` line is not a question: a triage hit the

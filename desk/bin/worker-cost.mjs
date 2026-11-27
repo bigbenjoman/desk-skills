@@ -27,6 +27,27 @@ export const MODEL_PRICES = {
 // The family a model id belongs to (`claude-opus-5-5` is `opus`), or null for one MODEL_PRICES lacks.
 export const modelFamily = (model) => Object.keys(MODEL_PRICES).find((f) => String(model ?? '').toLowerCase().includes(f)) ?? null;
 
+// OpenAI's standard API list prices in USD per million tokens for the GPT-6 models Codex runs on
+// (developers.openai.com/api/docs/pricing): input, cached input and output, and `long` for a request
+// whose input is past `above` tokens.
+const GPT6 = (input, read, output) => ({ input, read, output, long: { above: 272000, input: input * 2, read: read * 2, output: output * 1.5 } });
+export const CODEX_PRICES = {
+  'gpt-6.2-astra': GPT6(8, 0.4, 40),
+  'gpt-6.2-sol': GPT6(2, 0.1, 10),
+  'gpt-6.1-sol': GPT6(2, 0.1, 10),
+  'gpt-6.1-terra': GPT6(1, 0.05, 5),
+  'gpt-6-astra': GPT6(10, 1, 50),
+  'gpt-6-sol': GPT6(2, 0.2, 10),
+  'gpt-6-luna': GPT6(0.1, 0.01, 0.5),
+};
+// The prices of a Codex model id: a listed id, or one with a suffix after it (`gpt-6.1-sol-high` is
+// gpt-6.1-sol), or null.
+export const codexPrices = (model) => {
+  const m = String(model ?? '').toLowerCase();
+  const k = Object.keys(CODEX_PRICES).find((p) => m === p || m.startsWith(`${p}-`));
+  return k ? CODEX_PRICES[k] : null;
+};
+
 // pass.mjs writes one of these into the ticket's log before each spawn: the permissions preflight is
 // a claude -p call of its own, outside the worker's session, so its result event is not in the log.
 // A null figure is one the preflight did not report. Its time is `at`, not `timestamp`, which
