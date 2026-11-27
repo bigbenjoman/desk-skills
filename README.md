@@ -244,6 +244,31 @@ repo's config first and does only what its permissions allow.
 | `desk-kiss` | Should this change be smaller? Finds scope creep, abstractions with one consumer and comments that narrate, then offers each fix. | `/desk-kiss 460` |
 | `desk-review-response` | Works a reviewer's comments: assess, agree, fix, self-review, reply in the repo's register, resolve. | *auto* |
 
+#### desk-review as a Claude Code plugin
+
+For a session with no desk install (a cloud session, a teammate's machine), `desk-review` also
+builds as the `desk` plugin: the skill, the finder agents it names, and the desk scripts they
+import, copied into one directory. `install.sh` and local use do not change.
+
+```bash
+node desk/bin/plugin-build.mjs <out>     # writes the desk-skills marketplace to <out>
+node desk/bin/plugin-build.mjs --list    # prints what would ship, writes nothing
+```
+
+Enable it in the repo's `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": { "desk-skills": { "source": { "source": "directory", "path": "<out>" } } },
+  "enabledPlugins": { "desk@desk-skills": true }
+}
+```
+
+Then `claude plugin install desk@desk-skills --scope project`, or set
+`CLAUDE_CODE_SYNC_PLUGIN_INSTALL=1` for a `claude -p` run so the plugin is in place before the
+first turn. With no desk config on the machine, point `DESK_CONFIG_FILE` at a JSON file of review
+rows (`{"review-bar": "default", "required-checks": ["Tests"]}`).
+
 ### Keep things moving
 
 | Skill | What it does | Start it with |
