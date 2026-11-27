@@ -3403,6 +3403,16 @@ const readyWhy = (r, t) => startWait(r, t) ?? (r.live ? 'starts at the next pass
 
 const FINISHING_TEXT = 'worker finished, next pass records it';
 
+// A cloud ticket whose session opened its PR marked unfinished (pass.mjs cloudUnfinished): "cloud
+// session idle since Nov 26 23:40, PR #31 unfinished", from its last push, or null for any other ticket.
+export function cloudIdleText(t) {
+  const u = t?.stage === 'cloud' ? t.cloud?.unfinished : null;
+  if (!u?.pr) return null;
+  const at = Date.parse(u.pushed_at ?? '');
+  const since = Number.isFinite(at) ? `${new Date(at).toDateString().slice(4, 10)} ${clock(at)}` : 'its PR opened';
+  return `cloud session idle since ${since}, PR #${u.pr} unfinished`;
+}
+
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from. A worker started on the
 // fallback login (fallback-login.mjs) says which, and a cloud session the account it started under.
@@ -3412,6 +3422,8 @@ function runningStage(r, x) {
   const cl = x.t?.stage === 'cloud' ? x.t.cloud?.login : null;
   const on = x.t?.login?.fallback ? ` · on fallback ${x.t.login.email ?? x.t.login.name}` : cl ? ` · on ${cl.email ?? `login ${cl.name}`}` : '';
   if (p) return `paused on ${limitName(p.type)}${p.resets_at != null ? ` until ${resetsWhen(p.resets_at)}` : ''}, then resumes by itself${on}`;
+  const idle = cloudIdleText(x.t);
+  if (idle) return `${idle}${on}`;
   if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}${on}`;
   return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}${on}`;
 }
