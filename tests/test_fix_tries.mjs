@@ -1240,6 +1240,8 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('#1640 and leave out the echoed step script', errorLinesIn(LOG).some((l) => l.includes('grep -c FAIL')), false);
   t('#1640 the headings fill the rest, five lines at most', errorLinesIn(LOG).slice(1).join('|'), '== suite a errors ==|== suite b errors ==|== suite c errors ==|== suite d errors ==');
   t('#1640 pathsIn reads it, the error lines\' paths first, less ./ and a trailing dot', pathsIn(LOG).join(' '), 'tests/test_new_holds.mjs desk/bin/queue.mjs');
+  const ABS = ['Error: at /home/runner/work/r/r/desk/bin/queue.mjs:3', 'at /__w/r/r/src/a.ts', 'at /opt/actions/_work/r/r/lib/b.py', 'at /Users/runner/work/r/r/c/d.js', 'at /usr/lib/node/e.js'].map(J).join('\n');
+  t('#1640 pathsIn reads a path under a runner\'s workspace folder as the repo names it, and leaves any other absolute path', pathsIn(ABS).join(' '), 'desk/bin/queue.mjs src/a.ts lib/b.py c/d.js /usr/lib/node/e.js');
   t('#1640 pathsIn skips the echoed step script', pathsIn(LOG).includes('tests/ci_shard.sh') || pathsIn(LOG).includes('tests/out.txt'), false);
   t('#1640 with failing, only the error lines\' paths', pathsIn(LOG, { failing: true }).join(' '), 'tests/test_new_holds.mjs');
   t('#1640 a word with no letter or no slash or extension is no path', pathsIn('error at 12/34 in foo and v1').length, 0);

@@ -269,6 +269,7 @@ t('#1640 AC1 a renamed file counts by its new path, as the log prints it from a 
 t('#1640 AC2 a repo-wide check naming a file the PR touches is related', draftOf([red('Size caps', '9')], [{ ...shard(1, { log_paths: ['desk/bin/holds.mjs'] }), name: 'Size caps' }], off1640())?.call, 'requeue');
 t('#1640 AC2 a failure naming a path in a changed file\'s own folder is related', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['desk/bin/queue.mjs'] })], off1640())?.call, 'requeue');
 t('#1640 AC2 so is one on an error line, as the package runner prints it', draftOf([red('Unit', '9')], [{ ...red('Unit', '9'), errors: ['FAIL desk/bin/queue.test.mjs > totals the queue'] }], off1640({ changed: ['pkg/desk/bin/holds.mjs'] }))?.call, 'requeue');
+t('#1640 AC2 so is one printed under the runner\'s workspace folder', draftOf([red('Unit', '9')], [{ ...red('Unit', '9'), errors: ['Error: totals at /home/runner/work/r/r/desk/bin/queue.mjs:12'] }], off1640())?.call, 'requeue');
 t('#1640 AC2 a sibling folder is not', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['desk/lib/queue.mjs'] })], off1640())?.call, 'rerun');
 t('#1640 AC2 nor an ancestor folder', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['desk/queue.mjs'] })], off1640())?.call, 'rerun');
 t('#1640 AC2 a file directly in tests/ has tests/ as its own folder', draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_fail_paths: ['tests/test_queue.mjs'] })], off1640())?.call, 'requeue');
