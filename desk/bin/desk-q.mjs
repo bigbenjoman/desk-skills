@@ -2958,32 +2958,38 @@ function quietNotes(shown) {
   for (const r of shown) {
     if (r.stall?.noProgress == null || usageHoldOf(r)) continue;
     if (throttleOf(r)) { throttled.push(r); continue; }
-    // A structured hold groups by its cause and scope, so counts that differ between batches do not
-    // split one cause into two notes; one from a pass that wrote none, by its words.
-    const k = `${r.slug}\n${structured(r.stall.hold) ? holdHide(r.stall.hold) : holdKey(r.stall.held)}`;
+    const k = `${r.slug}\n${holdKey(r.stall.held)}`;
     groups.set(k, [...(groups.get(k) ?? []), r]);
   }
   const reasons = (slug) => [...groups.values()].filter((g) => g[0].slug === slug).length;
   const notes = new Map([...groups.values()].map((g) => {
     const named = reasons(g[0].slug) > 1 ? `${andList(g.map(batchName))}: ` : '';
     const h = g[0].stall.hold;
-    // The hide key is the cause and scope alone, never the batch names: a sibling batch stalling for
-    // another reason adds those to the text, and must not show a hidden note again.
-    return [g[0], { text: `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`,
-      hide: structured(h) ? holdHide(h) : null }];
+    // The hide key is the cause and scope, never whether the text names its batches: a sibling batch
+    // stalling for another reason adds those, and must not show a hidden note again. A hold on a batch
+    // (its base) is that batch's, so its key names the batches it holds whatever the text says.
+    const hide = !structured(h) ? null : h.scope === 'batch' ? `${andList(g.map(batchName))} ${holdHide(h)}` : holdHide(h);
+    return [g[0], { text: `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`, hide }];
   }));
   return { notes, shared: throttled.length ? throttleNote(throttled) : null, marked: new Set(throttled.map((r) => r.slug)) };
 }
 
-// The one note for every batch the test lock holds: the latest pass's queues, each by its own lock (the
-// test lock or the light one, as the pass named them), then each repo with the tickets it keeps waiting.
+// The one note for every batch the test lock holds: each lock queue the passes were held on (the test
+// lock or the light one, as each pass named them; a repo's suite weight picks which), at its latest
+// reading, then each repo with the tickets it keeps waiting.
 function throttleNote(rs) {
   const latest = rs.reduce((a, r) => ((r.last ?? -Infinity) > (a.last ?? -Infinity) ? r : a));
-  const n = latest.stall.hold.numbers ?? {};
   const s = (x) => (x === 1 ? '' : 's');
-  const qs = (Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }])
-    .filter((q) => Number.isFinite(q?.waiting) && Number.isFinite(q.slots));
-  const queue = n.stall && qs.length
+  const byLock = new Map();
+  for (const r of [...rs].sort((a, b) => (a.last ?? -Infinity) - (b.last ?? -Infinity))) {
+    const n = r.stall.hold.numbers ?? {};
+    if (!n.stall) continue;
+    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }]) {
+      if (Number.isFinite(q?.waiting) && Number.isFinite(q.slots)) byLock.set(q.lock ?? 'test', q);
+    }
+  }
+  const qs = [...byLock.values()];
+  const queue = qs.length
     ? `${andList(qs.map((q) => `${q.waiting} run${s(q.waiting)} waiting for ${q.slots} ${q.lock ?? 'test'} slot${s(q.slots)}`))}, shared by all repos.`
     : 'Each pass starts only so many test runs, shared by all repos.';
   const repos = new Map();
