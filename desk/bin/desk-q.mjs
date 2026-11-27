@@ -60,7 +60,6 @@ import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { metricsPath } from './pass-metrics.mjs';
-import { toHandoff } from './pass/eligibility.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
@@ -3398,7 +3397,7 @@ function countsLine(r, now = Date.now()) {
 // session, whose hold outlasts a free worker, its batch's worker slots, or the machine cap, which every
 // repo's workers share. A holder this batch has since moved on from holds nothing; one from another
 // batch stays named until the next pass.
-const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
+const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && o.handoff === 'pending');
 function startWait(r, t) {
   if (r.workers === 0) return 'workers set to 0';
   const clash = (r.passHolds?.[t.key] ?? []).filter((k) => stillHolds(r.q?.tickets?.[k]));
