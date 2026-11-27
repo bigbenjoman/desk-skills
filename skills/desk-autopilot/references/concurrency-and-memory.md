@@ -195,4 +195,7 @@ and these are a PR's.
 **Test runners ignore the cap unless it is on the command line**, so seed the worker-count flag
 (`--maxWorkers=<cap>`, appended **only** to a Jest or Vitest command; never to pytest or another
 runner, which rejects it) into `batch-notes.md` (the header does) and `SendMessage` any worker seen
-over it.
+over it. Under the test lock, `with-lock.sh` adds it itself to a Jest the command starts, directly or
+through a package.json script, and `--concurrency=<turbo-concurrency>` to a `turbo run` (the machine
+profile's row, 1 on WSL where it is unset), unless the command sets its own. Dependency installs
+take `with-lock.sh install`, one at a time machine-wide.

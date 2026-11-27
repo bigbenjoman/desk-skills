@@ -139,15 +139,16 @@ if [ -n "$INSTALL_CMDS" ]; then
     || fail "'$first' not found on PATH (config §4 Command prefix / Install). A detached shell has no interactive PATH setup."
 fi
 
-run_tool() { # run_tool <dir relative to the worktree> <configured command>
-  ( cd "$WT/$1" && sh -c "${PREFIX:+$PREFIX }$2" )
+run_tool() { # run_tool <dir relative to the worktree> <configured command> [<with-lock.sh lock>]
+  if [ -n "${3:-}" ]; then ( cd "$WT/$1" && bash "$DESK_ENV_DIR/with-lock.sh" "$3" -- sh -c "${PREFIX:+$PREFIX }$2" )
+  else ( cd "$WT/$1" && sh -c "${PREFIX:+$PREFIX }$2" ); fi
 }
-run_cmds() { # run_cmds <DIR<TAB>CMD lines> — every item, each in its directory; stops at the first failure
+run_cmds() { # run_cmds <DIR<TAB>CMD lines> [<lock>] — every item, each in its directory; stops at the first failure
   local d c
   while IFS="$(printf '\t')" read -r d c; do
     [ -n "$c" ] || continue
     say "  $d: $c"
-    run_tool "$d" "$c" || return 1
+    run_tool "$d" "$c" "${2:-}" || return 1
   done <<EOF_CMDS
 $1
 EOF_CMDS
@@ -161,11 +162,11 @@ install_last() { grep -v '^[[:space:]]*$' "$1" | tail -n 1 | cut -c1-200; }
 install_twice() {
   local log1 log2 why1 why2
   log1="$(mktemp "${TMPDIR:-/tmp}/desk-install.XXXXXX")"; log2="$(mktemp "${TMPDIR:-/tmp}/desk-install.XXXXXX")"
-  if run_cmds "$INSTALL_CMDS" 2>&1 | tee "$log1"; then rm -f "$log1" "$log2"; return 0; fi
+  if run_cmds "$INSTALL_CMDS" install 2>&1 | tee "$log1"; then rm -f "$log1" "$log2"; return 0; fi
   why1="$(install_last "$log1")"
   say "  §4 Install failed on its first run ($why1); running it again in ${INSTALL_RETRY_DELAY}s"
   sleep "$INSTALL_RETRY_DELAY"
-  if run_cmds "$INSTALL_CMDS" 2>&1 | tee "$log2"; then
+  if run_cmds "$INSTALL_CMDS" install 2>&1 | tee "$log2"; then
     rm -f "$log1" "$log2"; say "  §4 Install passed on its second run"; return 0
   fi
   why2="$(install_last "$log2")"
@@ -395,6 +396,14 @@ exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without t
   if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then echo >> "$excl"; fi
   echo "$1" >> "$excl"
 }
+next_app_dirs() { # each tracked Next.js app directory below the root (a next.config.*, or a package.json naming next), escaped for an exclude pattern
+  # NUL-separated, so a path git would quote (a non-ASCII directory name) arrives as it is on disk.
+  { git -C "$WT" ls-files -z -- ':(glob)**/next.config.*' || true
+    git -C "$WT" grep -lzE '"next"[[:space:]]*:' -- ':(glob)**/package.json' || true
+  } 2>/dev/null | while IFS= read -r -d '' f; do
+    case "$f" in */*) printf '%s\n' "${f%/*}" ;; esac
+  done | sort -u | sed 's/[][*?\\]/\\&/g'
+}
 mask_urls() { sed -E 's#(://[^:@/[:space:]]*):[^@/[:space:]]*@#\1:***@#g'; }
 migrate_db() { # a failure is kept, printed and reported on the machine-read lines, and setup carries on
   if [ -n "$MULTI" ]; then migrate_apps "$APPS"; return 0; fi
@@ -528,6 +537,14 @@ finish() {
   # keepReviewResults), so it must not dirty the tree a worker proves clean before it pushes.
   # Not worth failing setup over: a worker would then git clean it, as before.
   exclude_from_git '/desk-review-results-*.json' || say "WARNING: could not add desk-review results files to the git exclude"
+  # next dev writes untracked AGENTS.md and CLAUDE.md into its app's directory, which a worker's commit
+  # would sweep up. Excluded only in the Next.js app directories below the root: the exclude is shared by
+  # every checkout of the repo, where a ticket may add a root or nested CLAUDE.md, or a vendored skill its
+  # AGENTS.md. A tracked one is never excluded, so edits to it still commit. The apps are read from what
+  # is tracked each time a worker is spawned here, so an app a ticket adds is covered from its next session.
+  next_app_dirs | while IFS= read -r d; do
+    { exclude_from_git "/$d/AGENTS.md" && exclude_from_git "/$d/CLAUDE.md"; } || exit 1
+  done || say "WARNING: could not add generated AGENTS.md and CLAUDE.md files to the git exclude"
   rm -f "$MARKER"
   say "done"
   say "steps=$STEPS"

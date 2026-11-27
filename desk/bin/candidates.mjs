@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // What to admit into a free batch slot: first the unstarted Bugs and self-contained Tasks in §4 Jira
-// project already assigned to the person §1 names (§1 Jira account id, else the signed-in Jira user)
-// with no open PR naming their key, then its unassigned ones, each ranked by §4 Priority, then Bugs
+// project already assigned to the person §1 names (§1 Jira account id, else the signed-in Jira user),
+// then its unassigned ones, each ranked by §4 Priority, then Bugs
 // before Tasks, then newest, and checked against the default branch before it is offered. It only
 // lists and writes nothing in Jira or GitHub: /desk-admit admits.
 //
@@ -15,6 +15,9 @@
 // and GitHub:
 //   - a PR merged into §0 Default branch whose title or head branch names its key, or a commit on
 //     origin/<default> naming it: "already on main (PR #n)", and not offered;
+//   - an open PR, draft or not, whose title or head branch names its key: by anyone but §1 GitHub
+//     handle, left out as "open PR #n by <author>"; by the person, offered flagged "open PR #n", for
+//     the batch to adopt; with the open PRs unread, flagged as not checked for one;
 //   - no Acceptance criteria or no design, as triage's lint reads them: said, so it is not sent
 //     expecting a clean admit;
 //   - a file its description names that a PR merged in the last OVERLAP_DAYS days changed: that PR is
@@ -37,6 +40,7 @@ import { keyPattern } from './batch-state.mjs';
 import { lintTicket } from './ticket-lint.mjs';
 import { mergedNaming, prNames } from './recoveries.mjs';
 import { listBatches, liveBatch, repoTickets } from './batches.mjs';
+import { loginIn } from './gate.mjs';
 
 // Jira's largest page for a search returning fields.
 export const SEARCH_MAX = 100;
@@ -44,7 +48,7 @@ export const SEARCH_MAX = 100;
 // GitHub reads.
 export const CHECK_MAX = 15;
 export const OVERLAP_DAYS = 7;
-// Open PRs read a listing, to leave out the person's own tickets one names.
+// Open PRs read a listing, to leave out the tickets someone else's names.
 const OPEN_MAX = 200;
 export const CANDIDATES_EVERY_MS = 30 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -172,18 +176,23 @@ export function onMain(key, { prs = [], commits = [] } = {}) {
   return n ? { pr: Number(n) } : { commit: c.sha };
 }
 
+// An open PR's author's login, or null where gh gave none.
+const authorOf = (p) => String(p?.author?.login ?? '').trim() || null;
+
 // The listing, read through `reads` (defaultReads gives the real ones):
 //   search(jql, max, fields)  -> {ok, issues, more} (one page; `more` when one lies behind it) | {ok: false, why}
 //   description(key)          -> {ok, text} | {ok: false, why}
 //   mergedPrs(key)            -> [{number, title, headRefName}] merged into the default branch, or null when unread
 //   commits(key)              -> [{sha, subject}] on origin/<default>, or null when unread
 //   recent(sinceDate)         -> [{number, files}] merged into the default branch since then, or null when unread
-//   openPrs()                 -> [{number, title, headRefName}] open, or null when unread
+//   openPrs()                 -> [{number, title, headRefName, author: {login}}] open, or null when unread
 //   queued()                  -> Set of keys in a live batch;  liveEpics() -> Set of epic keys with a live feature batch
-// `person` is §1 Jira account id (null: the signed-in Jira user). `ownOnly` lists only the person's own.
+// `person` is §1 Jira account id (null: the signed-in Jira user), and `handle` §1 GitHub handle (null:
+// every open PR is someone else's). `ownOnly` lists only the person's own.
 // -> {ok, offered, onMain, left, unchecked, more, ownOnly} | {ok: false, why, ownOnly}. Each offered or on-main
-// entry is {key, type, priority, summary, rank, own, flags, overlap[, pr | commit]}.
-export function listCandidates({ project, priority, person = null, ownOnly = false, reads, now = Date.now(), checkMax = CHECK_MAX }) {
+// entry is {key, type, priority, summary, rank, own, flags, overlap[, pr | commit][, openPr]}, `openPr`
+// being the person's own open PR naming it, for the batch to adopt.
+export function listCandidates({ project, priority, person = null, handle = null, ownOnly = false, reads, now = Date.now(), checkMax = CHECK_MAX }) {
   const pr = priorityOf(priority);
   const fields = ['issuelinks', 'parent', 'created', ...(pr.field === 'priority' ? [] : [pr.field])];
   const ctx = { queued: reads.queued(), liveEpics: reads.liveEpics() };
@@ -191,10 +200,11 @@ export function listCandidates({ project, priority, person = null, ownOnly = fal
   const pool = [];
   // `more`: a match was not read, on a page past the first or in a lower tier no search was needed for.
   let more = false;
-  // The person's own tiers first, then the unassigned ones. One of the person's own an open PR names is
-  // started, so it is left out.
+  // The person's own tiers first, then the unassigned ones. One an open PR by someone else names is
+  // theirs, so it is left out; one only the person's own open PRs name is offered, flagged with the PR.
   const own = new Set();
   let open;
+  const openPr = new Map();
   const searches = [...candidatesJqls(project, pr, ownAssignee(person)).map((jql) => ({ jql, mine: true })),
     ...(ownOnly ? [] : candidatesJqls(project, pr).map((jql) => ({ jql, mine: false })))];
   for (const { jql, mine } of searches) {
@@ -204,10 +214,12 @@ export function listCandidates({ project, priority, person = null, ownOnly = fal
     if (res.more) more = true;
     for (const i of res.issues) {
       let why = leftOut(i, ctx);
-      if (!why && mine) {
+      if (!why) {
         if (open === undefined) open = reads.openPrs();
-        const p = open?.find(prNames(i.key));
-        if (p) why = `started: open PR #${p.number} names it`;
+        const naming = (open ?? []).filter(prNames(i.key));
+        const theirs = naming.find((p) => !(handle && loginIn(authorOf(p), handle)));
+        if (theirs) why = `open PR #${theirs.number} by ${authorOf(theirs) ?? 'an unknown author'}`;
+        else if (naming.length) openPr.set(i.key, naming[0].number);
       }
       if (why) left.push({ key: i.key, why });
       else { if (mine) own.add(i.key); pool.push(i); }
@@ -225,7 +237,8 @@ export function listCandidates({ project, priority, person = null, ownOnly = fal
     const commits = reads.commits(i.key);
     const landed = onMain(i.key, { prs: prs ?? [], commits: commits ?? [] });
     if (landed) { main.push({ ...c, ...landed }); continue; }
-    if (c.own && !open) c.flags.push('not checked for an open PR: the open PRs could not be read');
+    if (!open) c.flags.push('not checked for an open PR: the open PRs could not be read');
+    if (openPr.has(i.key)) { c.openPr = openPr.get(i.key); c.flags.push(`open PR #${c.openPr}`); }
     if (!prs || !commits) c.flags.push(`not checked against ${prs ? 'the default branch\'s commits' : 'merged PRs'}: it could not be read`);
     const d = reads.description(i.key);
     if (!d?.ok) c.flags.push(`its description could not be read (${d?.why ?? 'desk-jira get failed'})`);
@@ -256,8 +269,11 @@ export function renderLines(r, { project }) {
   const rest = r.offered.filter((c) => !c.own);
   if (r.ownOnly && !mine.length) return [];
   const out = [];
+  // One the person's own open PR names is taken in on that PR (queue.mjs adopt), which the merge driver
+  // then merges: /desk-admit would start a worker opening a second one.
+  const adopt = (c) => (c.openPr != null ? [`adopt it with node ~/.claude/desk/bin/queue.mjs adopt ${c.key} ${c.openPr} --filed, not /desk-admit, which would open a second PR`] : []);
   const line = (c, i) => {
-    const n = notes(c);
+    const n = [...notes(c), ...adopt(c)];
     return `  ${i}. ${c.key}  ${c.priority ?? 'no priority'}  ${c.type ?? '?'}  ${c.summary}${n.length ? ` — ${n.join('; ')}` : ''}`;
   };
   if (mine.length) {
@@ -298,7 +314,7 @@ export function defaultReads({ repo, root, base }) {
       return r.stdout.split('\n').filter(Boolean).map((l) => { const [sha, ...s] = l.split('\t'); return { sha, subject: s.join('\t') }; });
     },
     // A list OPEN_MAX long may be cut short, so it reads as unread.
-    openPrs: () => { const l = ghJson(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,headRefName', '--limit', String(OPEN_MAX)]); return l && l.length < OPEN_MAX ? l : null; },
+    openPrs: () => { const l = ghJson(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,headRefName,author', '--limit', String(OPEN_MAX)]); return l && l.length < OPEN_MAX ? l : null; },
     recent: (since) => ghJson(['pr', 'list', '--repo', repo, '--state', 'merged', '--base', base, '--search', `merged:>=${since.toISOString().slice(0, 10)}`, '--json', 'number,files', '--limit', '100']),
     queued: () => { try { return new Set(repoTickets(E.repoSlug(), listBatches()).map((t) => t.key)); } catch { return new Set(); } },
     liveEpics: () => { try { return new Set(listBatches().filter((b) => b.name && liveBatch(b.name)).map((b) => b.name)); } catch { return new Set(); } },
@@ -310,7 +326,9 @@ export function trackerOf() {
   if (!/^jira\b/i.test(String(E.configValue('tracker') ?? '').trim())) return { why: 'config §4 Tracker is not jira, and candidates come from a Jira project' };
   const project = /^[`"]?([A-Z][A-Z0-9_]*)\b/.exec(String([].concat(E.configValues('jira-project') ?? [])[0] ?? '').trim())?.[1];
   if (!project) return { why: 'config §4 Jira project is not set' };
-  return { project, priority: E.configValues('jira-priority'), person: personOf() };
+  let handle = null;
+  try { handle = String(E.githubHandle() ?? '').trim().replace(/^@/, '') || null; } catch { /* unset: every open PR reads as someone else's */ }
+  return { project, priority: E.configValues('jira-priority'), person: personOf(), handle };
 }
 
 // The listing for this repo: { ok, lines, result, noTracker }, `noTracker` true where it has no Jira
@@ -320,7 +338,7 @@ export function runList({ reads, ownOnly = false } = {}) {
   const t = trackerOf();
   if (t.why) return { ok: false, noTracker: true, lines: ownOnly ? [] : [`no candidates: ${t.why}`], result: { ok: false, why: t.why } };
   const base = String(E.configValue('default-branch') ?? '').trim() || 'main';
-  const result = listCandidates({ project: t.project, priority: t.priority, person: t.person, ownOnly,
+  const result = listCandidates({ project: t.project, priority: t.priority, person: t.person, handle: t.handle, ownOnly,
     reads: reads ?? defaultReads({ repo: E.ghRepo(), root: E.repoRoot(), base }) });
   return { ok: result.ok, lines: renderLines(result, t), result };
 }

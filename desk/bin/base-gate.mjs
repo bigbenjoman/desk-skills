@@ -122,7 +122,7 @@ function gate() {
   const run = (lock, { dir, cmd }) => runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
 
   for (const it of items('install-cmd')) {
-    const r = run('nolock', it);
+    const r = run('install', it);
     if (r.code !== 0) { failures.push(`§4 Install (${it.cmd}) failed with exit ${r.code}: ${tail(r.out)}`); return; }
   }
 
