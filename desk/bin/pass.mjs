@@ -539,11 +539,19 @@ const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
 // base fix's worker found paused there, or a pacing probe's new reading, moves new work to the fallback
 // for the rest of the pass, as the next pass would; tried once a pass. `full` is defaultFull's answer,
 // read from the limit unless given. -> true when new work moved there.
+// Once pacing has been read (PACE_READ), it judged the default, and spawns after a switch would spend
+// the fallback, so a fallback past its own pacing headroom takes no new work: the pass holds as before.
 let midPassTried = false;
+let PACE_READ = false;
+function fallbackPaced() {
+  const p = usagePace({ usage: loginReading(FALLBACK_LOGIN).seven_day });
+  return p.hold && !p.bad ? `is past its usage pacing headroom (${String(p.line).replace(/^usage: /, '')})` : null;
+}
 function fallBackMidPass(limit, full = defaultFull({ hold: limit })) {
   if (!FALLBACK_LOGIN || ON_FALLBACK || FALLBACK.held || midPassTried) return false;
   midPassTried = true;
-  const call = fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable: fallbackUsable(), record: queue().login_fallback ?? null });
+  const usable = fallbackUsable() ?? (PACE_READ ? fallbackPaced() : null);
+  const call = fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable, record: queue().login_fallback ?? null });
   recordFallback(call);
   if (call.on !== 'fallback') return false;
   ON_FALLBACK = true;
@@ -2350,6 +2358,7 @@ if (PACE.hold && !PACE.bad && !ON_FALLBACK && fallBackMidPass(null, defaultFull(
   paceProbe = '';
   paceProbeFailed = null;
 }
+PACE_READ = true;
 // "No recent data" names the login it read, so a reading kept under another login is not mistaken for
 // none, and why a probe for one failed: with no reading nothing holds, so no stall line would say it.
 const PACE_BLIND_NOW = /^usage: no recent data/.test(PACE.line);

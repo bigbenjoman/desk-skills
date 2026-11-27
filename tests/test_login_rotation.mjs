@@ -70,12 +70,13 @@ spawnSync('git', ['-C', join(W, 'repo'), 'commit', '-q', '--allow-empty', '-m', 
 const state = join(H, '.desk-autopilot', slug);
 const config = join(process.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
 mkdirSync(dirname(config), { recursive: true });
-// `sub` is the repo's §3b Subscription row, left out when null; `levers` sets the Phase 0 levers row to auto.
-const writeConfig = (sub, to = config, levers = false) => writeFileSync(to, [
+// `sub` is the repo's §3b Subscription row, left out when null; `levers` sets the Phase 0 levers row to
+// auto; `pacing` is the Usage pacing headroom row (off unless a check turns it on).
+const writeConfig = (sub, to = config, levers = false, pacing = 'off') => writeFileSync(to, [
   '## 0. Repo', '| Field | Value |', '|---|---|', '| GitHub repo | `acme/widgets` |', '| Default branch | `main` |', '',
   '## 2. Paths', '| Field | Value |', '|---|---|', `| Primary repo root | \`${join(W, 'repo')}\` |`, `| Worktrees directory | \`${join(W, 'wt')}\` |`, '',
   '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `autopilot-workers` | Run workers | `yes` | `yes` |', '',
-  '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Autopilot worker concurrency | `3 / 3` | `3 / 3` |', '| Usage pacing headroom (points) | `5` | `off` |',
+  '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Autopilot worker concurrency | `3 / 3` | `3 / 3` |', `| Usage pacing headroom (points) | \`5\` | \`${pacing}\` |`,
   ...(sub ? [`| Subscription | \`default\` | \`${sub}\` |`] : []), ...(levers ? ['| Phase 0 levers | `auto` | `auto` |'] : []), '',
 ].join('\n'));
 const QF = join(process.env.DESK_HOME, 'repos', slug, 'queue.json');
@@ -93,12 +94,12 @@ function writeSubs(logins) {
   const rows = logins.map(([n, r]) => `| \`claude\` | \`${n}\` | \`${n === 'default' ? '~/.claude' : `~/.claude-logins/${n}`}\` | \`${r}\` |`);
   writeFileSync(process.env.DESK_SUBSCRIPTIONS, `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.join('\n')}\n`);
 }
-function world(logins, tickets, { sub = null, levers = false } = {}) {
+function world(logins, tickets, { sub = null, levers = false, pacing = 'off' } = {}) {
   for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins'), join(H, '.claude.json')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
-  writeConfig(sub, config, levers);
+  writeConfig(sub, config, levers, pacing);
   if (logins) {
     writeSubs(logins);
     for (const [n, , five, week] of logins) {
@@ -231,6 +232,14 @@ t('fallback AC2 once the default has room the next worker starts on it', `${row(
 t('fallback AC2 a worker on the fallback stays there', on('Y-1'), 'c');
 t('fallback AC3 the switch back is logged', out.includes('login: new workers start on default login b again, as it has room; workers on fallback login c finish there'), true);
 t('fallback the record is cleared', batchOf().login_fallback ?? null, null);
+// issue-1490: a limit met mid-pass, after pacing read the default, with the fallback past its own pacing
+// headroom: new work does not move there, and the pass holds as before, saying why.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 99]], TWO, { pacing: '5' });
+atLimit(dirOf('b'));
+out = pass(env);
+t('issue-1490 a fallback past its pacing headroom takes no work mid-pass', `${row('Y-1').state} ${row('Y-2').state} ${batchOf().usage_hold?.preflight} ${batchOf().login_fallback ?? null}`, 'triaged triaged Y-1 null');
+t('issue-1490 nothing was preflighted on the fallback', readFileSync(CALLS, 'utf8').includes(dirOf('c')), false);
+t('issue-1490 and the report says why', out.includes('fallback login c is past its usage pacing headroom'), true);
 // A repo pinned to an email never falls back.
 env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO, { sub: 'b@example.com' });
 atLimit(dirOf('b'));
