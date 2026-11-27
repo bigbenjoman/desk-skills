@@ -48,7 +48,7 @@ const WORKER_BIN = Object.freeze(new Set([
   'worker-agents.mjs', 'worker-settings.mjs', 'worker-tools.mjs', 'desk-env.mjs', 'desk-env.sh', 'config-schema.mjs',
   'desk-gh.mjs', 'desk-design.mjs', 'stitch-boards.mjs', 'handoff.mjs', 'desk-wait.mjs', 'clears-when.mjs',
   'closing-keywords.mjs', 'push-retry.mjs', 'review-post.mjs', 'preview-db.mjs', 'desk-codex.mjs', 'codex-exec.mjs',
-  'evidence.mjs', 'decisions.mjs', 'not-now.mjs', 'needs-you.mjs', 'desk-lines.mjs', 'test-scope.mjs',
+  'evidence.mjs', 'decisions.mjs', 'not-now.mjs', 'needs-you.mjs', 'desk-lines.mjs', 'test-scope.mjs', 'harvest.mjs',
 ]));
 const TEST_PATH = /(^|\/)(tests?|__tests__|fixtures)\/|(^|\/)test_[^/]*$|\.(test|spec)\.[cm]?[jt]sx?$/;
 

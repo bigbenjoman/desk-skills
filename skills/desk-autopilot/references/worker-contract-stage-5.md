@@ -231,7 +231,11 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   deploy, a job to start against the merged code). They depend on the merge; they never block it. Name
   each on your DONE line as `follow_on=` and a one-line JSON array, before any `said=`:
   `AUTOPILOT_DONE: pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}]`,
-  `row` being the §3 key the step needs (`null` where none does). Add `"after"` to a step that needs
+  `row` being the §3 key the step needs (`null` where none does). The field is always that JSON
+  array, even for one step: never a bare word (`follow_on=peak-check`) or a list of names. Before
+  printing the line, check it with `~/.claude/desk/bin/harvest.mjs --check-done '<the whole DONE
+  line>'`, run bare (a `node` command holding `..` is refused), which exits 1 naming the fault on
+  anything else; fix it and check again. With no follow-on steps, leave `follow_on=` out. Add `"after"` to a step that needs
   more than the merge: `"main"` once the merge is on the default branch (a staging or deployed check),
   `"production"` once production runs it (config §4 Promotion ref, `desk-env get promotion-ref`, has
   the merge commit). Leave it out

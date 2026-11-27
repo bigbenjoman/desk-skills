@@ -420,6 +420,8 @@ if (mode === 'triage') {
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-wait.mjs:*)`, `Bash(node ${b}/desk-wait.mjs:*)`]),
     // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),
+    // Whether its AUTOPILOT_DONE line's follow_on= is the JSON array the pass reads: reads and writes nothing.
+    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/harvest.mjs --check-done:*)`, `Bash(node ${b}/harvest.mjs --check-done:*)`]),
     // desk-pr's closing-keyword check on a PR body file: reads it and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/closing-keywords.mjs:*)`, `Bash(node ${b}/closing-keywords.mjs:*)`]),
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
