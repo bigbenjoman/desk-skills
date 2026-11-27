@@ -66,15 +66,14 @@ stopped(){
 logins default b; stopped m1conflict conflict; pass
 check "DS-1057 a conflict try gone at b's limit, the default with room, ends rather than waiting on b" \
   '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x exited at the 5-hour usage limit until "*" on login b, which new work has moved off, so it ends and a new try starts on login default; it spends no try"* ]] && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"base-feat-x on the 5-hour usage limit until "* ]] && ! grep -q "RESUME session=sid-old" "$T/spawns"'
-for kind in review; do
-  # AC10: login b at its limit, the default login with room. The try waits on b, then resumes there.
-  logins default b; stopped "m1$kind" "$kind"; pass
-  check "DS-620 AC10 $kind: it waits on its own login, with no session started on another" \
-    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
-  : > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
-  check "DS-620 AC10 $kind: once b's limit lifts it resumes its own session there, as the same try" \
-    'grep -q "^base-feat-x $C/wt/base-feat-x login=$LB .*RESUME session=sid-old" "$T/spawns" && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ]'
-done
+# AC10, for a review try: login b at its limit, the default login with room. The try waits on b, then
+# resumes there.
+logins default b; stopped m1review review; pass
+check "DS-620 AC10 review: it waits on its own login, with no session started on another" \
+  '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+: > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+check "DS-620 AC10 review: once b's limit lifts it resumes its own session there, as the same try" \
+  'grep -q "^base-feat-x $C/wt/base-feat-x login=$LB .*RESUME session=sid-old" "$T/spawns" && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ]'
 for kind in conflict review; do
   # One login: it is held and resumed exactly as before.
   logins default; stopped "m5$kind" "$kind" "$LD"; pass
