@@ -44,6 +44,7 @@ t('#1526 a script that is not one simple command, bun test, or another tool gets
   ['bun run both', 'bun test', 'bun run lint', 'pytest -x', 'turbo test']);
 t('#1526 sh -c with one simple command is bounded inside its string', bound(['sh', '-c', 'bun run test'], L, { scripts }).words, ['sh', '-c', 'bun run test --maxWorkers=4']);
 t('#1526 sh -c with a compound string is left alone', bound(['sh', '-c', 'jest && true'], L, { scripts }).words, ['sh', '-c', 'jest && true']);
+t('DS-1053 a command run-for.mjs times is bounded inside it', bound(['/usr/bin/node', '/x/run-for.mjs', '5000', '--', 'sh', '-c', 'bun run test'], L, { scripts }).words, ['/usr/bin/node', '/x/run-for.mjs', '5000', '--', 'sh', '-c', 'bun run test --maxWorkers=4']);
 t('#1526 no limit for the tool adds nothing', bound(['turbo', 'run', 'test'], { jest: 4, turbo: null }, { scripts }).added, []);
 t('#1526 analyse names the script a run goes through', analyse(['bun', 'run', 'test'], { scripts })?.via, 'test');
 t('#1526 AC4 unbounded proposes the default bounds with no limits', unbounded('turbo run lint', { root: null }), { tool: 'turbo', why: 'starts turbo run with no --concurrency', bounded: 'turbo run lint --concurrency=1' });
