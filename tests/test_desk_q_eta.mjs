@@ -145,11 +145,12 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
 // (default `at`, so it is live then); null means no pass yet. With `batch`, it is that named batch.
-function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null, batch = null }) {
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null, batch = null, cloud = null }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`
+    + (cloud == null ? '' : `| Cloud sessions at once | \`4\` | \`${cloud}\` |\n`)
     + (tracker ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n` : ''));
   const tail = batch ? ['batches', batch] : [];
   const qp = join(zenv.DESK_HOME, 'repos', slug, ...tail, 'queue.json');
@@ -396,8 +397,59 @@ t('DS-185 AC3 (DS-188 AC6, DS-215 AC5): the header says passes stopped, when, wh
 t('DS-185 AC3: an overdue next pass is named', /^■ stopped · 40m {2}last pass 18:11, next was due 18:36 │ /.test(overdue.split('\n')[2]), true);
 t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+● running\s+stage 0\/9 as of 18:29\s/.test(bRow(waiting, 'B-2')), true);
 t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
+// issue-1543 AC5: a ready row the last pass held behind running tickets on a shared file's budget names
+// them, not a worker, and one from another batch (B-9) too. A collision recorded with no pass hold
+// (B-4 with B-2: the file still had a place) holds nothing, nor a holder no longer running (B-6). A
+// handoff of this batch waiting for its next session (B-8) still holds (pass.mjs budgetHolds).
+repo('shared', 4640, { ...between, tickets: { ...between.tickets, 'B-3': { state: 'triaged', collides_with: 'B-1' }, 'B-4': { state: 'triaged', collides_with: 'B-2' },
+  'B-5': { state: 'triaged' }, 'B-6': { state: 'triaged' }, 'B-7': { state: 'triaged' }, 'B-8': { state: 'triaged', handoff: 'pending' } },
+  sizes: { ...between.sizes, 'B-5': 'M', 'B-6': 'M', 'B-7': 'M', 'B-8': 'M' }, pass: FIXED - 2 * MIN, next: FIXED + 5 * MIN });
+writeFileSync(join(stateOf('shared'), 'passes.jsonl'), [
+  { at: new Date(FIXED - 30 * MIN).toISOString(), collisions: [{ key: 'B-4', with: ['B-2'], files: ['a.mjs'] }] },
+  { at: new Date(FIXED - 2 * MIN).toISOString(), collisions: [{ key: 'B-3', with: ['B-1', 'B-9'], files: ['a.mjs'] }, { key: 'B-5', with: ['B-6'], files: ['b.mjs'] },
+    { key: 'B-7', with: ['B-8'], files: ['c.mjs'] }] },
+].map((l) => `${JSON.stringify(l)}\n`).join(''));
+const shared = Q.repoScreen(repoAt('shared'), { now: FIXED, width: 200 });
+t('issue-1543 AC5: a ready row the last pass held on shared files names its holders while every worker is busy', /\sB-3\s+○ ready\s+waits for B-1, B-9 \(shared files\)\s/.test(bRow(shared, 'B-3')) || bRow(shared, 'B-3'), true);
+t('issue-1543 AC5: a collision the last pass did not hold on still waits for a worker', /\sB-4\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-4')) || bRow(shared, 'B-4'), true);
+t('issue-1543 AC5: a holder no longer running holds nothing', /\sB-5\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(shared, 'B-5')) || bRow(shared, 'B-5'), true);
+t('issue-1543 AC5: a handoff of this batch waiting for its next session is named as a holder', /\sB-7\s+○ ready\s+waits for B-8 \(shared files\)\s/.test(bRow(shared, 'B-7')) || bRow(shared, 'B-7'), true);
+repo('sharedRoomy', 4650, { ...between, workers: 3, tickets: { ...between.tickets, 'B-4': { state: 'triaged', collides_with: 'B-2' } }, pass: FIXED - 2 * MIN });
+t('issue-1543 AC5: with a free slot and no pass hold, a colliding ready row starts at the next pass', /\sB-4\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('sharedRoomy'), { now: FIXED, width: 200 }), 'B-4')), true);
 repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
 t('DS-185 AC5: with a free slot, a ready row starts at the next pass', /\sB-3\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('roomy'), { now: FIXED, width: 200 }), 'B-3')), true);
+// ---- #1564: a cloud session takes no worker slot, only one of §3b "Cloud sessions at once"
+const clouded = { tickets: { 'C-1': { state: 'running', stage: '3/9' }, 'C-2': { state: 'running', stage: '3/9', location: 'cloud' }, 'C-3': { state: 'running', stage: '2/9', location: 'cloud' },
+  'C-4': { state: 'triaged', location: 'cloud' }, 'C-5': { state: 'triaged' } }, sizes: { 'C-1': 'M', 'C-2': 'M', 'C-3': 'M', 'C-4': 'M', 'C-5': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN };
+repo('cloudfull', 4640, { ...clouded, workers: 1, cloud: 2 });
+repo('cloudroom', 4650, { ...clouded, workers: 1, cloud: 3 });
+const cloudFull = Q.repoScreen(repoAt('cloudfull'), { now: FIXED, width: 200 });
+const cloudRoom = Q.repoScreen(repoAt('cloudroom'), { now: FIXED, width: 200 });
+t('#1564 AC4: the counts line shows local and cloud running apart', /● 1 local · ☁ 2 cloud(\s|$)/m.test(cloudFull), true);
+t('#1564 AC4: at the cloud limit, a ready cloud ticket waits for a cloud session, and a local one for a worker',
+  [/\sC-4\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(cloudFull, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudFull, 'C-5'))], [true, true]);
+t('#1564 AC1: with every worker busy but a cloud session free, a ready cloud ticket starts at the next pass',
+  [/\sC-4\s+○ ready\s+starts at the next pass\s/.test(bRow(cloudRoom, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudRoom, 'C-5'))], [true, true]);
+// issue-1543 AC5: the pass holds a cloud start behind shared files too (spawn-loop's file-budget step),
+// so a ready cloud ticket it held names its holders even with a cloud session free.
+repo('cloudheld', 4655, { ...clouded, workers: 1, cloud: 3 });
+writeFileSync(join(stateOf('cloudheld'), 'passes.jsonl'), `${JSON.stringify({ at: new Date(FIXED - 2 * MIN).toISOString(), collisions: [{ key: 'C-4', with: ['C-2'], files: ['a.mjs'] }] })}\n`);
+t('issue-1543 AC5: a ready cloud ticket the last pass held on shared files names its holders, not a free cloud session',
+  /\sC-4\s+○ ready\s+waits for C-2 \(shared files\)\s/.test(bRow(Q.repoScreen(repoAt('cloudheld'), { now: FIXED, width: 200 }), 'C-4')) || bRow(Q.repoScreen(repoAt('cloudheld'), { now: FIXED, width: 200 }), 'C-4'), true);
+// #1564 AC2: the limit counts every batch of the repo, as the pass does, so a named batch's own screen
+// names it when the standing batch's cloud sessions fill it.
+repo('cloudsib', 4660, { tickets: { 'D-1': { state: 'running', stage: '3/9', location: 'cloud' }, 'D-2': { state: 'running', stage: '3/9', location: 'cloud' } },
+  sizes: { 'D-1': 'M', 'D-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN, cloud: 2 });
+repo('cloudsib', 4660, { batch: 'side', tickets: { 'D-3': { state: 'triaged', location: 'cloud' } }, sizes: { 'D-3': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN, cloud: 2 });
+const sideBatch = Q.loadRepos(FIXED).find((r) => r.repo === 'cloudsib' && r.batch === 'side');
+t('#1564 AC2: a named batch\'s ready cloud ticket waits on the cloud sessions its sibling batch holds',
+  /\sD-3\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(Q.repoScreen(sideBatch, { now: FIXED, width: 200 }), 'D-3')), true);
+// #1581: a running cloud session's row names the account it started under; back for a local try, it does not.
+repo('cloudy', 4670, { tickets: { 'C-1': { state: 'running', stage: 'cloud', location: 'cloud', cloud: { started: iso(FIXED - 5 * MIN), login: { name: 'studia', email: 'ops@acme.test' } } },
+  'C-2': { state: 'running', stage: '3/9', location: 'cloud', result: { pr: 7 }, cloud: { pr_at: iso(FIXED - 9 * MIN), login: { name: 'studia', email: 'ops@acme.test' } } } },
+  sizes: { 'C-1': 'M', 'C-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN });
+const cloudy = Q.repoScreen(repoAt('cloudy'), { now: FIXED, width: 200 });
+t('#1581 AC2 a cloud session\'s row names its account', [/\sC-1\s+● running\s+stage cloud as of \d\d:\d\d · on ops@acme\.test\s/.test(bRow(cloudy, 'C-1')), / on ops@acme\.test/.test(bRow(cloudy, 'C-2'))], [true, false]);
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);
@@ -812,6 +864,9 @@ t('#1487 AC7: a size with its own five uses them alone, and no size uses all uns
 const fewM = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(2, () => ({ size: 'M', h: 4, w: 1 }))];
 t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))], E.poolFor(fewM, 'M').scaled], [2, [4], true]);
 t('#1487 AC7: with one size alone there is no ratio, and the pool says its borrowed times are unscaled', E.poolFor(range(6, () => ({ size: 'S', h: 2, w: 1 })), 'M').scaled, false);
+// issue-1553 AC2: a cloud ticket with no saved estimate is judged by the typical slot time for its size.
+t('issue-1553 AC2 the typical slot time for a size is its pool\'s median, borrowed and scaled as the forecast does',
+  [E.typicalSlotHours({ history: [...histOf(6, 'S', 2), ...histOf(6, 'M', 4)], size: 'M', now: FIXED }), E.typicalSlotHours({ history: [...histOf(6, 'S', 2), ...histOf(6, 'M', 4)], size: 'L', now: FIXED }), E.typicalSlotHours({ history: [], size: 'M', now: FIXED })], [4, 8, null]);
 
 // ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
 // Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.
@@ -849,6 +904,26 @@ t('#1487 AC3: ships dates it from now, marked overdue, with the first estimate i
 t('#1487 AC3: so does its ticket page', field(Q.ticketScreen(repoAt('behind'), 'O-1', { now: FIXED }).split('\n'), 'Ships'),
   `Ships     ▲${when(behindF.T['O-1'].likely, FIXED)} overdue: first estimate Mon 19 Oct 16:51, re-forecast from now could run to ${when(behindF.T['O-1'].late, FIXED)} (1 run in 5 is later)`);
 t('#1487 AC3: and the Timeline\'s key says what the mark means', Q.timelineScreen(Q.loadRepos(FIXED), 'acme__behind', { now: FIXED }).includes('▲ overdue: its first estimate passed, re-forecast from now'), true);
+
+// ---- issue-1553 AC3: cloud tickets on the forecast and on Costs ----------------
+// A cloud ticket is dated with the local ones and marked cloud before its title; Costs lists it as
+// cost unknown (cloud) with its session URL, and leaves the local one off that list.
+repo('cloudy', 4790, {
+  tickets: { 'CL-1': { state: 'running', stage: '3/9', location: 'cloud', cloud: { session: 'session_9', url: 'https://claude.ai/code/session_9', started: new Date(FIXED - HOUR).toISOString() } }, 'CL-2': { state: 'triaged' } },
+  sizes: { 'CL-1': 'M', 'CL-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]),
+});
+const cloudyTl = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__cloudy', { now: FIXED }).split('\n');
+const cloudyDays = Q.daysScreen(Q.loadRepos(FIXED), 'acme__cloudy', { now: FIXED }).split('\n');
+const cloudRow = (lines, k) => lines.find((l) => new RegExp(`\\s${k}\\s`).test(l)) ?? '';
+t('issue-1553 AC3 the timeline dates the cloud ticket and marks it cloud; the local one is not marked',
+  [cloudRow(cloudyTl, 'CL-1').includes('cloud · CL-1 title'), cloudRow(cloudyTl, 'CL-2').includes('CL-2 title'), cloudRow(cloudyTl, 'CL-2').includes('cloud ·')], [true, true, false]);
+t('issue-1553 AC3 so does the by-day view', [cloudRow(cloudyDays, 'CL-1').includes('cloud · CL-1 title'), cloudRow(cloudyDays, 'CL-2').includes('cloud ·')], [true, false]);
+const cloudyCosts = Q.costsScreen(Q.loadRepos(FIXED), { now: FIXED, costs: { exists: false, entries: [] }, cache: {}, use: null, subs: { logins: [] }, pinUsage: true }).split('\n');
+t('issue-1553 AC3 Costs lists the cloud ticket as cost unknown (cloud) with its session URL', /CL-1\s+cost unknown \(cloud\)\s+https:\/\/claude\.ai\/code\/session_9$/.test(cloudRow(cloudyCosts, 'CL-1')), true);
+t('issue-1553 AC3 and says why, leaving the local ticket off it', [cloudyCosts.some((l) => l.includes('Claude Code reports no tokens or cost for a cloud session')), cloudRow(cloudyCosts, 'CL-2')], [true, '']);
+const cloudyJson = JSON.parse(JSON.stringify(Q.costsJson(Q.loadRepos(FIXED), {}, { now: FIXED, costs: { exists: false, entries: [] }, cache: {} })));
+t('issue-1553 AC3 desk-q --json costs carries it too', JSON.stringify((cloudyJson.data?.cloud ?? cloudyJson.cloud ?? []).find((x) => x.key === 'CL-1')),
+  JSON.stringify({ repo: 'cloudy', key: 'CL-1', cost: null, why: 'cost unknown (cloud)', url: 'https://claude.ai/code/session_9' }));
 
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 

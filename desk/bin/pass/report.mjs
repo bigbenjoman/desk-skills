@@ -133,9 +133,10 @@ export function* decidePutOffRefresh(s) {
 //                           read clean, and the clash last logged: logged once for that pair of rows,
 //                           since workers run /desk-review in its place until /desk-setup settles it
 //   blocked                 blockedOf the pass's rows
-//   heldBack                [{ key, holds: [{ file, by, elsewhere, k }] }] the triaged tickets a running one's
-//                           file holds: `by` this batch's running keys, `elsewhere` [{ key, label }] those
-//                           running in the repo's other batches, each with its batch's label
+//   heldBack                [{ key, holds: [{ file, by, handoff, elsewhere, k }] }] the triaged tickets a
+//                           running or handed-off one's file holds: `by` this batch's running keys,
+//                           `handoff` its keys handed off between sessions, `elsewhere` [{ key, label,
+//                           handoff? }] those of the repo's other batches, each with its batch's label
 //   resumeRows              the pass's triaged rows as the held phase read them, each
 //                           { key, resume, resume_why, toResume, rebootWait }
 //   askedAgain              [{ key, question, now }] the put-off parks decidePutOffRefresh asked again,
@@ -167,8 +168,10 @@ export function decideReportLines(s) {
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
   const budgetText = (h) => {
-    const names = [...h.by, ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}`)];
-    return `${h.file} has ${names.length} running of its ${h.k}: ${names.join(', ')}`;
+    const off = (h.handoff ?? []).length + (h.elsewhere ?? []).filter((o) => o.handoff).length;
+    const names = [...h.by, ...(h.handoff ?? []).map((k) => `${k} (handed off)`),
+      ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}${o.handoff ? ' (handed off)' : ''}`)];
+    return `${h.file} has ${names.length} ${off ? 'running or handed off' : 'running'} of its ${h.k}: ${names.join(', ')}`;
   };
   if (s.heldBack.length) acts.push(out(`held back by a collision: ${s.heldBack.map((x) => `${x.key} (${x.holds.map(budgetText).join('; ')})`).join(', ')}`));
   const resumeWaits = s.resumeRows.filter((r) => r.toResume && !(r.resume === 'reboot' && r.rebootWait));

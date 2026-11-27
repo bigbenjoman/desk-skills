@@ -365,6 +365,34 @@ t('#1526 AC4 items that bound themselves, or whose script is not one simple comm
   drift(`${conf()}| Unit tests | \`bun run test --maxWorkers=2\` \`bun run both\` |\n| Typecheck | \`turbo run typecheck --concurrency=2\` |\n`).out, 'no drift');
 rmSync(join(repoDir, 'package.json'), { force: true });
 
+// #1539 AC3: a §2 handoff row that the median start-up share of the last 10 worker sessions on its
+// window already reaches is named STARTUP, with that share. The hook's state stamps each session's start.
+{
+  const home = join(T, 'startup-desk');
+  const hs = join(home, 'handoff');
+  mkdirSync(hs, { recursive: true });
+  const wt = `${repoDir}-worktrees`;
+  const st = (id, used, window, at, root) => writeFileSync(join(hs, `${id}.json`), JSON.stringify({ arm: { pct: 20, window }, start: { used, window, at, root } }));
+  st('old', 20_000, 200_000, 1, `${wt}/X-0`);
+  for (let i = 1; i <= 10; i += 1) st(`s${i}`, [42_000, 44_000, 46_000][i % 3], 200_000, 100 + i, i % 2 ? repoDir : `${wt}/X-${i}`);
+  st('elsewhere', 190_000, 200_000, 500, join(T, 'elsewhere'));
+  st('big', 150_000, 1_000_000, 50, repoDir);
+  const startup = (rows) => {
+    const c = join(T, 'drift-startup.md');
+    writeFileSync(c, conf().replace(`| Primary repo root | \`${repoDir}\` | |\n`, `$&${rows}`));
+    try { return { code: 0, out: execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c, DESK_HOME: home }), stdio: 'pipe' }).trim() }; }
+    catch (e) { return { code: e.status, out: String(e.stdout).trim() }; }
+  };
+  d = startup('| Handoff at context % | `20` | |\n');
+  t('#1539 AC3 a row at 20 under a 22% median start-up of this repo\'s last 10 sessions is named, with the share', `${d.code} ${d.out}`,
+    '1 STARTUP  §2 Handoff at context % is 20, but a fresh session\'s start-up already uses 22% of its 200,000-token window (the median of its last 10 sessions), so its sessions hand off as soon as they start: set it above 22');
+  t('#1539 AC3 a row above the median start-up is no drift', startup('| Handoff at context % | `25` | |\n').out, 'no drift');
+  t('#1539 AC3 the 1M row is read against the 1M window\'s sessions, and one the start-up reaches is named',
+    startup('| Handoff at context % | `25` | |\n| Handoff at context % on a 1M window | `15` | |\n').out,
+    'STARTUP  §2 Handoff at context % on a 1M window is 15, but a fresh session\'s start-up already uses 15% of its 1,000,000-token window (the median of its last 1 session), so its sessions hand off as soon as they start: set it above 15');
+  t('#1539 AC3 a row of 0 hands off never, so is no drift', startup('| Handoff at context % | `0` | |\n').out, 'no drift');
+}
+
 // One app's setup gaps, each §4 row it lacks with the value to add, in one call.
 mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
 writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
@@ -770,6 +798,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'slot-candidates|3b|Propose candidates for a free slot', // #1394
     'light-lock-slots|3b|Light lock slots',
     'test-signin-permissions|4|Test sign-in permissions', // DS-1026
+    'cloud-sessions|3b|Cloud sessions at once', // #1564
     'worker-memory|3b|Worker memory weight (GB)', // issue-1523
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434

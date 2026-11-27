@@ -13,7 +13,11 @@
 //   at         the pass's start time, an ISO string
 //   dry        a dry run: nothing recorded where the loop records nothing on one
 //   stop       the loop is stopped: the batch base holds it, or the usage limit was met this pass
-//   attempts   the slots taken so far this pass, and `slots` how many it has
+//   attempts   the local slots taken so far this pass, and `slots` how many it has
+//   cloudAttempts  the cloud sessions taken so far this pass, and `cloudSlots` how many it has: a ticket
+//              that starts in a cloud session takes one of these and no local slot (§3b "Cloud sessions
+//              at once"); `cloudRunning` the cloud sessions running with those taken, of `cloudLimit`;
+//              `cloudHeld` a hold on every spawn (or the row unreadable) set cloudSlots to 0, not the limit
 //   rerun      t is named in AUTOPILOT_RERUN, so a PR shipped elsewhere does not count
 //   resume     t is a killed worker waiting to resume, and `handoff` a session handed off to its next stage
 //   dbDown     a worktree setup earlier this pass found the local database down
@@ -35,14 +39,17 @@
 //   claim-upload {key}   -> { ok: true, up }: up its last round's upload still running, else null and the
 //                           job dropped; { ok: false, why } where the upload queue could not be read
 //   read-repos {}        -> the read-only repos that could not be refreshed, once a pass: [{ repo, why }]
-//   login {key}          -> the login a new session starts on (pass.mjs repoLogin), or null
-//   take-slot {key}      one of the pass's slots is taken
+//   login {key, cloud?}  -> the login a new session starts on (pass.mjs repoLogin), or null; a cloud one never the fallback
+//   take-slot {key}      one of the pass's local slots is taken
+//   take-cloud-slot {key} one of the pass's cloud sessions is taken
 //   setup {key}          -> the worktree setup: { wt, kept, renamed, hung } where origin was found hung
 //                           before it, else { wt, kept, renamed, ok, exitOk, out, retried }
 //   remote-hung {why}    origin is marked hung for the rest of the pass
 //   db-down {why}        the local database's health check is marked failing
 // The verdict, last:
-//   skip {key, stop?}                         nothing more for it; `stop` ends the loop
+//   skip {key, stop?, full?, cloud?}          nothing more for it; `stop` ends the loop, and `full` says
+//                                             its slots are spent (`cloud` its cloud sessions), so a later
+//                                             ticket on the other kind may still start
 //   record-done {key, how, pr, mergedAt, line, dropStatus?} record it done, shipped outside its worker;
 //                                             dropStatus: its PR status is another repo's PR of that number
 //   park {key, line}                          park it
@@ -50,14 +57,23 @@
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
 
-import { set, say, runsInCloud } from './shared.mjs';
+import { set, say, runsInCloud, startsInCloud } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
   const key = t.key;
   const skip = { type: 'skip', key };
   const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
-  if (s.stop || !(s.attempts < s.slots)) return yield { ...skip, stop: true };
+  if (s.stop) return yield { ...skip, stop: true };
+  // A cloud session takes none of the local slots, only one of its own limit; a resume or handoff runs here.
+  // (pass/shared.mjs startsInCloud, the rule pass.mjs counts the cloud and local candidates by.)
+  const cloud = startsInCloud(t);
+  if (cloud && !((s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0))) {
+    // Held by a hold on every spawn, the pass says that hold; only the limit itself is said here.
+    if (!s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: waits for a cloud session (${s.cloudRunning} of ${s.cloudLimit} running, §3b "Cloud sessions at once"). The next pass looks again`);
+    return yield { ...skip, full: true, cloud: true };
+  }
+  if (!cloud && !(s.attempts < s.slots)) return yield { ...skip, full: true };
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (yield { type: 'file-budget', key }) return yield skip;
   if (yield { type: 'fix-try-stale', key }) return yield skip;
@@ -119,14 +135,14 @@ export function* decideSpawn(s) {
       return yield { type: 'park', key, line: `${failure}. Once it is reachable: queue.mjs requeue ${key}` };
     }
   }
-  // A new session starts on the repo's subscription; a resumed one has its own, so it still goes ahead.
-  const needsLogin = !s.resume && (s.handoff || !runsInCloud(t));
-  const pick = needsLogin ? yield { type: 'login', key } : null;
-  if (needsLogin && !pick) return yield skip;
-  yield { type: 'take-slot', key };
+  // A new session starts on the repo's subscription, a cloud one too (never its fallback); a resumed one
+  // has its own, so it still goes ahead.
+  const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
+  if (!s.resume && !pick) return yield skip;
+  yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
-  if (runsInCloud(t)) return yield { type: 'start', key, how: 'cloud' };
+  if (cloud) return yield { type: 'start', key, how: 'cloud', pick };
   // An earlier setup in this pass found the local database down: no other worktree is set up on it.
   if (s.dbDown) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');

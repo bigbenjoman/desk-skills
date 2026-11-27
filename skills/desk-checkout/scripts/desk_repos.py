@@ -207,17 +207,20 @@ def scope_for_repo_name(gh_repo, repos):
     return ("side" if name in side else "none"), None
 
 
-def allowed(repo, perm_key):
-    """(ok, note). `yes`, or `ask` the user agreed to via --include, reads; anything else is skipped."""
-    if repo is None:
-        return True, ""
-    if repo.config_path is None:
-        return True, ""  # the cwd's repo with no config: the skill already stopped for /desk-setup
+def allowed(repo, perm_key, include=None, flag="--include", unconfigured=True):
+    """(ok, note). `yes`, or `ask` the user agreed to, reads; anything else is skipped.
+
+    The user's agreement is --include's (`included_by_user`) unless `include` names the slugs a
+    row's own flag agreed to; `flag` is the flag the ask note tells them to pass. A repo with no
+    desk config reads as `unconfigured`, with no note."""
+    if repo is None or repo.config_path is None:
+        return unconfigured, ""  # the cwd's repo with no config: the skill already stopped for /desk-setup
     v = repo.perm(perm_key)
-    if v == "yes" or (v == "ask" and getattr(repo, "included_by_user", False)):
+    agreed = repo.slug in include if include is not None else getattr(repo, "included_by_user", False)
+    if v == "yes" or (v == "ask" and agreed):
         return True, ""
     if v == "ask":
-        return False, f"{repo.slug}: §3 {perm_key} is ask - pass --include {repo.slug} once the user agrees"
+        return False, f"{repo.slug}: §3 {perm_key} is ask - pass {flag} {repo.slug} once the user agrees"
     return False, f"{repo.slug}: §3 {perm_key} is {v} - skipped"
 
 

@@ -670,6 +670,7 @@ if [ "\$3" = preflight ]; then
   echo "[preflight] pass"; exit 0
 fi
 echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}\${AUTOPILOT_BUDGET_USD:+ budget=\$AUTOPILOT_BUDGET_USD}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
+[ -z "\${DESK_HANDOFF_PCT:-}" ] || echo "\$1 \$DESK_HANDOFF_PCT" >> "$T/pcts"
 EOF
 stub_claude '[{"sessionId": "live-1"}]'
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
@@ -683,12 +684,15 @@ check "DS-145 AC1 it keeps its session, branch and worktree, and counts the resu
 # K-1's resumed worker counts as live while K-2 is killed.
 q set K-1 session_id=live-1
 killed K-2 sess-k2
+# Its threshold was raised by a stageless handoff (#1539 AC2) before it was killed.
+q set K-2 handoff_pct=45
 # A fixture saved for K-2 while it was down, after its briefing was written.
 mkdir -p "$T/state-k/fixtures/K-2"; printf '{"k":2}' > "$T/state-k/fixtures/K-2/post.json"
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-553 AC1 a killed worker's fixtures are copied into its worktree on resume, and its resume prompt names the path" \
   '[ "$(cat "$T/wt/K-2/.desk-fixtures/K-2/post.json")" = "{\"k\":2}" ] && grep -qF "copied into your worktree at $T/wt/K-2/.desk-fixtures/K-2/ (untracked, and kept out of git status): post.json." "$T/resume-prompt-K-2"'
 check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
+check "#1539 AC2 a resumed session keeps the ticket's raised threshold" '[ "$(grep "^K-2 " "$T/pcts" | tail -1)" = "K-2 45" ] && ! grep -q "^K-1 " "$T/pcts"'
 q set K-2 state=done
 # K-1's resumed worker is killed again, once it has had both resumes the row allows. Its log was last
 # written by the resume's preflight line: set it back, or it reads as a worker the registry has not listed yet.
@@ -984,6 +988,7 @@ mkdir -p "$T/state-h/logs" "$T/state-h/answers" "$T/state-h/handoffs"; : > "$T/s
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
 echo "\$1 \$3 stage=\${AUTOPILOT_START_STAGE:-} branch=\${AUTOPILOT_BRANCH:-} brief=\${4:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
+[ -z "\${DESK_HANDOFF_PCT:-}" ] || echo "\$1 \$DESK_HANDOFF_PCT" >> "$T/pcts"
 EOF
 hlog(){ say "$2" > "$T/state-h/logs/$1.log"; result_event >> "$T/state-h/logs/$1.log"; }
 handing(){ git -C "$T/repo" worktree add -q -b "fix/$1" "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=old-$1" stage=4/9; }
@@ -1060,7 +1065,8 @@ check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(f
 # DS-1037 AC3: a worker that handed off partway through Stage 5 on context is followed by a fresh one
 # starting at Stage 5 from the briefing; a third such handoff in a row at that stage parks.
 midfile(){ node -e 'const [k, s = "5"] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: s, criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$@"; }
-handing H-10; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+# Its threshold was already raised once (#1539 AC2), so its stageless sessions park rather than raise.
+handing H-10; q set H-10 handoff_pct=55; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 AC3 a mid-stage handoff at Stage 5 is followed by a fresh session at Stage 5" 'echo "$out" | grep -qF "H-10 handed off partway through Stage 5 on context (31% used; handoff-threshold 30): queued for a fresh session from Stage 5" && [ "$(spawned_for H-10 | tail -1 | grep -o "stage=[^ ]*")" = stage=5 ] && [ "$(field H-10 state)" = "\"running\"" ]'
 check "DS-1037 AC3 its briefing says so and lists what is left of the stage" 'b=$(brief H-10); grep -qF "## Handoff: this session starts at Stage 5" <<< "$b" && grep -qF "handed off partway through Stage 5" <<< "$b" && grep -qF "handoff-threshold 30" <<< "$b" && grep -qF "### Left of Stage 5" <<< "$b" && grep -qxF -- "- capture the after screenshot" <<< "$b"'
@@ -1084,6 +1090,28 @@ hfile H-11 7 "typecheck: pass"; hlog H-11 "$(printf 'AUTOPILOT_STAGE: 6/9 hygien
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 a stage-boundary handoff ends the streak" '[ "$(spawned_for H-11 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && [ "$(field H-11 handoff_mid)" = null ] && [ "$(field H-11 handoff_repeats)" = null ]'
 q set H-11 state=done
+
+# #1539 AC2: the second session in a row that starts at a stage and hands off partway through it with
+# no commit raises the ticket's threshold, from the one its hook stamped, for the sessions after it.
+# stamp <key> <pct>: the hook's state for the ticket's running session, with the threshold it ran on.
+stamp(){ mkdir -p "$T/desk/handoff"; printf '{"arm":{"pct":%s,"window":200000}}' "$2" > "$T/desk/handoff/$(field "$1" session_id | tr -d '"').json"; }
+midhand(){ midfile "$1" "$2"; hlog "$1" "$(printf 'AUTOPILOT_STAGE: %s/9 x\nAUTOPILOT_HANDOFF: %s' "$2" "$2")"; out=$(node "$B/pass.mjs" 2>&1); }
+handing H-12; midhand H-12 3
+check "#1539 AC2 a fresh session's handoff moved stages, so it is not stageless" '[ "$(field H-12 handoff_stuck)" = 0 ] && [ "$(field H-12 handoff_pct)" = null ]'
+stamp H-12 20; midhand H-12 3
+check "#1539 AC2 the first stageless session counts one, and raises nothing" '[ "$(field H-12 handoff_stuck)" = 1 ] && [ "$(field H-12 handoff_pct)" = null ] && ! grep -q "^H-12 " "$T/pcts" 2>/dev/null'
+stamp H-12 20; midhand H-12 3
+check "#1539 AC2 the second raises its threshold from the 20 it ran on to 45, logged, and spawns rather than parks" 'echo "$out" | grep -qF "its last 2 sessions handed off partway through Stage 3 without moving a stage or adding a commit, so its handoff threshold is raised from 20% to 45% for the sessions after this" && [ "$(field H-12 handoff_pct)" = 45 ] && [ "$(field H-12 state)" = "\"running\"" ]'
+check "#1539 AC2 the next session runs at 45" '[ "$(grep "^H-12 " "$T/pcts" | tail -1)" = "H-12 45" ]'
+q set H-12 state=done
+# AC4: sessions that move a stage, or add a commit, before they hand off change nothing.
+handing H-13; midhand H-13 3
+midhand H-13 4
+check "#1539 AC4 a session that moved a stage, with no commit, is not stageless" '[ "$(field H-13 handoff_stuck)" = 0 ]'
+git -C "$T/wt/H-13" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m wip
+midhand H-13 4
+check "#1539 AC4 a session that moved a stage, then one that added a commit, raise nothing" '[ "$(field H-13 handoff_stuck)" = 0 ] && [ "$(field H-13 handoff_pct)" = null ] && ! grep -q "^H-13 " "$T/pcts" 2>/dev/null && ! echo "$out" | grep -q "threshold is raised"'
+q set H-13 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"

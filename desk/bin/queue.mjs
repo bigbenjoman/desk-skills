@@ -21,10 +21,10 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { markRearmed } from './loop-tick.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey } from './desk-env.mjs';
-import { placement, featureRole, runsText } from './cloud-worker.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey, recordStop } from './desk-env.mjs';
+import { placement, featureRole, runsText, handOver } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
-import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
+import { processRows, workerProcs, endProcs, targetPids } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs, recordedPr } from './queue-store.mjs';
 import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -347,13 +347,17 @@ function requeue(q, key, { handedBack = false } = {}) {
     // started since would harvest it too.
     p = exitedPark?.key === key && exitedPark.session === (t.session_id ?? null) ? exitedPark.park : null;
     if (p && (logStamp(p.log) !== p.logStamp || passRunning())) p = null;
+    if (!p && t.location === 'cloud' && t.cloud && !t.session_id) throw new Error(`${key} is running in a cloud session: queue.mjs stop ${key} first, which records the session abandoned, or it gets a second one`);
     if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
     calls = workerCalls(p.markers, { ticket: key, run: t.session_id, repo: ghRepo(), pr: null });
     Object.assign(t, { state: 'parked', park: newPark(p.question, p.since), last_round: { stage: p.stage, question: p.question, at: p.since } });
     harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
       + `${calls.unreadable.map((u) => `; unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`).join('')}`;
   }
-  if (isHeld(t)) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
+  // A cloud ticket stopped by queue.mjs stop has no worker or worktree here: a requeue is the person
+  // letting it start again with a new session, as needs-you's start does (stopCloud).
+  const cloudStopped = t.location === 'cloud' && t.cloud?.abandoned_at && stoppedHold(t);
+  if (isHeld(t) && !cloudStopped) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
@@ -417,6 +421,9 @@ function requeue(q, key, { handedBack = false } = {}) {
     spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null,
     // A red-base repair the pass closed as needless is owed its own work again, so what it commits next is pushed.
     ...(t.closed_superseded ? { closed_superseded: null } : {}),
+    // A cloud ticket with no PR from its session starts a new one: the old session, abandoned when it was
+    // stopped, is on the finished-session list (stopCloud), not this ticket.
+    ...(t.location === 'cloud' && t.cloud && t.cloud.pr_at == null && t.result?.pr == null ? { cloud: null } : {}),
     // When it came back: desk-q's no-progress clock counts this ticket from here, not from added_at.
     requeued_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
@@ -534,6 +541,7 @@ function stop(key) {
   const t = load().tickets[key];
   if (!t) throw new NoTicket(`no such ticket in the queue: ${key}. Nothing was changed`);
   if (t.state !== 'running') throw new Error(`${key} has no running worker (it is ${t.state}): nothing was changed`);
+  if (t.location === 'cloud' && t.cloud && !t.session_id) return stopCloud(key, t);
   if (!t.session_id) throw new Error(`${key} has no running worker that can be found: it records no session id. Nothing was changed`);
   const target = workerProcs(t.session_id, processRows());
   if (!target.groups.length && !target.pids.length) throw new Error(`${key} has no running worker: no process runs its session ${t.session_id}, so the next pass records how it ended. Nothing was changed`);
@@ -544,6 +552,10 @@ function stop(key) {
     round = lines.slice(lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"')) + 1).join('\n');
   } catch { /* no log: the stage recorded on the ticket */ }
   if (workerMarkers(round).some(([k]) => k === 'AUTOPILOT_DONE')) throw new Error(`${key}'s worker has already printed AUTOPILOT_DONE, so the next pass records it done and stops its session: nothing was changed`);
+  // Recorded before any signal goes, so the memory watch never reads the exit 137 its SIGKILL leaves in
+  // the worker's log as an OOM kill (desk-env.mjs harmStep); a record that cannot be written stops nothing.
+  const pids = targetPids(target, processRows());
+  try { recordStop(stateDir(), { key, at: Date.now(), pids }); } catch (e) { console.error(`queue.mjs stop ${key}: the stop could not be recorded for the memory watch (${e.message}), so it may read the stopped worker as killed for memory and hold spawns for 10m`); }
   const ended = endProcs(target, { graceMs: STOP_GRACE_MS });
   if (ended.left.length) throw new Error(`${key}'s worker did not end: pid ${ended.left.join(', ')} still alive after SIGTERM and SIGKILL. Nothing in the queue was changed`);
   const wt = t.worktree ?? join(worktreesDir(), key);
@@ -567,6 +579,34 @@ function stop(key) {
   save(q);
   if (c.error) process.exitCode = EXIT.SHOW_PERSON;
   return `${key} stopped: its worker (pid ${ended.ended.join(', ')}) ended; ${kept}; ${key} is held, and starts again only once you let it (needs-you: start)`;
+}
+
+// A ticket worked in a cloud session has no process here to end: nothing on this computer can end or
+// archive a cloud session either (cloud-worker.mjs), so its session is recorded abandoned
+// (`cloud.abandoned_at`) and handed to the repo's finished-session list (handOver), where needs-you asks
+// the person to archive it, and the ticket is held as a stopped local worker is. A requeue then starts it
+// with a new session (requeue). Whatever the session pushes after this is on its branch for that one.
+function stopCloud(key, t) {
+  const c = t.cloud ?? {};
+  const where = c.url ?? c.session ?? '(its session URL was not recorded)';
+  takeDirLock(LOCK, { waitMs: Infinity });
+  const q = load();
+  const now = q.tickets[key];
+  if (now?.state !== 'running' || now.location !== 'cloud' || now.session_id || JSON.stringify(now.cloud ?? null) !== JSON.stringify(t.cloud)) {
+    unlock();
+    throw new Error(`${key} changed while it was being stopped (it is now ${now?.state ?? 'not in the queue'}), so its record was left as it is. Nothing was changed`);
+  }
+  const at = new Date().toISOString();
+  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its cloud session ${where} is recorded abandoned (nothing here can end a cloud session: archive it in claude.ai/code). Starts again only once you let it`, at, 'stopped'),
+    cloud: { ...c, abandoned_at: at }, held_by: null, held_outside: null,
+    last_round: { stage: now.stage ?? 'cloud', question: `stopped by queue.mjs stop; its cloud session ${where} recorded abandoned`, at },
+    resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
+  save(q);
+  let listed = '';
+  if (c.session && c.url) {
+    try { handOver(stateDir(), [{ key, session: c.session, name: c.name ?? null, url: c.url, at }]); listed = '; needs-you asks you to archive it'; } catch (e) { listed = `; it could not be put on needs-you's archive list (${e.message})`; process.exitCode = EXIT.SHOW_PERSON; }
+  }
+  return `${key} stopped: its cloud session ${where} is recorded abandoned, as nothing here can end one${listed}; ${key} is held, and starts again only once you let it (needs-you: start), with a new session`;
 }
 
 // A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:

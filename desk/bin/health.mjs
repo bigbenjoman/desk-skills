@@ -30,7 +30,10 @@
 //   disk     free space on the worktrees disk, against config §3b "Free disk floor (GB)" (default 20)
 //   database `docker exec <container> pg_isready`  where §4 Local database is `postgres container <name>`
 //                                                 and setup-worktree.sh makes a per-ticket database in it
-//                                                 (§3 db-per-ticket yes, §4 Database URL variable names one)
+//                                                 (§3 db-per-ticket yes, §4 Database URL variable names one),
+//                                                 with `docker ps` beside it: one that times out names
+//                                                 the engine as the cause ("Docker not responding:
+//                                                 restart OrbStack", from `docker context show`)
 //   reviewer `gh api user` as the account desk    where §4 Gate reviewers names logins: the login read
 //            posts verdicts from (§4 Review       must be one of them. It never holds a spawn: failing,
 //            account's gh config directory, else  it holds review and fix tries on PRs red only on a
@@ -275,9 +278,12 @@ async function runCheck(id, env, timeoutMs, retryMs) {
   if (id === 'browser') return browserCheck();
   if (id === 'disk') return diskCheck(env);
   // Local: no host to be unreachable, so never retried and never part of the network verdict.
+  // `docker ps` runs beside it, so an engine that has stopped answering is named as the cause; both end
+  // at the timeout, so a hung engine costs the pass one timeout, not two.
   if (id === 'database') {
-    const r = await runCommand(dbCmd(env), timeoutMs);
+    const [r, engine] = await Promise.all([runCommand(dbCmd(env), timeoutMs), runCommand(DOCKER_PROBE, timeoutMs)]);
     delete r.kind;
+    if (!r.ok && !engine.ok && engine.why === 'timed out') r.engine = await engineName(timeoutMs);
     return r;
   }
   // Both tries go through this, so a limit the retry meets is still a limit, not a sign-out.
@@ -341,8 +347,19 @@ function realCall(key, login, env, prev, now) {
 
 const REFUSED_ELSE = "if the call is still refused once signed in, the API is turning away this machine's connection (a Cloudflare page says so), which no sign-in fixes";
 const dbCmd = (env = process.env) => ['docker', 'exec', perTicketDb(env).container, 'pg_isready'];
+const DOCKER_PROBE = ['docker', 'ps', '-q'];
+// The engine behind a hung `docker ps`, named from the current context, which docker reads locally
+// without asking the engine: OrbStack for its own context, else the context's name.
+async function engineName(timeoutMs) {
+  const r = await runCommand(['docker', 'context', 'show'], timeoutMs, undefined, true);
+  const ctx = r.ok ? String(r.out ?? '').split('\n')[0].trim() : '';
+  // The `default` context names no engine of its own.
+  return !ctx || ctx === 'default' ? 'Docker' : /^orbstack$/i.test(ctx) ? 'OrbStack' : ctx;
+}
+const notResponding = (r) => `Docker not responding: restart ${r.engine}`;
 const fixOf = (id, r) => {
   if (id === 'disk') return `free space on ${r.path ?? 'the worktrees disk'}`;
+  if (id === 'database' && r.engine) return `${notResponding(r)} (docker ps timed out); the queued tickets spawn on the first pass it answers`;
   if (id === 'database') return `start Docker and the container ${perTicketDb().container}; the queued tickets spawn on the first pass it answers`;
   if (r.kind === 'network') return `check this machine's connection to ${byId[id].name}; it is not reaching it, which is not a sign-in`;
   if (r.refused) return `${byId[id].fix}; ${REFUSED_ELSE}`;
@@ -483,6 +500,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
 
   const when = reused ? `checked ${Math.round(age / 60000)} min ago, reused` : 'checked now';
   const notes = [when];
+  if (failing.includes('database') && results.database.engine) notes.push(notResponding(results.database));
   if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
   const rechecking = [...unconfirmed, ...(reviewerOut && !reviewerTold && reviewerOut.kind !== 'limit' ? ['reviewer'] : [])];
   if (rechecking.length) notes.push(`rechecking before telling you: ${rechecking.join(', ')}`);

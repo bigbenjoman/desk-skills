@@ -31,7 +31,8 @@ nowhere to push. The merged PR's tests are kept outside it (a test file the PR c
 its base version, as the ticket's worker found it) and copied in only after the run, then
 run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
 passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
-which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web
+which counts as neither. Each test command gets an hour from when it holds the test lock; the wait
+for the lock is not counted. Arms run on a worker's permission set for that repo with gh, Jira, the web
 and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded in that run's
 result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
 default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its

@@ -51,6 +51,9 @@ export const loginsFolder = (tool) => TOOL[tool].logins();
 // tool it opens, or null.   -> { shell, then }
 export const signInParts = (login) => TOOL[login.tool].signIn(login);
 export const signInCommand = (login) => { const p = signInParts(login); return p.then ? `${p.shell}, then ${p.then}` : p.shell; };
+// The one cloud start a person runs on a Claude login in a terminal, to answer what a first start there
+// asks (whether the session may use the environment's variables), which no background start can.
+export const cloudStartCommand = (login) => `${signInParts(login).shell} --cloud "<any prompt>"`;
 
 // `in rotation`, `In-Rotation` and `in  rotation` are one rule; anything else is null.
 const ruleWords = (v) => String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');
