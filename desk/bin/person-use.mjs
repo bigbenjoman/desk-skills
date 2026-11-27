@@ -17,8 +17,8 @@
 //   person-use-cpu       cores over the baseline that is use  25% of cpu-cores, at least 1
 //   person-use-floor     the local cap while in use        1
 //   person-use-calm-min  minutes under it before the cap returns  10
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { parsePs as parsePsRows, psRows } from './ps-rows.mjs';
 
 const num = (v) => (v == null || String(v).trim() === '' ? NaN : Number(String(v).trim()));
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -55,15 +55,11 @@ export function personUseRows(get) {
   };
 }
 
-// `ps -axww -o pid=,ppid=,rss=,pcpu=,command=` (or its fixture) -> [{ pid, ppid, kb, cpu, cmd }].
-export function parsePs(text) {
-  const out = [];
-  for (const line of String(text ?? '').split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(line);
-    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), kb: Number(m[3]), cpu: Number(m[4]), cmd: m[5] });
-  }
-  return out;
-}
+// The `ps` columns read, through ps-rows.mjs (desk's one ps call).
+const COLUMNS = 'pid=,ppid=,rss=,pcpu=,args=';
+const procsOf = (rows) => rows.map((r) => ({ pid: r.pid, ppid: r.ppid, kb: r.rss, cpu: Number(r.pcpu) || 0, cmd: r.args }));
+// `ps -ww -axo pid=,ppid=,rss=,pcpu=,args=` output (or its fixture) -> [{ pid, ppid, kb, cpu, cmd }].
+export const parsePs = (text) => procsOf(parsePsRows(String(text ?? ''), COLUMNS));
 
 // What processes other than desk's hold: -> { gb, cpu, procs } (cpu in cores, procs counted).
 // `marks` are substrings that make a process desk's (desk's bin directory, the worktrees directories);
@@ -100,10 +96,7 @@ export function othersHold(procs, { marks = [], self = null } = {}) {
 // -> procs, or null where ps could not be run.
 export function readProcs(env = process.env) {
   try {
-    const text = env.AUTOPILOT_PERSON_USE_PS
-      ? readFileSync(env.AUTOPILOT_PERSON_USE_PS, 'utf8')
-      : execFileSync('ps', ['-axww', '-o', 'pid=,ppid=,rss=,pcpu=,command='], { encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
-    return parsePs(text);
+    return env.AUTOPILOT_PERSON_USE_PS ? parsePs(readFileSync(env.AUTOPILOT_PERSON_USE_PS, 'utf8')) : procsOf(psRows(COLUMNS));
   } catch { return null; }
 }
 

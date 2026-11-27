@@ -1,5 +1,5 @@
 // suite: person in use (the rows and their defaults, what processes other than desk's hold, the mode switching on and off, placement at start)
-// layer: L2
+// layer: L1
 // covers: desk/bin/person-use.mjs desk/bin/machine.mjs desk/bin/pass/shared.mjs
 // person-use.mjs on fixture `ps` output and a fixed clock; the machine profile's row checks; the
 // placement rule by itself (desk-q's line and place are in test_desk_q_eta.mjs, the pass's in
