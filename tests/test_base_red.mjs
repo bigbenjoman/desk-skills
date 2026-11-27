@@ -703,4 +703,137 @@ test('read-cache: an entry set with its own ttl outlives the cache\'s, and one w
   assert.equal(openCache(path, { now: t0 + 2 * CACHE_MS + 1 }).get('long'), undefined);
 });
 
+// #1532: a pass of a check main was red on counts only where its job ran work.
+{
+  const { ranWork, failingFiles, untestedWords, readGreenRec } = await import('../desk/bin/base-red.mjs');
+  const was = { branch: 'main', checks: [{ name: 'tests', sha: sha('a'), url: 'u/job/1', files: ['guards.spec.ts'] }] };
+  const idleLog = 'No tasks were executed as part of this run.\n Tasks:    0 successful, 0 total\n';
+  const workRead = (commits, verdicts, calls = []) => ({ ...reader(commits), work: (w, prev) => { calls.push([w, prev]); return verdicts[w.url] ?? 'ran'; } });
+
+  test('#1532 ranWork: turbo with 0 tasks is no work; any task, the failing file, or no signal is work', () => {
+    assert.equal(ranWork(idleLog), 'none');
+    assert.equal(ranWork('\x1b[1mTasks:\x1b[0m    0 successful, 0 total'), 'none');
+    assert.equal(ranWork('Tasks:    0 successful, 0 total\nTasks:    3 successful, 3 total'), 'ran');
+    assert.equal(ranWork(`${idleLog}PASS src/guards.spec.ts`, ['guards.spec.ts']), 'ran');
+    assert.equal(ranWork('pytest: 12 passed'), 'ran');
+    assert.equal(ranWork(null), 'ran');
+  });
+  test('#1532 failingFiles names the test files on a log\'s failing-file lines only', () => {
+    assert.deepEqual(failingFiles('PASS a.spec.ts\n\x1b[31mFAIL\x1b[0m src/inngest-function-guards.spec.ts\n FAIL b.test.tsx > x'), ['inngest-function-guards.spec.ts', 'b.test.tsx']);
+    assert.deepEqual(failingFiles(null), []);
+  });
+
+  test('#1532 AC1/AC2 a pass of the red check that ran nothing keeps main red as it was, with no_work', () => {
+    const calls = [];
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: workRead({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }, { 'u/job/2': 'none' }, calls) });
+    assert.deepEqual(s, { state: 'red', sha: sha('b'), checks: was.checks, no_work: [{ name: 'tests', sha: sha('b'), url: 'u/job/2' }] });
+    assert.deepEqual(calls[0][1], was.checks[0]);
+  });
+  test('#1532 AC1 below an idle pass the walk reads on, and finds the failure still there', () => {
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: workRead({
+      [sha('c')]: { parent: sha('b'), runs: [run('tests', 'success', 'u/job/3')] },
+      [sha('b')]: { parent: null, runs: [run('tests', 'failure', 'u/job/1')] },
+    }, { 'u/job/3': 'none' }) });
+    assert.equal(s.state, 'red');
+    assert.deepEqual(s.checks.map((c) => c.sha), [sha('b')]);
+    assert.deepEqual(s.no_work.map((w) => w.sha), [sha('c')]);
+  });
+  test('#1532 a pass that ran work below an idle tip pass reads green, standing for the tip', () => {
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: workRead({
+      [sha('c')]: { parent: sha('b'), runs: [run('tests', 'success', 'u/job/3')] },
+      [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/4')] },
+    }, { 'u/job/3': 'none' }) });
+    assert.deepEqual(s, { state: 'green' });
+  });
+  test('#1532 a pass that ran work, a check not red before, and a read with no work() read as before', () => {
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was, read: workRead({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }, {}) }), { state: 'green' });
+    const calls = [];
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was: { ...was, branch: 'dev' }, read: workRead({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }, { 'u/job/2': 'none' }, calls) }), { state: 'green' });
+    assert.equal(calls.length, 0);
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was, read: reader({ [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/2')] } }) }), { state: 'green' });
+  });
+  test('#1532 a failing run\'s test files are read once and kept on its check', () => {
+    let reads = 0;
+    const read = { ...reader({ [sha('a')]: { parent: null, runs: [run('tests', 'failure', 'u/job/1')] } }), files: () => { reads++; return ['guards.spec.ts']; } };
+    const s = baseState({ required: ['tests'], branch: 'main', read });
+    assert.deepEqual(s.checks, [{ name: 'tests', sha: sha('a'), url: 'u/job/1', files: ['guards.spec.ts'] }]);
+    baseState({ required: ['tests'], branch: 'main', read, was: { branch: 'main', checks: s.checks } });
+    assert.equal(reads, 1);
+  });
+  test('#1532 AC2 the record keeps no_work and the batch line says main\'s last green run tested nothing', () => {
+    const s = { state: 'red', sha: sha('b'), checks: was.checks, no_work: [{ name: 'tests', sha: sha('b'), url: 'u/job/2' }] };
+    const rec = nextRecord(null, s, { branch: 'main', merges: [], at: '2026-11-26T18:00:00Z' });
+    assert.deepEqual(rec.no_work, s.no_work);
+    assert.equal(untestedWords(rec), 'main\'s last green run tested nothing for "tests"');
+    assert.match(batchLine(rec, { repair: { key: rec.repair_key, state: 'queued' } }), /main's last green run tested nothing for "tests", so it stays red\./);
+    assert.equal(nextRecord(null, { ...s, no_work: undefined }, { branch: 'main', merges: [], at: '2026-11-26T18:00:00Z' }).no_work, undefined);
+  });
+  test('#1532 AC1 a skipped run of the red check is no work: main stays red as it was, with no_work', () => {
+    const skipped = (url) => ({ name: 'tests', status: 'completed', conclusion: 'skipped', url });
+    const commits = {};
+    for (let i = 0; i < WALK; i++) commits[sha(String(i))] = { parent: i < WALK - 1 ? sha(String(i + 1)) : null, runs: [skipped(`u/job/${i}`)] };
+    const s = baseState({ required: ['tests'], branch: 'main', was, read: reader(commits) });
+    assert.deepEqual([s.state, s.checks, s.no_work.length, s.no_work[0]], ['red', was.checks, WALK, { name: 'tests', sha: sha('0'), url: 'u/job/0' }]);
+    // A skipped tip over a pass that ran work stands for the tip; a check not red before reads as it did.
+    assert.deepEqual(baseState({ required: ['tests'], branch: 'main', was, read: reader({ [sha('c')]: { parent: sha('b'), runs: [skipped('u/job/3')] }, [sha('b')]: { parent: null, runs: [run('tests', 'success', 'u/job/4')] } }) }), { state: 'green' });
+    assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader(commits) }).state, 'unknown');
+  });
+  test('#1532 AC1 ghRead reads a check\'s job log by the job id in its URL: a turbo run of 0 tasks is no work, a failing run names its spec', () => {
+    const fixture = (f) => readFileSync(join(import.meta.dirname, 'fixtures', f), 'utf8');
+    const calls = [];
+    const logs = { 'repos/acme/widgets/actions/jobs/45875655153/logs': fixture('gh-job-log-turbo-no-tasks.txt'), 'repos/acme/widgets/actions/jobs/45870000001/logs': fixture('gh-job-log-jest-fail.txt') };
+    const stub = (args) => { calls.push(args.join(' ')); return logs[args[1]] != null ? { status: 0, stdout: logs[args[1]] } : { status: 1, stdout: '' }; };
+    const read = ghRead('acme/widgets', { run: stub, viaGit: false });
+    const files = read.files('https://github.com/acme/widgets/actions/runs/9/job/45870000001');
+    assert.deepEqual(files, ['inngest-function-guards.spec.ts']);
+    assert.equal(read.work({ url: 'https://github.com/acme/widgets/actions/runs/9/job/45875655153' }, { files }), 'none');
+    assert.equal(read.work({ url: 'https://github.com/acme/widgets/actions/runs/9/job/45870000001' }, { files }), 'ran');
+    // A URL with no job id, or a log that cannot be read, reads as work: the base reads as it did before.
+    assert.equal(read.work({ url: 'https://github.com/acme/widgets/actions/runs/9' }, { files }), 'ran');
+    assert.equal(read.work({ url: 'https://github.com/acme/widgets/actions/runs/9/job/1' }, { files }), 'ran');
+    assert.equal(calls.filter((c) => c.includes('/actions/jobs/')).length, 4);
+  });
+  test('#1532 AC1/AC3 the driver\'s check keeps main red on a pass whose job log ran nothing, and a green read records the tip it read', () => {
+    const dir = scratch('base-red-work-'), bin = join(dir, 'bin'), state = join(dir, 'state'), runsFile = join(dir, 'runs.json'), tipFile = join(dir, 'tip');
+    mkdirSync(bin); mkdirSync(state);
+    const logFile = join(import.meta.dirname, 'fixtures', 'gh-job-log-turbo-no-tasks.txt');
+    writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'), a = process.argv.slice(2), tip = fs.readFileSync('${tipFile}', 'utf8');
+const ok = (body) => process.stdout.write('HTTP/2.0 200 OK\\r\\n\\r\\n' + JSON.stringify(body));
+if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') ok({ sha: tip, parents: [] });
+else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/' + tip + '/check-runs')) ok({ check_runs: JSON.parse(fs.readFileSync('${runsFile}', 'utf8')).map((r) => ({ ...r, details_url: r.url })) });
+else if (a[0] === 'api' && a[1] === 'repos/acme/widgets/actions/jobs/2/logs') process.stdout.write(fs.readFileSync('${logFile}', 'utf8'));
+else process.exit(1);
+`, { mode: 0o755 });
+    const cfg = join(dir, 'config.md');
+    writeFileSync(cfg, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n## 4. Checks\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n');
+    const check = (tip, runs) => {
+      writeFileSync(tipFile, tip); writeFileSync(runsFile, JSON.stringify(runs));
+      const r = spawnSync('node', [join(import.meta.dirname, '..', 'desk', 'bin', 'base-red.mjs'), 'check', '--branch', 'main', '--repo', 'acme/widgets', '--state', state],
+        { cwd: dir, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DESK_CONFIG: cfg, DESK_REPO_OVERRIDE: 'acme/widgets' }, encoding: 'utf8' });
+      return JSON.parse(r.stdout.trim()).state;
+    };
+    const job = (id, conclusion) => [{ name: 'tests', status: 'completed', conclusion, url: `https://github.com/acme/widgets/actions/runs/7/job/${id}` }];
+    assert.equal(check(sha('a'), job(1, 'failure')), 'red');
+    // The docs-only push: its job passed and its log shows turbo ran 0 tasks.
+    assert.equal(check(sha('b'), job(2, 'success')), 'red');
+    const rec = JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8'));
+    assert.deepEqual([rec.checks[0].sha, rec.no_work], [sha('a'), [{ name: 'tests', sha: sha('b'), url: 'https://github.com/acme/widgets/actions/runs/7/job/2' }]]);
+    assert.equal(existsSync(join(state, GREEN_FILE)), false);
+    // A pass whose log is not a no-work one ends the red, and the green record names the tip it read.
+    assert.equal(check(sha('c'), job(3, 'success')), 'green');
+    assert.equal(existsSync(join(state, 'base-red.json')), false);
+    assert.equal(JSON.parse(readFileSync(join(state, GREEN_FILE), 'utf8')).sha, sha('c'));
+  });
+  test('#1532 readGreenRec reads the tip SHA a green record keeps; readGreen still gives its time', () => {
+    const dir = scratch('base-green-sha-');
+    writeFileSync(join(dir, GREEN_FILE), JSON.stringify({ branch: 'main', at: '2026-11-26T18:00:00Z', sha: sha('b') }));
+    assert.deepEqual(readGreenRec(dir, 'main'), { at: '2026-11-26T18:00:00Z', sha: sha('b') });
+    assert.equal(readGreen(dir, 'main'), '2026-11-26T18:00:00Z');
+    writeFileSync(join(dir, GREEN_FILE), JSON.stringify({ branch: 'main', at: '2026-11-26T18:00:00Z' }));
+    assert.deepEqual(readGreenRec(dir, 'main'), { at: '2026-11-26T18:00:00Z', sha: null });
+    assert.equal(readGreenRec(dir, 'dev'), null);
+  });
+}
+
 console.log(`base-red: ${pass} passed, 0 failed`);

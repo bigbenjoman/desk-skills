@@ -245,6 +245,18 @@ re-running a ticket from scratch.
   subscription changed waits only for that login's own limit, without holding the batch. To move a
   repo's new work elsewhere, the person changes its subscription or the default (`desk-env
   subscription set`, desk-q view 6's `d`), and the next worker starts there.
+- **A repo following the default starts new work on the fallback while the default is full.** Where
+  one Claude login is `fallback` (`desk-env logins set claude <name> fallback`), a pass that finds the
+  default at its 5-hour or 7-day limit, held by a refused preflight or a paused worker, or past the
+  usage pacing headroom starts new sessions on the fallback (`fallback-login.mjs`). A pass that meets
+  the limit itself, at a preflight refused on the default or a worker it finds paused there, moves to
+  the fallback there and then, and starts a refused new session on it in the same pass. The pass logs the
+  switch and its reason under ADVANCED, records it on the queue (`login_fallback`) until that limit
+  lifts, and logs the switch back once the default has room. A spawn line names the login
+  (`login=<name> (fallback)`), and desk-q's row says `on fallback <account>`. Running and resumed
+  workers stay on the login they started on, waiting for its reset, so a ticket never moves mid-session.
+  A repo pinned to an email never falls back, and with no fallback, or a fallback that is signed out,
+  signed in to the default's own account, or full too, the batch holds as above.
 - **A queue from before subscriptions is cleaned up on its first pass.** A record a pass from before
   left, of a login set aside at its limit or of a ticket waiting to move to another login, is
   cleared, and that ticket resumes its own session on its own login, as a paused worker does.

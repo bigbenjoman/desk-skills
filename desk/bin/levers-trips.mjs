@@ -15,7 +15,8 @@
 //                              and landed), so a ticket still held behind one is not waiting past it
 //   post-merge-revert          post-merge.jsonl records a revert of the ticket's PR
 //   own-step-error             the lever's own step exited non-zero: a `lever_step` line in the ticket's
-//                              run record, or the worker's own call of that command in its log. An exit
+//                              run record, or the worker's own call of that command, alone, in its log
+//                              (a compound command's one exit is not the step's). An exit
 //                              another of the lever's trips counts as a rate (codex's dead seats) is
 //                              left to that trip
 //   codex-dead-seats           more than the trip's rate of the last `calls` desk-codex finder and
@@ -157,8 +158,9 @@ function fromLogs(state, key, since, cache = new Map(), tag, parse) {
   return cache.get(k);
 }
 
-// A Bash command with any leading `cd <dir> &&` dropped and its spaces collapsed.
-const bare = (cmd) => String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, '').replace(/\s+/g, ' ');
+// A Bash command with any leading `cd <dir> &&` dropped, and then with its spaces collapsed too.
+const dropCd = (cmd) => String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, '');
+const bare = (cmd) => dropCd(cmd).replace(/\s+/g, ' ');
 // The binary a probe proves executes: its first word.
 const binOf = (probe) => bare(probe).split(' ')[0];
 const startsWithCommand = (cmd, stem) => !!stem && (cmd === stem || cmd.startsWith(`${stem} `));
@@ -197,6 +199,39 @@ export function stepPattern(step) {
   return new RegExp(`(?:^|[\\s/])${head}(?:\\.mjs)?${words.slice(1).map((w) => `\\s+${esc(w)}`).join('')}(?:\\s|$)`);
 }
 
+// Whether Bash command `cmd` is one command, so its exit is that command's: no `;`, `&&`, `||`, `|`,
+// `&`, newline or subshell outside quotes and `$( )`. A redirection's `&` (`2>&1`, `&>`) is not a separator.
+export function oneCommand(cmd) {
+  const s = String(cmd ?? '').trim();
+  let quote = null;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote === "'") { if (c === "'") quote = null; continue; }
+    if (c === '\\') { i++; continue; }
+    if (quote === '"') { if (c === '"') quote = null; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    // `$( )` is a value inside the command; a bare `( )` at the top is a subshell of commands.
+    if (c === '(') { if (!depth && s[i - 1] !== '$') return false; depth++; continue; }
+    if (c === ')') { depth = Math.max(0, depth - 1); continue; }
+    if (depth) continue;
+    if (c === ';' || c === '|' || c === '\n' || c === '\r') return false;
+    if (c === '&' && s[i - 1] !== '>' && s[i - 1] !== '<' && s[i + 1] !== '>') return false;
+  }
+  return true;
+}
+
+// Whether Bash command `cmd` runs the step `re` matches as its own program, alone: one command whose
+// first word (after an interpreter) is the step's program, by any path. Its exit is then the step's.
+export function runsStep(re, cmd) {
+  // Separators are read before bare() collapses a newline into a space.
+  if (!re || !oneCommand(dropCd(cmd))) return false;
+  const c = bare(cmd);
+  const rest = c.replace(/^(?:node|bash|sh)\s+/, '');
+  const m = re.exec(rest);
+  return !!m && !/\s/.test(rest.slice(0, m.index + 1));
+}
+
 // ---- the trips --------------------------------------------------------------------------------------
 // Each finds the records on one ticket that trip `lever`, oldest first: [{ file, line, error?, why }].
 export const DETECTORS = Object.freeze({
@@ -215,8 +250,11 @@ export const DETECTORS = Object.freeze({
         const error = `${s.step ?? trip.step} exited ${s.exit}${s.error ? `: ${s.error}` : ''}`;
         return { file, line: l.line, error, why: error };
       });
+    // A worker's own call counts only when the step is the whole call: a compound command has one exit
+    // for all its parts, so a failure in another part is not the step's (the lever_step records carry
+    // the step's own exit).
     const re = stepPattern(trip.step);
-    const called = re ? logOutcomes(state, t.key, t.levers?.at, cache).filter((o) => o.tool === 'Bash' && !o.denied && counts(o.exit) && re.test(bare(o.input?.command)))
+    const called = re ? logOutcomes(state, t.key, t.levers?.at, cache).filter((o) => o.tool === 'Bash' && !o.denied && counts(o.exit) && runsStep(re, o.input?.command))
       .map((o) => {
         const error = `${trip.step} exited ${o.exit}${o.text ? `: ${o.text.slice(0, 200)}` : ''}`;
         return { file: o.file, line: o.line, error, why: error };

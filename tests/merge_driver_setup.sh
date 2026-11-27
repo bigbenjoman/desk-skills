@@ -88,6 +88,14 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName,baseRefName') {
   // GitHub's merge time, a PR's "mergedAt" or gh's unset time, its branch and its base, tab-separated.
   out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? '') + '\t' + (prs[a[2]]?.base ?? ''));
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state,headRefOid,mergedBy') {
+  // merge-log.mjs's read (ghMerged): a PR's "premergedBy" (someone merged it since the gate, "" naming
+  // nobody) reads MERGED at its "premergedHead" (else its sha); otherwise its own state. The merger is
+  // "premergedBy" or "mergedBy", null (or "") for none, tester where unset.
+  const p = prs[a[2]] ?? {};
+  const m = p.premergedBy ?? p.mergedBy;
+  out({ state: 'premergedBy' in p ? 'MERGED' : String(p.state ?? '').toUpperCase(), headRefOid: p.premergedHead ?? p.sha ?? null,
+    mergedBy: m === null ? null : { login: m ?? 'tester' } });
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,

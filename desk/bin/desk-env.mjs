@@ -110,13 +110,17 @@
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run or, with worker-local-services yes, a Local services
 //                                             item with no service name (UNLISTED), an app directory other command rows
-//                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
+//                                             name with no Dev server item (NODEV), a §4 Unit tests or Typecheck
+//                                             item starting Jest with no worker cap or turbo run with no
+//                                             --concurrency, with its bounded form (UNBOUND), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
 //                                             its primary-checkout directory holds (NOENV), and a Test sign-in
-//                                             user for an app it runs (NOSIGNIN); exit 1 if any
+//                                             user for an app it runs (NOSIGNIN); and, read from Clerk, each
+//                                             §4 Test sign-in permissions name that user lacks (NOPERM), or
+//                                             why it could not be read (PERMREAD); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -151,9 +155,11 @@
 //   node desk-env.mjs logins check [--json]   as list, with each login's sign-in, account and plan, the signed-in
 //                                             folders under ~/.claude-logins and ~/.codex-logins it does not list,
 //                                             and the usable ones (logins.mjs)
-//   node desk-env.mjs logins set <claude|codex> <name> <unused|off>
-//                                             set one login unused or off, keeping the previous file as .bak;
-//                                             the older rules (in rotation, standby) are refused
+//   node desk-env.mjs logins set <claude|codex> <name> <unused|fallback|off>
+//                                             set one login unused or off, or Claude's one fallback (new work
+//                                             of the repos following the default starts there while the
+//                                             default is full), keeping the previous file as .bak; the older
+//                                             rules (in rotation, standby) are refused
 //   node desk-env.mjs logins remove <claude|codex> <name>
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
@@ -188,14 +194,17 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import { remember, runOnce, outOrNull } from './build-memo.mjs';
+import { parsePs, psRows as readPs, runPs } from './ps-rows.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
+import { unbounded as unboundedRun } from './run-bounds.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
+  signinPermissionsOf,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -378,7 +387,7 @@ const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
 
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
 // The result is shared between callers: read it, never change it.
-function parseConfigFile(path) {
+export function parseConfigFile(path) {
   let st = null;
   if (path) try { st = statSync(path, { bigint: true }); } catch { /* missing: parsed below as absent */ }
   if (!st) { parsedFiles.delete(path); return parseConfigText(path, null); }
@@ -1603,32 +1612,11 @@ export function rssGiB() {
   try { return psRows('rss=').reduce((s, r) => s + (r.rss || 0), 0) * 1024 / GiB; } catch { return NaN; }
 }
 
-// Every process's command line can carry a worker's whole prompt, so the list runs to megabytes.
-const PS_MAX_BUFFER = 64 * 1024 * 1024;
-const PS_NUMERIC = new Set(['pid', 'ppid', 'rss']);
-// `ps` output for `columns` (e.g. 'pid=,args=') as one object per process keyed by column name:
-// every column but the last is one word, the last runs to the end of the line. pid, ppid and rss
-// are numbers. A line of another shape is skipped.
-export function parsePs(text, columns) {
-  const names = columns.split(',').map((c) => c.replace(/=.*$/, ''));
-  const re = new RegExp(`^\\s*${names.slice(0, -1).map(() => '(\\S+)\\s+').join('')}(.*?)\\s*$`);
-  const rows = [];
-  for (const line of String(text).split('\n')) {
-    const m = re.exec(line);
-    if (!m || !line.trim()) continue;
-    rows.push(Object.fromEntries(names.map((n, i) => [n, PS_NUMERIC.has(n) ? Number(m[i + 1]) : m[i + 1]])));
-  }
-  return rows;
-}
-// Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
-// partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+// Every process, read whole from one `ps` (ps-rows.mjs psRows), memoised within a build run.
+// Throws when ps cannot be read. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+export { parsePs };
 export function psRows(columns, env = {}) {
-  const r = remember(['ps', columns, env], () => spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }));
-  if (r.error || r.status !== 0) {
-    const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
-    throw new Error(`ps could not be read (${why})`);
-  }
-  return parsePs(r.stdout, columns);
+  return readPs(columns, env, (c, e) => remember(['ps', c, e], () => runPs(c, e)));
 }
 // The `mem status` line, which `queue.mjs watch` prints under its table too.
 export function memStatusLine() {
@@ -1978,7 +1966,28 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight, dontAsk: mode === 'dontAsk' ? file : null };
+}
+
+// §4 Unit tests and Typecheck items that start Jest with no worker cap or `turbo run` with no
+// --concurrency (run-bounds.mjs unbounded), each with its bounded form at the test cap and the
+// profile's turbo-concurrency: -> [{ row, item, why, bounded }].
+export function unboundRuns(parsed, root) {
+  const n = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : null);
+  let jest = null;
+  try { jest = n(configValueIn(parsed, 'test-cap')); } catch { /* unset */ }
+  const limits = { jest: jest ?? undefined, turbo: n(machineValue('turbo-concurrency')) ?? undefined };
+  const out = [];
+  for (const id of ['test-cmd', 'typecheck-cmd']) {
+    const values = driftValues(parsed, id);
+    if (!values || isNone(values)) continue;
+    for (const item of values) {
+      const { dir, cmd } = parseCommandItem(item);
+      const u = unboundedRun(cmd, { root, dir, limits });
+      if (u) out.push({ row: CONFIG_ROWS[id].row, item, why: u.why, bounded: `${dir === '.' ? '' : `${dir}: `}${u.bounded}` });
+    }
+  }
+  return out;
 }
 
 // The rows another row settles (the schema's forced rules), as the config file has the settling rows:
@@ -2070,8 +2079,13 @@ const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(r
 // it, and a Test sign-in item. A row unset is drift's MISSING, and `none` is a decision: neither is a
 // gap here, except the Test sign-in row unset.
 // -> [{ row, dir, value: [item], have?: [file] }]
+// An app directory as config items name it (`./apps/web/` -> `apps/web`, the root `.`), and whether a
+// §4 Env files item sits under it: both appSetupGaps and appPermissionGaps read an app's env files.
+const appDirOf = (dir) => String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+const envFileUnder = (app, f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`));
+
 export function appSetupGaps(parsed, root, dir) {
-  const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+  const app = appDirOf(dir);
   const gaps = [];
   const dev = configValuesIn(parsed, 'dev-cmd');
   const p = readPackage(root, app);
@@ -2080,7 +2094,7 @@ export function appSetupGaps(parsed, root, dir) {
     gaps.push({ row: 'Dev server', dir: app, value: [`${app === '.' ? '' : `${app}: `}${TS.packageManager(root, pm && !isNone(pm) ? pm[0] : null)} run dev`] });
   }
   const env = configValuesIn(parsed, 'env-files');
-  if (env && !isNone(env) && !env.some((f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`)))) {
+  if (env && !isNone(env) && !env.some((f) => envFileUnder(app, f))) {
     let have = [];
     try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
     if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
@@ -2096,13 +2110,74 @@ export function appSetupGaps(parsed, root, dir) {
 }
 const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
+// Clerk on a development instance, shared by drift's permission check and desk-pr's sign-in capture
+// recipe (screenshot-surfaces.md), which imports these so both read an env file the same way.
+// clerkSecretKeyIn: the CLERK_SECRET_KEY an env file's text sets (`export`, quotes and a trailing
+// comment allowed), or null where it sets none. isClerkDevKey: a development key, `sk_test_` and key
+// characters only, so no control character reaches a request header or an error message.
+// clerkUsersByEmail: Clerk's users with that email; a refusal throws with its `status`.
+export const clerkSecretKeyIn = (text) => /^[ \t]*(?:export[ \t]+)?CLERK_SECRET_KEY[ \t]*=[ \t]*["']?([^"'\s#]*)/m.exec(text)?.[1] ?? null;
+export const isClerkDevKey = (key) => /^sk_test_[A-Za-z0-9_-]+$/.test(key ?? '');
+export async function clerkUsersByEmail(key, email, { fetch = globalThis.fetch } = {}) {
+  const r = await fetch(`https://api.clerk.com/v1/users?email_address=${encodeURIComponent(email)}`, {
+    headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw Object.assign(new Error(`Clerk answered ${r.status}`), { status: r.status });
+  return r.json();
+}
+
+// The §4 Test sign-in permissions one app names that its §4 Test sign-in user lacks in Clerk, read
+// with the CLERK_SECRET_KEY of the app's first §4 Env files item in the primary checkout (`root`) that
+// holds one, a development key (`sk_test_`) only. An app naming no permissions, or with no Test sign-in
+// item, is no finding and makes no Clerk call. `fetch` is the one Clerk is called through.
+// -> [{ row: 'Test sign-in permissions', dir, email, need, lacks: [perm] } | { …, unread: why }]
+export async function appPermissionGaps(parsed, root, dir, { fetch = globalThis.fetch } = {}) {
+  const app = appDirOf(dir);
+  const named = configValuesIn(parsed, 'test-signin-permissions');
+  if (!named || isNone(named)) return [];
+  const need = [...new Set(named.map(signinPermissionsOf).filter((x) => x && appDirOf(x.dir) === app).flatMap((x) => x.perms))];
+  const signin = configValuesIn(parsed, 'test-signin');
+  const email = !need.length || !signin || isNone(signin) ? null : signin.map((x) => parseCommandItem(x)).find((x) => appDirOf(x.dir) === app)?.cmd;
+  if (!email) return [];
+  const gap = (more) => [{ row: 'Test sign-in permissions', dir: app, email, need, ...more }];
+  const env = configValuesIn(parsed, 'env-files');
+  let envFile = null, key = null;
+  for (const f of env && !isNone(env) ? env.filter((f) => envFileUnder(app, f)) : []) {
+    let text = '';
+    try { text = readFileSync(join(root, f), 'utf8'); } catch { continue; }
+    key = clerkSecretKeyIn(text);
+    if (key != null) { envFile = f; break; }
+  }
+  if (!envFile) return gap({ unread: `no §4 Env files item under ${app} holds a CLERK_SECRET_KEY in the primary checkout` });
+  if (!isClerkDevKey(key)) return gap({ unread: `${envFile}'s CLERK_SECRET_KEY is not a development instance's (sk_test_), so desk read nothing` });
+  let users;
+  try { users = await clerkUsersByEmail(key, email, { fetch }); } catch (e) {
+    return gap({ unread: e?.status ? e.message : `Clerk could not be reached: ${String(e?.message ?? e).split('\n')[0]}` });
+  }
+  if (!Array.isArray(users) || !users.length) return gap({ unread: 'Clerk has no user with that email' });
+  // `services` absent holds nothing; a list of names, or an object of flags, holds the names set. Any
+  // other shape is one desk cannot read, so it is PERMREAD, never a false "lacks".
+  const services = users[0]?.public_metadata?.services;
+  const isFlags = services != null && typeof services === 'object' && !Array.isArray(services);
+  if (services != null && !(Array.isArray(services) && services.every((s) => typeof s === 'string')) && !isFlags) {
+    return gap({ unread: 'its public_metadata.services is neither a list of names nor an object of flags' });
+  }
+  const held = new Set(services == null ? [] : isFlags ? Object.keys(services).filter((k) => services[k]) : services);
+  const lacks = need.filter((p) => !held.has(p));
+  return lacks.length ? gap({ lacks }) : [];
+}
+
 export function appGapLines(gaps, dir) {
   const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
   const lines = gaps.map((g) => (g.row === 'Dev server'
     ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
     : g.row === 'Env files'
       ? `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`
-      : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
+      : g.row === 'Test sign-in permissions'
+        ? (g.lacks
+          ? `NOPERM   §4 Test sign-in user ${g.email} for ${g.dir} lacks ${g.lacks.join(', ')} in its Clerk public_metadata.services, which §4 Test sign-in permissions names: a worker signed in as it cannot see the pages that need ${g.lacks.length > 1 ? 'them' : 'it'}`
+          : `PERMREAD §4 Test sign-in user ${g.email} for ${g.dir}: could not read its Clerk permissions (${g.unread}), so whether it holds ${g.need.join(', ')} is unknown`)
+        : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
   return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
@@ -2115,13 +2190,14 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...invalid.map(invalidLine),
     ...conflicts.map(conflictLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
+    ...unbound.map((u) => `UNBOUND  §4 ${u.row} item "${u.item}" ${u.why}, so one locked run can take the whole machine: set it to \`${u.bounded}\``),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),
@@ -2883,7 +2959,7 @@ if (isMain) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
           const root = configRepoRoot(parsed) || process.cwd();
-          const gaps = appSetupGaps(parsed, root, dir);
+          const gaps = [...appSetupGaps(parsed, root, dir), ...await appPermissionGaps(parsed, root, dir)];
           for (const l of appGapLines(gaps, dir)) console.log(l);
           process.exitCode = gaps.length ? 1 : 0;
           break;
@@ -3119,7 +3195,7 @@ if (isMain) {
           const [tool, name, ...rule] = rest;
           const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
-          console.log(`${tool} ${name}: ${r.login.rule === 'off' ? 'off' : 'unused'}`);
+          console.log(`${tool} ${name}: ${r.login.rule === 'off' ? 'off' : r.login.stored === 'fallback' ? 'fallback: new work of the repos following the default starts here while the default is full' : 'unused'}`);
           break;
         }
         if (sub === 'default' && rest.length === 2) {

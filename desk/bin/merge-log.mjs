@@ -13,13 +13,18 @@
 //       off records `disarmed`, which releases the PR.
 //   merge-log.mjs record ... [--ticket <key>]
 //       names the ticket the PR is for, as the merge driver does.
+//   merge-log.mjs record ... --event merged
+//       a `merged` line carries `merged_by`, the login GitHub names as the merger, read from GitHub. With
+//       none named, `who` is `unknown`.
 //   merge-log.mjs show [--repo <owner/name>] [--pr <n>]
 //       the events, oldest first, one line each.
 //   merge-log.mjs show --pr <n> --latest [--repo <owner/name>]
 //       the PR's latest merged (else armed, not since disarmed or failed) event as one JSON line: its event, who,
 //       head SHA, time and ticket. Nothing, exit 0, when the log has none or there is no log yet.
 // The repo defaults to §0 GitHub repo. `who` names the merger and stays the same across its own retries:
-// `merge-driver <slug>` for the driver, `session <id or name>` for a session.
+// `merge-driver <slug>` for the driver, `session <id or name>` for a session, and on a `merged` line
+// `github <login>` for a PR merged outside desk before its merger got to it, or `unknown` where GitHub
+// names no merger.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,8 +115,59 @@ export function claim({ repo, pr, sha, by, now = Date.now(), armedNow = ghArmed,
     return { ok: true };
   });
 }
-export function record({ repo, pr, sha, by, event, ticket = null, why = null, now = Date.now(), path = logPath() }) {
-  locked(path, () => append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event, ...(ticket ? { ticket } : {}), ...(why ? { why } : {}) }, path));
+// The merger of a PR someone outside desk merged, as GitHub names them: `github <login>`, else `unknown`.
+export const outsideMerger = (login) => (login ? `github ${login}` : 'unknown');
+
+// `mergedBy`, on a `merged` record: the login GitHub names as the PR's merger, kept as `merged_by`;
+// null when GitHub names none, which makes the merger `unknown` rather than `by`; undefined when
+// GitHub was not read, which records `by` as before. -> the entry written.
+export function record({ repo, pr, sha, by, event, ticket = null, why = null, mergedBy, now = Date.now(), path = logPath() }) {
+  const named = event === 'merged' && mergedBy !== undefined;
+  const e = { at: new Date(now).toISOString(), repo, pr: String(pr), sha, by: named && !mergedBy ? 'unknown' : by, event,
+    ...(named ? { merged_by: mergedBy || null } : {}), ...(ticket ? { ticket } : {}), ...(why ? { why } : {}) };
+  locked(path, () => append(e, path));
+  return e;
+}
+
+// The PR as GitHub has it: { merged, head, login }, `login` the merger it names (null for none), or
+// null when it could not be read.
+export function ghMerged(repo, pr) {
+  const r = spawnSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'state,headRefOid,mergedBy'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
+  if (r.status !== 0) return null;
+  try {
+    const v = JSON.parse(r.stdout);
+    return { merged: v.state === 'MERGED', head: v.headRefOid ? String(v.headRefOid) : null, login: v.mergedBy?.login ? String(v.mergedBy.login) : null };
+  } catch { return null; }
+}
+// The login GitHub names as the PR's merger: a string, null when it names none, or undefined when it
+// could not be read.
+export const ghMergedBy = (repo, pr) => { const g = ghMerged(repo, pr); return g ? g.login : undefined; };
+
+// A PR GitHub shows merged, `g` as a read gives it ({ head, login }): its merge log line at the head
+// GitHub merged, `by` the merger (merge-log's `who`; outsideMerger(g.login) for a merge desk did not
+// make). -> { who, at, moved, note }: the merger the line names (`unknown` where GitHub names none, as
+// record writes it), the head recorded, whether GitHub merged another head than `sha`, and what to add
+// to the line where it could not be written.
+export function recordMerged({ repo, pr, sha, g, by = outsideMerger(g.login), ticket = null, path = logPath() }) {
+  const at = g.head || sha;
+  const who = g.login ? by : 'unknown';
+  let note = '';
+  try { record({ repo, pr, sha: at, by, event: 'merged', mergedBy: g.login ?? null, ticket, path }); } catch (err) { note = `; not written to the merge log (${err.message})`; }
+  const moved = !!g.head && !g.head.startsWith(sha) && !sha.startsWith(g.head);
+  return { who, at, moved, note };
+}
+// The line naming a head GitHub merged other than the one checked.
+export const movedLine = (got, sha) => `at ${got.slice(0, 9)}, not the head checked, ${sha.slice(0, 9)}: something merged unchecked`;
+
+// A PR GitHub already shows merged, before this merger merged it: someone else merged it, so the line
+// names them (outsideMerger) at the head GitHub merged. `read(repo, pr)` is GitHub's PR, as ghMerged
+// gives it (the merge lease hold passes its own read). -> null when GitHub shows it unmerged or could
+// not be read, and nothing is written; else recordMerged's result with `line` the line to print.
+export function recordOutside({ repo, pr, sha, ticket = null, read = ghMerged, path = logPath() }) {
+  const g = read(repo, pr);
+  if (!g?.merged) return null;
+  const m = recordMerged({ repo, pr, sha, g, ticket, path });
+  return { ...m, line: `already merged on GitHub by ${m.who}${m.moved ? ` ${movedLine(g.head, sha)}` : ''}${m.note}` };
 }
 
 // The PR's latest `merged` event, else its latest `armed` one not ended since, else null. A disarm ends
@@ -137,7 +193,7 @@ if (isMain) {
   const latestFlag = args.includes('--latest'); if (latestFlag) args.splice(args.indexOf('--latest'), 1);
   const repoFlag = flag('--repo'); const by = flag('--by'); const event = flag('--event'); const why = flag('--why'); const prFlag = flag('--pr'); const ticket = flag('--ticket');
   const [cmd, pr, sha] = args;
-  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--ticket <key>] [--why <text>] | show [--pr <n>] | show --pr <n> --latest   [--repo <owner/name>]';
+  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--ticket <key>] [--why <text>] | outside <PR> <sha> [--ticket <key>] | show [--pr <n>] | show --pr <n> --latest   [--repo <owner/name>]';
   const die = (m) => { console.error(`merge-log: ${m}`); process.exit(EXIT.SHOW_PERSON); };
   let repo = repoFlag;
   if (!repo) { try { repo = E.ghRepo(); } catch (e) { die(`no --repo, and §0 GitHub repo could not be read (${e.message})`); } }
@@ -151,14 +207,19 @@ if (isMain) {
     for (const e of readLog()) if (e.repo === repo && (prFlag == null || String(e.pr) === String(prFlag))) console.log(eventLine(e));
     process.exit(EXIT.GO_ON);
   }
-  if (!['claim', 'record'].includes(cmd) || !/^[1-9][0-9]*$/.test(pr ?? '') || !/^[0-9a-f]{7,40}$/.test(sha ?? '') || !by) die(usage);
-  if (cmd === 'claim') {
+  if (!['claim', 'record', 'outside'].includes(cmd) || !/^[1-9][0-9]*$/.test(pr ?? '') || !/^[0-9a-f]{7,40}$/.test(sha ?? '') || (!by && cmd !== 'outside')) die(usage);
+  if (cmd === 'outside') {
+    const o = recordOutside({ repo, pr, sha, ticket });
+    if (!o) process.exit(EXIT.GO_ON + 1);
+    console.log(o.line);
+  } else if (cmd === 'claim') {
     const r = claim({ repo, pr, sha, by });
     if (!r.ok) die(r.why);
     console.log(`claimed ${repo}#${pr} at ${sha.slice(0, 12)} for ${by}`);
   } else {
     if (!EVENTS.includes(event) || event === 'claim') die(usage);
-    record({ repo, pr, sha, by, event, ticket, why });
-    console.log(`recorded ${repo}#${pr} ${event} at ${sha.slice(0, 12)} by ${by}`);
+    const mergedBy = event === 'merged' ? ghMergedBy(repo, pr) : undefined;
+    const e = record({ repo, pr, sha, by, event, ticket, why, mergedBy });
+    console.log(`recorded ${repo}#${pr} ${event} at ${sha.slice(0, 12)} by ${e.by}${e.merged_by ? ` (GitHub: ${e.merged_by})` : ''}`);
   }
 }
