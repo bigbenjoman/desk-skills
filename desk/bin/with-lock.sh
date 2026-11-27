@@ -10,6 +10,7 @@
 #   with-lock.sh browser -- node shot.mjs                     # a leading -- is dropped with or without --cwd
 #   with-lock.sh test --cwd apps/api -- uv run pytest tests/x.py
 #   with-lock.sh nolock --cwd portal -- pnpm dev              # a directory, no lock
+#   with-lock.sh install -- sh -c 'bun install'               # a dependency install, one at a time
 #   with-lock.sh tsc --timeout 60 --cwd . -- pnpm typecheck   # give up waiting after 60 s: exit 75
 # --cwd runs the command in that directory, relative to the root of the git worktree the caller is in:
 # the form a §4 command item with a directory (`apps/api: uv run pytest`) takes, because `cd dir && …`
@@ -48,8 +49,9 @@
 #           A slot whose lock file a live run holds with no lease (an older wrapper) counts as held.
 #           An unreadable store or a failing broker falls back to the lock files, saying so once.
 # In every mode the grant line names the commit of the release that took the slot (`release`).
-# The lease is owned by this script's pid, which execs into the command, or by the command's pid where
-# the mkdir fallback runs it as a child, so it is held exactly as long as the command runs.
+# The lease is owned by this script's pid, which execs into the command (on WSL into locked-run.mjs,
+# which runs it as a child to measure it), or by the command's pid where the mkdir fallback runs it as
+# a child, so it is held exactly as long as the command runs.
 #
 # Every wait is logged in the lease log (leases.mjs), in every mode: a queued line as a run starts to
 # wait, then a grant line (the lease's own where a lease is taken) or a gave-up line, each with the
@@ -87,7 +89,7 @@
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
-name="${1:?usage: with-lock.sh <test|tsc|browser|light|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
+name="${1:?usage: with-lock.sh <test|tsc|browser|light|install|nolock>[--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
 # A repo whose §4 Suite weight is `light` runs its suites under the light lock instead: slots of its
 # own, box-wide, so a long light suite neither holds nor queues behind the heavy suites and typechecks
 # that share the test lock. It runs again under that name, so the pass, which counts only `test` and
@@ -139,9 +141,28 @@ case "$name" in
   # nolock: no lock at all, only --cwd. A §4 command item with a directory that is not heavy (a dev
   # server, a codegen) runs this way, because the worker allow-list has no `cd`.
   nolock)   lock="" ;;
+  # install: one slot, never a lease or headroom admission, so dependency installs (worktree setup,
+  # the base gate, the baseline) run one at a time machine-wide without queueing behind a suite.
+  install)  lock="$dir/desk-install.lock" ;;
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac
 [ -n "$lock" ] || exec "$@"
+# A Jest or `turbo run` the command starts gets the test cap or turbo-concurrency added
+# (locked-run.mjs bound), unless it sets its own. A node that fails leaves the command as given.
+case "$name" in test|tsc|light)
+  bounded=(); nb=0
+  while IFS= read -r -d '' x; do bounded+=("$x"); nb=$((nb + 1)); done < <(node "$here/locked-run.mjs" bound "$name" -- "$@" </dev/null)
+  [ "$nb" -gt 0 ] && set -- "${bounded[@]}" ;;
+esac
+# On WSL a test or tsc run is measured: its command runs as locked-run.mjs's child, which logs the
+# guest's memory peak once it exits (DESK_RUN_PEAK=on or off overrides the kernel check).
+measure=()
+case "$name" in test|tsc)
+  peak="${DESK_RUN_PEAK:-}"
+  [ -n "$peak" ] || { grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && peak=on; }
+  [ "$peak" = on ] && measure=(node "$here/locked-run.mjs" run "$name" --) ;;
+esac
+run_cmd() { exec ${measure[@]+"${measure[@]}"} "$@"; }
 # An autopilot worker's test run keeps its temporary files on disk, never in a tmpfs /tmp: its TMPDIR is
 # a folder of its own in the repo's cache folder (spawn-worker.sh), named by this pid, which the command
 # keeps, so a later run removes it once that pid is gone. In it, Jest's default cache (jest_<uid in base
@@ -284,6 +305,7 @@ say_waiting() {
 
 # The slot lease. Anything but shadow or on, a failing node included, is off.
 lease_mode="$(node "$here/slot-lease.mjs" mode 2>/dev/null)" || lease_mode=off
+[ "$name" = install ] && lease_mode=off
 # The light lock's express lane: one slot of its own, a lock file outside light-lock-max and never
 # gated on headroom, for a run its caller says is small (DESK_LIGHT_SMALL=1, as tests/related.sh does)
 # where the machine profile's light-express-lane row is on. Such a run takes a pool slot it may have
@@ -321,8 +343,8 @@ if [ "$lease_mode" = on ]; then
   rc=$?
   unwatch
   case $rc in
-    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; watch_caller; exec "$@" ;;
-    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; watch_caller; exec "$@" ;;
+    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; watch_caller; run_cmd "$@" ;;
+    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; watch_caller; run_cmd "$@" ;;
     75) exit 75 ;;
     *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off
   esac
@@ -415,7 +437,7 @@ if command -v flock >/dev/null 2>&1; then
     holder 1
     held; granted "$$" "$@"
     watch_caller
-    exec "$@"
+    run_cmd "$@"
   fi
   # Several slots, or admission on: try each without blocking, and wait 2 s between rounds. A run let
   # in above the floor tries every slot up to the ceiling (slot_order), at once and then each round.
@@ -423,13 +445,13 @@ if command -v flock >/dev/null 2>&1; then
   while :; do
     for i in $(slot_order); do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; watch_caller; exec "$@"; }
+      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; watch_caller; run_cmd "$@"; }
       exec 9>&-
     done
     admit_round && continue
     if [ -n "$express" ]; then
       exec 9>>"$elock" || exit 2
-      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; watch_caller; exec "$@"; }
+      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; watch_caller; run_cmd "$@"; }
       exec 9>&-
     fi
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
@@ -498,7 +520,7 @@ held
 # Run the command as a child (explicit <&0: a background job would otherwise get /dev/null) and
 # record its pid beside ours, so the lock counts as held while either is alive — a SIGKILLed wrapper
 # must not free the lock under a suite that is still running.
-"$@" <&0 &
+${measure[@]+"${measure[@]}"} "$@" <&0 &
 child=$!
 echo "$$ $child" > "$ldir/pid"
 watch_caller

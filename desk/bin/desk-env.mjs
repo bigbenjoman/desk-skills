@@ -110,7 +110,9 @@
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run or, with worker-local-services yes, a Local services
 //                                             item with no service name (UNLISTED), an app directory other command rows
-//                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
+//                                             name with no Dev server item (NODEV), a §4 Unit tests or Typecheck
+//                                             item starting Jest with no worker cap or turbo run with no
+//                                             --concurrency, with its bounded form (UNBOUND), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
@@ -158,6 +160,9 @@
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
 //                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs logins fee <claude|codex> <name> <usd|none> [<plan>]
+//                                             record one login's plan and monthly fee in the Fees table,
+//                                             or clear it with none, keeping the previous file as .bak
 //   node desk-env.mjs preview-slot [--wait <s>] <label>
 //                                             take the preview-build slot for §4 Vercel's team before a push
 //                                             that starts a preview build, waiting up to <s> (default 600)
@@ -188,6 +193,7 @@ import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import { parsePs, psRows as readPs, runPs } from './ps-rows.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
+import { unbounded as unboundedRun } from './run-bounds.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
@@ -1027,7 +1033,7 @@ export const leverOn = (name, l = levers()) => l.on.includes(name);
 // The arm a lever with more than two arms runs on for this worker: its value in DESK_LEVER_VALUES
 // (`<lever>=<value>`, space-separated), which spawn-worker.sh exports from the ticket's pin; null
 // where it carries none for `name`.
-function leverValue(name, env = process.env) {
+export function leverValue(name, env = process.env) {
   for (const w of String(env.DESK_LEVER_VALUES ?? '').split(/\s+/)) {
     const i = w.indexOf('=');
     if (i > 0 && w.slice(0, i) === name && w.length > i + 1) return w.slice(i + 1);
@@ -1955,7 +1961,28 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight, dontAsk: mode === 'dontAsk' ? file : null };
+}
+
+// §4 Unit tests and Typecheck items that start Jest with no worker cap or `turbo run` with no
+// --concurrency (run-bounds.mjs unbounded), each with its bounded form at the test cap and the
+// profile's turbo-concurrency: -> [{ row, item, why, bounded }].
+export function unboundRuns(parsed, root) {
+  const n = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : null);
+  let jest = null;
+  try { jest = n(configValueIn(parsed, 'test-cap')); } catch { /* unset */ }
+  const limits = { jest: jest ?? undefined, turbo: n(machineValue('turbo-concurrency')) ?? undefined };
+  const out = [];
+  for (const id of ['test-cmd', 'typecheck-cmd']) {
+    const values = driftValues(parsed, id);
+    if (!values || isNone(values)) continue;
+    for (const item of values) {
+      const { dir, cmd } = parseCommandItem(item);
+      const u = unboundedRun(cmd, { root, dir, limits });
+      if (u) out.push({ row: CONFIG_ROWS[id].row, item, why: u.why, bounded: `${dir === '.' ? '' : `${dir}: `}${u.bounded}` });
+    }
+  }
+  return out;
 }
 
 // The rows another row settles (the schema's forced rules), as the config file has the settling rows:
@@ -2092,13 +2119,14 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...invalid.map(invalidLine),
     ...conflicts.map(conflictLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
+    ...unbound.map((u) => `UNBOUND  §4 ${u.row} item "${u.item}" ${u.why}, so one locked run can take the whole machine: set it to \`${u.bounded}\``),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),
@@ -3119,6 +3147,13 @@ if (isMain) {
           console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${L.ruleWord(r.login)}`);
           break;
         }
+        if (sub === 'fee' && rest.length >= 3) {
+          const [tool, name, fee, ...plan] = rest;
+          const r = L.setFee(subs, { tool, name, fee, plan: plan.join(' ') });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${name}: ${r.login.fee ? `${r.login.fee.plan}, $${r.login.fee.usd.toFixed(2)} a month` : 'fee not set'}`);
+          break;
+        }
         if (sub === 'migrate' && rest.length === 0) {
           if (!L.needsPinMigration(subs)) { console.log('nothing to migrate'); break; }
           const r = L.migratePins(subs, () => L.checkLogins(subs));
@@ -3127,7 +3162,7 @@ if (isMain) {
           if (r.hint) console.log(`add ${r.hint} with a in view 6`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | migrate`);
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | fee <claude|codex> <name> <usd|none> [<plan>] | pin claude <name> | migrate`);
         process.exit(2);
         break;
       }

@@ -13,7 +13,8 @@
 // Cost Explorer request is billed, so an AWS profile is read at most once a UTC day, and after a
 // failure not again for READ_EVERY_MS; a Neon org the same.
 //
-//   node cost-cache.mjs refresh [--force]   read every supplier that is due, under its lock
+//   node cost-cache.mjs refresh [--force]   read every supplier that is due, under its lock, then this
+//                                           month's Claude and Codex use at list prices when due
 //   node cost-cache.mjs show                print the cache
 import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
@@ -928,8 +929,36 @@ export async function refresh({ dir = costDir(), lockDir = E.lockDir(), costs = 
   return out;
 }
 
-// desk-q's check: start one reading in the background when any supplier is due, and never wait.
-export function startRefresh({ now = Date.now(), due = dueSuppliers({ now }), env = process.env } = {}) {
+// ---- Claude and Codex use at list prices (subscription-use.mjs) -------------------------------
+// Kept apart from the charges in use.json: list-price use is not a bill. Read again once it is an hour
+// old or from another month.
+export const usePath = (dir = costDir()) => join(dir, 'use.json');
+export function readUseFile(dir = costDir()) {
+  try { return JSON.parse(readFileSync(usePath(dir), 'utf8')); } catch { return null; }
+}
+// Whether a use reading is for the month `now` (UTC) falls in.
+export const useIsThisMonth = (use, now) => {
+  const d = new Date(now);
+  return !!use && use.period?.year === d.getUTCFullYear() && use.period?.month === d.getUTCMonth() + 1;
+};
+export const useDue = ({ use = readUseFile(), now }) => !(useIsThisMonth(use, now) && now - (use.at ?? 0) < READ_EVERY_MS);
+// -> 'read' | why not
+export async function refreshUse({ dir = costDir(), lockDir = E.lockDir(), now = Date.now(), force = false, read = null } = {}) {
+  const lock = await takeBorrowLock({ dir: lockDir, name: 'desk-cost-use.lock.d', waitMs: 0 });
+  if (!lock.ok) return 'another reading is running';
+  try {
+    if (!force && !useDue({ use: readUseFile(dir), now })) return 'read under an hour ago';
+    const use = (read ?? (await import('./subscription-use.mjs')).readUse)({ now });
+    mkdirSync(dir, { recursive: true });
+    const part = `${usePath(dir)}.part`;
+    writeFileSync(part, `${JSON.stringify(use, null, 2)}\n`);
+    renameSync(part, usePath(dir));
+    return 'read';
+  } finally { lock.release(); }
+}
+
+// desk-q's check: start one reading in the background when any supplier, or the use, is due, and never wait.
+export function startRefresh({ now = Date.now(), due = [...dueSuppliers({ now }), ...(useDue({ now }) ? ['use'] : [])], env = process.env } = {}) {
   if (!due.length) return { started: false };
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'refresh'], { env, detached: true, stdio: 'ignore' });
   child.on('error', () => {});
@@ -943,7 +972,10 @@ const isMain = (() => {
 })();
 if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);
-  if (cmd === 'refresh') console.log(JSON.stringify(await refresh({ force: rest.includes('--force') })));
+  if (cmd === 'refresh') {
+    const force = rest.includes('--force');
+    console.log(JSON.stringify({ ...(await refresh({ force })), use: await refreshUse({ force }) }));
+  }
   else if (cmd === 'show') console.log(JSON.stringify(forCosts(readCache(), readCosts(E.costsPath())), null, 2));
   else { console.error('usage: cost-cache.mjs refresh [--force] | show'); process.exit(2); }
 }

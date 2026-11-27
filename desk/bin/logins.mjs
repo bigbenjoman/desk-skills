@@ -91,6 +91,14 @@ export function loginEnv(l, env = process.env) {
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
+// The Fees table: each login's plan and monthly fee, as the person entered them in /desk-setup costs.
+const FEE_HEADER = 'tool|name|plan|monthly fee (usd)';
+// `$200`, `200.00` or `1,000` -> dollars; blank, `-` or `none` -> null (not set); anything else undefined.
+export function feeUsd(v) {
+  const s = String(v ?? '').trim().replace(/^\$/, '').replace(/,/g, '');
+  if (!s || s === '-' || s.toLowerCase() === 'none') return null;
+  return /^\d+(\.\d+)?$/.test(s) ? Number(s) : undefined;
+}
 
 // -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A
 // malformed row is named and left out; a tool with no good row keeps its default login, except Claude in
@@ -101,6 +109,7 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
   const errors = [];
+  const fees = [];
   let header = null;
   let accounts = false;
   String(text ?? '').split('\n').forEach((raw, i) => {
@@ -110,6 +119,14 @@ export function parseSubscriptions(text, { exists = true } = {}) {
     if (c.every((x) => /^:?-{2,}:?$/.test(x) || x === '')) return;
     if (!header) { header = c.map((x) => x.toLowerCase()); return; }
     const at = `line ${i + 1}`;
+    if (header.join('|') === FEE_HEADER) {
+      const [tool, name, plan, usdText] = c;
+      const usd = feeUsd(usdText);
+      if (c.length !== 4 || !TOOLS.includes(tool) || !NAME.test(name ?? '')) errors.push(`${at}: a fee wants a tool (claude or codex), a name, a plan and a monthly fee`);
+      else if (usd === undefined) errors.push(`${at}: ${tool} ${name}: fee "${usdText}" is not dollars`);
+      else fees.push({ at, tool, name, fee: { plan: plan && plan !== '-' ? plan : null, usd } });
+      return;
+    }
     if (header.join('|') === 'tool|name|folder') {
       const [tool, name, folder] = c;
       if (c.length !== 3 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name and a folder`);
@@ -141,6 +158,11 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   });
   // A file with pins has no ~/.claude login unless it lists one.
   for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool) && !(tool === 'claude' && multiAccount({ accounts, logins }))) logins.push(defaultLogin(tool));
+  for (const f of fees) {
+    const i = logins.findIndex((l) => l.tool === f.tool && l.name === f.name);
+    if (i < 0) errors.push(`${f.at}: a fee for ${f.tool} ${f.name}, which is not one of the logins`);
+    else logins[i] = { ...logins[i], fee: f.fee };
+  }
   return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
@@ -193,6 +215,17 @@ export function renderSubscriptions(logins, removed = []) {
     ...(pinned ? ['| Tool | Name | Folder | Account | Rule |', '|---|---|---|---|---|'] : ['| Tool | Name | Folder | Rule |', '|---|---|---|---|']),
     ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${pinned ? `${cell(l.account ?? '-')} | ` : ''}${cell(l.stored ?? l.rule)} |`),
     '',
+    ...(logins.some((l) => l.fee) ? [
+      '## Fees',
+      '',
+      'What each subscription costs a month, as entered in `/desk-setup costs` (`desk-env logins fee`).',
+      'desk-q\'s Costs shows each as a monthly line. desk never guesses a fee.',
+      '',
+      '| Tool | Name | Plan | Monthly fee (USD) |',
+      '|---|---|---|---|',
+      ...sortLogins(logins.filter((l) => l.fee)).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.fee.plan ?? '-')} | ${cell(l.fee.usd ?? 'none')} |`),
+      '',
+    ] : []),
     ...(removed.length ? [
       '## Removed',
       '',
@@ -475,6 +508,24 @@ export function setDefault(subs, { tool, who }) {
   const was = defaultOf(moved.logins, tool);
   const r = writeRule(moved, { tool, name, rule: 'in rotation', check: () => null });
   return { text: r.text, login: r.login, was: was && was.dir !== r.login.dir ? was : null };
+}
+
+// ---- a login's fee ---------------------------------------------------------------------------
+// The file's text with one listed login's plan and monthly fee set, or cleared with a fee of `none`.
+//   -> { text, login }, or throws with the reason
+export function setFee(subs, { tool, name, fee: feeText, plan }) {
+  if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
+  if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  const target = subs.logins.find((l) => l.tool === tool && l.name === name);
+  if (!target) throw new Error(`logins: no ${tool} login "${name}": the logins are ${subs.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
+  const usd = feeUsd(feeText);
+  if (usd === undefined) throw new Error(`logins: fee "${feeText}" is not dollars: give the monthly fee, e.g. 200, or none to clear it`);
+  const p = String(plan ?? '').trim();
+  if (usd !== null && !p) throw new Error(`logins: ${tool} ${name}: name the plan the fee is for, e.g. Max`);
+  if (p.includes('`') || p.includes('|')) throw new Error('logins: a plan name takes no ` or |');
+  const { fee: _was, ...rest } = target;
+  const changed = { ...rest, source: 'file', ...(usd === null ? {} : { fee: { plan: p, usd } }) };
+  return { text: renderSubscriptions(subs.logins.map((l) => (l === target ? changed : l)), subs.removed), login: changed };
 }
 
 // ---- a repo's subscription -------------------------------------------------------------------

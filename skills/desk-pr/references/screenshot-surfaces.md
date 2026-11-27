@@ -122,8 +122,12 @@ app with no line there has no user to sign in as: `desk-env drift --app <dir>` n
    ./<script>.mjs <port> <path> <out.png> <test user email> <env file holding the instance's keys>`. A script elsewhere, or an argument holding `..`, is
    refused. Delete the script afterwards.
 3. **Refuse any key but a development one.** Mint the token server-side, sign in from a page where
-   ClerkJS has loaded, and print what the session token carries before looking at the page. A
-   refusal is the end of it: stop and report the env file and the reason it names (an autopilot
+   ClerkJS has loaded, and print what the session token carries before looking at the page.
+   Sign-in is done when the `__session` cookie is set, not when `setActive` resolves: where the
+   app's middleware 401s the server action `setActive` fires before that cookie is sent, it never
+   resolves (`@clerk/testing`'s `clerk.signIn` hangs the same way). No cookie within 30 seconds
+   stops the script, naming it; a first page load that fails is tried again, three loads in all. A
+   refused key is the end of it: stop and report the env file and the reason it names (an autopilot
    worker parks on it), and never look for another key:
 
 ```js
@@ -153,17 +157,26 @@ const page = await ctx.newPage();
 const base = `http://localhost:${port}`;
 await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded', timeout: 180000 });
 await page.waitForFunction(() => window.Clerk?.loaded, null, { timeout: 60000 });
-const signedIn = await page.evaluate(async (ticket) => {
+const status = await page.evaluate(async (ticket) => {
   const si = await window.Clerk.client.signIn.create({ strategy: 'ticket', ticket });
-  await window.Clerk.setActive({ session: si.createdSessionId });
-  const jwt = await window.Clerk.session.getToken();
-  const claims = JSON.parse(atob(jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-  return { status: si.status, claims: Object.keys(claims) };
+  window.Clerk.setActive({ session: si.createdSessionId }).catch(() => {}); // can hang where middleware 401s it; the cookie is the signal
+  return si.status;
 }, token);
-console.log('sign-in', JSON.stringify(signedIn));
+let session;
+for (const end = Date.now() + 30000; !session && Date.now() < end; await page.waitForTimeout(500)) {
+  session = (await ctx.cookies(base)).find((c) => c.name === '__session');
+}
+if (!session) throw new Error(`sign-in ${status}: no __session cookie was set within 30s, so no session`);
+const claims = JSON.parse(Buffer.from(session.value.split('.')[1], 'base64url').toString());
+console.log('sign-in', JSON.stringify({ status, claims: Object.keys(claims) }));
 await ctx.storageState({ path: `${out}.state.json` }); // the token is single-use; this is what you reuse
 chmodSync(`${out}.state.json`, 0o600);
-await page.goto(`${base}${path}`, { waitUntil: 'networkidle', timeout: 180000 });
+for (let tries = 1; ; tries++) {
+  const res = await page.goto(`${base}${path}`, { waitUntil: 'networkidle', timeout: 180000 }).catch((e) => e);
+  if (!(res instanceof Error) && (!res || res.ok())) break;
+  if (tries === 3) throw new Error(`${path}: ${res instanceof Error ? res.message : res.status()} on all 3 loads`);
+  await page.waitForTimeout(3000);
+}
 console.log('landed', page.url().replace(base, ''));
 await page.screenshot({ path: out, fullPage: true });
 await browser.close();

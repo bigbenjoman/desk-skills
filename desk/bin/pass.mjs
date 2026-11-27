@@ -16,6 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
+import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief } from './decisions-change.mjs';
 import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
@@ -53,8 +54,8 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn } from './gate.mjs';
+import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
@@ -319,6 +320,13 @@ const shOut = (cmd, args, { fresh, ...opts } = {}) => {
   try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
+// shOut's output, or a throw naming `what` and the last line it printed. Declared here, before the
+// first phase runs: a phase's handlers run as the module loads.
+const readOrThrow = (what, cmd, args, opts) => {
+  const r = shOut(cmd, args, opts);
+  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
+  return r.out;
+};
 function refusedLine(args, refused, why) {
   const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
   return `${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, ${refused} — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${String(why).split('\n').pop()}`;
@@ -412,7 +420,8 @@ const { read: registryOk, sessions: live } = REGISTRY;
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
+// `waiting` is WAITING ON YOU, the person's; `waits` is what waits on a slot or the next pass, nobody's.
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], waits: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
 // The handlers every phase's actions share (pass/run-phase.mjs): a queue write and a report line.
 const PHASE_HANDLERS = {
   set: (a) => q('set', a.key, ...a.fields),
@@ -719,7 +728,7 @@ function refuseUnnamedLease(t, question) {
   return true;
 }
 
-// A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
+// A session that handed off (AUTOPILOT_HANDOFF: <stage>) is queued to start that stage in a fresh
 // session, ahead of new tickets, in the same worktree and on the same branch (spawnHandoff below). A
 // stage no session starts at, a worktree or branch that is gone, or a handoff briefing that is missing
 // or names no criteria parks it, naming which, and spawns nothing. One that is not JSON is kept aside
@@ -748,18 +757,32 @@ function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
   if (isSpine(t)) parkSpine(t, pr);
   else if (ownsSpecs(t)) checkOwned(t, pr);
 }
+// Mid-stage handoffs in a row at one stage before the ticket parks (handedOff).
+const MID_STAGE_REPEATS = 2;
 function handedOff(t, said, { log, h, imgs, stopped }) {
   logDecisions(t, log, null);
   const stage = handoffStage(said);
   const parkIt = (why) => { q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
-  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${HANDOFF_ORDER.join(' or ')}), so no session was spawned. ${FROM_ZERO(t)}`);
+  if (!stage) return parkIt(`handed off to "${said}", which no session starts at (only Stage ${HANDOFF_ORDER.join(', ')}), so no session was spawned. ${FROM_ZERO(t)}`);
   const refused = handoffRefusal(t, stage);
   if (refused) return parkIt(refused);
+  // A handoff partway through a stage, on context (hooks/desk-handoff.py): one at the stage the last
+  // one was also mid-way through counts as a repeat, and the third in a row parks, so a stage whose
+  // own start fills the context past the threshold cannot hand off for ever.
+  const mid = readHandoff(STATE, t.key).data?.midStage ?? null;
+  const repeats = mid && t.handoff_mid != null && String(t.handoff_mid) === stage ? (Number(t.handoff_repeats) || 0) + 1 : 0;
+  if (repeats >= MID_STAGE_REPEATS) {
+    q('set', t.key, 'handoff_mid=null', 'handoff_repeats=null');
+    return parkIt(`handed off partway through Stage ${stage} ${repeats + 1} times in a row on context (${mid.context}% used; handoff-threshold ${mid.threshold}), so no session was spawned: its sessions leave Stage ${stage} no further. ${FROM_ZERO(t)}`);
+  }
   // The session's cost so far, added to the ticket's when its last session finishes.
   const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
-  q('set', t.key, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`,
+  q('set', t.key, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`, `handoff_mid=${mid ? stage : 'null'}`, `handoff_repeats=${mid ? repeats : 'null'}`,
+    `handoffs=${(Number(t.handoffs) || 0) + 1}`,
     ...(cost ? [`handoff_cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`] : []), ...(imgs ? [`images_dir=${imgs}`] : []));
-  report.advanced.push(`${t.key} handed off at the end of Stage ${HANDOFF_STAGES[stage]}: queued for a fresh session from Stage ${stage}${stopped}`);
+  report.advanced.push(mid
+    ? `${t.key} handed off partway through Stage ${stage} on context (${mid.context}% used; handoff-threshold ${mid.threshold}): queued for a fresh session from Stage ${stage}${stopped}`
+    : `${t.key} handed off at the end of Stage ${HANDOFF_STAGES[stage]}: queued for a fresh session from Stage ${stage}${stopped}`);
   return undefined;
 }
 
@@ -939,7 +962,7 @@ function advanceCloud(t) {
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
-  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
+  report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -962,6 +985,13 @@ function buildParkOf(t, question) {
 // §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
+// What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
+function prVerdict(pr) {
+  if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
+  try {
+    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
+  } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
+}
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
   try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
@@ -1067,6 +1097,7 @@ const ADVANCE_HANDLERS = {
   'pr-owner': (a) => {
     try { return prOwner(a.pr); } catch { return null; }
   },
+  'pr-verdict': (a) => prVerdict(a.pr),
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -1298,11 +1329,6 @@ for (const t of Object.values(queue().tickets)) {
 // holds (pass/parks.mjs decideClears). The reads its checks make, cached for the pass:
 const clearsCache = new Map();
 const cached = memo(clearsCache);
-const readOrThrow = (what, cmd, args, opts) => {
-  const r = shOut(cmd, args, opts);
-  if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
-  return r.out;
-};
 const clearsRead = {
   pr: (n, repo = GH_REPO) => cached(`pr:${repo}#${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state,isDraft,mergedAt']))),
   // The latest run of each check, as the gate reads them (gate.mjs latestPerCheck).
@@ -1496,6 +1522,7 @@ const CLEARS_HANDLERS = {
     return checkCond(a.cond, { ...clearsRead, push: (p) => pushParked(t, p), file: (f) => existsSync(condPath(f, { worktree: t.worktree, state: STATE })) });
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
+  'pr-verdict': (a) => prVerdict(a.pr),
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
   'other-merged': (a, s) => {
     const t = s.tickets[a.key];
@@ -1693,7 +1720,7 @@ function finishPush(t) {
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
   keepSlot(slot, n);
   q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
-  report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
+  report.done.push(`${t.key}: ${prVerdict(n)}; PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
 }
 // The §3b check-in times, or null where the row cannot be read (the digest says why).
@@ -3016,7 +3043,7 @@ function recordBaseline(path) {
       'base-line': (a) => { baseLines.push(a.line); },
       'drop-baseline': () => { try { unlinkSync(BL.baselineFile(STATE)); } catch { /* none recorded */ } },
       dirty: () => !!sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true }),
-      install: (a) => run('nolock', a.item).code,
+      install: (a) => run('install', a.item).code,
       restore: () => restore(path),
       record: (a) => BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: a.sha, items: a.checks, run: ({ name, ...it }) => run(E.lockFor(BL.CHECKS[name]), it) }),
     },
@@ -3303,7 +3330,7 @@ async function resumeKilled(t) {
   if (pre.limit) return preflightHitLimit(t, pre.cost, login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
-  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
@@ -3325,7 +3352,9 @@ async function resumeKilled(t) {
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...budgetEnv, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    // A fix try resumed is still a task worker, which never hands off (spawn-worker.sh's DESK_HANDOFF_FILE).
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...budgetEnv, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}),
+      ...(t.fix && !t.fix.finished ? { AUTOPILOT_NO_HANDOFF: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
@@ -3384,8 +3413,8 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
     fixBrief(t, reviewRun()),
     baselineBrief(),
     triageBrief(t),
-    migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed}, so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
-      'Read it and run §4 Database migrate yourself before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
+    migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed} (with an app per database, a failed seed counts too), so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
+      'Read it and run §4 Database migrate (and §4 Seed, where a seed failed) yourself, for the database that failed only, before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
     fixturesBrief(t.key, wt),
     t.cleared?.tail ? tailBrief(t)
       : t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
@@ -3434,6 +3463,34 @@ function resumeRound(t, { wt, kept, branch }) {
   const base = `origin/${DEFAULT_BRANCH}`;
   const brief = renderLastRound({ key: t.key, round: { ...round, stage }, answers, branch, worktree: wt, base, commits: branchCommits(wt, base), resumePath: r.path });
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
+}
+
+// A ticket with a PR whose ticket file ($STATE/tickets/<key>.md) gained Decisions entries dated after
+// that PR's last desk review, and after the last restart delivered for them (`decisions_seen`,
+// decisions-change.mjs), restarts at Stage 3 with those entries in its briefing, whatever stage a last
+// round or a handoff names; at Stage 0 when `resumable` is false (its round's worktree or resume file
+// was refused). Returns { stage: '3' or null, brief, line, seen }, `seen` the time to record as
+// `decisions_seen` once it spawns, or null: no ticket file or PR, nothing new, or the PR unread (said
+// in the report, and the ticket resumes as it would have).
+function decisionsRestart(t, { resumable = true } = {}) {
+  const pr = t.result?.pr ?? t.draft_pr ?? null;
+  const file = join(STATE, 'tickets', `${t.key}.md`);
+  if (pr == null || !existsSync(file)) return null;
+  const got = shOut('gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'createdAt,reviews']);
+  let view = null;
+  try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
+  if (!view) {
+    report.waiting.push(`${t.key}: PR #${pr} could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}), so its ticket file's Decisions were not compared with its last review`);
+    return null;
+  }
+  const reviewAt = lastReviewAt(view, { isVerdict: (b) => parseVerdict(b) != null, ownLogin: (l) => loginIn(l, conflictHandle) });
+  const since = decisionsSince(reviewAt, t.decisions_seen);
+  const entries = newDecisions(readFileSync(file, 'utf8'), { since, changedAt: statSync(file).mtime.toISOString() });
+  if (!entries.length) return null;
+  const count = `${entries.length} Decisions ${entries.length === 1 ? 'entry' : 'entries'} dated after PR #${pr}'s last review`;
+  return { stage: resumable ? '3' : null, seen: new Date().toISOString(),
+    brief: decisionsBrief({ key: t.key, pr, since: reviewAt, entries, file, resumable }),
+    line: resumable ? ` restarted at Stage 3: ${count}` : ` restarted at Stage 0, its round not resumable: ${count}` };
 }
 
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
@@ -3490,15 +3547,19 @@ function spawnCloud(t) {
 
 async function spawnHandoff(t, pick) {
   // queue.mjs stores a stage of 7 as a number.
-  const stage = t.handoff_stage == null ? '' : String(t.handoff_stage);
+  const handedTo = t.handoff_stage == null ? '' : String(t.handoff_stage);
   const parkIt = (why) => { q('set', t.key, 'handoff=null'); q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
-  if (!HANDOFF_STAGES[stage]) return parkIt(`handed off to "${stage}", which no session starts at, so no session was spawned. ${FROM_ZERO(t)}`);
+  if (!HANDOFF_STAGES[handedTo]) return parkIt(`handed off to "${handedTo}", which no session starts at, so no session was spawned. ${FROM_ZERO(t)}`);
   // The worktree may have gone while it waited for a slot.
-  const refused = handoffRefusal(t, stage);
+  const refused = handoffRefusal(t, handedTo);
   if (refused) return parkIt(refused);
+  // A requeue after the ticket file's Decisions changed builds them from Stage 3, with the handoff kept
+  // as what the sessions before it did.
+  const restart = decisionsRestart(t);
+  const stage = restart?.stage ?? handedTo;
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
+  const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? ''}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits })}`);
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -3512,7 +3573,7 @@ async function spawnHandoff(t, pick) {
   if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
-  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
@@ -3527,7 +3588,8 @@ async function spawnHandoff(t, pick) {
   const spawnRefused = spawnRefusal(spawned.out);
   if (spawnRefused) return fail(spawnRefused);
   leaseToWorker(t.key, port, spawned.out);
-  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
+  if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
+  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off${restart ? ` at Stage ${handedTo};${restart.line}` : ''}) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
@@ -3593,7 +3655,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   // No room under the memory ceiling: no try is spent, as at the usage limit, and the next pass looks again.
   const memWhy = memHeld(key);
-  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
+  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
@@ -3656,7 +3718,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(key);
-  if (memWhy) { logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
+  if (memWhy) { logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort();
   const briefPath = join(STATE, 'briefings', `${key}.md`);
   const prompt = `Your previous run of this session ended (${ended}). Carry on with your base ${tryWhat(bf.tries[bf.tries.length - 1])} on ${BASE} from where you stopped, in your worktree ${wt}. ` +
@@ -3665,7 +3727,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   const logBytes = logPreflight(key, pre.cost);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, AUTOPILOT_NO_HANDOFF: '1' },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
@@ -3842,7 +3904,8 @@ function fixTryStale(t) {
     : v.state === 'CLOSED' ? `PR #${f.pr} was closed unmerged`
     : headBound && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
   if (!ended) return false;
-  const line = `${t.key}: its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
+  // A PR still open (its head moved) leads with the review at that head; a merged or closed one has none to gate.
+  const line = `${t.key}: ${v.state === 'OPEN' ? `${prVerdict(f.pr)}; ` : ''}its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
   // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
   // done tickets' reading below.
@@ -4022,6 +4085,10 @@ const SPAWN_HANDLERS = {
   'hand-away': (a, s) => handAway(s.t, a.placement),
   start: () => {},
 };
+// Where in `spawnable` the loop stopped for want of a slot, or null; and the slots taken and workers
+// running as it began, so a stop on slots spent on tickets that did not start is told apart.
+let slotStopAt = null;
+const loopFrom = { attempts, running: runningKeys.size };
 for (const t of spawnable) {
   const [verdict] = runSteps({
     name: 'spawn loop',
@@ -4034,7 +4101,10 @@ for (const t of spawnable) {
     handlers: SPAWN_HANDLERS,
     report,
   }).slice(-1);
-  if (verdict?.type === 'skip' && verdict.stop) break;
+  if (verdict?.type === 'skip' && verdict.stop) {
+    if (!baseHold && !usageStop) slotStopAt = spawnable.indexOf(t);
+    break;
+  }
   if (verdict?.type !== 'start') continue;
   if (verdict.how === 'resume') {
     // eslint-disable-next-line no-await-in-loop
@@ -4064,8 +4134,18 @@ for (const t of spawnable) {
   const model = models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model, ...pick.vars };
 
-  const resumed = resumeRound(t, { wt, kept, branch });
-  const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
+  // A fix try keeps its own task (fixTask); any other ticket with a PR whose Decisions changed since its
+  // last review restarts at Stage 3, after the last round's summary where one resumes. A round whose
+  // worktree or resume file is refused starts at Stage 0 with the entries, and its resume file is
+  // moved aside below as for any round not resumed.
+  const round = resumeRound(t, { wt, kept, branch });
+  const resumable = kept && resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE }).ok;
+  const restart = t.fix && !t.fix.finished ? null : decisionsRestart(t, { resumable });
+  const resumed = restart ? { ...restart, brief: `${restart.brief}${round.brief}` } : round;
+  // With several apps, `database=` lists every app's database and `migrate-failed=` the ones that failed.
+  const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup)
+    ? ([...setup.matchAll(/\[setup-worktree\] migrate-failed=(\S+)/g)].pop()?.[1] ?? database).replaceAll(',', ', ')
+    : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);
@@ -4085,7 +4165,7 @@ for (const t of spawnable) {
   const memWhy = memHeld(t.key);
   if (memWhy) {
     logPreflight(t.key, pre.cost);
-    report.waiting.push(`${t.key}: ${memWhy}; it and the tickets after it wait for the next pass`);
+    report.waits.push(`${t.key}: ${memWhy}; it and the tickets after it wait for the next pass`);
     break;
   }
 
@@ -4109,7 +4189,7 @@ for (const t of spawnable) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null',
+    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'images_dir=null',
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.
@@ -4143,14 +4223,33 @@ for (const t of spawnable) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
+  // So the restart's own handoffs and later requeues compare the entries with this spawn, not the review.
+  if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);
 }
+// The pending handoffs the loop left for want of a slot, by key, each with what holds the slots: the
+// batch's own workers, and where they leave some of its number free, the cap that bound the pass's
+// slots (the machine's workers or memory reservations, or the repo's), which other repos' or batches'
+// workers fill. The deadline sweep says these wait for a slot, with no deadline until one frees.
+// Only a stop where every slot the loop took became a running worker is one: a slot spent on a ticket
+// that did not start (a failed preflight, the database down) frees again, so a handoff behind it keeps
+// its deadline. A spawn hold, low memory, maintenance or an unlocked repo cap is its own report, so it
+// makes none of these.
+const capFull = (b) => Number.isFinite(b.room) && b.room <= ticketSlots;
+const capHolder = runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency ? null
+  : capFull(MACHINE) ? (MACHINE.line === memLine ? "the machine's memory reservations" : "the machine's worker cap")
+  : capFull(REPO) ? "the repo's worker cap" : null;
+const slotHolders = [...runningKeys, ...(baseFixLive ? ['the base conflict fix'] : []), ...(capHolder ? [capHolder] : [])];
+const slotsAllStarted = runningKeys.size - loopFrom.running >= attempts - loopFrom.attempts;
+const slotsHeld = slotStopAt != null && slotsAllStarted && (capHolder != null || runningKeys.size + (baseFixLive ? 1 : 0) >= concurrency);
+const SLOT_HELD = !slotsHeld || spawnHeld || lowMemory || MAINT.hold || repoUnlocked ? {}
+  : Object.fromEntries(spawnable.slice(slotStopAt).filter(toHandoff).map((t) => [t.key, slotHolders]));
 const LOCK_HELD = lockHeldLine({ gate: LOCK_QUEUE, held: lockQueueHeld, running: runningKeys.size, concurrency });
 const lockQueueHeldText = LOCK_HELD?.line ?? null;
-if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waiting'].push(LOCK_HELD.line);
+if (LOCK_HELD) report[LOCK_HELD.stall ? 'stalled' : 'waits'].push(LOCK_HELD.line);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
 // moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
 if (!DRY) {
@@ -6028,7 +6127,7 @@ runPhase({
 // ---- deadlines -----------------------------------------------------------
 // Each wait a ticket is in, read once this pass's PR reads, undrafts and spawns are made, with its
 // deadline; one past it is escalated once (pass/deadlines.mjs).
-runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
+runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY, slotHeld: SLOT_HELD }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
 
 // The red base as the batch's record (pass/base-gate.mjs decideBaseRed): its one line, the report's RED
 // BASE, only on the pass that records the spell, and its escalation once past its deadline. It is cleared

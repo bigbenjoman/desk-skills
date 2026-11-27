@@ -11,7 +11,8 @@
 //                                        per epic first; with --plain, one line per ticket, then one per
 //                                        epic with children in the queue
 //   desk-q <repo> days, desk-q days      By day: the tickets grouped by the day they ship
-//   desk-q costs                         every name's charge this month, from the cost cache
+//   desk-q costs                         every name's charge this month, from the cost cache, each repo's
+//                                        Claude and Codex use at list prices, and each subscription's fee
 //   desk-q costs <repo>                  one repo's (or name's) charge this month by supplier
 //   desk-q <repo> up|down|top|bottom <KEY>   move a ticket in the spawn order (queue.mjs move)
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
@@ -40,13 +41,13 @@ import * as MS from './merge-stages.mjs';
 import * as ST from './stuck-time.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -73,7 +74,7 @@ import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
   multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
@@ -158,8 +159,13 @@ function stateOf(q, t, ctx, seen) {
   // unclaimed past its wait yet needs nobody either.
   if (claimOf(t) || (planFirst(t) && !planFirstDue(t, ctx.planFirstMs ?? NOBODY.planFirstMs))) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
+  if (slotWait(t)) return 'waiting';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
+
+// A pending handoff the last pass found held by full slots waits for a slot, and is not stalled.
+const slotWait = slotHeldBy;
+const slotWaitText = (t) => slotWaitWords(slotHeldBy(t));
 
 const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
@@ -1819,25 +1825,32 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
 // by supplier. A name the cost sources list with no figure reads –. A row ends in what its figure
 // leaves out, the total in how many figures were not read today, and a note under them says each.
 // With a `width`, a line too wide is cut at a whole field (fitRuns).
-function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
+function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, use: useRead = readUseFile(), subs = readSubscriptions(subscriptionsPath()) } = {}) {
   const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
-  if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
+  const use = useThisMonth(useRead, now);
+  const subsBlock = subscriptionLines(repos, { use, subs, width });
+  if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot: [...useOnlyLines(repos, use, width), ...subsBlock, ...foot] };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
   const unread = unreadSources({ cache: fc, costs });
-  if (!c) return { head: noFigureHead(unread, costs, fc, width), rows: [], foot };
+  if (!c) return { head: noFigureHead(unread, costs, fc, width), rows: [], foot: [...useOnlyLines(repos, use, width), ...subsBlock, ...foot] };
   const charged = segLine(fitRuns([['charged ', GREY], ...chargedSegs(c)], width));
-  const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
+  const slugOfName = (name) => costs.entries.find((e) => e.name === name && e.repo)?.repo ?? null;
+  const covered = new Set(c.names.map((x) => slugOfName(x.name)).filter(Boolean));
+  const useOnly = Object.keys(use?.repos ?? {}).filter((s) => !covered.has(s)).sort().map((s) => ({ name: repoName(repos, s), total: null, slug: s, useOnly: true }));
+  const lines = [...c.names.map((x) => ({ ...x, slug: slugOfName(x.name) })), ...useOnly, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
   const aw = Math.max(10, usd(c.total).length + 3);
+  const uw = Math.max(LIST_HEAD.length + 2, ...Object.values(use?.repos ?? {}).map((u) => usd(u.claude + u.codex).length + 3));
+  const useCell = (x) => (!use ? [] : [[rpad(x.slug && use.repos[x.slug] ? usd(use.repos[x.slug].claude + use.repos[x.slug].codex) : x.name === 'shared' ? '' : '–', uw), GREY]]);
   const suppliersOf = (name) => SUPPLIERS.filter((s) => costs.entries.some((e) => e.name === name && e.supplier === s));
   const repoless = new Set(costs.entries.filter((e) => !costs.entries.some((o) => o.name === e.name && o.repo)).map((e) => e.name));
   const sharedTag = c.sharedParts.length ? [c.sharedParts.map((p) => `${SUPPLIER_LABEL[p.supplier]} ${p.label} ${usd(p.total)}`).join(' · '), GREY] : null;
   const rows = lines.map((x) => {
-    const tag = x.name === 'shared' ? sharedTag : costTag(x, { now, suppliersOf, repoless });
-    const open = x.name === 'shared' ? null : { kind: 'costs', ...costPlace(repos, costs, x.name) };
-    const r = segRow(`cost ${x.name}`, fitRuns([[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...(tag ? [['  ', null], tag] : [])], width), open);
-    return { ...r, bill: x.name === 'shared' ? null : billOf(x, { costs }) };
+    const tag = x.name === 'shared' ? sharedTag : x.useOnly ? ['no cost sources', GREY] : costTag(x, { now, suppliersOf, repoless });
+    const open = x.name === 'shared' || x.useOnly ? null : { kind: 'costs', ...costPlace(repos, costs, x.name) };
+    const r = segRow(`cost ${x.name}`, fitRuns([[`  ${pad(x.name, nw)}`, null], x.total == null ? [rpad('–', aw), GREY] : [rpad(usd(x.total), aw), null], ...useCell(x), ...(tag ? [['  ', null], tag] : [])], width), open);
+    return { ...r, bill: x.name === 'shared' || x.useOnly ? null : billOf(x, { costs }) };
   });
   const stale = c.names.filter((x) => x.total != null).flatMap((x) => staleReads(x, now).map((r) => ({ ...r, name: x.name })));
   const old = staleBills(c, now);
@@ -1849,9 +1862,60 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
       : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
     ...unreadNameNotes(unread, { said: (name, s) => c.names.some((x) => x.name === name && x.cantRead?.supplier === s) }),
+    ...useNotes(use),
   ];
-  return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
-    foot: [segLine(fitRuns([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes], width)),...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
+  const useTotal = use ? [[rpad(usd(Object.values(use.repos).reduce((a, u) => a + u.claude + u.codex, 0)), uw), GREY]] : [];
+  return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}${use ? rpad(LIST_HEAD, uw) : ''}`)], rows,
+    foot: [segLine(fitRuns([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...useTotal, ...includes], width)),...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...subsBlock, ...foot] };
+}
+
+// ---- Claude and Codex subscriptions on Costs ---------------------------------------------------
+export const FEE_NOT_SET = 'fee not set: /desk-setup costs';
+const LIST_HEAD = 'LIST PRICE';
+const TOOL_LABEL = { claude: 'Claude', codex: 'Codex' };
+// The use reading (cost-cache.mjs use.json) when it is for the month `now` is in, else null.
+const useThisMonth = (use, now) => (use?.repos && useIsThisMonth(use, now) ? use : null);
+// What the list-price figures are, then what they leave out.
+function useNotes(use) {
+  if (!use) return [];
+  const sum = (t) => Object.values(use.repos).reduce((a, u) => a + u[t], 0);
+  const left = use.unpriced.claude + use.unpriced.codex;
+  const other = use.other.claude + use.other.codex;
+  return [{ tag: '◌ list price', sgr: GREY, text: [[`${LIST_HEAD} is what each repo's Claude and Codex use this month, worker and interactive, would cost at API list prices: Claude ${usd(sum('claude'))}, Codex ${usd(sum('codex'))}. It is list-price equivalent, not a bill: the subscription fees below are what is charged.`
+    + `${other > 0 ? ` ${usd(other)} more was used outside any repo in desk.` : ''}${left ? ` ${left} request${left === 1 ? '' : 's'} on a model with no list price ${left === 1 ? 'is' : 'are'} left out.` : ''}`, null]] }];
+}
+// Each repo's list-price use, for a Costs screen with no charges to show.
+function useOnlyLines(repos, use, width) {
+  const slugs = Object.keys(use?.repos ?? {}).sort();
+  if (!slugs.length) return [];
+  const names = slugs.map((s) => repoName(repos, s));
+  const nw = Math.max(14, ...names.map((n) => n.length + 1));
+  const uw = Math.max(LIST_HEAD.length + 2, ...slugs.map((s) => usd(use.repos[s].claude + use.repos[s].codex).length + 3));
+  const notes = useNotes(use);
+  return ['', bold(`  ${pad('REPO', nw)}${rpad(LIST_HEAD, uw)}`),
+    ...slugs.map((s, i) => segLine(fitRuns([[`  ${pad(names[i], nw)}`, null], [rpad(usd(use.repos[s].claude + use.repos[s].codex), uw), GREY]], width))),
+    '', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)];
+}
+// One monthly line per Claude and Codex login: its fee and plan as subscriptions.md records them, or
+// that none is, then the repos it ran this month, which share the fee. Shown once any login has a fee
+// or there is a use reading. A login set off still has its line: it may still be paid for.
+function subscriptionLines(repos, { use, subs, width }) {
+  const logins = subs?.logins ?? [];
+  if (!logins.length || (!use && !logins.some((l) => l.fee))) return [];
+  const label = (l) => `${l.tool} ${l.name}`;
+  const nw = Math.max(14, ...logins.map((l) => label(l).length + 1));
+  const fees = logins.filter((l) => l.fee?.usd != null);
+  const total = fees.reduce((a, l) => a + l.fee.usd, 0);
+  const aw = Math.max(10, usd(total).length + 3);
+  const ranOn = (l) => (use?.logins ?? []).filter((u) => u.tool === l.tool && u.dir === l.dir).flatMap((u) => u.repos).map((s) => repoName(repos, s));
+  const lines = logins.map((l) => {
+    const ran = ranOn(l);
+    const where = ran.length ? `${ran.length > 1 ? 'shared by ' : ''}${andList(ran)}` : use ? 'no repo this month' : null;
+    const info = l.fee?.usd != null ? [l.fee.plan, where].filter(Boolean).join(' · ') : [FEE_NOT_SET, where].filter(Boolean).join(' · ');
+    return segLine(fitRuns([[`  ${pad(label(l), nw)}`, null], l.fee?.usd != null ? [rpad(usd(l.fee.usd), aw), null] : [rpad('–', aw), GREY], ['  ', null], [info, GREY]], width));
+  });
+  return ['', bold(`  ${pad('SUBSCRIPTION', nw)}${rpad('A MONTH', aw)}`), ...lines,
+    ...(fees.length ? [segLine(fitRuns([[`  ${pad('total', nw)}`, GREY], [rpad(usd(total), aw), BOLD], ['  ', null], [`${TOOL_LABEL.claude} and ${TOOL_LABEL.codex} fees, shared across the repos each runs`, GREY]], width))] : [])];
 }
 
 export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
@@ -3087,7 +3151,19 @@ function leaseNotes(repos, now) {
     trial.push({ tag: '  leases', sgr: GREY, text: [[`${today.length} clash${today.length === 1 ? '' : 'es'} today: ${leaseHolder(e.kind, e.label).name} was given ${leaseThing(e.kind, e.key, e.units)} while ${who} held it, at ${clock(Date.parse(e.at))}.`, null]],
       more: [[[`Leases are on trial, so it went through.${t ? ` The trial ${t.ends > now ? 'ends' : 'ended'} ${dmy(t.ends)}.` : ''}`, null]]] });
   }
+  const heavy = heaviestRuns(log.peaks, now);
+  if (heavy) trial.push({ tag: '  memory', sgr: GREY, text: [[heavy, null]] });
   return { warn, trial };
+}
+
+// The three locked runs of the last 24 hours that took the guest's memory highest (readLog's peaks),
+// as one sentence, or null with none.
+export function heaviestRuns(peaks, now) {
+  const top = (peaks ?? []).filter((e) => now - Date.parse(e.at) < 86_400_000 && Date.parse(e.at) <= now)
+    .sort((a, b) => b.peak_rss_gb - a.peak_rss_gb).slice(0, 3);
+  if (!top.length) return null;
+  const who = (e) => e.ticket ?? (e.worktree ? basename(e.worktree) : 'a session');
+  return `Heaviest locked runs today: ${top.map((e) => `${who(e)} ${SLOT_RUN[e.step] ?? e.step} ${e.peak_rss_gb} GB at ${clock(Date.parse(e.at))}`).join(', ')}.`;
 }
 
 // A stuck lease's note: who holds what, since when it stopped checking in, and the command that frees it.
@@ -3331,6 +3407,7 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'finishing') return [[FINISHING_TEXT, null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (clearsPark(t)) return [[clearsText(t), null]];
+  if (k === 'waiting' && slotWait(t)) return [[slotWaitText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
   if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
@@ -3602,8 +3679,8 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t))) {
-    const why = h ? h.text : clearsPark(t) ? clearsText(t) : '';
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t) || slotWait(t))) {
+    const why = h ? h.text : clearsPark(t) ? clearsText(t) : slotWait(t) ? slotWaitText(t) : '';
     const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
@@ -3614,6 +3691,7 @@ function moveOf(r, row, k, t, h, now) {
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
   if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
+  if (slotWait(t)) return { text: `Moves without you: ${slotWaitText(t)}. Its Stage ${t.handoff_stage ?? '?'} session starts once one frees.` };
   if (planFirstClaim(t)) {
     return { text: `Being worked in session ${planFirstClaim(t).session}, which claimed it. It is plan-first work, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it waits for a session again.` };
   }
@@ -4249,7 +4327,9 @@ export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsP
   const parts = v.name !== undefined ? supplierParts(repos, v.name, { now, costs, cache, label: v.label ?? v.name }) : costsParts(repos, { now, costs, cache });
   const charges = !c ? null : v.name !== undefined ? { period: c.period, name: c.names.find((x) => x.name === v.name) ?? null }
     : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
-  return envelope('costs', now, inputs, { name: v.name ?? null, charges }, parts);
+  const use = v.name !== undefined ? null : useThisMonth(readUseFile(), now);
+  const fees = v.name !== undefined ? null : readSubscriptions(subscriptionsPath()).logins.map((l) => ({ tool: l.tool, name: l.name, plan: l.fee?.plan ?? null, usd: l.fee?.usd ?? null }));
+  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees }) }, parts);
 }
 
 const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';

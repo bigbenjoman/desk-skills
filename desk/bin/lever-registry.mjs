@@ -146,6 +146,17 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/question-arms.mjs')],
     preconditions: [Object.freeze({ id: 'ledger', want: 'on', status: 'needs ledger on', why: 'its asks and what they cost are read from the ticket ledger' })],
   },
+  // The context share at which a worker hands off mid-stage (hooks/desk-handoff.py's worker mode): `config`
+  // hands off at config §2's Handoff at context % rows, one for a 200k window and one for 1M; any other
+  // value is that percentage on both windows. Weighed on dollars per ticket; the levers page shows the
+  // handoffs per ticket beside it. Cloud workers run no hooks, so only local workers take it.
+  'handoff-threshold': {
+    layer: 'low-risk', trialled: true, values: ['config', '20', '30', '45'], baseline: 'config',
+    mechanism: metric('dollars per ticket', 0.1),
+    trips: [POST_MERGE_REVERT, ownStepError('handoff.mjs write')],
+    code: [code('hooks/desk-handoff.py'), code('desk/bin/handoff.mjs')],
+    preconditions: [Object.freeze({ id: 'worker-location', want: 'local', status: 'needs local workers', why: 'the handoff hook runs in a local worker; a cloud worker never takes it' })],
+  },
   // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
   // trialled: it is pinned on where a repo wants the log.
   ledger: {

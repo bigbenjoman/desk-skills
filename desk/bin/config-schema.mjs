@@ -32,10 +32,11 @@ export const mixesNone = (items) => items.length > 1 && items.some((x) => isNone
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
 // -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
+// A leading `./` is dropped, so `./apps/api` and `apps/api` name the same directory wherever items are matched.
 export function parseCommandItem(item) {
   const m = /^([A-Za-z0-9._][A-Za-z0-9._/-]*):\s+(\S.*)$/.exec(String(item).trim());
   if (m && !m[1].split('/').includes('..')) {
-    return { dir: m[1].replace(/\/+$/, ''), cmd: m[2] };
+    return { dir: m[1].replace(/\/+$/, '').replace(/^(\.\/+)+/, '') || '.', cmd: m[2] };
   }
   return { dir: '.', cmd: String(item).trim() };
 }
@@ -191,7 +192,7 @@ export function parseWorkerLocation(raw) {
 // the caller to name, and is never on.
 //   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
 //   parseLevers -> { on, unknown }
-export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'ledger', 'ledger-record', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'ledger', 'ledger-record', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
 // The finder-model lever's on arm: the Agent tool alias desk-review's Claude finder seats run on while
 // the lever is on (desk-env model finder). One of the aliases parseWorkerModels takes for `finder=`.
 export const FINDER_MODEL_LEVER = 'sonnet';
