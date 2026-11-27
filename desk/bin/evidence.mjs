@@ -135,7 +135,34 @@ const READ_ERROR = /\bunexpected end of JSON input\b|\bin JSON at position \d|\b
 export const readError = (line) => READ_ERROR.test(String(line ?? '').replace(/".*"|“.*”/g, '""'));
 export function errorLinesIn(log) {
   const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
-  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l) || readError(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
+  return [...new Set(lines.filter(namesError))].slice(0, LOG_ERRORS_MAX);
+}
+const namesError = (l) => (NAMES_CAUSE.test(l) || ERROR.test(l) || readError(l)) && !NO_CAUSE.test(l);
+
+// Every path a failed job's log names, each once, for the relatedness check (fix-tries.mjs namesChanged):
+// a token holding a `/`, or ending in a `.<ext>`, with a letter in it, less a leading `./` and trailing
+// dots or slashes. Read across the whole log, not the LOG_ERRORS_MAX lines errorLinesIn keeps: a test
+// runner prints its own heading lines before the failing file. With `failing`, only from the lines that
+// name an error. A `##[group]Run` block is GitHub echoing the step's script, the same on every job and
+// every PR, so it is skipped. At most LOG_PATHS_MAX, the ones on error lines first.
+const LOG_PATHS_MAX = 1000;
+const PATH_TOKEN = /[A-Za-z0-9_.@~+\/-]+/g;
+const isPath = (s) => /[A-Za-z]/.test(s) && (s.includes('/') || /\.[A-Za-z][A-Za-z0-9]{0,9}$/.test(s));
+export function pathsIn(log, { failing = false } = {}) {
+  const first = [], rest = [];
+  let echo = false;
+  for (const l of logLines(log)) {
+    if (/^##\[group\]Run\b/.test(l)) { echo = true; continue; }
+    if (echo) { if (/^##\[endgroup\]/.test(l)) echo = false; continue; }
+    const line = l.replace(/^##\[error\]\s*/, '');
+    const err = namesError(line);
+    if (failing && !err) continue;
+    for (const m of line.match(PATH_TOKEN) ?? []) {
+      const p = m.replace(/^(?:\.\/)+/, '').replace(/[./]+$/, '');
+      if (isPath(p)) (err ? first : rest).push(p);
+    }
+  }
+  return [...new Set([...first, ...rest])].slice(0, LOG_PATHS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and
