@@ -199,7 +199,18 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('and the record kept for the rest of the pass', state(live).bf.idle_passes, 1);
   const woken = sync(snap({ base_fix: running }, { woken: true, registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) }));
   t('DS-695 a pass a worker\'s exit woke counts no quiet pass for it', state(woken).bf.idle_passes, 0);
-  t('an unread registry reads it as still at it, never ended', j([types(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).includes('end-try'), state(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).baseFixLive]), '[false,true]');
+  // issue-1490: one paused at the limit on the repo's login holds the batch, unless new work moves to
+  // the fallback login (usage-hold answers true), where it alone waits for its own login.
+  const limited = `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Math.floor(NOW / 1000) + 3600 } })}\n`;
+  const pausedLog = { 'fix-log': { raw: Buffer.from(limited), text: limited, recent: true, bytes: limited.length } };
+  const liveReg = { registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) };
+  const pausedHeld = sync(snap({ base_fix: running }, liveReg), pausedLog);
+  t('issue-1490 a fix worker paused on the repo\'s login holds the batch', j(['usage-hold', 'usage-stop'].map((x) => types(pausedHeld).includes(x))), '[true,true]');
+  t('issue-1490 and says it stalled', pausedHeld.some((a) => a.type === 'report' && a.list === 'stalled'), true);
+  const pausedMoved = sync(snap({ base_fix: running }, liveReg), { ...pausedLog, 'usage-hold': true });
+  t('issue-1490 with new work moved to the fallback, nothing stops and nothing stalls', j([types(pausedMoved).includes('usage-stop'), pausedMoved.some((a) => a.type === 'report' && a.list === 'stalled')]), '[false,false]');
+  t('issue-1490 and the worker is still reported paused', pausedMoved.some((a) => a.type === 'report' && a.list === 'paused'), true);
+  t('an unread registry reads it as still at it, never ended',j([types(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).includes('end-try'), state(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).baseFixLive]), '[false,true]');
 }
 
 // A conflict the base gate met.

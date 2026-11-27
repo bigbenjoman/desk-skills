@@ -155,9 +155,11 @@
 //   node desk-env.mjs logins check [--json]   as list, with each login's sign-in, account and plan, the signed-in
 //                                             folders under ~/.claude-logins and ~/.codex-logins it does not list,
 //                                             and the usable ones (logins.mjs)
-//   node desk-env.mjs logins set <claude|codex> <name> <unused|off>
-//                                             set one login unused or off, keeping the previous file as .bak;
-//                                             the older rules (in rotation, standby) are refused
+//   node desk-env.mjs logins set <claude|codex> <name> <unused|fallback|off>
+//                                             set one login unused or off, or Claude's one fallback (new work
+//                                             of the repos following the default starts there while the
+//                                             default is full), keeping the previous file as .bak; the older
+//                                             rules (in rotation, standby) are refused
 //   node desk-env.mjs logins remove <claude|codex> <name>
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
@@ -3193,7 +3195,7 @@ if (isMain) {
           const [tool, name, ...rule] = rest;
           const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
-          console.log(`${tool} ${name}: ${r.login.rule === 'off' ? 'off' : 'unused'}`);
+          console.log(`${tool} ${name}: ${r.login.rule === 'off' ? 'off' : r.login.stored === 'fallback' ? 'fallback: new work of the repos following the default starts here while the default is full' : 'unused'}`);
           break;
         }
         if (sub === 'default' && rest.length === 2) {

@@ -45,6 +45,7 @@ import { probeShared, probeDue, noReadingProbeDue, loginProbeLog, usageDir } fro
 import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
+import { defaultFull, fallbackCall } from './fallback-login.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
@@ -469,10 +470,7 @@ const loginDirOf = (t) => (t.login ? t.login.config_dir : workerLoginDir(STATE, 
 const SUBS = readSubscriptions(E.subscriptionsPath());
 const REPO_SUB = E.thisRepoSubscription({ repoSubscription }, SUBS);
 const INHERITS = !SUBS.exists && REPO_SUB.source === 'default';
-// Only a limit on the repo's own login holds the batch. One on another login, where a worker started
-// before the subscription changed, holds that worker alone.
-const REPO_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
-const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
+const DEFAULT_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
 // A repo's row pinned to a subscription set off is one item for the person (needs-you subscription-off)
 // while it stands: the queue's subscription_off (pass/shared.mjs subscriptionOffWrite).
 {
@@ -493,6 +491,75 @@ const lifted = (l, login) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
 // the limit refused (the queue's usage_hold).
 const usageHolds = [];
+const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
+
+// A repo following the default whose computer names a Claude fallback login starts new sessions there
+// while the default is full (fallback-login.mjs), and on the default once it has room. The switch is
+// kept in the queue's login_fallback, with the limit it was for, so it holds until that limit lifts.
+const FALLBACK_LOGIN = !INHERITS && DEFAULT_LOGIN ? REPO_SUB.fallback ?? null : null;
+let FALLBACK_CHECK = null;
+const FALLBACK = (() => {
+  const record = queue().login_fallback ?? null;
+  if (!FALLBACK_LOGIN) return fallbackCall({ fallback: null, record });
+  const stored = queue().usage_hold ?? null;
+  const storedLogin = stored ? (stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir)) : null;
+  const limits = [
+    ...(stored && sameLogin(DEFAULT_LOGIN, storedLogin) ? [{ type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null }] : []),
+    ...(record?.type && record.type !== 'pace' ? [{ type: record.type, resetsAt: record.resets_at ?? null }] : []),
+  ];
+  const hold = limits.find((l) => !lifted(l, DEFAULT_LOGIN)) ?? null;
+  let reading = loginReading(DEFAULT_LOGIN);
+  // While new work runs on the fallback no worker starts on the default, so only a probe reads it again.
+  if (record && !hold && probeDue({ running: 0, reading, now: Date.now() }) && probeOnce(DEFAULT_LOGIN).ok) reading = loginReading(DEFAULT_LOGIN);
+  const full = defaultFull({ hold, reading, pace: usagePace({ usage: reading.seven_day }) });
+  return fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable: full.full ? fallbackUsable() : null, record });
+})();
+// Why the fallback login cannot take new work, or null (fallbackCall's `usable`). A fallback signed in to
+// the default's own account shares its limits, so it has no room to give.
+function fallbackUsable() {
+  FALLBACK_CHECK = checkLogin(FALLBACK_LOGIN);
+  const no = loginUnusable(FALLBACK_LOGIN, FALLBACK_CHECK);
+  const live = liveEmail(FALLBACK_CHECK);
+  const sameAccount = !no && live && live === (DEFAULT_LOGIN.account ?? liveEmail(checkLogin(DEFAULT_LOGIN)));
+  return no?.kind === 'signed out' ? `is signed out (sign it in, in another terminal: ${signInCommand(FALLBACK_LOGIN)})`
+    : no ? `is signed in to ${no.live} instead of ${FALLBACK_LOGIN.account}`
+      : sameAccount ? `is signed in to ${live}, the default's own account, so it shares the default's limits` : null;
+}
+// What fallbackCall decided, said and kept in the queue's login_fallback.
+function recordFallback(call) {
+  if (call.line) (call.held ? report.stalled : report.advanced).push(call.line);
+  if (!DRY && call.record !== undefined) q('set-batch', `login_fallback=${JSON.stringify(call.record)}`);
+}
+recordFallback(FALLBACK);
+let ON_FALLBACK = FALLBACK.on === 'fallback';
+// Only a limit on the login new sessions start on holds the batch. One on another login, where a worker
+// started before the subscription changed or on the default before the fallback took over, holds that
+// worker alone.
+let REPO_LOGIN = ON_FALLBACK ? FALLBACK_LOGIN : DEFAULT_LOGIN;
+const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
+// A limit this pass meets on the default after choosing it, at a refused preflight, a ticket's or the
+// base fix's worker found paused there, or a pacing probe's new reading, moves new work to the fallback
+// for the rest of the pass, as the next pass would; tried once a pass. `full` is defaultFull's answer,
+// read from the limit unless given. -> true when new work moved there.
+// Once pacing has been read (PACE_READ), it judged the default, and spawns after a switch would spend
+// the fallback, so a fallback past its own pacing headroom takes no new work: the pass holds as before.
+let midPassTried = false;
+let PACE_READ = false;
+function fallbackPaced() {
+  const p = usagePace({ usage: loginReading(FALLBACK_LOGIN).seven_day });
+  return p.hold && !p.bad ? `is past its usage pacing headroom (${String(p.line).replace(/^usage: /, '')})` : null;
+}
+function fallBackMidPass(limit, full = defaultFull({ hold: limit })) {
+  if (!FALLBACK_LOGIN || ON_FALLBACK || FALLBACK.held || midPassTried) return false;
+  midPassTried = true;
+  const usable = fallbackUsable() ?? (PACE_READ ? fallbackPaced() : null);
+  const call = fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable, record: queue().login_fallback ?? null });
+  recordFallback(call);
+  if (call.on !== 'fallback') return false;
+  ON_FALLBACK = true;
+  REPO_LOGIN = FALLBACK_LOGIN;
+  return true;
+}
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -1176,7 +1243,7 @@ runSteps({
   snapshot: () => {
     const { tickets, usage_hold: stored = null } = queue();
     const preLogin = stored?.preflight ? (stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir)) : null;
-    return { tickets, holds: [...usageHolds], stored, preLogin, repoLogin: REPO_LOGIN, now: Date.now() };
+    return { tickets, holds: [...usageHolds], stored, preLogin, repoLogin: REPO_LOGIN, fallback: ON_FALLBACK ? FALLBACK_LOGIN.name : null, now: Date.now() };
   },
   decide: decideUsageLimit,
   handlers: {
@@ -1187,6 +1254,8 @@ runSteps({
   },
   report,
 });
+// A worker found paused at the default's limit moves new work to the fallback rather than holding it.
+if (USAGE_HOLD && fallBackMidPass(USAGE_HOLD)) USAGE_HOLD = null;
 
 // ---- batch notes ---------------------------------------------------------
 if (notes.length) appendNotes(notes, STATE);
@@ -2267,15 +2336,14 @@ if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { 
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
-const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
 // It reads the login this repo's new sessions start on (REPO_LOGIN), which is what the spawns it holds
 // would spend: the pass's own login is often another, whose workers never feed this one's reading.
 // With no reading for that login at all, it probes it once too, rather than letting the guard go
 // blind: at most once per PROBE_EVERY_MS on that login, so a probe whose output carries no reading
 // is not repeated every pass, but joining one started under a minute ago that is still running
 // (noReadingProbeDue). A probe that succeeds leaves a reading that lasts the recent window.
-const PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
-const PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
+let PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
+let PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
 const paceReading = () => loginReading(PACE_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
@@ -2295,6 +2363,18 @@ if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, 
     paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
   }
 }
+// A reading past the pacing headroom on the default, found here rather than at the start of the pass,
+// moves new work to the fallback as the start-of-pass check would have (fallBackMidPass); pacing then
+// reads the fallback, the login those spawns would spend.
+if (PACE.hold && !PACE.bad && !ON_FALLBACK && fallBackMidPass(null, defaultFull({ pace: PACE }))) {
+  PACE_LOGIN = REPO_LOGIN;
+  PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
+  READING = paceReading();
+  PACE = usagePace({ usage: READING.seven_day });
+  paceProbe = '';
+  paceProbeFailed = null;
+}
+PACE_READ = true;
 // "No recent data" names the login it read, so a reading kept under another login is not mistaken for
 // none, and why a probe for one failed: with no reading nothing holds, so no stall line would say it.
 const PACE_BLIND_NOW = /^usage: no recent data/.test(PACE.line);
@@ -2872,7 +2952,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       'end-try': (a) => { endTry(a.outcome, a.path, a.extra); return bf; },
       'fix-login': (a) => loginOf(loginDirOf({ key: BASE_FIX_KEY, login: a.login })),
       lifted: (a) => lifted(a.limit, a.login),
-      'usage-hold': (a) => { USAGE_HOLD = a.hold; },
+      // A fix worker paused on the default, with a fallback that takes new work over: nothing holds.
+      'usage-hold': (a) => { if (fallBackMidPass(a.hold)) return true; USAGE_HOLD = a.hold; return false; },
       'usage-stop': () => { usageStop = true; },
       'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
       // A base push moves its PRs' merge state and the base's refs, and syncBase runs git without sh or shOut.
@@ -3182,6 +3263,16 @@ let REPO_CHECK = null;
 let noLoginWhy = null;
 function repoLogin() {
   if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
+  if (ON_FALLBACK) {
+    const login = FALLBACK_LOGIN;
+    const refused = refusedOf(login);
+    if (refused) {
+      noLogin(`this repo's fallback login ${login.name} (${login.folder}) failed its health check, ${refused}, and the default is full, so nothing new starts for this repo`);
+      return null;
+    }
+    const email = login.account ?? FALLBACK_CHECK?.email?.toLowerCase() ?? null;
+    return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email, fallback: true })}`, line: ` login=${login.name} (fallback)` };
+  }
   const login = REPO_SUB.login;
   if (!login && REPO_SUB.off) {
     const slug = E.repoSlug();
@@ -3194,14 +3285,13 @@ function repoLogin() {
   }
   REPO_CHECK ??= checkLogin(login);
   const email = REPO_SUB.email ?? REPO_CHECK.email ?? null;
-  if (REPO_CHECK.state === 'signed out') {
+  const no = loginUnusable(login, REPO_CHECK);
+  if (no?.kind === 'signed out') {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) is signed out, so nothing new starts for this repo; it never falls back to another. Sign it in, in another terminal: ${signInCommand(login)}`);
     return null;
   }
-  // A folder pinned to an account (DS-528) is used only while it is signed in to that account.
-  const live = REPO_CHECK.state === 'signed in' ? REPO_CHECK.email?.toLowerCase() ?? null : null;
-  if (login.account && live && live !== login.account) {
-    noLogin(`this repo's subscription ${login.account} (login ${login.name}, ${login.folder}) is signed in to ${live} instead, so nothing new starts for this repo; it never falls back to another. Sign it back in to ${login.account}, in another terminal: ${signInCommand(login)}`);
+  if (no) {
+    noLogin(`this repo's subscription ${login.account} (login ${login.name}, ${login.folder}) is signed in to ${no.live} instead, so nothing new starts for this repo; it never falls back to another. Sign it back in to ${login.account}, in another terminal: ${signInCommand(login)}`);
     return null;
   }
   const refused = refusedOf(login);
@@ -3210,6 +3300,16 @@ function repoLogin() {
     return null;
   }
   return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email })}`, line: ` login=${login.name}` };
+}
+// The email a checkLogin answer is signed in to, lower-cased, or null when signed out or unread.
+function liveEmail(check) { return check.state === 'signed in' ? check.email?.toLowerCase() ?? null : null; }
+// Why a checked login cannot take new work, or null: { kind: 'signed out' }, or, for a folder pinned to an
+// account (DS-528), { kind: 'wrong account', live } while it is signed in to another. An email the check
+// could not read is no other account: the preflight says what is wrong with such a login.
+function loginUnusable(login, check) {
+  if (check.state === 'signed out') return { kind: 'signed out' };
+  const live = liveEmail(check);
+  return login.account && live && live !== login.account ? { kind: 'wrong account', live } : null;
 }
 function noLogin(why) {
   if (noLoginWhy) return;
@@ -3247,19 +3347,23 @@ function preflight(key, wt, workerEnv) {
 }
 // A preflight the usage limit refused on the repo's login holds the batch: the ticket keeps its place
 // and state, and nothing else spawns or preflights this pass. The probe names the limit where it can.
-// A resume refused on another login, the one its session started on, waits for that login alone.
+// A resume refused on another login, the one its session started on, waits for that login alone. One
+// refused on the default, with a fallback that can take new work, moves new work there (fallBackMidPass)
+// and holds nothing: -> true, and a new session's caller starts it again on repoLogin().
 function preflightHitLimit(t, cost, login) {
   logPreflight(t.key, cost);
   if (!onRepoLogin(login)) {
     report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login; this repo's subscription is another, and the batch goes on`);
-    return;
+    return false;
   }
   const l = probeOnce(login).limit ?? { type: 'unknown', resetsAt: null };
+  if (fallBackMidPass(l)) return true;
   USAGE_HOLD ??= { type: l.type, resetsAt: l.resetsAt, preflight: t.key };
   USAGE_HOLD.preflight ??= t.key;
   USAGE_HOLD.login ??= login;
   usageStop = true;
   report.stalled.push(`${t.key}: its preflight was refused at ${limitName(USAGE_HOLD.type)} — not failed, and nothing else spawns until the limit lifts`);
+  return false;
 }
 const preflightNote = ({ usd, turns, skipped }) => (skipped ? 'preflight skipped on a matching fingerprint'
   : `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`);
@@ -3327,7 +3431,10 @@ async function resumeKilled(t) {
   const model = t.model && t.model !== 'default' ? t.model : '';
   const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.limit) return preflightHitLimit(t, pre.cost, login);
+  if (pre.limit) {
+    if (preflightHitLimit(t, pre.cost, login)) report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
+    return undefined;
+  }
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
   if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
@@ -3570,7 +3677,11 @@ async function spawnHandoff(t, pick) {
     markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
+  if (pre.limit) {
+    // Refused on the default, with new work moved to the fallback: the handoff starts there instead.
+    const again = preflightHitLimit(t, pre.cost, pick.login) ? repoLogin() : null;
+    return again ? spawnHandoff(t, again) : undefined;
+  }
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(t.key);
   if (memWhy) { logPreflight(t.key, pre.cost); report.waits.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
@@ -3715,7 +3826,10 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
-  if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
+  if (pre.limit) {
+    if (preflightHitLimit({ key }, pre.cost, login)) report.paused.push(`${key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
+    return undefined;
+  }
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const memWhy = memHeld(key);
   if (memWhy) { logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
@@ -4122,7 +4236,8 @@ for (const t of spawnable) {
     spawnCloud(t);
     continue;
   }
-  const { pick, setup: { wt, kept, renamed, out: setup } } = verdict;
+  const { setup: { wt, kept, renamed, out: setup } } = verdict;
+  let { pick } = verdict;
   // The branch this ticket's PR must come from: recorded so the merge driver matches the PR by
   // branch, never by a fuzzy key search.
   const branch = [...setup.matchAll(/\[setup-worktree\] branch=(\S+)/g)].pop()?.[1] ?? t.branch;
@@ -4132,7 +4247,8 @@ for (const t of spawnable) {
   // The preflight runs on the worker's own model, so a model the CLI rejects fails it here.
   const tier = tierFor(t);
   const model = models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model, ...pick.vars };
+  const baseEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
+  let workerEnv = { ...baseEnv, ...pick.vars };
 
   // A fix try keeps its own task (fixTask); any other ticket with a PR whose Decisions changed since its
   // last review restarts at Stage 3, after the last round's summary where one resumes. A round whose
@@ -4148,10 +4264,20 @@ for (const t of spawnable) {
     : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
-  const pre = preflight(t.key, wt, workerEnv);
+  let pre = preflight(t.key, wt, workerEnv);
+  // Refused at the usage limit: preflightHitLimit runs once per refused preflight. Refused on the
+  // default, with new work moved to the fallback, this ticket starts there instead; otherwise the batch
+  // holds.
   if (pre.limit) {
-    preflightHitLimit(t, pre.cost, pick.login);
-    break;
+    if (!preflightHitLimit(t, pre.cost, pick.login)) break;
+    pick = repoLogin();
+    if (!pick) continue;
+    workerEnv = { ...baseEnv, ...pick.vars };
+    pre = preflight(t.key, wt, workerEnv);
+    if (pre.limit) {
+      preflightHitLimit(t, pre.cost, pick.login);
+      break;
+    }
   }
   if (pre.failure) {
     logPreflight(t.key, pre.cost);
