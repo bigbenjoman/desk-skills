@@ -1,5 +1,5 @@
 // suite: plugin root paths (desk-review and the finder agents reach desk scripts through CLAUDE_PLUGIN_ROOT, else ~/.claude)
-// layer: L1
+// layer: L2
 // covers: skills/desk-review/** agents/**
 // issue-1559. A plugin install puts desk/bin under the plugin's root, so a desk-script call in
 // skills/desk-review or agents/ must name it as "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/desk/bin/<script>":
