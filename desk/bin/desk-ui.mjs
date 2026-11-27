@@ -29,7 +29,7 @@
 // one at a time, in the order they arrived; another repo's do not wait. Each command's exit maps to
 // the status (0 200, 10 202, 11 409, anything else 500), and the body is { exit, stdout, stderr }.
 // Every command run is appended to ~/.desk-autopilot/ui/audit.jsonl with its free text redacted.
-//   POST /api/repos/<slug>/tickets/<KEY>/record {action, text?}   needs-you.mjs record <repo> <KEY> <action> [text]
+//   POST /api/repos/<slug>/tickets/<KEY>/record {action, text?, batch?}   needs-you.mjs record <batch> <KEY> <action> [text]
 //   POST /api/repos/<slug>/tickets/<KEY>/answer {text, approve?}  answer.mjs <KEY> [--approve] <text>
 //   POST /api/repos/<slug>/tickets/<KEY>/undo-not-now {}          not-now.mjs clear "<question>", in that batch's
 //                                 state: the newest entry the not-now register holds for <KEY>, put off in
@@ -129,7 +129,9 @@ const KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 // A needs-you item key: printable, starting with a letter or digit (never a flag or a path), and
 // still only one the repo's list holds.
 const ITEM_KEY = /^[A-Za-z0-9][^\p{Cc}]{0,199}$/u;
-const VERB = /^[a-z][a-z-]*$/;
+// needs-you's verbs, and a session ask's own choices (ask-defaults.mjs OPTION: Plan2, A); the item
+// must still offer it.
+const VERB = /^[A-Za-z][A-Za-z0-9-]{0,39}$/;
 // How recent a put-off undo-not-now takes back: the Inbox's toast offers it for 10 s.
 const UNDO_MS = 2 * 60 * 1000;
 const RECORDED_MS = 6 * 60 * 60 * 1000;
@@ -360,11 +362,13 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   // The item's actions are needs-you's own list (--no-settle writes nothing), run as a child so its
   // GitHub reads stall no other repo's write. The record names the batch whose item offers the action,
   // so needs-you records it there and not against an archived copy elsewhere.
-  async function planRecord(repo, key, { action, text }) {
+  // `batch`, where sent, is the item's own batch as the list names it: two batches can list one key
+  // (each held on the usage limit lists usage-limit), and the answer goes to the one shown.
+  async function planRecord(repo, key, { action, text, batch }) {
     const at = { env: E.otherRepoEnv() };
     const listed = await run(join(HERE, 'needs-you.mjs'), ['list', '--json', '--no-settle', repo], at, READ_TIMEOUT_MS);
     let items;
-    try { items = JSON.parse(listed.stdout).items.filter((i) => i.key === key); } catch { items = null; }
+    try { items = JSON.parse(listed.stdout).items.filter((i) => i.key === key && (batch === undefined || i.batch === batch)); } catch { items = null; }
     if (listed.exit !== 0 || !items) throw new Error(`needs-you list ${repo} exited ${listed.exit}: ${listed.stderr.trim().slice(0, 300)}`);
     const offered = [...new Set(items.flatMap((i) => i.actions.map((a) => a.action)))];
     const item = items.find((i) => i.actions.some((a) => a.action === action));
@@ -390,20 +394,20 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       at: { cwd: at.cwd, env: { ...at.env, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath } } };
   }
 
-  // The newest not-now entry for the key across the repo's batches, put off in the last UNDO_MS: cleared
-  // in the state of the batch that holds it, by its question as the register keeps it.
+  // The newest not-now entry for the key across the registers needs-you puts items off into (the repo's
+  // batches', and desk's own for machine-level items such as the screenshot uploader's page), put off in
+  // the last UNDO_MS: cleared in the register that holds it, by its question as the register keeps it.
   async function planUndo(batches, repo, key) {
     const { readRegister } = await import('./not-now.mjs');
     const now = clock();
     let best = null;
-    for (const r of batches) {
-      if (!r.stateDir) continue;
-      const reg = readRegister(r.stateDir);
+    for (const dir of new Set([...batches.map((r) => r.stateDir).filter(Boolean), E.deskHome()])) {
+      const reg = readRegister(dir);
       if (!reg.ok) continue;
       for (const e of reg.entries.values()) {
         const at = Date.parse(e.at);
         if (e.ticket !== key || e.dismissed || !(now - at <= UNDO_MS) || !e.question) continue;
-        if (!best || at > best.at) best = { at, e, stateDir: r.stateDir };
+        if (!best || at > best.at) best = { at, e, stateDir: dir };
       }
     }
     if (!best) return { refuse: [400, 'undo', `${repo} ${key} has nothing put off in the last ${UNDO_MS / 60000} minutes to take back.`] };
@@ -422,6 +426,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const { text } = body;
     if (text !== undefined && (typeof text !== 'string' || text.length > MAX_TEXT)) return refuse(res, 400, 'text', `The text must be a string of at most ${MAX_TEXT} characters.`);
     if (kind === 'record' && (typeof body.action !== 'string' || !VERB.test(body.action) || NOT_HERE.has(body.action))) return refuse(res, 400, 'action', 'That action is not one this route records.');
+    if (kind === 'record' && body.batch !== undefined && (typeof body.batch !== 'string' || body.batch.length > 200)) return refuse(res, 400, 'batch', 'The batch must be the item\'s batch as the list names it.');
     if (kind === 'answer') {
       if (typeof text !== 'string' || !text.trim()) return refuse(res, 400, 'text', 'An answer needs its text.');
       if (ANSWER_FLAGS.has(text)) return refuse(res, 400, 'text', 'That text reads as one of answer.mjs\'s flags.');

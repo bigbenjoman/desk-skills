@@ -2961,15 +2961,24 @@ export function run(argv, { reads } = {}) {
 }
 
 // The machine's log of answers recorded from the command line, whichever session or window ran them.
-export const recordsLogPath = (home = HOME) => join(home, '.desk-autopilot', 'needs-you-records.jsonl');
+const recordsLogPath =(home = HOME) => join(home, '.desk-autopilot', 'needs-you-records.jsonl');
 const RECORDS_ROLL_BYTES = 512 * 1024;
-export function logRecord(entry, path = recordsLogPath()) {
+function logRecord(entry, path = recordsLogPath()) {
   try {
     mkdirSync(dirname(path), { recursive: true });
     if (existsSync(path) && statSync(path).size > RECORDS_ROLL_BYTES) renameSync(path, `${path}.1`);
     appendFileSync(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     chmodSync(path, 0o600);
   } catch (e) { console.error(`needs-you: the records log was not written (${e.code ?? e.message})`); }
+}
+// The batch a record named by `word` went to, as list --json names it (`<repo>` or `<repo>:<batch>`):
+// the one holding the ticket, as record finds it, else the batch the word names; the word as typed
+// where it names none.
+function recordedBatch(word, key, repos = null) {
+  try {
+    const { named, scope } = batchesNamed(repos ?? loadRepos(Date.now(), word), word);
+    return (scope.find((b) => b.q?.tickets?.[key]) ?? named).word ?? word;
+  } catch { return word; }
 }
 // The log's entries recorded at or after `since` (ms), oldest first, read from at most its last `tail` bytes.
 export function readRecords({ since = 0, tail = 256 * 1024, path = recordsLogPath() } = {}) {
@@ -2995,8 +3004,8 @@ if (isMain) {
   const argv = process.argv.slice(2);
   const { code, out, err } = run(argv);
   if (code === 0 && argv[0] === 'record' && argv.length >= 4) {
-    const [, batch, key, verb, ...more] = argv;
-    logRecord({ at: new Date().toISOString(), batch, key, action: verb === 'override' ? `override ${more[0] ?? ''}` : verb, line: out.split('\n')[0] });
+    const [, word, key, verb, ...more] = argv;
+    logRecord({ at: new Date().toISOString(), batch: recordedBatch(word, key), key, action: verb === 'override' ? `override ${more[0] ?? ''}` : verb, line: out.split('\n')[0] });
   }
   // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
   if (out) console.log(out.replace(/\n$/, ''));

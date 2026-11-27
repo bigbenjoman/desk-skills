@@ -49,11 +49,11 @@ export function recordCommand(item, action, text = '') {
 }
 
 // A time as a weekday and a clock, Tue 08:00.
-export const dayTime = (at) => `${new Date(at).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(at)}`;
+const dayTime =(at) => `${new Date(at).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(at)}`;
 
 // Actions the record route does not take here: override and move name an argument of their own, and a
 // drop or a base push's approve each get a confirm of their own first. They stay copy-only.
-export const recordsHere = (item, action) => {
+const recordsHere =(item, action) => {
   const verb = action.split(' ')[0];
   return !['override', 'move', 'drop'].includes(verb) && !(item.kind === 'base-push' && verb === 'approve');
 };
@@ -62,12 +62,14 @@ const COPY_ONLY = "Desk can't record this one yet. Copy the needs-you command an
 const MERGE_HOLD = /merge it on GitHub|only a person merges/i;
 const mergeHold = (item) => item.kind === 'pr' && item.pr != null && item.actions.some((a) => a.action === 'done') && MERGE_HOLD.test(item.question);
 const ANSWERS = new Set(['answer', 'resume']);
+// needs-you record's words for an answer it took as an instruction to run elsewhere, recording nothing.
+const NOTHING_RECORDED = /(^|: )nothing recorded\./;
 const UNDO_MS = 10_000;
 const READ_MS = 1000;
 
 // The detail's answer cards: needs-you's actions, each run through record, except a PR merge hold's
 // (opening the PR comes first) and a usage hold's (waiting is not-now; moving the repo is Usage & costs').
-export function optionsOf(item, repo, gh) {
+function optionsOf(item, repo, gh) {
   const base = item.actions.map((a) => ({ ...a, id: a.action, label: a.action, run: 'record' }));
   if (mergeHold(item)) {
     const done = base.find((o) => o.action === 'done');
@@ -643,8 +645,9 @@ export function Inbox({ get, snapshot, go }) {
   const figures = JSON.stringify([snapshot?.needs_you, (snapshot?.repos ?? []).map((r) => [r.slug, r.needs_you, r.production_broken])]);
   useEffect(() => { load(false); }, [load, figures]);
 
-  // An item Desk recorded leaves the list at once, before needs-you's next read drops it.
-  const items = useMemo(() => (data?.items ?? []).filter((i) => results[i.id]?.phase !== 'done'), [data, results]);
+  // An item Desk recorded leaves the list at once, before needs-you's next read drops it. Once a read
+  // has dropped it (`left`), a later read that lists it again is a new question, and it shows.
+  const items = useMemo(() => (data?.items ?? []).filter((i) => !(results[i.id]?.phase === 'done' && !results[i.id].left)), [data, results]);
   const shown = useMemo(() => {
     let out = items.filter((i) => (!repoF || i.repo === repoF) && (!kindF || i.kind === kindF));
     if (sort === 'held') out = [...out].sort((a, b) => (b.behind ?? 0) - (a.behind ?? 0));
@@ -658,19 +661,35 @@ export function Inbox({ get, snapshot, go }) {
   // A refresh that drops the open item Desk did not record: it was answered elsewhere (or settled by
   // itself), which the detail says, with needs-you's records log line where it has one.
   const before = useRef([]);
+  const beforeAt = useRef(null);
   useEffect(() => {
     if (!data) return;
     const all = data.items ?? [];
+    const listed = new Set(all.map((i) => i.id));
+    // A recorded item a read no longer lists has left; one listed again after that is asked afresh.
+    setResults((r) => {
+      let changed = false;
+      const out = { ...r };
+      for (const [id, x] of Object.entries(r)) {
+        if (x.phase !== 'done') continue;
+        if (!listed.has(id) && !x.left) { out[id] = { ...x, left: true }; changed = true; }
+        else if (listed.has(id) && x.left) { delete out[id]; changed = true; }
+      }
+      return changed ? out : r;
+    });
     // Desk's own record (sent, or still sending) is not "elsewhere"; one it was refused or failed is.
-    if (sel && !all.some((i) => i.id === sel) && !['done', 'busy'].includes(results[sel]?.phase)) {
+    if (sel && !listed.has(sel) && !['done', 'busy'].includes(results[sel]?.phase)) {
       const was = before.current.find((i) => i.id === sel);
       if (was) {
-        const entry = [...(data.recorded ?? [])].reverse().find((e) => e.key === was.key && (e.batch === was.batch || !e.batch)) ?? null;
-        setGone({ id: sel, item: was, entry, at: data.generated_at ?? new Date().toISOString(), next: nextOf(sel, before.current.filter((i) => all.some((x) => x.id === i.id) || i.id === sel)) });
+        // Only a record made since the last read that still listed it answered this question.
+        const since = Date.parse(beforeAt.current ?? '') || -Infinity;
+        const entry = [...(data.recorded ?? [])].reverse().find((e) => e.key === was.key && (e.batch === was.batch || !e.batch) && Date.parse(e.at) > since) ?? null;
+        setGone({ id: sel, item: was, entry, at: data.generated_at ?? new Date().toISOString(), next: nextOf(sel, before.current.filter((i) => listed.has(i.id) || i.id === sel)) });
       }
       setSel(null);
     }
     before.current = shownOf(all);
+    beforeAt.current = data.generated_at ?? new Date().toISOString();
     if (picked.current) return;
     const first = items.find((i) => i.production_broken) ?? (items.length === 1 ? items[0] : null);
     if (first) { setSel(first.id); picked.current = true; }
@@ -712,9 +731,11 @@ export function Inbox({ get, snapshot, go }) {
     try {
       const r = await get(`/api/repos/${encodeURIComponent(slug)}/tickets/${encodeURIComponent(item.key)}/record`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(text === undefined ? { action: option.action } : { action: option.action, text }),
+        body: JSON.stringify(text === undefined ? { action: option.action, batch: item.batch } : { action: option.action, text, batch: item.batch }),
       });
       res = await resultOf(r);
+      // An instruction (admit, a plan-first start) exits 0 having recorded nothing: the item stays.
+      if (res.phase === 'done' && NOTHING_RECORDED.test(res.out.split('\n')[0])) res = { ...res, phase: 'nothing' };
     } catch { res = { phase: 'failed', out: '', message: "Desk couldn't reach its server, so nothing was recorded. Try again once it's back." }; }
     const at = new Date().toISOString();
     setResults((r) => ({ ...r, [item.id]: { ...r[item.id], ...res, at, next } }));

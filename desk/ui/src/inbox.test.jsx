@@ -562,6 +562,36 @@ describe('items that answer differently', () => {
     expect([detail().querySelector('[data-gone]'), !!detail().querySelector('[data-recorded]')]).toEqual([null, true]);
   });
 
+  it('an item Desk recorded that a later read lists again is asked again in the list', async () => {
+    const s = await open();
+    fireEvent.click(row('SV-4000'));
+    fireEvent.click(radio(/not-now/));
+    fireEvent.click(button(/^Put off/));
+    await waitFor(() => expect(row('SV-4000')).toBeUndefined());
+    // Still listed by the read straight after: hidden until needs-you drops it.
+    key('r');
+    await waitFor(() => expect(s.calls.length).toBe(2));
+    expect(row('SV-4000')).toBeUndefined();
+    s.list = listOf(ITEMS.filter((i) => i.key !== 'SV-4000'));
+    key('r');
+    await waitFor(() => expect(s.calls.length).toBe(3));
+    s.list = listOf(ITEMS);
+    key('r');
+    await waitFor(() => expect(row('SV-4000')).toBeTruthy());
+  });
+
+  it('a record older than the last read that listed the item is not credited as its answer', async () => {
+    const SV3952 = item('SV-3952', 'studia-web', 3, { kind: 'reviewer' });
+    const s = await open({ list: listOf([SV3952, ...ITEMS.slice(0, 2)]) });
+    fireEvent.click(row('SV-3952'));
+    s.list = listOf(ITEMS.slice(0, 2), { generated_at: at(10, 12).toISOString(),
+      recorded: [{ at: at(9, 40).toISOString(), batch: 'studia-web', key: 'SV-3952', action: 'not-now', line: 'studia-web SV-3952: put off' }] });
+    key('r');
+    const gone = await waitFor(() => { const n = detail().querySelector('[data-gone]'); expect(n).toBeTruthy(); return n; });
+    expect(within(gone).getByText('SV-3952 left the list at 10:12.')).toBeTruthy();
+    expect(gone.querySelector('pre')).toBeNull();
+  });
+
   it('AC16 every needs-you kind offers its own actions, each Runs: line naming desk\'s own command', async () => {
     const ACTIONS = { parked: ['resume', 'not-now'], session: ['resume', 'not-now'], spine: ['answer', 'not-now'], plan: ['approve', 'reject'], triage: ['answer', 'not-now'],
       held: ['start', 'not-now'], stopped: ['requeue', 'drop'], pr: ['done', 'not-now'], worktree: ['start', 'drop'], usage: ['done', 'not-now'], 'base-push': ['approve', 'not-now'],

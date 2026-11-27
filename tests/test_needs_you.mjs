@@ -400,6 +400,12 @@ t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stri
 t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue().tickets['X-2'].state}`, '0 triaged');
 const x3 = N.record({ word: 'alpha', ticket: 'X-3', action: 'resume', text: 'the plain one' });
 t('DS-310 AC3 a repo\'s name finds the batch that holds the ticket', `${x3.ok} ${answers().at(-1).queue === xq} ${xQueue().tickets['X-3'].state} ${queueOf('alpha').tickets['X-3']}`, 'true true triaged undefined');
+// DS-737: the records log names the batch the answer went to as list --json does, however the repo was typed.
+writeFileSync(xq, JSON.stringify({ ...xQueue(), tickets: { ...xQueue().tickets, 'X-4': { key: 'X-4', added_at: minsAgo(600), ...parked('A', 5, 'Which header?') } } }));
+const x4 = cli('record', 'ALPHA', 'X-4', 'resume', 'the tall one');
+const x4Log = existsSync(join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl'))
+  ? JSON.parse(readFileSync(join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl'), 'utf8').trim().split('\n').at(-1)) : null;
+t('DS-737 a record typed with the repo\'s name logs the named batch that holds the ticket', `${x4.code} ${x4Log?.key} ${x4Log?.batch}`, '0 X-4 alpha:X-1');
 
 // ---- DS-279: every row desk-q puts in Needs you is asked about: a worker that gave up, and a PR only you move.
 put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
