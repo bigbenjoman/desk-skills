@@ -183,6 +183,11 @@ export const placedMoveText = (m) => `from ${m.from} to ${m.to}, the queue finis
 // (placed again at its new place, so only another move past the threshold, said as this one is, moves
 // it again), `line` its entry in the pass's metrics line `queue_moves`, which the check-in digest reads
 // (pass-metrics.mjs readQueueMoves).
+export function placedMoveRecord(m) {
+  const move = { from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60) };
+  return { set: ['placed=null', `placed_move=${JSON.stringify(move)}`], replace: ['placed=true'], line: { key: m.key, ...move, text: placedMoveText(m) } };
+}
+
 // Which placed tickets' moves reached queue.json, from the write that carried them (queue-writer.mjs
 // flush's result): a move whose write was refused, or whose order or own fields another writer's
 // value kept, was not made. -> { said: the moves made, unnote: keys of moves not made whose
@@ -193,11 +198,6 @@ export function placedLanded(moves, w) {
   const orderKept = w.conflicts.some((c) => c.field === 'order');
   const made = (m) => !orderKept && !theirs(m.key, ['*', 'placed', 'placed_move']);
   return { said: moves.filter(made), unnote: moves.filter((m) => !made(m) && !theirs(m.key, ['*', 'placed_move'])).map((m) => m.key) };
-}
-
-export function placedMoveRecord(m) {
-  const move = { from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60) };
-  return { set: ['placed=null', `placed_move=${JSON.stringify(move)}`], replace: ['placed=true'], line: { key: m.key, ...move, text: placedMoveText(m) } };
 }
 
 // The pass's report line for a re-sort, or null when the order did not change.
