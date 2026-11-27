@@ -294,14 +294,24 @@ function summary(v) {
     const cost = pct == null ? '' : `Last week a ticket cost <b>${Math.abs(pct).toFixed(1)}% ${pct >= 0 ? 'less' : 'more'}</b> than before levers${breached ? ', and a guardrail has been breached' : ', and nothing has got worse'}. `;
     body = `${cost}${l.kept} kept, ${l.testing} still being tested${needsText ? `, and ${needsText}` : ''}.`;
   }
-  const first = leverItems(v)[0];
-  // leverTable draws the decision panel only for an evaluated page's lever row whose ask has choices.
-  const panelled = first?.choices && evaluated(v) && (v.panels.board.levers ?? []).some((b) => b.lever === first.lever);
-  const cta = !first ? '' : first.lever
-    ? `<a class="cta" href="#${panelled ? decideId(first) : 'lev-h'}">Decide on ${esc(first.lever)}</a>`
-    : `<a class="cta" href="#lev-h">Review what needs you${first.repo ? ` in ${esc(first.repo)}` : ''}</a>`;
-  return `<section aria-label="Summary" class="card summary"><p><b>${lead}</b> ${body}</p>${cta}</section>${notes(v.panels.status)}`;
+  return `<p class="lede"><b>${lead}</b> ${body}</p>`;
 }
+
+// Needs you: each lever item's question, with a button to its decision panel. leverTable draws that panel
+// only for an evaluated page's lever row whose ask has choices; otherwise the button opens the table.
+function needsYou(v) {
+  const items = leverItems(v);
+  if (!items.length) return `<section aria-labelledby="ny-h" class="stack4"><h2 id="ny-h">Needs you</h2><p class="muted small">Nothing needs you. desk asks here when a lever needs a decision.</p></section>`;
+  const panelled = (a) => a.choices && evaluated(v) && (v.panels.board.levers ?? []).some((b) => b.lever === a.lever);
+  const cta = (a) => (a.lever
+    ? `<a class="cta" href="#${panelled(a) ? decideId(a) : 'lev-h'}">Decide on ${esc(a.lever)}</a>`
+    : `<a class="cta" href="#lev-h">Review what needs you${a.repo ? ` in ${esc(a.repo)}` : ''}</a>`);
+  return `<section aria-labelledby="ny-h" class="card needs-box"><h2 id="ny-h" class="needs-label">Needs you · ${items.length}</h2>`
+    + `${items.map((a) => `<div class="needs-item"${repoAttr(a.repo)}><p class="needs-q">${esc(askHead(a))}</p>${cta(a)}</div>`).join('')}</section>`;
+}
+
+// Overview: where testing stands in a sentence, then the headline numbers.
+const overview = (v, today) => `<section aria-labelledby="ov-h" class="stack12"><div class="stack4"><h2 id="ov-h">Overview</h2>${summary(v)}</div>${notes(v.panels.status)}${tiles(v, today)}</section>`;
 
 function spark(metric, m, shown) {
   const vals = (shown === 'days' ? metric.daily : metric.weekly).map((p) => scaled(m, p.value));
@@ -379,18 +389,27 @@ function trends(v) {
 // `cols` are { label, num }, a numeric column right-aligned with tabular figures; each row is its cells
 // as HTML, the first its row header, or { sub } for a header row over the rows after it inside the group,
 // or { empty } for a muted line standing in for rows; a group's `note` is a muted line under its rows.
-function dataSection({ id, title, intro, cols, groups }) {
+// Each group is its own tbody, carrying its `repo` for the repo filter. With `fold` (one headline per
+// repo, { repo, text }), the section starts closed, showing its title and headlines, and opens on click
+// to its intro and table.
+function dataSection({ id, title, intro, cols, groups, fold = null }) {
   const cls = (c, base) => `${base}${c.num ? ' n' : ''}`;
   const head = `<tr>${cols.map((c) => `<th scope="col" class="${cls(c, 'th')}">${esc(c.label)}</th>`).join('')}</tr>`;
   const row = (r) => (r.sub != null ? `<tr><th scope="colgroup" colspan="${cols.length}" class="td sgrp">${esc(r.sub)}</th></tr>`
     : r.empty != null ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(r.empty)}</td></tr>`
       : `<tr>${r.map((v, i) => (i === 0 ? `<th scope="row" class="td">${v}</th>` : `<td class="${cls(cols[i], 'td')}">${v}</td>`)).join('')}</tr>`);
-  const body = groups.map((g) => `<tr class="grp"${g.attrs ?? ''}><th scope="colgroup" colspan="${cols.length}" class="td grp">${esc(g.head)}</th></tr>`
+  const body = groups.map((g) => `<tbody${repoAttr(g.repo)}><tr class="grp"${g.attrs ?? ''}><th scope="colgroup" colspan="${cols.length}" class="td grp">${esc(g.head)}</th></tr>`
     + g.rows.map(row).join('')
-    + (g.note ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(g.note)}</td></tr>` : '')).join('');
-  return `<section aria-labelledby="${id}" class="card levers"><div class="levers-head"><div class="stack4"><h2 id="${id}">${esc(title)}</h2><p class="muted small">${esc(intro)}</p></div></div>`
-    + `<div class="scroll"><table class="levtable data"><thead>${head}</thead><tbody>${body}</tbody></table></div></section>`;
+    + (g.note ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(g.note)}</td></tr>` : '') + '</tbody>').join('');
+  const table = `<div class="scroll"><table class="levtable data"><thead>${head}</thead>${body}</table></div>`;
+  if (!fold) {
+    return `<section aria-labelledby="${id}" class="card levers"><div class="levers-head"><div class="stack4"><h2 id="${id}">${esc(title)}</h2><p class="muted small">${esc(intro)}</p></div></div>${table}</section>`;
+  }
+  const lines = fold.map((f) => `<span class="fold-line"${repoAttr(f.repo)}>${esc(f.text)}</span>`).join('');
+  return `<section aria-labelledby="${id}" class="card levers"><details class="fold"><summary class="levers-head fold-sum"><span class="stack4"><h2 id="${id}">${esc(title)}</h2><span class="muted small stack3">${lines}</span></span><span class="fold-cue small"><span class="fold-show">Show table</span><span class="fold-hide">Hide table</span></span></summary>`
+    + `<p class="muted small fold-intro">${esc(intro)}</p>${table}</details></section>`;
 }
+const repoAttr = (repo) => (repo && repo !== '*' ? ` data-repo="${esc(repo)}"` : '');
 
 // The outside reviewer's re-reviews per PR and undraft-to-approval time, before and after the learned
 // review bar began (review-misses.mjs beforeAfter), for each repo with one. Nothing until a check has
@@ -402,8 +421,15 @@ function learned(v) {
   return dataSection({
     id: 'lr-h', title: 'Learned review bar', intro: 'The outside reviewer’s re-reviews per PR and the time from undraft to approval, before and after desk learned its review bar.',
     cols: [{ label: 'Learned bar' }, { label: 'PRs', num: true }, { label: 'External re-reviews per PR', num: true }, { label: 'Undraft to approval (median)', num: true }],
-    groups: repos.map((r) => ({ head: `${r.name} · learned review bar since ${String(r.learned.since).slice(0, 10)}`, rows: [row('Before', r.learned.before), row('After', r.learned.after)] })),
+    groups: repos.map((r) => ({ repo: r.name, head: `${r.name} · learned review bar since ${String(r.learned.since).slice(0, 10)}`, rows: [row('Before', r.learned.before), row('After', r.learned.after)] })),
   });
+}
+
+// A repo's slowest stage at the median, as the closed section's headline.
+function stagesHeadline(r) {
+  const slow = MS.STAGES.filter((k) => r.stages?.[k]?.n && r.stages[k].median != null).sort((a, b) => r.stages[b].median - r.stages[a].median)[0];
+  const prs = `${r.prs} merged PR${r.prs === 1 ? '' : 's'}`;
+  return { repo: r.name, text: slow ? `${r.name}: ${MS.STAGE_NAMES[slow]} takes ${MS.fmt(r.stages[slow].median)} at the median, over ${prs}` : `${r.name}: ${prs}` };
 }
 
 // Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
@@ -415,11 +441,19 @@ function mergeStages(v) {
     id: 'ms-h', title: 'Merge time by stage', intro: 'How long each stage of a merged PR took: the median, and the time 3 in 4 PRs came in under.',
     cols: [{ label: 'Stage' }, { label: 'Median', num: true }, { label: 'p75', num: true }, { label: 'PRs', num: true }],
     groups: repos.map((r) => ({
-      head: `${r.name} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}`,
+      repo: r.name, head: `${r.name} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}`,
       rows: MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => [esc(MS.STAGE_NAMES[k]), esc(MS.fmt(r.stages[k].median)), esc(MS.fmt(r.stages[k].p75)), String(r.stages[k].n)]),
       note: r.outage ? `${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.` : null,
     })),
-  }) + learned(v);
+    fold: repos.map(stagesHeadline),
+  });
+}
+
+// Merge time by stage and time parked by cause, each closed until opened, with the learned review bar
+// between them; a line saying neither has anything yet when that is so.
+function mergeAndParking(v) {
+  const body = mergeStages(v) + learned(v) + stuckTime(v);
+  return `<section aria-labelledby="mp-h" class="stack12"><div class="stack4"><h2 id="mp-h">Merge time and parking</h2><p class="muted small">${body ? 'Each table is closed until you open it, and shows its headline first.' : 'No merged PR has its stages recorded yet, and no ticket has sat parked.'}</p></div>${body}</section>`;
 }
 
 // Each repo's asks by arm of a lever weighed on them (question handling, levers-evaluate.mjs): per
@@ -439,7 +473,7 @@ function asksByArm(v) {
     cols: [{ label: 'Arm' }, { label: 'Tickets', num: true }, ...steps.map((k) => ({ label: `${cap(k)} $ (tokens)`, num: true })),
       { label: 'Pushes', num: true }, { label: 'Digests', num: true }, { label: 'Defaulted', num: true }, { label: 'Median to answer', num: true }],
     groups: repos.map((r) => ({
-      head: `${r.name} · ${r.lever} · asking tickets by arm, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
+      repo: r.name, head: `${r.name} · ${r.lever} · asking tickets by arm, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
       rows: Object.entries(r.arms).map(([a, x]) => [esc(a), String(x.tickets), ...steps.map((k) => `${usd(x.steps?.[k]?.usd_per_ticket)} (${tokens(x.steps?.[k]?.tokens_per_ticket)})`),
         esc(String(x.pushes_per_ticket ?? DASH)), esc(String(x.digests_per_ticket ?? DASH)), share(x.defaulted_share), latency(x.median_latency_s)]),
     })),
@@ -461,7 +495,7 @@ function handoffsByArm(v) {
       const base = r.arms[r.baseline];
       const order = [...(base ? [r.baseline] : []), ...Object.keys(r.arms).filter((a) => a !== r.baseline)];
       return {
-        head: `${r.name} · ${r.lever} · tickets by threshold, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
+        repo: r.name, head: `${r.name} · ${r.lever} · tickets by threshold, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
         rows: order.map((a) => { const x = r.arms[a]; return [esc(a === r.baseline ? `${a} (baseline)` : `${a}%`), String(x.tickets), usd(x.usd_per_ticket),
           a === r.baseline ? DASH : vs(x.usd_per_ticket, base?.usd_per_ticket), esc(String(x.handoffs_per_ticket ?? DASH))]; }),
       };
@@ -489,9 +523,17 @@ function stuckTime(v) {
     id: 'st-h', title: 'Time parked by cause', intro: 'Hours tickets sat parked this week and last, by cause and most hours first, with stalls apart from deliberate holds.',
     cols: [{ label: 'Cause' }, { label: 'Hours', num: true }, { label: 'Tickets', num: true }, ...(linked ? [{ label: 'Tracking issue' }] : [])],
     groups: weeks.map(({ name, w }) => ({
-      head: `${name} · week ${w.week} · ${over(w)}`,
+      repo: name, head: `${name} · week ${w.week} · ${over(w)}`,
       rows: w.groups ? grouped(w.groups) : rows(w.causes),
     })),
+    // Each repo's latest week with a ticket parked, as its headline: the hours, the tickets and the cause
+    // with the most hours.
+    fold: repos.filter((r) => r.weeks.some((w) => w.tickets)).map((r) => {
+      const i = r.weeks.findIndex((w) => w.tickets);
+      const w = r.weeks[i];
+      const top = w.causes[0];
+      return { repo: r.name, text: `${r.name} ${i === 0 ? 'this week' : 'last week'}: ${fmtHours(w.hours)} parked over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}${top ? `, the most hours on ${top.cause} (${fmtHours(top.hours)})` : ''}` };
+    }),
   });
 }
 
@@ -623,19 +665,24 @@ function choiceCard(row, a, { choice, command }) {
 
 // The panel under a lever's row for each needs-you item on it: why desk is asking, the evidence, each
 // choice with its command, and what holds until the person chooses.
+// The question a needs-you item asks, as plain text.
+function askHead(a) {
+  if (!a.lever) return sentence(cap(a.text ?? 'A lever needs your decision'));
+  if (!a.turned_off) return `${a.lever} in ${a.repo} needs your decision.`;
+  return a.baseline ? `desk set ${a.lever} back to ${a.baseline} in ${a.repo}. Keep it there, or test it again?`
+    : `desk turned ${a.lever} off in ${a.repo}. Keep it off, or test it again?`;
+}
+
 function decisionPanel(row, a) {
   const lever = esc(row.lever);
-  const repo = esc(a.repo);
-  const head = !a.turned_off ? `${lever} in ${repo} needs your decision.`
-    : a.baseline ? `desk set ${lever} back to ${esc(a.baseline)} in ${repo}. Keep it there, or test it again?`
-      : `desk turned ${lever} off in ${repo}. Keep it off, or test it again?`;
+  const head = esc(askHead({ ...a, lever: row.lever }));
   const why = a.step && a.ticket
     ? `On ${esc(a.ticket)} a worker ran a command that included <span class="key">${esc(a.step.step)}</span>, and the command exited ${esc(a.step.exit)}. desk counts that as the lever’s own step failing, so it turned the lever off. Nothing about ${row.layer === 'quality-risk' ? 'review quality' : 'what it saves'} was measured.`
     : a.text ? esc(sentence(cap(a.text))) : '';
   const ev = a.evidence ? `<p class="muted tiny">Evidence: <span class="mono">${esc(a.evidence.file)}</span>${a.evidence.line != null ? `, line ${esc(a.evidence.line)}` : ''}</p>` : '';
   const until = a.turned_off ? `Until you choose, ${lever} stays ${a.baseline ? `on ${esc(a.baseline)}` : 'off'}. ` : '';
   const id = decideId(a);
-  return `<div class="decide" id="${id}" role="region" aria-labelledby="${id}-h"><div class="stack4"><h3 class="decide-h" id="${id}-h">${head}</h3>${why ? `<p class="decide-why">${why}</p>` : ''}${ev}</div>`
+  return `<div class="decide" id="${id}"${repoAttr(a.repo)} role="region" aria-labelledby="${id}-h"><div class="stack4"><h3 class="decide-h" id="${id}-h">${head}</h3>${why ? `<p class="decide-why">${why}</p>` : ''}${ev}</div>`
     + `<div class="choices">${a.choices.map((c) => choiceCard(row, a, c)).join('')}</div>`
     + `<p class="muted tiny">${until}Run ${a.choices.length === 2 ? 'either command' : 'one of these commands'} in a terminal, and this row updates on the next refresh.</p></div>`;
 }
