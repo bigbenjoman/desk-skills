@@ -2900,10 +2900,12 @@ const budgetFiles = (key) => {
 };
 // The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
 // resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
-// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it.
+// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it. The
+// cloud-able tickets and the local-only ones are sorted apart, as each kind has its own slots first.
 const RESORT = resortQueue(Object.values(fresh.tickets), {
   scope: budgetFiles,
   fileCount: (k) => plannedFiles(triageRec(k)),
+  cloud: startsInCloud,
 });
 const orderLines = [];
 if (RESORT.changed) {
