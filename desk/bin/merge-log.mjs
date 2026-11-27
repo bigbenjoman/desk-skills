@@ -143,18 +143,31 @@ export function ghMerged(repo, pr) {
 // could not be read.
 export const ghMergedBy = (repo, pr) => { const g = ghMerged(repo, pr); return g ? g.login : undefined; };
 
+// A PR GitHub shows merged, `g` as a read gives it ({ head, login }): its merge log line at the head
+// GitHub merged, `by` the merger (merge-log's `who`; outsideMerger(g.login) for a merge desk did not
+// make). -> { who, at, moved, note }: the merger the line names (`unknown` where GitHub names none, as
+// record writes it), the head recorded, whether GitHub merged another head than `sha`, and what to add
+// to the line where it could not be written.
+export function recordMerged({ repo, pr, sha, g, by = outsideMerger(g.login), ticket = null, path = logPath() }) {
+  const at = g.head || sha;
+  const who = g.login ? by : 'unknown';
+  let note = '';
+  try { record({ repo, pr, sha: at, by, event: 'merged', mergedBy: g.login ?? null, ticket, path }); } catch (err) { note = `; not written to the merge log (${err.message})`; }
+  const moved = !!g.head && !g.head.startsWith(sha) && !sha.startsWith(g.head);
+  return { who, at, moved, note };
+}
+// The line naming a head GitHub merged other than the one checked.
+export const movedLine = (got, sha) => `at ${got.slice(0, 9)}, not the head checked, ${sha.slice(0, 9)}: something merged unchecked`;
+
 // A PR GitHub already shows merged, before this merger merged it: someone else merged it, so the line
-// names them (outsideMerger) at the head GitHub merged. -> the line to print, or null when GitHub
-// shows it unmerged or could not be read, and nothing is written.
+// names them (outsideMerger) at the head GitHub merged. `read(repo, pr)` is GitHub's PR, as ghMerged
+// gives it (the merge lease hold passes its own read). -> null when GitHub shows it unmerged or could
+// not be read, and nothing is written; else recordMerged's result with `line` the line to print.
 export function recordOutside({ repo, pr, sha, ticket = null, read = ghMerged, path = logPath() }) {
   const g = read(repo, pr);
   if (!g?.merged) return null;
-  const who = outsideMerger(g.login);
-  const at = g.head || sha;
-  let note = '';
-  try { record({ repo, pr, sha: at, by: who, event: 'merged', mergedBy: g.login, ticket, path }); } catch (e) { note = `; not written to the merge log (${e.message})`; }
-  const moved = g.head && !g.head.startsWith(sha) && !sha.startsWith(g.head);
-  return `already merged on GitHub by ${who}${moved ? ` at ${g.head.slice(0, 9)}, not the head checked, ${sha.slice(0, 9)}: something merged unchecked` : ''}${note}`;
+  const m = recordMerged({ repo, pr, sha, g, ticket, path });
+  return { ...m, line: `already merged on GitHub by ${m.who}${m.moved ? ` ${movedLine(g.head, sha)}` : ''}${m.note}` };
 }
 
 // The PR's latest `merged` event, else its latest `armed` one not ended since, else null. A disarm ends
@@ -196,9 +209,9 @@ if (isMain) {
   }
   if (!['claim', 'record', 'outside'].includes(cmd) || !/^[1-9][0-9]*$/.test(pr ?? '') || !/^[0-9a-f]{7,40}$/.test(sha ?? '') || (!by && cmd !== 'outside')) die(usage);
   if (cmd === 'outside') {
-    const line = recordOutside({ repo, pr, sha, ticket });
-    if (!line) process.exit(EXIT.GO_ON + 1);
-    console.log(line);
+    const o = recordOutside({ repo, pr, sha, ticket });
+    if (!o) process.exit(EXIT.GO_ON + 1);
+    console.log(o.line);
   } else if (cmd === 'claim') {
     const r = claim({ repo, pr, sha, by });
     if (!r.ok) die(r.why);

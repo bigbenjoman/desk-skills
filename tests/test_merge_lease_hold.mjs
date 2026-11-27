@@ -30,6 +30,7 @@ const envOf = (mode) => ({ machineValue: (k) => (k === 'lease-kinds' ? `merge=${
 let n = 0;
 const leaseLog = (dir) => { try { return readFileSync(join(dir, 'leases.log.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
 const noLedger = () => ({ tickets: {} });
+const MERGED_AT = '2026-11-24T09:41:07Z';
 
 // One hold, on a fresh lease directory and merge log. `merges` is the poll on which gh reports the PR
 // merged (0: never), `head` the head it reports, `login` the merger GitHub names ('' for none), and
@@ -49,9 +50,11 @@ function run({ mode = 'on', merges = 1, head = SHA, login = 'bigbenjoman', befor
     bounds.push(ms);
     if (args.includes('PUT') && enqueue === 'timeout') return { status: 1, stdout: '', stderr: 'gh did not answer within 60s', timedOut: true };
     if (args.includes('PUT')) return { status: enqueue, stdout: '', stderr: enqueue ? 'Pull Request is not mergeable' : '' };
-    if (!calls.some((c) => c.includes('PUT'))) return { status: 0, stdout: before ? `true ${head} ${login}\n` : `false ${SHA} \n`, stderr: '' };
+    // The read's jq object: merged, head, login (null for none) and GitHub's merge time.
+    const pr = (merged, h) => ({ status: 0, stdout: `${JSON.stringify({ merged, head: h, login: merged ? login || null : null, merged_at: merged ? MERGED_AT : null })}\n`, stderr: '' });
+    if (!calls.some((c) => c.includes('PUT'))) return before ? pr(true, head) : pr(false, SHA);
     polls++;
-    return { status: 0, stdout: `${merges && polls >= merges ? `true ${head} ${login}` : `false ${head} `}\n`, stderr: '' };
+    return pr(!!(merges && polls >= merges), head);
   };
   const recordLedger = (a) => {
     const held = JSON.parse(readFileSync(storeFile(dir), 'utf8')).leases.filter((l) => l.kind === 'merge').length;
@@ -87,10 +90,14 @@ function holdLease(dir, mode, label) {
   const r = run({ before: true, login: 'someone-else' });
   t('DS-1030 AC1 a PR already merged before the enqueue is not enqueued, and its line names the GitHub user', [r.code, r.calls.filter((c) => c.includes('PUT')).length, r.log.map((e) => `${e.event} ${e.by} ${e.merged_by ?? ''}`.trim())], [0, 0, [`claim ${BY}`, 'merged github someone-else someone-else']]);
   t('DS-1030 AC1 the ledger records that merger too, and the hold says it was already merged', [r.ledger.map((l) => l.by), r.lines.some((l) => l.includes('#501 already merged by github someone-else (not enqueued) at 111111111 onto main'))], [['github someone-else'], true]);
+  t('DS-1030 the ledger dates an outside merge when GitHub merged it, not when the hold read it', r.ledger.map((l) => l.at), [MERGED_AT]);
+  const moved = run({ before: true, login: 'someone-else', head: '2222222222222222222222222222222222222222' });
+  t('DS-1030 already merged at another head: recorded there, and the hold stops naming it', [moved.code, moved.log.at(-1)?.sha, moved.ledger.map((l) => l.sha), moved.lines.some((l) => l.includes('STOP: GitHub merged it at 222222222, not the head checked, 111111111'))], [1, '2222222222222222222222222222222222222222', ['2222222222222222222222222222222222222222'], true]);
   const same = run({ before: true, login: 'bigbenjoman' });
   t('DS-1030 AC1 merged under the same login the hold uses, it is still someone else\'s merge', same.log.map((e) => `${e.event} ${e.by}`), [`claim ${BY}`, 'merged github bigbenjoman']);
   const own = run({ merges: 1, login: 'bigbenjoman' });
   t('DS-1030 AC2 a PR the hold merged names the session, with the GitHub user GitHub reports', own.log.map((e) => `${e.event} ${e.by} ${e.merged_by ?? ''}`.trim()), [`claim ${BY}`, `merged ${BY} bigbenjoman`]);
+  t('DS-1030 its ledger entry is dated GitHub\'s merge time too', own.ledger.map((l) => [l.by, l.at]), [[BY, MERGED_AT]]);
   const none = run({ merges: 1, login: '' });
   t('DS-1030 AC3 GitHub naming no merger records it unknown, not the session', [none.code, none.log.map((e) => `${e.event} ${e.by} ${JSON.stringify(e.merged_by)}`)], [0, [`claim ${BY} undefined`, 'merged unknown null']]);
   const noneBefore = run({ before: true, login: '' });
@@ -115,7 +122,7 @@ function holdLease(dir, mode, label) {
 // AC4: the ledger records the PR, the head, the base and the session before the lease is released.
 {
   const r = run({ merges: 1 });
-  t('AC4 the ledger record names the PR, head, base and session, with the lease still held', r.ledger, [{ ticket: 'T-1', pr: 501, head: 'feat/T-1', sha: SHA, base: 'main', by: BY, held: 1 }]);
+  t('AC4 the ledger record names the PR, head, base, session and GitHub\'s merge time, with the lease still held', r.ledger, [{ ticket: 'T-1', pr: 501, head: 'feat/T-1', sha: SHA, base: 'main', by: BY, at: MERGED_AT, held: 1 }]);
   t('AC4 it says the ledger recorded it', r.lines.some((l) => l.startsWith('#501 ledger: T-1 merged')), true);
   const none = run({ merges: 1, ticket: null });
   t('AC4 a PR with no ticket records no ledger entry, only the merge log line', [none.code, none.ledger.length, none.log.map((e) => e.event)], [0, 0, ['claim', 'merged']]);
