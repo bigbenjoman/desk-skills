@@ -190,6 +190,18 @@ function refuseLeft(t, key, what) {
   throw new Error(`${key} was left in finished batch ${name} (${t.park.question}), so it is not ${what} there: move it (node queue.mjs --batch ${name} transfer ${key} standing) or drop it`);
 }
 
+// Whether running ticket `t` is paused at a usage limit with no worker left: a session recorded, no live
+// recorded pid, and no process running that session (workerProcs, the test stop uses). A ps that cannot be
+// read is never taken as the worker being gone.
+function pausedGone(t) {
+  if (!t.usage_paused || !t.session_id || t.location === 'cloud') return false;
+  if (t.pid != null && alive(Number(t.pid))) return false;
+  try {
+    const target = workerProcs(t.session_id, processRows());
+    return !target.groups.length && !target.pids.length;
+  } catch { return false; }
+}
+
 // A ticket still recorded running whose worker has exited on a park, before a pass harvested it:
 // { question, since, stage, markers, notes } from its log, or null. Its worker is gone when a recorded
 // pid is dead and the agent registry, read across every login, lacks its session; a registry that
@@ -342,13 +354,24 @@ function requeue(q, key, { handedBack = false } = {}) {
   let harvested = '';
   let calls = null;
   let p = null;
+  let pausedWip = null;
   if (t.state === 'running') {
     // Read again under the lock: a resume of the same session since appends to the log, and a pass
     // started since would harvest it too.
     p = exitedPark?.key === key && exitedPark.session === (t.session_id ?? null) ? exitedPark.park : null;
     if (p && (logStamp(p.log) !== p.logStamp || passRunning())) p = null;
     if (!p && t.location === 'cloud' && t.cloud && !t.session_id) throw new Error(`${key} is running in a cloud session: queue.mjs stop ${key} first, which records the session abandoned, or it gets a second one`);
-    if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+    // A worker paused at a usage limit whose process is gone: no pass records how it ended, as it waits to
+    // resume on its own login, and stop finds nothing to end. The person sends it to a fresh worker on
+    // whichever login the next spawn picks, its worktree committed first as stop commits it.
+    if (!p && pausedGone(t)) {
+      if (passRunning()) throw new Error(`${key} is paused at a usage limit with no worker process, but a pass is running now and may resume it: requeue it again once the pass has finished`);
+      pausedWip = commitStopped(t.worktree ?? join(worktreesDir(), key), key, t.branch, 'its worker, paused at a usage limit, was gone and queue.mjs requeue sent it to a new one');
+    } else if (!p && t.usage_paused && t.session_id && t.location !== 'cloud') {
+      throw new Error(`${key} is paused at a usage limit, but its worker is still live (a process runs its session ${t.session_id}, or none could be checked): stop it first (queue.mjs stop ${key}), or it gets a second one`);
+    } else if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+  }
+  if (t.state === 'running' && p) {
     calls = workerCalls(p.markers, { ticket: key, run: t.session_id, repo: ghRepo(), pr: null });
     Object.assign(t, { state: 'parked', park: newPark(p.question, p.since), last_round: { stage: p.stage, question: p.question, at: p.since } });
     harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
@@ -430,7 +453,9 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
   save(q);
-  return `${key} requeued: ${placed}${harvested}${repointed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  if (pausedWip?.error) process.exitCode = EXIT.SHOW_PERSON;
+  const wip = !pausedWip ? '' : `; its worker, paused at a usage limit, was gone: its work so far is ${pausedWip.sha ? `committed as ${pausedWip.sha.slice(0, 12)} on ${pausedWip.branch}` : pausedWip.nothing ? `nothing to commit (${pausedWip.nothing})` : `not committed: ${pausedWip.error}`}, and a new worker starts on whichever login the next spawn picks`;
+  return `${key} requeued: ${placed}${wip}${harvested}${repointed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 // A lane C or D park whose step the person has done (desk-needs-you's resume on a session item), handed
@@ -517,7 +542,7 @@ class NoTicket extends Error { exit = 2; }
 // Commit everything in worktree `wt` but desk's own `.claude/` files (setup-worktree.sh leaves agent links
 // and a disabled settings file there); ignored files stay out, as git add leaves them.
 // -> { sha } | { nothing: why } | { error: why }
-function commitStopped(wt, key, branch) {
+function commitStopped(wt, key, branch, why = 'queue.mjs stop ended its worker') {
   if (!wt || !existsSync(wt)) return { nothing: `it has no worktree${wt ? ` at ${wt}` : ''}` };
   const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
@@ -527,7 +552,7 @@ function commitStopped(wt, key, branch) {
     if (mid || /^(DD|AU|UD|UA|DU|AA|UU) /m.test(status)) return { error: `its worktree ${wt} is mid ${mid ? mid.replace(/_HEAD$|-.*$/, '').toLowerCase() : 'merge'} with conflicts or an operation in progress, so nothing was committed: its changes are left in place` };
     git('add', '-A', '--', '.', ':(exclude).claude');
     try { git('diff', '--cached', '--quiet'); return { nothing: 'its worktree held only desk\'s own .claude files' }; } catch { /* staged changes to commit */ }
-    git('commit', '--no-verify', '-q', '-m', `wip(${key}): work in progress when queue.mjs stop ended its worker`);
+    git('commit', '--no-verify', '-q', '-m', `wip(${key}): work in progress when ${why}`);
     return { sha: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD') || branch };
   } catch (e) {
     return { error: `committing in ${wt} failed (${String(e.stderr || e.message).trim().split('\n').pop()}): its changes are left in place` };
