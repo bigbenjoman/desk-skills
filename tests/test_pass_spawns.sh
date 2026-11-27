@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (124 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
