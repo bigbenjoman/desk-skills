@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './icons.jsx';
 import { SCREENS } from './routes.js';
-import { andList, dayTime, defaultSub, paceOf, step, useNow, usageBadge } from './usage-figures.js';
+import { andList, dayTime, defaultSub, paceOf, step, useNow, usageBadge, windowWord } from './usage-figures.js';
 
 export const SERVER = '127.0.0.1:4823';
 // Below this width the window is Compact: Standard's sidebar, list and detail pane need 1192 px.
@@ -79,7 +79,7 @@ const PACE_KEY = 'desk.usage-pace-dismissed';
 const readDismissed = () => { try { return JSON.parse(window.localStorage.getItem(PACE_KEY) ?? 'null'); } catch { return null; } };
 const writeDismissed = (v) => { try { window.localStorage.setItem(PACE_KEY, JSON.stringify(v)); } catch { /* private mode: for this load only */ } };
 
-// The usage banners (screen-spec §2.5, DS-731): one per subscription at its limit with repos waiting
+// The usage banners (screen-spec §2.5): one per subscription at its limit with repos waiting
 // for it, which cannot be dismissed, then the Claude default's 7-day window from 85%, until dismissed.
 function usageBanners({ subs, routes, go, now, dismissed, dismiss }) {
   const out = [];
@@ -91,7 +91,7 @@ function usageBanners({ subs, routes, go, now, dismissed, dismiss }) {
     const run = usage('/usage/subscriptions');
     out.push({
       id: `limit ${w.name}`, tone: 'warn', glyph: <Icon name="gauge" />,
-      body: `${w.email} has reached its ${w.type === 'five_hour' ? '5-hour' : '7-day'} limit. ${andList(names)} wait${one ? 's' : ''} ${until}. desk doesn't move ${one ? 'it' : 'them'} to another subscription.`,
+      body: `${w.email} has reached its ${windowWord(w.type) ? `${windowWord(w.type)} ` : 'usage '}limit. ${andList(names)} wait${one ? 's' : ''} ${until}. desk doesn't move ${one ? 'it' : 'them'} to another subscription.`,
       action: run ? { label: 'See subscriptions', run } : null,
     });
   }

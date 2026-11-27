@@ -1,11 +1,11 @@
-// Usage & costs (screen-spec §11.1, §11.3, §11.4; DS-731): how full each subscription's windows are,
+// Usage & costs (screen-spec §11.1, §11.3, §11.4): how full each subscription's windows are,
 // which subscription each repo runs on, and which repos wait for a reset. Read only: every
 // subscription write (pin, default, off, add, remove) is its own story, so no control for one is drawn.
 // Read from the snapshot's `subscriptions` (desk-q-model subscriptionsJson), which the server's probe
 // loop keeps fresh; drawn again every 30 s so the stamp and the pace move with the clock.
 import { useEffect } from 'react';
 import { Icon } from './icons.jsx';
-import { andList, dayTime, defaultSub, level, paceOf, probeStamp, useNow, weekLimit } from './usage-figures.js';
+import { andList, dayTime, defaultSub, level, paceOf, probeStamp, useNow, weekLimit, windowWord } from './usage-figures.js';
 
 const FILL = { done: 'bg-done', needs: 'bg-needs-solid', fail: 'bg-fail' };
 const TEXT = { done: 'text-done', needs: 'text-needs', fail: 'text-fail' };
@@ -191,7 +191,7 @@ function ReposTable({ subs, now }) {
           <td colSpan={4} className="px-3 py-2 text-[13px]">
             <span className="inline-flex items-center gap-2" data-wait={r.name}>
               <span className="text-needs"><Icon name="hourglass" size={14} /></span>
-              {`${r.name} waits for ${w.email}'s ${w.type === 'five_hour' ? '5-hour' : '7-day'} reset · ${r.ready} ready · starts ${w.at != null ? dayTime(w.at) : 'once its limit lifts'}`}
+              {`${r.name} waits for ${w.email}'s ${windowWord(w.type) ? `${windowWord(w.type)} reset` : 'usage limit to lift'} · ${r.ready} ready · starts ${w.at != null ? dayTime(w.at) : 'once its limit lifts'}`}
             </span>
           </td>
         </tr>,
@@ -203,7 +203,9 @@ function ReposTable({ subs, now }) {
           <td colSpan={4} className="px-3 py-2.5">
             <div role="alert" className="flex items-start gap-2 rounded-md border border-fail-bd bg-fail-bg px-3 py-2.5 text-[13px]" data-unknown={r.name}>
               <span className="mt-px text-fail"><Icon name="circle-x" size={14} /></span>
-              <span>{`✕ No subscription on this computer is signed in to ${r.email}, so ${r.name} can't start work. Pick another subscription for it, or add one signed in to that account.`}</span>
+              <span>{r.off
+                ? `✕ The only subscription on this computer signed in to ${r.email} is ${r.off}, which is off, so ${r.name} can't start work. Turn ${r.off} back on, or pick another subscription for it.`
+                : `✕ No subscription on this computer is signed in to ${r.email}, so ${r.name} can't start work. Pick another subscription for it, or add one signed in to that account.`}</span>
             </div>
           </td>
         </tr>,

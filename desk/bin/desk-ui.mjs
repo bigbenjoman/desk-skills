@@ -26,8 +26,8 @@
 //
 // Usage probes: serve runs the usage probe loop (desk-ui-probes.mjs) for as long as it runs, whether or
 // not a window is open, writing its heartbeat to ~/.desk-autopilot/ui/scheduler.json. A desk-q screen
-// open beside it sees the heartbeat fresh and leaves the probes to the server; stopped, desk-q probes as
-// it always has. Each probe's end rebuilds the change stream's model, whose home event carries the
+// open beside it sees the heartbeat fresh and leaves the probes to the server; with the server stopped,
+// desk-q probes by itself. Each probe's end rebuilds the change stream's model, whose home event carries the
 // Usage & costs screen's figures (desk-q-model subscriptionsJson).
 //
 // Writes: every POST below runs one of desk's own commands, from WRITES, through execFile with no

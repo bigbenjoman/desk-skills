@@ -1037,12 +1037,13 @@ export function interactive({
   }, refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
   // and the cost cache's reading, workers or not. While desk-ui's server runs its probe loop (its
-  // heartbeat fresh, serverProbes) the server makes them and this screen shows the readings it writes;
-  // with the heartbeat stale or gone, this screen probes by itself.
+  // heartbeat fresh, serverProbes) the server makes them and this screen shows the readings it writes,
+  // but for a login only this screen's CLAUDE_CONFIG_DIR names (source `env`): the server, started
+  // without it, never sees that one. With the heartbeat stale or gone, this screen probes by itself.
   probeTimer = setInterval(() => {
     const now = clock();
     // One at a time: the probe's start lock refuses a second caller in the same moment.
-    const due = serverProbes(now) ? [] : probesDue(repos, { now });
+    const due = probesDue(repos, { now }).filter((p) => !serverProbes(now) || p.login?.source === 'env');
     (async () => { for (const p of due) await probeWith({ now, ...p, done: () => { if (!done) draw(); } }).catch(() => {}); })();
     costCheck(costWith, now);
   }, probeMs);

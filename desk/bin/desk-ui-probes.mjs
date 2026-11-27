@@ -1,11 +1,11 @@
-// desk-ui's usage probe loop (DS-731): while the server runs, it makes the probes an open desk-q
+// desk-ui's usage probe loop: while the server runs, it makes the probes an open desk-q
 // screen would (desk-q-model probesDue), whether or not a Desk window is open, so the figures stay no
 // older than one probe interval with the app quit. Every TICK_MS it writes its heartbeat,
 // ~/.desk-autopilot/ui/scheduler.json { pid, at, every_ms }, then starts the probes due, one at a time
 // (the probe's start lock refuses a second caller in the same moment), telling the change stream as each
 // ends, since its reading is a quiet .log the stream's watcher leaves out. A desk-q screen that finds the heartbeat fresh (schedulerFresh) leaves the
 // probes to the server and shows the readings it writes; with the heartbeat stale or gone, as when the
-// server has stopped, desk-q probes by itself as it always has. The heartbeat is removed on stop.
+// server has stopped, desk-q probes by itself. The heartbeat is removed on stop.
 import { mkdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';

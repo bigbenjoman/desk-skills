@@ -1,6 +1,7 @@
 // What the Usage & costs screen, its banners and its sidebar badge read from the snapshot's
 // `subscriptions` (desk-q-model subscriptionsJson): every figure, and every time said the screen's way.
 import { useEffect, useState } from 'react';
+import { clock } from './system.jsx';
 
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
@@ -17,9 +18,13 @@ export function useNow(ms = 30_000) {
 // "Tue 08:00": a reset or a projection, its weekday and its time.
 export function dayTime(ms) {
   const d = new Date(ms);
-  return `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(ms)}`;
 }
-export const hhmm = (ms) => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+// A limit's window as the screen names it, "7-day"; null for a limit no window is named for (a hold
+// whose type is `unknown`), which the copy then calls the usage limit.
+const WINDOW_WORD = { five_hour: '5-hour', seven_day: '7-day' };
+export const windowWord = (type) => WINDOW_WORD[type] ?? null;
 
 // "a", "a and b", "a, b and c".
 export const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
@@ -54,15 +59,15 @@ export function probeStamp(subs, now) {
   const at = defaultSub(subs)?.reading?.at;
   const every = subs?.probe_every_ms ?? 5 * 60000;
   if (at == null) return { stale: true, text: '◌ No probe reading yet' };
-  if (now - at > 2 * every) return { stale: true, text: `◌ Probe stale: last read ${hhmm(at)}` };
-  return { stale: false, text: `Checked ${hhmm(at)} · next ${hhmm(at + every)}` };
+  if (now - at > 2 * every) return { stale: true, text: `◌ Probe stale: last read ${clock(at)}` };
+  return { stale: false, text: `Checked ${clock(at)} · next ${clock(at + every)}` };
 }
 
-// The sidebar's Usage & costs figure: the fullest window of any Claude subscription a repo runs on,
-// amber from 85%. -> { pct, hot } | null
+// The sidebar's Usage & costs figure: the fullest window of any Claude subscription a repo runs on and
+// of the Codex default every review runs on, amber from 85%. -> { pct, hot } | null
 export function usageBadge(subs) {
-  const pcts = (subs?.claude ?? []).filter((s) => s.state === 'default' || s.state === 'pinned')
-    .flatMap((s) => [s.reading?.seven_day?.pct, s.reading?.five_hour?.pct]).filter((p) => Number.isFinite(p));
+  const inUse = [...(subs?.claude ?? []).filter((s) => s.state === 'default' || s.state === 'pinned'), ...(subs?.codex ?? []).filter((s) => s.state === 'default')];
+  const pcts = inUse.flatMap((s) => [s.reading?.seven_day?.pct, s.reading?.five_hour?.pct]).filter((p) => Number.isFinite(p));
   if (!pcts.length) return null;
   const pct = Math.max(...pcts);
   return { pct, hot: pct >= 85 };

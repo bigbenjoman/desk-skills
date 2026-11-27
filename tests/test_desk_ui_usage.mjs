@@ -1,4 +1,4 @@
-// suite: desk-ui Usage & costs figures and the server's usage probe loop (DS-731)
+// suite: desk-ui Usage & costs figures and the server's usage probe loop
 // layer: L2
 // covers: desk/bin/desk-ui-probes.mjs desk/bin/desk-q-model.mjs desk/bin/desk-ui-events.mjs desk/bin/desk-ui.mjs desk/bin/desk-q.mjs
 // desk-q-model's subscriptionsJson against a subscriptions file, each Claude login's .claude.json and
@@ -94,7 +94,7 @@ t('AC4 no standby, rotation or most-room field or word', /standby|rotation|most 
 // ---- AC3, AC6: the default at its 7-day limit, desk-skills waiting with its ready tickets
 claudeReading('personal', [0.32, at(26, 13, 10)], [1, at(1 + 30, 8, 0)]);
 s = Q.subscriptionsJson(Q.loadRepos(FIXED), { now: FIXED });
-t('AC6 the default at its limit carries the limit and its reset', byEmail(s.claude, 'ben@studia.example').limit, { type: 'seven_day', at: at(31, 8, 0) });
+t('AC6 the default at its limit carries the limit and its reset', byEmail(s.claude, 'ben@studia.example').limit, { type: 'seven_day', at: at(31, 8, 0) * 1000 });
 t('AC3 desk-skills waits for ben@studia.example with its ready tickets, until the reset',
   s.waiting, [{ email: 'ben@studia.example', name: 'personal', type: 'seven_day', at: at(31, 8, 0) * 1000, repos: [{ name: 'desk-skills', ready: 3 }] }]);
 claudeReading('personal', [0.32, at(26, 13, 10)], [0.88, at(1 + 30, 8, 0)]);
@@ -104,12 +104,15 @@ const E = await import(join(BIN, 'desk-ui-events.mjs'));
 let builds = 0;
 const feed = E.makeFeed({ build: async (now) => { builds += 1; return { at: now, body: { repos: [], subscriptions: { n: builds } }, tickets: {}, batches: [] }; },
   roots: () => [], debounceMs: 5, tickMs: 60000 });
-await feed.current();
+const { EventEmitter } = await import('node:events');
+const res = Object.assign(new EventEmitter(), { text: '', writableLength: 0, writeHead() {}, flushHeaders() {}, write(x) { this.text += x; return true; }, end() {}, destroy() {} });
+await feed.subscribe({ headers: {} }, res);
 const before = builds;
 feed.changed();
 await new Promise((r) => setTimeout(r, 60));
 t('a probe ending (changed) rebuilds the model the watcher cannot see change', builds, before + 1);
-t('the home event carries the subscriptions', feed.snapshot().subscriptions, { n: before + 1 });
+const homes = res.text.split('\n\n').filter((f) => /^event: home$/m.test(f)).map((f) => JSON.parse(f.match(/^data: (.*)$/m)[1]));
+t('the home event sent to an open window carries the new subscriptions', homes.at(-1)?.subscriptions, { n: before + 1 });
 feed.stop();
 
 // ---- the probe loop: its heartbeat, its rounds and stop
@@ -164,6 +167,12 @@ async function screenProbes(beatAt) {
   return calls;
 }
 t('AC11 with the server probing, desk-q makes no probe of its own', await screenProbes(FIXED - 5000), []);
+// A login only this screen's CLAUDE_CONFIG_DIR names: the server, started without it, cannot probe it.
+const SOLO = join(H, 'solo-login');
+mkdirSync(SOLO, { recursive: true });
+process.env.CLAUDE_CONFIG_DIR = SOLO;
+t('with the server probing, desk-q still probes a login only its own CLAUDE_CONFIG_DIR names', (await screenProbes(FIXED - 5000)).includes('solo-login'), true);
+process.env.CLAUDE_CONFIG_DIR = PERSONAL;
 t('AC12 with the server\'s heartbeat stale, desk-q probes by itself', (await screenProbes(FIXED - 10 * MIN)).includes('work'), true);
 t('AC12 with the server stopped (no heartbeat), desk-q probes by itself', (await screenProbes(null)).includes('work'), true);
 

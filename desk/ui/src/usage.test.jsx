@@ -20,7 +20,7 @@ const repo = (name, email, more = {}) => ({ slug: `studia__${name}`, name, email
 // ben@studia.example the default at 88%; studia-web and ai-agents pinned to ops@studia.example (work-2).
 function subscriptions({ d7 = 88, limited = false, at = NOW - MIN } = {}) {
   const def = sub('default', 'ben@studia.example', { plan: 'Max 20x', folder: '~/.claude', state: 'default', reading: reading(d7, at),
-    limit: limited ? { type: 'seven_day', at: RESET / 1000 } : null });
+    limit: limited ? { type: 'seven_day', at: RESET } : null });
   return {
     claude: [def, sub('work-2', 'ops@studia.example', { state: 'pinned', pinned: ['studia-web', 'ai-agents'], on: 'work-2' }),
       sub('work-3', 'ben@personal.example', { plan: 'Pro', state: 'off', reading: null })],
@@ -123,6 +123,14 @@ describe('Usage & costs', () => {
     expect(screen.queryByRole('button', { name: /Add subscription/ })).toBe(null);
   });
 
+  it('a repo pinned to an account only a subscription set off is signed in to says to turn it back on', () => {
+    const subs = subscriptions();
+    subs.repos[2] = { ...subs.repos[2], email: 'ben@personal.example', off: 'work-3' };
+    draw(subs);
+    expect(document.querySelector('[data-unknown="studia-reports"]').textContent)
+      .toBe("✕ The only subscription on this computer signed in to ben@personal.example is work-3, which is off, so studia-reports can't start work. Turn work-3 back on, or pick another subscription for it.");
+  });
+
   it('AC6 at its limit the hero bar is full and says repos wait until the reset', () => {
     draw(subscriptions({ d7: 100, limited: true }));
     const hero = document.querySelector('[data-hero]');
@@ -160,6 +168,13 @@ describe('the usage banners and the sidebar', () => {
     expect(banner('usage pace')).toBe(null);
   });
 
+  it('a limit no window is named for reads as the usage limit, never the 7-day one', async () => {
+    const subs = subscriptions({ d7: 100, limited: true });
+    subs.waiting[0] = { ...subs.waiting[0], type: 'unknown', at: null };
+    await open(subs);
+    expect(banner('limit default').textContent).toContain('ben@studia.example has reached its usage limit. desk-skills and studia-zendesk wait until its limit lifts.');
+  });
+
   it('AC8 the 7-day window at 88% shows its banner with See usage', async () => {
     await open();
     const b = banner('usage pace');
@@ -193,5 +208,11 @@ describe('the usage banners and the sidebar', () => {
   it('the sidebar figure is grey under 85%, from the fullest window a repo runs on', () => {
     expect(usageBadge(subscriptions({ d7: 60 }))).toEqual({ pct: 60, hot: false });
     expect(usageBadge(subscriptions({ d7: 85 }))).toEqual({ pct: 85, hot: true });
+  });
+
+  it('the sidebar figure counts the Codex default every review runs on', () => {
+    const subs = subscriptions({ d7: 60 });
+    subs.codex[0].reading.seven_day.pct = 88;
+    expect(usageBadge(subs)).toEqual({ pct: 88, hot: true });
   });
 });
