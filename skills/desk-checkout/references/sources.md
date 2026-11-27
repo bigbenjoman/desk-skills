@@ -19,12 +19,13 @@ the user once, then re-run with the flag the note names (`--include <slug>`, `--
 | **Meeting notes** | Gmail connector, Gemini notes | `read-calendar` | Decisions and actions from each meeting, and whether the user spoke |
 | **Slack** | Slack connector | `read-slack-public`; DMs and private channels need `read-slack-own` | What they already announced, asks they made, and their previous check-out |
 
-To run every collector in one call:
+To run every collector once, in one call, with the window from the previous check-out (`W=` when
+none was found):
 
 ```bash
-S=~/.claude/skills/desk-checkout/scripts; D=auto
-python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D
-python3 $S/worklog_activity.py --day $D; python3 $S/claude_activity.py --day $D --window-turns
+S=~/.claude/skills/desk-checkout/scripts; D=auto; W="--since <its ISO time> --since-for <its day>"
+python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W
+python3 $S/worklog_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W --window-turns
 ```
 
 **Searches that hit the cap.** GitHub's search returns at most 1000 results. Each search pages to
