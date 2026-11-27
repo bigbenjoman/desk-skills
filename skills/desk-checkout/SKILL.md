@@ -89,7 +89,7 @@ day.
 **Permissions.** A source whose row is not `yes` is skipped (or asked about, for `ask`), and the
 draft says so under **Missing sources**. The collectors apply each repo's own row and print what
 they skipped: for an `ask` row, ask the user once, then re-run that collector with
-`--include <slug>`. With `read-slack-public` alone, use `slack_search_public` and search only
+the flag the note names. With `read-slack-public` alone, use `slack_search_public` and search only
 channels.
 
 **When the Claude summary isn't enough.** A session's `ended with` line is truncated. For the

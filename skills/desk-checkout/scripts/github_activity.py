@@ -5,8 +5,8 @@ Uses the `gh` CLI (already authenticated), so no token handling here. Lists PRs 
 opened, merged, closed or pushed to, and other people's PRs you reviewed, across every
 repo. Open PRs carry their review decision and check state, which is what "waiting on
 approval" claims need. For each repo it also counts the PRs merged in the window, yours and
-everyone's (the latter only where that repo's §3 read-others allows), so a post's merged count
-says whose PRs it means.
+everyone's (the latter only for a configured repo whose own §3 read-others is `yes`, or `ask`
+and passed with --include-others <slug>), so a post's merged count says whose PRs it means.
 
 Rows are grouped by scope (see desk_repos.py): this check-out (the current repo and any
 configured desk repo sharing its §4 Check-out destination), side projects
@@ -16,6 +16,7 @@ read-own-work is `yes` (or `ask` and passed with --include <slug>).
 
 Usage:
   github_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD] [--include <slug>]
+                     [--include-others <slug>]
 """
 import argparse
 import json
@@ -109,6 +110,8 @@ def main():
     ap = argparse.ArgumentParser()
     window.add_day_argument(ap)
     desk_repos.add_include_argument(ap)
+    ap.add_argument("--include-others", action="append", default=[], metavar="SLUG",
+                    help="count everyone's merged PRs in a repo whose §3 read-others is `ask`, after the user agreed")
     args = ap.parse_args()
     repos, _current = desk_repos.load_all(args.include)
     skipped = set()
@@ -176,17 +179,30 @@ def main():
     side = [s.strip() for s in os.environ.get("DESK_CHECKOUT_SIDE_REPOS", "").split(",") if s.strip()]
     names = {n.lower(): n for n in side + [r.gh_repo for r in repos if r.gh_repo]}.values()
 
+    def others_allowed(cfg):
+        """(ok, note) for counting everyone's merged PRs. read-others has its own consent, never --include's."""
+        if cfg is None or cfg.config_path is None:
+            return False, "no desk config"
+        v = cfg.perm("read-others")
+        if v == "yes" or (v == "ask" and cfg.slug in args.include_others):
+            return True, ""
+        if v == "ask":
+            note = f"{cfg.slug}: §3 read-others is ask - pass --include-others {cfg.slug} once the user agrees"
+            skipped.add(note)
+            return False, note
+        return False, f"{cfg.slug}: §3 read-others is {v}"
+
     def describe_merged(repo):
         sc = scope(repo)
         if sc is None:
             return None
-        everyone, note = desk_repos.allowed(desk_repos.scope_for_repo_name(repo, repos)[1], "read-others")
+        everyone, note = others_allowed(desk_repos.scope_for_repo_name(repo, repos)[1])
         counts = merged_counts(repo, login, since, until, day, everyone)
         label = "" if sc == "this" else f" [{desk_repos.SCOPE_LABELS[sc]}]"
         if counts is None:
             return sc, f"- {repo}: not counted (gh search failed){label}"
         mine, total = counts
-        rest = f"{total} all" if total is not None else f"all not counted ({note.replace(' - skipped', '')})"
+        rest = f"{total} all" if total is not None else f"all not counted ({note})"
         return sc, f"- {repo}: {mine} mine / {rest}{label}"
 
     with ThreadPoolExecutor(max_workers=8) as pool:
