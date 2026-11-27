@@ -1,9 +1,9 @@
 // suite: new merge holds (a change pushed after a PR opened that puts it under §4 Merge holds)
 // layer: L1
 // covers: desk/bin/new-holds.mjs
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { scratch } from './scratch.mjs';
 import { newHolds, nowNeedsText, writeHoldAsks, NOW_NEEDS } from '../desk/bin/new-holds.mjs';
 import { readAsks, pruneAsks } from '../desk/bin/asks.mjs';
 import { newHoldPrs } from '../desk/bin/desk-q.mjs';
@@ -72,7 +72,7 @@ t('two new files are joined with "and" in the ask', r.ask.includes('touched infr
 t('... and "them" in the line', r.line.includes('put them under'), true);
 
 // writeHoldAsks: the ask goes in the repo's asks, a named batch's state included, and a dropped one goes.
-const repoState = mkdtempSync(join(tmpdir(), 'new-holds-'));
+const repoState = scratch('new-holds-');
 const batchState = join(repoState, 'batches', 'EPIC-1');
 mkdirSync(batchState, { recursive: true });
 r = newHolds(t1, s('b2'), opts({ head: 'b2', holds: [ci, src] }));
@@ -102,7 +102,6 @@ t('a failed ask is reported', unasked.join(','), 'recorded');
 t('... and leaves its files out of asked, with no ask id', `${J(lost.asked)} ${J(lost.asks)}`, '[] []');
 r = newHolds({ ...t1, hold_read: lost, new_holds: ['infra/main.tf'] }, s('c3'), opts({ head: 'c3', holds: [ci, src] }));
 t('... so the next head asks about them again', `${r.fresh.join(',')} ${Boolean(r.ask)}`, 'infra/main.tf true');
-rmSync(repoState, { recursive: true, force: true });
 
 // Nothing read, nothing changed.
 let calls = [];
