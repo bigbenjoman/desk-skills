@@ -661,7 +661,8 @@ export function Inbox({ get, snapshot, go }) {
   useEffect(() => {
     if (!data) return;
     const all = data.items ?? [];
-    if (sel && !all.some((i) => i.id === sel) && !results[sel]) {
+    // Desk's own record (sent, or still sending) is not "elsewhere"; one it was refused or failed is.
+    if (sel && !all.some((i) => i.id === sel) && !['done', 'busy'].includes(results[sel]?.phase)) {
       const was = before.current.find((i) => i.id === sel);
       if (was) {
         const entry = [...(data.recorded ?? [])].reverse().find((e) => e.key === was.key && (e.batch === was.batch || !e.batch)) ?? null;

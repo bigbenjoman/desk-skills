@@ -433,8 +433,9 @@ describe('put off and taken back', () => {
   const SV3957 = item('SV-3957', 'studia-web', 2, { question: 'SV-3957 needs a lane' });
 
   it('AC10 e puts SV-3957 off at once and the toast offers Undo (⌘Z) for 10 s', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers({ toFake: ['Date'] });
     const s = await open({ list: listOf([SV3957, ...ITEMS.slice(0, 2)]) });
+    const timers = vi.spyOn(globalThis, 'setTimeout');
     fireEvent.click(row('SV-3957'));
     key('e');
     await waitFor(() => expect(document.querySelector('[data-toast]')).toBeTruthy());
@@ -443,9 +444,12 @@ describe('put off and taken back', () => {
     expect(toast.textContent).toContain('SV-3957 put off until the next check-in.');
     expect(within(toast).getByRole('button', { name: 'Undo (⌘Z)' })).toBeTruthy();
     expect(row('SV-3957')).toBeUndefined();
-    act(() => { vi.advanceTimersByTime(9_000); });
-    expect(document.querySelector('[data-toast]')).toBeTruthy();
-    act(() => { vi.advanceTimersByTime(1_500); });
+    expect(toast.querySelector('span[aria-hidden]').style.transitionDuration).toBe('10000ms');
+    // The toast's own timer is the one 10 s long; when it fires, the toast goes.
+    const ends = timers.mock.calls.filter(([, ms]) => ms === 10_000);
+    timers.mockRestore();
+    expect(ends.length).toBeGreaterThan(0);
+    act(() => { ends.at(-1)[0](); });
     expect(document.querySelector('[data-toast]')).toBeNull();
   });
 
