@@ -618,39 +618,45 @@ def min_growth():
 
 
 def current_stage(transcript):
-    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None."""
-    try:
-        lines = transcript_lines(transcript)
-    except Exception:
-        return None
-    for raw in reversed(lines):
-        if b"AUTOPILOT_STAGE" not in raw:
-            continue
+    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None.
+
+    The tail usually holds it; the whole file is read only when the tail does not, so a None means
+    the worker has printed no stage line at all."""
+    for limit in (TAIL_LIMIT, None):
         try:
-            e = json.loads(raw)
+            lines = transcript_lines(transcript, limit)
         except Exception:
-            continue
-        if e.get("type") != "assistant" or e.get("isSidechain"):
-            continue
-        for c in reversed((e.get("message") or {}).get("content") or []):
-            if not isinstance(c, dict):
+            return None
+        for raw in reversed(lines):
+            if b"AUTOPILOT_STAGE" not in raw:
                 continue
-            if c.get("type") == "text":
-                found = STAGE_LINE.findall(c.get("text") or "")
-                if found:
-                    return found[-1].lower()
-            elif c.get("type") == "tool_use" and c.get("name") == "Bash":
-                m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
-                if m:
-                    return m.group(2).lower()
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            if e.get("type") != "assistant" or e.get("isSidechain"):
+                continue
+            for c in reversed((e.get("message") or {}).get("content") or []):
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text":
+                    found = STAGE_LINE.findall(c.get("text") or "")
+                    if found:
+                        return found[-1].lower()
+                elif c.get("type") == "tool_use" and c.get("name") == "Bash":
+                    m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
+                    if m:
+                        return m.group(2).lower()
+        if os.path.getsize(transcript) <= TAIL_LIMIT:
+            break  # the tail was the whole file
     return None
 
 
 def worker_stage(transcript):
     """The stage the worker is in: its last stage line, else the stage spawn-worker.sh started this
     session at (DESK_START_STAGE, from AUTOPILOT_START_STAGE). A fresh session after a handoff or a
-    park starts partway through a stage and may print no stage line until the next one, and without
-    this it never hands off (DS-1046's Stage 4b session ran to 254,830 tokens past a drawn 20%)."""
+    park starts partway through a stage and may print no stage line until the next one; without
+    this it could never hand off before then."""
     stage = current_stage(transcript)
     if stage:
         return stage
