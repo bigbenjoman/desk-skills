@@ -8,7 +8,8 @@
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only),
 # two sessions in one repo: a reserved name each, and each resuming its own handoff; and the
 # session's /rename name, recorded in the handoff and given back as a /rename line after /clear; and
-# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows.
+# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows;
+# and `pick` (DS-1051): /desk-resume's one fitting handoff in a session started without /clear.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -598,5 +599,41 @@ check "DS-1037 AC4 rows at 0 and no lever value: a worker never hands off" '[ -z
 config '`45`'
 DESK_HANDOFF_FILE="" hook PostToolUse wk7 "$T/w90.jsonl"
 check "DS-1037 outside a worker, worker mode stays off"                    '[[ "$(ctx)" == *".handoffs/"* ]]'
+
+# ---- DS-1051: /desk-resume in a session started fresh (no /clear) asks the hook to pick ----
+P="$T/pickrepo"; git init -q -b main "$P"; P="$(cd "$P" && pwd -P)"; mkdir -p "$P/.handoffs" "$P/sub"
+pick(){ out=$(CLAUDE_CODE_SESSION_ID="${SID_PICK:-}" DESK_HANDOFF_PID="${PID_PICK:-pkfresh}" python3 "$HOOK" pick "$P/sub" 2>&1); rc=$?; }
+# A session started fresh under Claude process pkfresh; one /clear began under pkclear.
+printf '{"hook_event_name":"SessionStart","session_id":"pkf","source":"startup","cwd":"%s"}' "$P/sub" | DESK_HANDOFF_PID=pkfresh python3 "$HOOK" >/dev/null 2>&1
+check "DS-1051 SessionStart records how the session began"     '[ "$(python3 -c "import json,sys; s=json.load(open(sys.argv[1])); print(s[\"start_source\"], s[\"start_pid\"])" "$DESK_HOME/handoff/pkf.json")" = "startup pkfresh" ]'
+printf '{"root":"%s","start_pid":"pkclear","start_source":"clear","started_at":%s}' "$P" "$(date +%s)" > "$DESK_HOME/handoff/pkc.json"
+printf '<!-- desk handoff placeholder: session z -->\n' > "$P/.handoffs/$DAY-3.md"
+echo "# stale" > "$P/.handoffs/old.md"; age "$P/.handoffs/old.md" 90000
+echo "# done" > "$P/.handoffs/done.md"; echo "done.md" > "$P/.handoffs/.consumed"
+echo "# held" > "$P/.handoffs/held.md"; echo "held.md live" > "$P/.handoffs/.held"
+echo "# the one" > "$P/.handoffs/$DAY-2.md"
+pick
+check "DS-1051 AC1: the one fresh, unconsumed, unheld handoff is picked" '[ $rc -eq 0 ] && [ "$out" = "$P/.handoffs/$DAY-2.md" ]'
+check "DS-1051 AC1: and recorded as consumed"                  'grep -qx "$DAY-2.md" "$P/.handoffs/.consumed"'
+pick
+check "DS-1051 AC2: once consumed it is not picked again"      '[ $rc -eq 1 ] && [ -z "$out" ]'
+echo "# a" > "$P/.handoffs/a.md"; echo "# b" > "$P/.handoffs/b.md"
+pick
+check "DS-1051 AC3: two that fit: none picked, none consumed"  '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qxE "(a|b)\.md" "$P/.handoffs/.consumed"'
+pick_outside="$(python3 "$HOOK" pick "$T" 2>&1)"; rc=$?
+check "DS-1051 outside a git repo: exit 1, silent"            '[ $rc -eq 1 ] && [ -z "$pick_outside" ]'
+rm -f "$P/.handoffs/b.md"
+PID_PICK=pkclear pick
+check "DS-1051 a process whose session /clear began: none picked" '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+SID_PICK=pkc pick
+check "DS-1051 a session id /clear began: none picked"         '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+PID_PICK=nobody pick
+check "DS-1051 a session with no start record: none picked"    '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+# The start record decides, not the repo the session last worked in.
+python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["root"]="/elsewhere"; json.dump(s,open(p,"w"))' "$DESK_HOME/handoff/pkc.json"
+PID_PICK=pkclear pick
+check "DS-1051 /clear's record holds after work in another repo" '[ $rc -eq 1 ] && [ -z "$out" ]'
+SID_PICK=pkf pick
+check "DS-1051 a session started fresh: the one that fits"     '[ $rc -eq 0 ] && [ "$out" = "$P/.handoffs/a.md" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
