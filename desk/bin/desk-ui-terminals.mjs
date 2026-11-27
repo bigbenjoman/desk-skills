@@ -58,9 +58,12 @@ export function makeTerminals({ socket, log = (l) => console.error(l) } = {}) {
 
   const available = async () => (await request('ping')).ok === true;
   // `onEvent` gets { ev: 'data', id, data (base64) }, { ev: 'exit', id, code, signal }, or { ev: 'gone', id } when the daemon goes.
+  // The watcher is set before the request: the daemon's first output can arrive in the same read as
+  // its answer, and is handed on before the answer's promise settles.
   async function attach(id, onEvent) {
+    watchers.set(id, onEvent);
     const r = await request('attach', { id });
-    if (r.ok) watchers.set(id, onEvent);
+    if (!r.ok && watchers.get(id) === onEvent) watchers.delete(id);
     return r;
   }
   async function detach(id) { watchers.delete(id); return request('detach', { id }); }

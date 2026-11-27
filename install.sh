@@ -7,7 +7,8 @@
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
 #   ./install.sh --rollback     makes the release before the current one current, installs nothing
-#   ./install.sh --uninstall-ui stops the desk app's server, removes its launchd job and Desk.app, nothing else
+#   ./install.sh --uninstall-ui stops the desk app's server and its pty daemon, removes their launchd
+#                               jobs and Desk.app, nothing else
 #   ./install.sh --accept=<id,...> --decline=<id,...>   answers the prompts named, with or without a
 #                               terminal; each prompt's id is shown in the Skipped list (and below)
 #
@@ -63,7 +64,7 @@ for arg in "$@"; do
     --uninstall-ui) UNINSTALL_UI=1 ;;
     --accept=*) ACCEPT="$ACCEPT,${arg#--accept=}," ;;
     --decline=*) DECLINE="$DECLINE,${arg#--decline=}," ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -79,16 +80,21 @@ refresh_pristine() {
   done
 }
 
-# After a rollback to a release older than the desk-ui server, its launchd job would restart a script
-# that is no longer there every few seconds: unload it and remove its plist, as --uninstall-ui does.
+# After a rollback to a release older than the desk-ui server (or its pty daemon), its launchd job
+# would restart a script that is no longer there every few seconds: unload it and remove its plist, as
+# --uninstall-ui does.
 ui_after_rollback() {
-  local plist="$HOME/Library/LaunchAgents/com.desk-skills.ui.plist"
-  [ -f "$DESKDIR/bin/desk-ui.mjs" ] && return 0
-  [ -f "$plist" ] || return 0
-  # Not loaded (a failed bootstrap, a port clash, an ssh session) fails the bootout; the plist still goes.
-  launchctl bootout "gui/$(id -u)/com.desk-skills.ui" >/dev/null 2>&1 || true
-  rm -f "$plist"
-  echo "  desk-ui: removed com.desk-skills.ui: the release now current has no desk-ui server"
+  local pair label script what plist
+  for pair in "ui desk-ui.mjs desk-ui server" "ptyd desk-ptyd.mjs pty daemon"; do
+    label="${pair%% *}"; script="${pair#* }"; what="${script#* }"; script="${script%% *}"
+    plist="$HOME/Library/LaunchAgents/com.desk-skills.$label.plist"
+    [ -f "$DESKDIR/bin/$script" ] && continue
+    [ -f "$plist" ] || continue
+    # Not loaded (a failed bootstrap, a port clash, an ssh session) fails the bootout; the plist still goes.
+    launchctl bootout "gui/$(id -u)/com.desk-skills.$label" >/dev/null 2>&1 || true
+    rm -f "$plist"
+    echo "  ${script%.mjs}: removed com.desk-skills.$label: the release now current has no $what"
+  done
 }
 
 # --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
@@ -102,12 +108,13 @@ if [ "$ROLLBACK" = 1 ]; then
   exit 0
 fi
 
-# --uninstall-ui unloads the desk-ui server's launchd job, removes its plist, ~/Applications/Desk.app
-# and the app build (~/.claude/desk/ui).
+# --uninstall-ui unloads the desk-ui server's and the pty daemon's launchd jobs, removes their plists,
+# node-pty (~/.claude/desk/ptyd), ~/Applications/Desk.app and the app build (~/.claude/desk/ui).
 # No queue or state file changes.
 if [ "$UNINSTALL_UI" = 1 ]; then
   rc=0
   DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-ui.mjs" uninstall || rc=$?
+  DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-ptyd.mjs" uninstall || rc=$?
   DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-app.mjs" uninstall || rc=$?
   exit $rc
 fi
@@ -1434,6 +1441,27 @@ install_desk_ui() {
   fi
 }
 install_desk_ui
+
+# ---------------------------------------------------------------------------------------------
+section "Desk's terminals  -> pty daemon (launchd com.desk-skills.ptyd, node-pty in ~/.claude/desk/ptyd)"
+
+# node-pty is installed with npm ci from desk/ptyd's committed lockfile, and only when that changed.
+# A native module that does not build leaves terminals unavailable (the app says so) and is a warning,
+# never a failed install. A daemon already running keeps running, and with it every open terminal.
+install_desk_ptyd() {
+  local out
+  if [ "$OS" != mac ]; then
+    note "skipped: Desk's terminals run under macOS launchd only"
+  elif ! has npm; then
+    warn "Desk's terminals are unavailable: npm is not on PATH to install node-pty"
+  elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-ptyd.mjs" install --src "$SRC/desk/ptyd" 2>&1)"; then
+    ok "$out"
+    case "$out" in *"already running"*) ;; *) wrote "desk-ptyd ~/Library/LaunchAgents/com.desk-skills.ptyd.plist, ~/.claude/desk/ptyd (./install.sh --uninstall-ui removes them)" ;; esac
+  else
+    warn "Desk's terminals are unavailable; the rest of Desk works"; show_err "$out"
+  fi
+}
+install_desk_ptyd
 
 # ---------------------------------------------------------------------------------------------
 section "Desk app  -> ~/.claude/desk/ui/dist (built from desk/ui, served by desk-ui)"

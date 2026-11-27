@@ -243,7 +243,10 @@ export function makeDaemon({ pty, socket = socketPath(), log = (l) => console.er
     }
   }
 
+  const socks = new Set();
   const server = createServer((sock) => {
+    socks.add(sock);
+    sock.on('close', () => socks.delete(sock));
     const conn = { terms: new Set(), say: (o) => { if (!sock.destroyed) sock.write(`${JSON.stringify(o)}\n`); } };
     let buf = '';
     sock.setEncoding('utf8');
@@ -281,7 +284,10 @@ export function makeDaemon({ pty, socket = socketPath(), log = (l) => console.er
   }
   function stop() {
     for (const t of terms.values()) if (t.state === 'running') try { t.p.kill('SIGHUP'); } catch { /* gone */ }
-    return new Promise((r) => server.close(() => r()));
+    // A connected desk-ui server would hold close() open for ever: its connections end here.
+    const closed = new Promise((r) => server.close(() => r()));
+    for (const s of socks) s.destroy();
+    return closed;
   }
   return { listen, stop, server, terms };
 }
