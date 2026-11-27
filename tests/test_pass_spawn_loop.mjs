@@ -201,7 +201,7 @@ const { threw, calls } = withNoIo(() => {
       t(`a cloud ticket back for a ${kind} fix try on its PR is set up for a local worker`, j([types(back.actions).includes('setup'), back.verdict.how]), j([true, 'local']));
     }
     t('so is one back for more work on its PR with no try', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 } }))).verdict.how, 'local');
-    t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-4)), j(['take-slot', 'setup', 'place', 'start']));
+    t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
   }
 
   // #1564: a cloud session has its own limit, §3b "Cloud sessions at once", and takes no local slot.
@@ -229,20 +229,22 @@ const { threw, calls } = withNoIo(() => {
   // (cloud_ok); the cloud takes it while its cap has room, and a local slot only as placeAtStart allows.
   {
     const able = (key, f = {}) => ticket(key, { cloud_ok: true, ...f });
-    const places = (as) => as.filter((a) => a.type === 'place').map((a) => `${a.key}:${a.where}`);
+    // A cloud start yields its place; a local one carries it on its start verdict, for pass.mjs to record once the worker runs.
+    const places = (as) => as.flatMap((a) => (a.type === 'place' ? [a] : a.type === 'start' && a.place ? [{ key: a.key, ...a.place }] : [])).map((a) => `${a.key}:${a.where}`);
+    const whyOf = (as) => (as.find((a) => a.type === 'place') ?? as.find((a) => a.type === 'start')?.place)?.why;
     const roomy = step(snap(able('C')));
     t('issue-1587 AC1 a cloud-able ticket goes to the cloud while the cloud cap has room', j([roomy.verdict.how, places(roomy.actions)]), j(['cloud', ['C:cloud']]));
     t('issue-1587 AC4 and its place says why', roomy.actions.find((a) => a.type === 'place').why, 'cloud first: a cloud session is free (0 of 4 running, §3b "Cloud sessions at once")');
     const local = step(snap(ticket('L'), { cloudSlots: 4 }));
     t('issue-1587 AC1 a local-only ticket takes a local slot, the cloud free or not', j([local.verdict.how, places(local.actions)]), j(['local', ['L:local']]));
-    t('issue-1587 AC4 and its place says why', local.actions.find((a) => a.type === 'place').why, 'it must run on this computer');
+    t('issue-1587 AC4 and its place says why', whyOf(local.actions), 'it must run on this computer');
     const fullNoSpare = step(snap(able('C'), { cloudSlots: 0, cloudRunning: 4 }));
     t('issue-1587 AC2 with the cloud cap full and no local slot free last pass, a cloud-able ticket waits, a local slot free now or not',
       j([fullNoSpare.verdict, types(fullNoSpare.actions).includes('take-slot')]), j([{ type: 'skip', key: 'C', full: true, cloud: true }, false]));
     const spare = step(snap(able('C'), { cloudSlots: 0, cloudRunning: 4, localSpare: true }));
     t('issue-1587 AC2 with the cloud cap full and a local slot free all last pass, it takes a local slot',
       j([spare.verdict.how, places(spare.actions), types(spare.actions).includes('take-slot')]), j(['local', ['C:local'], true]));
-    t('issue-1587 AC4 and its place says why', spare.actions.find((a) => a.type === 'place').why, 'the cloud is full (4 of 4 running, §3b "Cloud sessions at once"), and a local slot stayed free all last pass');
+    t('issue-1587 AC4 and its place says why', whyOf(spare.actions),'the cloud is full (4 of 4 running, §3b "Cloud sessions at once"), and a local slot stayed free all last pass');
     const reserved = step(snap(able('C'), { cloudSlots: 0, cloudRunning: 4, localSpare: true, slots: 2, reserve: 2 }));
     t('issue-1587 AC2 local slots go first to the local-only tickets still to come: one they would take holds it back', reserved.verdict.type, 'skip');
     // A pass's order: two cloud-able tickets ahead of two local-only ones, one cloud session, two local slots.
@@ -266,8 +268,8 @@ const { threw, calls } = withNoIo(() => {
     const hung = step(snap(able('C'), spareSnap), { setup: { hung: 'origin hung' } });
     t('issue-1587 nor does one whose worktree setup found origin hung', j([hung.verdict.type, places(hung.actions)]), j(['skip', []]));
     const setUp = step(snap(able('C'), spareSnap));
-    t('issue-1587 a local start records its place once its worktree is set up, before it starts',
-      types(setUp.actions).filter((x) => ['setup', 'place', 'start'].includes(x)).join(), 'setup,place,start');
+    t('issue-1587 a local start records no place in the step: its start verdict carries it, for pass.mjs to record once the worker runs',
+      j([types(setUp.actions).includes('place'), setUp.verdict.place?.where]), j([false, 'local']));
     const back = step(snap(able('C', { result: { pr: 31 } }), { cloudSlots: 4 }));
     t('issue-1587 one back for more work on its PR runs here, not the cloud', back.verdict.how, 'local');
   }

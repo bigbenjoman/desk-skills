@@ -55,7 +55,8 @@
 //   park {key, line}                          park it
 //   park-ask {key, line}                      park it with a question for the person, no slot taken
 //   hand-away {key, placement}                admit it in the repo its code is in
-//   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
+//   start {key, how, pick?, setup?, place?}   start it: `how` is resume, handoff, cloud or local; a local
+//                                             one carries its place ({where, why}), recorded once it runs
 
 import { set, say, runsInCloud, startsInCloud, placeAtStart } from './shared.mjs';
 
@@ -148,12 +149,12 @@ export function* decideSpawn(s) {
   const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
   if (!s.resume && !pick) return yield skip;
   // Its place at start, with why: recorded on the ticket for desk-q, and location set to match. A new
-  // local session records it only once its worktree is set up and it starts (afterSetup): a place
-  // 'local' ends its cloud eligibility (shared.mjs cloudAble), so a start that stops before then
-  // (the database down, origin hung) must leave the ticket as cloud-able as it was.
-  const placed = { type: 'place', key, where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
-  const placeNow = cloud || s.resume || s.handoff;
-  if (placeNow) yield placed;
+  // local session does not record it here: its `start` verdict carries it, and pass.mjs records it
+  // once spawn-worker.sh has started the worker. A place 'local' ends its cloud eligibility
+  // (shared.mjs cloudAble), so a start that stops before then (the database down, origin hung, the
+  // memory share or the preflight refused) must leave the ticket as cloud-able as it was.
+  const placed = { where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
+  if (cloud || s.resume || s.handoff) yield { type: 'place', key, ...placed };
   yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
@@ -200,8 +201,7 @@ function* afterSetup(s, pick, setup, placed) {
     return yield { type: 'park', key, line: `worktree setup failed, not spawned — ${why}${answered}` };
   }
   if (t.db_wait && !s.dry) yield set(key, 'db_wait=null');
-  yield placed;
-  return yield { type: 'start', key, how: 'local', pick, setup };
+  return yield { type: 'start', key, how: 'local', pick, setup, place: placed };
 }
 
 // The lines of setup-worktree.sh's output that say why it failed, else its tail.

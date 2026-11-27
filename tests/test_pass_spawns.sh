@@ -427,8 +427,10 @@ q add RR-1; q set RR-1 state=triaged lane=A branch=fix/RR-1
 refused_pass RR-1
 check "DS-752 AC1 a refused state=running write starts no worker, and the failed line names the ticket and says so" \
   '[ "$(spawns_of RR-1)" = 0 ] && [ "$(field RR-1 state)" = "\"triaged\"" ] && [ "$(field RR-1 session_id)" = null ] && [ "$(field RR-1 spawn_failed)" = null ] && echo "$out" | grep -q "RR-1: queue write refused, not recorded, so no worker was started — set state=running" && ! echo "$out" | grep -q "spawned: RR-1"'
+check "issue-1587 a local start refused after its worktree is set up records no place at start, so a cloud-able ticket stays cloud-able" '[ "$(field RR-1 start_place)" = null ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 AC2 with the queue writable again, the next pass starts exactly one worker" '[ "$(spawns_of RR-1)" = 1 ] && [ "$(field RR-1 state)" = "\"running\"" ]'
+check "issue-1587 and once its worker runs, its place at start is recorded" '[ "$(field RR-1 start_place.where)" = "\"local\"" ]'
 check "DS-752 AC6 a recorded write spawns, and the report reads as before" 'echo "$out" | grep -q "spawned: RR-1 port=[0-9]* db=none" && ! echo "$out" | grep -q "queue write refused"'
 q set RR-1 state=done session_id=null
 git -C "$T/repo" worktree add -q -b fix/RR-2 "$T/wt/RR-2"

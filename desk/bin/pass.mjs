@@ -3316,10 +3316,12 @@ let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
 // While the person uses this computer, the local cap is person-use-floor, counted across every repo's
-// local workers that this pass can read: a running worker over it is left running, and no new one
-// starts, a ticket's (localSlots), a base worker's (baseFixRoom) or a blind audit's alike.
-const localElsewhere = otherRepos.filter((o) => o.q).reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter(runningHere).length, 0);
-const PERSON_ROOM = PERSON.on ? Math.max(0, PERSON.rows.floor - running.length - localElsewhere) : Infinity;
+// local workers that this pass can read (each queue's running local tickets and base conflict fix, as
+// borrow.mjs counts them, and this repo's blind audits): a running worker over it is left running, and
+// no new one starts, a ticket's (localSlots), a base worker's (baseFixRoom, the epic review's start) or a
+// blind audit's alike. Each start this pass adds to `attempts`, which each of those compares with it.
+const localElsewhere = otherRepos.filter((o) => o.q).reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter(runningHere).length + (o.q.base_fix?.running ? 1 : 0), 0);
+const PERSON_ROOM = PERSON.on ? Math.max(0, PERSON.rows.floor - running.length - localElsewhere - SLOTS_SNAP.ownBaseFix - SLOTS_SNAP.auditWorkers) : Infinity;
 const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked && PERSON_ROOM > 0;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
@@ -4921,6 +4923,8 @@ for (const t of spawnable) {
     continue;
   }
   leaseToWorker(t.key, port, spawned.out);
+  // Its place at start, only now that its worker runs: every refusal above leaves it as cloud-able as it was.
+  if (verdict.place) SPAWN_HANDLERS.place({ key: t.key, ...verdict.place }, { t });
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
@@ -6770,7 +6774,9 @@ const epicNow = (() => {
   if (!due) return { epicOn, due };
   return {
     epicOn, due, promotion: qx.promotion ?? null, tickets: qx.tickets, epicPr,
-    bf, baseFixLive, baseFix: baseFix != null, baseFixRoom, noRoom: baseFixRoom ? null : noBaseFixRoom(), baseWt,
+    // The person-use floor is re-read here: the tickets and audits this pass started may have taken it.
+    bf, baseFixLive, baseFix: baseFix != null, baseFixRoom: baseFixRoom && attempts < PERSON_ROOM,
+    noRoom: !baseFixRoom ? noBaseFixRoom() : attempts < PERSON_ROOM ? null : personModeLine(PERSON.rows.floor), baseWt,
     readyPerm: E.permission('pr-ready'), readyKey: E.permissionKey('pr-ready'), base: BASE, source: SOURCE, repo: GH_REPO, dry: DRY,
   };
 })();
