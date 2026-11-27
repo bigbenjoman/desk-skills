@@ -179,30 +179,21 @@ def main():
     side = [s.strip() for s in os.environ.get("DESK_CHECKOUT_SIDE_REPOS", "").split(",") if s.strip()]
     names = {n.lower(): n for n in side + [r.gh_repo for r in repos if r.gh_repo]}.values()
 
-    def others_allowed(cfg):
-        """(ok, note) for counting everyone's merged PRs. read-others has its own consent, never --include's."""
-        if cfg is None or cfg.config_path is None:
-            return False, "no desk config"
-        v = cfg.perm("read-others")
-        if v == "yes" or (v == "ask" and cfg.slug in args.include_others):
-            return True, ""
-        if v == "ask":
-            note = f"{cfg.slug}: §3 read-others is ask - pass --include-others {cfg.slug} once the user agrees"
-            skipped.add(note)
-            return False, note
-        return False, f"{cfg.slug}: §3 read-others is {v}"
-
     def describe_merged(repo):
         sc = scope(repo)
         if sc is None:
             return None
-        everyone, note = others_allowed(desk_repos.scope_for_repo_name(repo, repos)[1])
+        # read-others has its own consent, never --include's; a repo with no desk config has no row.
+        everyone, note = desk_repos.allowed(desk_repos.scope_for_repo_name(repo, repos)[1], "read-others",
+                                            include=args.include_others, flag="--include-others", unconfigured=False)
+        if note:
+            skipped.add(note)
         counts = merged_counts(repo, login, since, until, day, everyone)
         label = "" if sc == "this" else f" [{desk_repos.SCOPE_LABELS[sc]}]"
         if counts is None:
             return sc, f"- {repo}: not counted (gh search failed){label}"
         mine, total = counts
-        rest = f"{total} all" if total is not None else f"all not counted ({note})"
+        rest = f"{total} all" if total is not None else f"all not counted ({note or 'no desk config'})"
         return sc, f"- {repo}: {mine} mine / {rest}{label}"
 
     with ThreadPoolExecutor(max_workers=8) as pool:

@@ -322,7 +322,8 @@ lacks('github: a review from before the day is left out', go, 'Reviewed last wee
 has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees\n- acme__other: §3 read-own-work is no - skipped');
 lacks('github: and none of it shows', go, 'Other thing');
 has('#1534 merged PRs in the window are counted per repo, yours and everyone\'s', go, '## Merged PRs in the window, by author (yours / everyone\'s)\n- acme/app: 1 mine / 3 all\n');
-has('#1534 everyone\'s count needs read-others; without it only yours is given', go, '- acme/side: 1 mine / all not counted (acme__side: §3 read-others is no) [Side project]');
+has('#1534 everyone\'s count needs read-others; without it only yours is given', go, '- acme/side: 1 mine / all not counted (acme__side: §3 read-others is no - skipped) [Side project]');
+has('#1534 and the read-others no is listed with what was skipped', go, '- acme__other: §3 read-own-work is no - skipped\n- acme__side: §3 read-others is no - skipped');
 lacks('#1534 a repo whose read-own-work is no is not counted', go, '- acme/other:');
 const ghCalls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('is:merged'));
 t('#1534 without read-others the search asks only for your PRs', ghCalls.some((l) => l.includes('repo:acme/side') && l.includes('author:me')), true);
