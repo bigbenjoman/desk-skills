@@ -193,22 +193,30 @@ export function record(entry, path = ledgerPath()) {
 // that predates the pid, so long gone.
 const benchAlive = (e) => Number.isInteger(e.pid) && alive(e.pid);
 
+// The ids of this account's open runs, in windows not yet reset, whose bench is gone and that no run
+// has closed yet. A run starting now closes them: its before-reading, taken after this check, is the
+// first reading of the account since their bench died.
+const goneOpen = (entries, account, at) => entries
+  .filter((e) => e.account === account.key && !Number.isFinite(e.points) && Number.isFinite(e.before)
+    && e.resetsAt * 1000 > at && !benchAlive(e) && !entries.some((o) => o.closes?.includes(e.id)))
+  .map((e) => e.id);
+
 // The points the bench has used of this account's allowance in the window `now` reads: each run's
-// points, and a run whose after-reading never came counted as the rise from its before-reading to now
-// while its bench still runs. Once that bench is gone (killed or crashed), the rise counts only up to
-// the next reading the bench took after it, the next run's before-reading, since all use after that is
-// other work on the account; with no such reading, up to now. With no reading now, the windows not yet
-// reset, those runs counted at their known points only.
-export function benchUsed(entries, account, now, at = Date.now(), isAlive = benchAlive) {
+// points, and a run whose after-reading never came counted as the rise from its before-reading to the
+// before-reading of the run that closed it (the first run to start after its bench was gone), since all
+// use after that is other work on the account; with no run closing it, to now. A run started while
+// the open run's bench still ran does not close it: that bench may have spent more after. With no
+// reading now, the windows not yet reset, open runs counted at their known points only.
+export function benchUsed(entries, account, now, at = Date.now()) {
   const mine = entries.filter((e) => e.account === account.key
     && (now.why ? e.resetsAt * 1000 > at : Math.abs(e.resetsAt - now.resetsAt) <= SAME_WINDOW_S));
-  const nextReading = (e) => mine
-    .filter((o) => Date.parse(o.at) > Date.parse(e.at) && Number.isFinite(o.before))
+  const closedAt = (e) => mine
+    .filter((o) => o.closes?.includes(e.id) && Number.isFinite(o.before))
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))[0]?.before;
   let used = 0;
   for (const e of mine) {
     if (Number.isFinite(e.points)) { used += e.points; continue; }
-    const upTo = isAlive(e) ? undefined : nextReading(e);
+    const upTo = closedAt(e);
     used += upTo != null ? Math.max(0, upTo - e.before) : now.why ? 0 : Math.max(0, now.used - e.before);
   }
   return round1(used);
@@ -242,12 +250,13 @@ export function startRun({ account, settings, ledger = ledgerPath(), env = proce
   if (!metered(account.vendor) && typeof arm?.runner !== 'function') return { line: `quota: ${account.name}: no runner`, why: noRunner(account) };
   if (account.vendor === GO) return goStart({ account, settings, ledger, id, fields, plans, arm, now });
   if (!metered(account.vendor)) return limitStart({ account, ledger, id, fields, now });
+  const closes = goneOpen(readLedger(ledger), account, now);
   const before = readWeekly(account, { env });
   const used = benchUsed(readLedger(ledger), account, before);
   const line = pointsLine(account, used, settings, before);
   const why = gate({ account, reading: before, used, settings });
   if (why) return { line, why };
-  const entry = { id, account: account.key, name: account.name, ...fields, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString(), pid: process.pid };
+  const entry = { id, account: account.key, name: account.name, ...fields, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString(), pid: process.pid, ...(closes.length ? { closes } : {}) };
   record(entry, ledger);
   return { line, before, entry };
 }

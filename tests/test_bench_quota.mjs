@@ -127,10 +127,19 @@ t('a run\'s last line stands', entries.find((e) => e.id === 'r1').points, 3);
 t('only this window and account count; an unfinished run counts its rise to now', Q.benchUsed(entries, account, reading(46)), 5);
 t('with no reading, the windows not yet reset count at their known points', Q.benchUsed(entries, account, { why: 'x' }, now), 3);
 t('no ledger is nothing used', Q.benchUsed(Q.readLedger(join(T, 'nope.jsonl')), account, reading(10)), 0);
-const openThenNext = [{ id: 'o1', account: account.key, resetsAt: reset, before: 40, after: null, points: null, at: '2026-11-20T10:00:00.000Z', pid: process.pid },
-  { id: 'o2', account: account.key, resetsAt: reset, before: 44, after: 45, points: 1, at: '2026-11-20T11:00:00.000Z' }];
-t('AC1 an open run whose bench still runs counts its rise to now', Q.benchUsed(openThenNext, account, reading(50)), 11);
-t('AC1 one whose bench is gone counts its rise to the next run\'s before-reading', Q.benchUsed(openThenNext, account, reading(50), now, () => false), 5);
+const open1 = { id: 'o1', account: account.key, resetsAt: reset, before: 40, after: null, points: null, at: '2026-11-20T10:00:00.000Z', pid: process.pid };
+const next2 = { id: 'o2', account: account.key, resetsAt: reset, before: 44, after: 45, points: 1, at: '2026-11-20T11:00:00.000Z' };
+t('AC1 an open run no later run closed counts its rise to now', Q.benchUsed([open1, next2], account, reading(50)), 11);
+t('AC1 one a later run closed counts its rise to that run\'s before-reading', Q.benchUsed([open1, { ...next2, closes: ['o1'] }], account, reading(50)), 5);
+
+// Only a run started after the open run's bench is gone closes it: a run started while it still ran
+// (a second bench on the account) leaves it counting to now.
+const liveLedger = join(T, 'usage', 'live.jsonl');
+Q.record({ ...open1, id: 'alive', account: claudeAccount.key }, liveLedger);
+Q.record({ ...open1, id: 'gone', account: claudeAccount.key, pid: undefined }, liveLedger);
+stubClaude(`echo '${event({ utilization: 0.41, resetsAt: reset })}'\necho '{"type":"result","is_error":false,"result":"ok"}'`);
+const beside = Q.startRun({ account: claudeAccount, settings, ledger: liveLedger, env: probeEnv, id: 'beside' });
+t('AC1 a run started beside a live bench closes only the gone bench\'s run', JSON.stringify(beside.entry?.closes), '["gone"]');
 
 // AC2: a bench killed mid-run, then restarted for one run, then other work on the account; the next
 // start counts the killed run up to the restarted bench's first reading, not to now.
@@ -151,6 +160,7 @@ await new Promise((r) => bench.once('exit', r));
 const quotaRun = (id) => Q.startRun({ account: claudeAccount, settings, ledger: killLedger, env: probeEnv, id, fields: { task: id } });
 weeklyAt(64);
 const next = quotaRun('next');
+t('AC2 the next run closes the killed run', JSON.stringify(next.entry?.closes), '["killed"]');
 weeklyAt(66);
 Q.endRun({ account: claudeAccount, settings, ledger: killLedger, env: probeEnv, before: next.before, entry: next.entry, label: 'next' });
 weeklyAt(75);
