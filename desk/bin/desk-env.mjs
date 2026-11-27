@@ -23,6 +23,9 @@
 //                                             (configRows): the named sections (e.g. rules 3 5), else every
 //                                             one; never §3c, the rule ledger only /desk-setup reads (exit 2
 //                                             when named, as for an unknown section); exit 3 with no config
+//   node desk-env.mjs show --rows <id>...     print only the named rows, one `§<n> <label> (<id>) = <value>`
+//                                             line each, `UNSET` where unset (showRows); exit 2 for an
+//                                             unknown id, 3 with no config
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
@@ -2660,6 +2663,25 @@ function getJson(args) {
     ...(where && want.includes('jira-required-fields') ? { required_fields: requiredFieldsByType(requiredFieldRules()) } : {}) };
 }
 
+// `show --rows <id>...`: the named rows as `get --json` reads them, one line each, for a skill that
+// uses a handful of rows rather than whole sections: `§<section> <label> (<id>) = <value>`, a list's
+// items joined by ` · `. An unset row says `UNSET`, with what its reader takes instead where it takes
+// something, so the skill can name it.
+function checkRowIds(ids) {
+  if (!ids.length) throw new GetJsonUsage('usage: desk-env.mjs show --rows <id>...');
+  const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
+  if (unknown.length) throw new GetJsonUsage(`desk-env show --rows: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
+}
+export function showRows(ids) {
+  checkRowIds(ids);
+  return Object.entries(getJson(ids).rows).map(([id, r]) => {
+    const shown = r.kind === 'list' && r.items?.length ? r.items.join(' · ') : r.value;
+    const value = r.set ? shown : `UNSET${shown == null ? '' : ` (reads as ${shown})`}`;
+    const errors = r.errors.map((e) => ` [${e.error}]`).join('');
+    return `§${r.section} ${r.label} (${id}) = ${value}${errors}`;
+  }).join('\n');
+}
+
 // What `get`, `list`, `perm`, `perm-or-unset` and `budget` print for one id, or null where they exit
 // 3. The CLI cases print it and `config` snapshots it, so desk-env.sh's readers answer as they do.
 const line = (v) => (v == null ? null : `${v}\n`);
@@ -2726,10 +2748,15 @@ if (isMain) {
       }
       case 'show': {
         const p = configPathOrNull();
+        const ids = args[0] === '--rows' ? args.slice(1) : null;
         let want;
-        try { want = checkSections('desk-env show', args, ['rules']); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
+        try {
+          if (ids) checkRowIds(ids);
+          else want = checkSections('desk-env show', args, ['rules']);
+        } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
-        console.log(configRows(readFileSync(p, 'utf8'), want));
+        if (!ids) { console.log(configRows(readFileSync(p, 'utf8'), want)); break; }
+        try { console.log(showRows(ids)); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         break;
       }
       case 'list':

@@ -716,6 +716,21 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-875 AC4 desk-env show 3c exits 2 and prints no ledger', (({ status, stdout }) => `${status} ${/Bash\(x\)/.test(stdout)}`)(showRun(['3', '§3c'])), '2 false');
   t('DS-875 an unknown section exits 2, naming it', (({ status, stderr }) => `${status} ${/"9"/.test(stderr)}`)(showRun(['9'])), '2 true');
   t('DS-875 AC4 every section show prints leaves the ledger out', /Bash\(x\)|3c/.test(showRun([]).stdout), false);
+  // issue-1533: `show --rows` prints only the named rows, one line each, and names an unset one.
+  const help = `(${'help text a reader of this row needs and the checkout does not. '.repeat(40)})`;
+  writeFileSync(join(T, 'rows.md'), ['## 1. You', '| Field | Value |', '|---|---|', '| Name | `Pat Example` |', '| Short form colleagues use | `TODO` |', '',
+    '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `read-calendar` | read | `yes` | `yes` |', '',
+    '## 4. Project', '| Field | Value |', '|---|---|', '| Check-out destination | `#team` (where the post goes) |', `| Check builds | \`none\` ${help} |`, ''].join('\n'));
+  const rowsRun = showRun(['--rows', 'name', 'short-name', 'read-calendar', 'read-slack-own', 'checkout-destination'], { ...showEnv, DESK_CONFIG: join(T, 'rows.md') });
+  t('issue-1533 AC1 show --rows prints the named rows alone, one line each', `${rowsRun.status}\n${rowsRun.stdout}`, ['0',
+    '§1 Name (name) = Pat Example',
+    '§1 Short form colleagues use (short-name) = UNSET',
+    '§3 read-calendar (read-calendar) = yes',
+    '§3 read-slack-own (read-slack-own) = UNSET (reads as no)',
+    '§4 Check-out destination (checkout-destination) = #team', ''].join('\n'));
+  t('issue-1533 an unknown id exits 2, naming it', (({ status, stderr }) => `${status} ${/"nope"/.test(stderr)}`)(showRun(['--rows', 'name', 'nope'])), '2 true');
+  t('issue-1533 no id exits 2', showRun(['--rows']).status, 2);
+  t('issue-1533 with no config it exits 3', showRun(['--rows', 'name'], { ...showEnv, DESK_CONFIG: join(T, 'missing.md') }).status, 3);
 }
 // The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
 // derives from it against the literals they replaced.

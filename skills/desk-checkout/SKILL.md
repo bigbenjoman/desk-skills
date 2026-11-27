@@ -23,15 +23,22 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read `desk-env show rules 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
-which slug was looked up and offer `/desk-setup`.
+`EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`. Otherwise read only
+the rows this skill uses, one line each (never the `CONFIG` file whole, nor whole sections):
+
+```bash
+desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers required-checks branch-protection slack-channels
+```
+
+A row printed as `UNSET` (a `TODO`, or missing from the file) is named to the user with
+`/desk-setup`; an unset §3 row is a `no`.
 §1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
 §4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
 **§4 Check-out destination** says where the draft goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
-| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as §5 says. **Never sent** |
+| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as step 5 says. **Never sent** |
 | a file path | Written to that file (a directory gets `<YYYY-MM-DD>.md` inside it). If the file already exists, show what is there and ask before replacing or appending |
 | `none` | Printed and copied. Nothing is written anywhere |
 | `TODO` or missing | Ask where it goes, print it meanwhile, and offer `/desk-setup` |
