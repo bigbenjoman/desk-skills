@@ -2654,8 +2654,8 @@ t('DS-386 a stuck recorded with no head holds as written', Q.stuckOf(t386(null, 
 // ---- A repo's batches held for the same reason show one "nothing started or merged" note.
 // Each live batch's last pass held for `held` with no progress for `quiet` minutes; `batch` null is the
 // standing batch.
-const put454 = (name, port, batch, held, quiet) => {
-  const pass = { at: minsAgo(1), by: 'session', held, errors: 0, progress_at: minsAgo(quiet) };
+const put454 = (name, port, batch, held, quiet, hold) => {
+  const pass = { at: minsAgo(1), by: 'session', held, ...(hold ? { hold } : {}), errors: 0, progress_at: minsAgo(quiet) };
   const tickets = { [`${name.toUpperCase()}-${batch ?? 'S'}`]: { state: 'triaged', open_questions: 0 } };
   if (!batch) return put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: 2, pass, tickets } });
   const q = join(I.env.DESK_HOME, 'repos', `acme__${name}`, 'batches', batch, 'queue.json');
@@ -2706,7 +2706,7 @@ const throttle1048 = lines(ov1048).filter((l) => /^(note| {4}) {2}⧗ tests queu
 t('DS-1048 AC1 two repos held by the test lock show one note naming both repos and their tickets, and no note of their own',
   `${throttle1048.join(' / ')} | ${notesIn(lines(ov1048), 'tla').length} ${notesIn(lines(ov1048), 'tlb').length}`,
   '8 runs waiting for 3 test slots, shared by all repos. Waiting for a slot: TLA-1 in tla and TLB-1 in tlb. Nothing started or merged for 3h 5m. | 0 0');
-const wait1048 = (name) => { const head = lines(ov1048).find((l) => /^ {2}REPO /.test(l)); const at = head.indexOf('WAIT') + 4; return (rowOf(ov1048, name) ?? '').slice(at - 4, at); };
+const wait1048 = (name, ov = ov1048) => { const head = lines(ov).find((l) => /^ {2}REPO /.test(l)); const at = head.indexOf('WAIT') + 4; return (rowOf(ov, name) ?? '').slice(at - 4, at); };
 t('DS-1048 AC2 each WAIT cell the note explains ends in its mark, and one it does not keeps its count in line',
   ['tla', 'tlb', 'tlc'].map(wait1048).join('|'), '  0⧗|  0⧗|  0 ');
 const cell1048 = (name) => (rowOf(ov1048, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
@@ -2719,6 +2719,24 @@ const hidden1048 = new Map([['⧗ tests queued hold test-lock machine', NOW], ['
 const later1048 = Q.overview(repos1048(), { now: NOW, avail: 30, hidden: hidden1048 });
 t('DS-1048 AC3 hidden notes whose holders and counts moved on, but not their cause and scope, stay hidden',
   `${/⧗ tests queued/.test(later1048)} ${notesIn(lines(later1048), 'tlc').length} ${lines(later1048).filter((l) => l.endsWith('2 warnings hidden · H shows them')).length}`, 'false 0 1');
+t('DS-1048 AC2 with the test-lock note hidden, no WAIT cell carries its mark',
+  ['tla', 'tlb', 'tlc'].map((r) => wait1048(r, later1048)).join('|'), '   0|   0|   0');
+// A pass the test and light locks both held names each queue by its own lock.
+put1048('tla', 5850, { ...lock1048(6, 3, ['TLA-1'], []), numbers: { waiting: 6, slots: 3, factor: 2, room: 0, stall: true, running: 2, concurrency: 3,
+  queues: [{ lock: 'test', waiting: 6, slots: 3 }, { lock: 'light', waiting: 5, slots: 1 }] } });
+put1048('tlb', 5860, { ...lock1048(6, 3, ['TLB-1'], []), numbers: { waiting: 6, slots: 3, factor: 2, room: 0, stall: true, running: 2, concurrency: 3,
+  queues: [{ lock: 'test', waiting: 6, slots: 3 }, { lock: 'light', waiting: 5, slots: 1 }] } });
+const both1048 = lines(Q.overview(repos1048(), { now: NOW, avail: 30 })).find((l) => /⧗ tests queued/.test(l)) ?? '';
+t('DS-1048 AC1 a hold on both locks names each queue by its own lock',
+  /6 runs waiting for 3 test slots and 5 runs waiting for 1 light slot, shared by all repos\./.test(both1048), true);
+// A hidden hold note stays hidden when a sibling batch of its repo stalls for another reason, which
+// names the batches in its text.
+const memHold1048 = { cause: 'memory', scope: 'machine', numbers: { availGB: 3.1, minAvailGB: 4 }, holders: [], tickets: [], action: null };
+put454('tld', 5880, null, mem454, 185, memHold1048);
+put454('tld', 5880, 'B2', 'the batch base sync holds every spawn', 185, { cause: 'base', scope: 'batch', numbers: null, holders: [], tickets: [], action: null });
+const tld1048 = Q.overview(Q.loadRepos(NOW).filter((r) => r.repo === 'tld'), { now: NOW, avail: 30, hidden: new Map([['▲ tld hold memory machine', NOW]]) });
+t('DS-1048 AC3 a hidden hold note stays hidden when a sibling batch stalls for another reason',
+  notesIn(lines(tld1048), 'tld').join(' / '), 'batch B2: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn.');
 t('DS-1048 AC3 a note from a pass that wrote no structured hold keeps the key its wording gives', Q.noteKey({ tag: '▲ x', text: [['nothing started for 2h.', null]] }), '▲ x nothing started for #.');
 
 // ---- DS-490: a draft waiting on a check pending past the limit says how long, not "checks running".

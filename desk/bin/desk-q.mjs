@@ -2946,6 +2946,7 @@ const throttleOf = (r) => ((h) => (h?.cause === 'test-lock' && h.scope === 'mach
 const THROTTLE_MARK = '⧗';
 // A hold note's hide key: its cause and scope, so holders and queue counts moving on keep it hidden.
 const holdHide = (h) => `hold ${h.cause} ${h.scope}`;
+const structured = (h) => !!(h?.cause && h.scope);
 
 // Each "nothing started or merged" note, keyed by the batch it shows under: one per repo and hold
 // reason, timed from the repo's latest progress, its text the first batch's. Where a repo's batches
@@ -2957,27 +2958,33 @@ function quietNotes(shown) {
   for (const r of shown) {
     if (r.stall?.noProgress == null || usageHoldOf(r)) continue;
     if (throttleOf(r)) { throttled.push(r); continue; }
-    const k = `${r.slug}\n${holdKey(r.stall.held)}`;
+    // A structured hold groups by its cause and scope, so counts that differ between batches do not
+    // split one cause into two notes; one from a pass that wrote none, by its words.
+    const k = `${r.slug}\n${structured(r.stall.hold) ? holdHide(r.stall.hold) : holdKey(r.stall.held)}`;
     groups.set(k, [...(groups.get(k) ?? []), r]);
   }
   const reasons = (slug) => [...groups.values()].filter((g) => g[0].slug === slug).length;
   const notes = new Map([...groups.values()].map((g) => {
     const named = reasons(g[0].slug) > 1 ? `${andList(g.map(batchName))}: ` : '';
     const h = g[0].stall.hold;
+    // The hide key is the cause and scope alone, never the batch names: a sibling batch stalling for
+    // another reason adds those to the text, and must not show a hidden note again.
     return [g[0], { text: `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`,
-      hide: h?.cause && h.scope ? `${named}${holdHide(h)}` : null }];
+      hide: structured(h) ? holdHide(h) : null }];
   }));
   return { notes, shared: throttled.length ? throttleNote(throttled) : null, marked: new Set(throttled.map((r) => r.slug)) };
 }
 
-// The one note for every batch the test lock holds: the latest pass's queue, then each repo with the
-// tickets it keeps waiting.
+// The one note for every batch the test lock holds: the latest pass's queues, each by its own lock (the
+// test lock or the light one, as the pass named them), then each repo with the tickets it keeps waiting.
 function throttleNote(rs) {
   const latest = rs.reduce((a, r) => ((r.last ?? -Infinity) > (a.last ?? -Infinity) ? r : a));
   const n = latest.stall.hold.numbers ?? {};
   const s = (x) => (x === 1 ? '' : 's');
-  const queue = n.stall && Number.isFinite(n.waiting) && Number.isFinite(n.slots)
-    ? `${n.waiting} run${s(n.waiting)} waiting for ${n.slots} test slot${s(n.slots)}, shared by all repos.`
+  const qs = (Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }])
+    .filter((q) => Number.isFinite(q?.waiting) && Number.isFinite(q.slots));
+  const queue = n.stall && qs.length
+    ? `${andList(qs.map((q) => `${q.waiting} run${s(q.waiting)} waiting for ${q.slots} ${q.lock ?? 'test'} slot${s(q.slots)}`))}, shared by all repos.`
     : 'Each pass starts only so many test runs, shared by all repos.';
   const repos = new Map();
   for (const r of rs) repos.set(r.repo, [...new Set([...(repos.get(r.repo) ?? []), ...(r.stall.hold.tickets ?? [])])]);
@@ -3223,6 +3230,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.id, line, open: { kind: 'repo', slug: r.id } });
   const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
+  // The test-lock note's mark shows only while the note does: hidden with h, nothing would explain it.
+  const marks = quiet.shared && !hidden?.has(noteKey(quiet.shared));
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}${runs(r)[0]}queue unreadable: ${r.error}`); continue; }
     const [last, lastSgr] = lastPass(r, now);
@@ -3231,7 +3240,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const n = ([, k, cw]) => {
       if (k === 'needs') { const y = needs.get(r); return [[rpad(needsCell(y), cw), y.shown ? STATE_SGR.needs : DIM]]; }
       const c = k === 'done' ? r.done : count(r, k), sgr = c ? (k === 'done' ? null : STATE_SGR[k]) : DIM;
-      if (k !== 'waiting' || !quiet.shared) return [[rpad(c, cw), sgr]];
+      if (k !== 'waiting' || !marks) return [[rpad(c, cw), sgr]];
       return [[rpad(c, cw - 1), sgr], quiet.marked.has(r.slug) ? [THROTTLE_MARK, quiet.shared.sgr] : [' ', null]];
     };
     const qd = queueDone(r, now, checkin);
