@@ -470,9 +470,9 @@ const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blockin
 // Admits `r` into the repo its Jira Repository names (desk-env.mjs admitInRepo).
 const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' });
 
-// Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer
-// runs in a cloud session (cloud-worker.mjs placement), and the plan says where each runs, and why a
-// ticket stays local, before any worker starts. A cloud session takes no budget flag.
+// Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer can
+// run in a cloud session (cloud-worker.mjs placement), and the plan says which can, and why a ticket
+// stays local, before any worker starts. Where a cloud-able one runs is decided when it starts. A cloud session takes no budget flag.
 let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
@@ -488,7 +488,7 @@ const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, loc
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {
   const n = admitted.filter((r) => placed[r.ticket].where === 'cloud').length;
-  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) in a cloud session, the rest local (config §3b "Worker location")`);
+  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) can run in a cloud session, placed when each starts; the rest local (config §3b "Worker location")`);
   say(`budget: ${budget.off ? 'no cap' : `$${budget.usd}`} per local worker (config §3b "Autopilot per-worker budget (USD)"); a cloud session takes no budget, and its tokens and cost are not reported`);
 } else say('workers: local');
 if (notOurs.length) {
@@ -681,7 +681,9 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
       `merge_after=${mergeAfter[t]?.length ? mergeAfter[t].join('|') : 'null'}`,
-      `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
+      // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs placeAtStart).
+      'location=null',
+      `cloud_ok=${placed[t].where === 'cloud' ? 'true' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
     const park = stepPark(r) ?? lanePark(r)

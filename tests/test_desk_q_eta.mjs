@@ -450,6 +450,20 @@ repo('cloudy', 4670, { tickets: { 'C-1': { state: 'running', stage: 'cloud', loc
   sizes: { 'C-1': 'M', 'C-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN });
 const cloudy = Q.repoScreen(repoAt('cloudy'), { now: FIXED, width: 200 });
 t('#1581 AC2 a cloud session\'s row names its account', [/\sC-1\s+● running\s+stage cloud as of \d\d:\d\d · on ops@acme\.test\s/.test(bRow(cloudy, 'C-1')), / on ops@acme\.test/.test(bRow(cloudy, 'C-2'))], [true, false]);
+// issue-1587 AC4: the mode the last pass recorded while the person uses the computer, and each ticket's
+// place at start with why (or, cloud-able and not started, that it is placed when it starts).
+repo('inuse', 4680, { tickets: { 'P-1': { state: 'running', stage: '3/9', start_place: { where: 'local', why: 'it must run on this computer', at: iso(FIXED - 5 * MIN) } },
+  'P-2': { state: 'triaged', cloud_ok: true } }, sizes: { 'P-1': 'M', 'P-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN });
+{
+  const qp = join(zenv.DESK_HOME, 'repos', 'acme__inuse', 'queue.json');
+  const qj = JSON.parse(readFileSync(qp, 'utf8'));
+  writeFileSync(qp, JSON.stringify({ ...qj, person_use: { on: true, since: '2026-11-27T09:05:00.000Z', calm_since: null, gb: 14, cpu: 2, floor: 1 } }));
+}
+const inUse = Q.repoScreen(repoAt('inuse'), { now: FIXED, width: 200 });
+t('issue-1587 AC4 desk-q says the person is using this computer: local cap 1, cloud first', inUse.split('\n').some((l) => l.startsWith('you\'re using this computer: local cap 1, cloud first · since 09:05')), true);
+t('issue-1587 AC4 and says nothing of it with the mode off', cloudy.includes('using this computer'), false);
+t('issue-1587 AC4 a started ticket\'s screen gives its place at start, and why', field(Q.ticketScreen(repoAt('inuse'), 'P-1', { now: FIXED }).split('\n'), 'Place'), 'Place     this computer · it must run on this computer');
+t('issue-1587 AC4 a cloud-able one not yet started is placed when it starts', field(Q.ticketScreen(repoAt('inuse'), 'P-2', { now: FIXED }).split('\n'), 'Place'), 'Place     cloud-able · placed when it starts: the cloud while it has room');
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);

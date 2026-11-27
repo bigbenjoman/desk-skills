@@ -72,11 +72,12 @@ printf '{"ticket": "KAN-2", "type": "Task", "lane": "A", "size": "S", "summary":
 printf '{"ticket": "KAN-3", "type": "Task", "lane": "A", "size": "S", "summary": "s", "branch": "feat/KAN-3", "change_kind": "surface", "files_in_scope": ["c.js"], "unknowns": [], "blockers": [], "renders": true, "needs_db": false, "needs_local": null}\n' \
   > "$T/state/triage/KAN-3.json"
 node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-1 KAN-2 KAN-3 2>&1); rc=$?
-check "DS-124 AC1 the plan states the location before any worker starts"   '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 1 of 3 admitted ticket(s) in a cloud session, the rest local"'
+check "DS-124 AC1 the plan states the location before any worker starts"   '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 1 of 3 admitted ticket(s) can run in a cloud session, placed when each starts; the rest local"'
 check "DS-124 AC1 and the per-worker budget"                                'echo "$out" | grep -q "^budget: \$25 per local worker (config §3b \"Autopilot per-worker budget (USD)\"); a cloud session takes no budget"'
 check "DS-124 AC3 a ticket that needs nothing here runs in the cloud"       'echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: cloud"'
 check "DS-124 AC3 one that renders runs locally, and the plan says why"     'echo "$out" | grep -A3 "^KAN-3 " | grep -q "^  runs: local — it renders: its screenshots need the browser lock and a local dev server$"'
-check "DS-124 AC2 the queue sends the cloud ticket to the cloud, and only it" '[ "$(node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); console.log([\"KAN-1\", \"KAN-2\", \"KAN-3\"].map((k) => q.tickets[k].location).join())" "$DESK_QUEUE")" = ",cloud," ]'
+# issue-1587: admission records only whether a ticket can run in the cloud; the pass places it when it starts.
+check "DS-124 AC2 issue-1587 AC1 the queue marks the cloud ticket cloud-able, and only it, placing none yet" '[ "$(node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); console.log([\"KAN-1\", \"KAN-2\", \"KAN-3\"].map((k) => \`\${q.tickets[k].cloud_ok ?? \"\"}/\${q.tickets[k].location ?? \"\"}\`).join())" "$DESK_QUEUE")" = "/,true/,/" ]'
 check "DS-124 AC1 a malformed budget refuses the plan at cloud"             'out=$(AUTOPILOT_BUDGET_USD="25 USD" node "$B/plan-batch.mjs" KAN-2 2>&1); [ $? != 0 ] && echo "$out" | grep -q "per-worker budget"'
 
 # DS-450: with the effort lever on, the ticket that would run in the cloud stays local, and the queue agrees.
@@ -85,7 +86,7 @@ config cloud
 node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(DESK_CONFIG="$T/config-lever.md" AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-2 2>&1); rc=$?
 check "DS-450 AC1 the plan puts no ticket in the cloud with the effort lever on" '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 0 of 1 admitted"'
 check "DS-450 AC1 and says why on its runs line"                            'echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: local — the effort lever is on, and a cloud session cannot be given an effort"'
-check "DS-450 AC1 and the queue runs it here"                               '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[\"KAN-2\"].location ?? \"local\")" "$DESK_QUEUE")" = local ]'
+check "DS-450 AC1 and the queue runs it here"                               '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[\"KAN-2\"].cloud_ok ? \"cloud\" : \"local\")" "$DESK_QUEUE")" = local ]'
 # A ticket already in the queue is planned on its pin, not the row: pinned without the effort
 # lever, it is planned as with the lever off, and goes to the cloud.
 node "$B/queue.mjs" init "t$RANDOM" >/dev/null; node "$B/queue.mjs" add KAN-2 Task A >/dev/null
@@ -96,7 +97,8 @@ check "DS-639 AC5 with the row reading effort, a ticket pinned without it is pla
 
 # #876: a ticket admitted mid-batch (queue.mjs admit, as intake and /desk-admit add one) is placed as
 # plan-batch places one it seeds.
-loc(){ node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[process.argv[2]]?.location ?? \"local\")" "$DESK_QUEUE" "$1"; }
+# Where it can run: cloud where the admit marks it cloud-able (issue-1587: the pass places it when it starts).
+loc(){ node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[process.argv[2]]?.cloud_ok ? \"cloud\" : \"local\")" "$DESK_QUEUE" "$1"; }
 config cloud
 node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(node "$B/queue.mjs" admit KAN-2 2>&1); rc=$?
 check "#876 at cloud, a ticket admitted mid-batch that needs nothing here runs in the cloud" '[ "$rc" = 0 ] && [ "$(loc KAN-2)" = cloud ]'

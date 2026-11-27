@@ -57,7 +57,7 @@
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
 
-import { set, say, runsInCloud, startsInCloud } from './shared.mjs';
+import { set, say, runsInCloud, startsInCloud, placeAtStart } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
@@ -65,15 +65,22 @@ export function* decideSpawn(s) {
   const skip = { type: 'skip', key };
   const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
   if (s.stop) return yield { ...skip, stop: true };
-  // A cloud session takes none of the local slots, only one of its own limit; a resume or handoff runs here.
-  // (pass/shared.mjs startsInCloud, the rule pass.mjs counts the cloud and local candidates by.)
-  const cloud = startsInCloud(t);
-  if (cloud && !((s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0))) {
+  // Where it starts is decided now, not at admission (pass/shared.mjs placeAtStart): a cloud-able ticket
+  // goes to the cloud while §3b "Cloud sessions at once" has room, and takes a local slot only as that
+  // says; a local-only one, and a resume or handoff (which run here), takes a local slot.
+  const place = placeAtStart({
+    able: startsInCloud(t), cloudRoom: (s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0), localRoom: s.attempts < s.slots,
+    localSpare: !!s.localSpare, reserve: s.reserve ?? 0, free: s.slots - s.attempts, personUse: !!s.personUse,
+    ...(s.cloudLimit != null && !s.cloudHeld ? { cloudRunning: s.cloudRunning, cloudLimit: s.cloudLimit } : {}),
+  });
+  if (place.where == null) {
     // Held by a hold on every spawn, the pass says that hold; only the limit itself is said here.
-    if (!s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: waits for a cloud session (${s.cloudRunning} of ${s.cloudLimit} running, §3b "Cloud sessions at once"). The next pass looks again`);
-    return yield { ...skip, full: true, cloud: true };
+    if (place.full === 'cloud' && !s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: ${place.why}. The next pass looks again`);
+    return yield { ...skip, full: true, ...(place.full === 'cloud' ? { cloud: true } : {}) };
   }
-  if (!cloud && !(s.attempts < s.slots)) return yield { ...skip, full: true };
+  const cloud = place.where === 'cloud';
+  // A resume or handoff of a ticket whose cloud session is over runs here, as before.
+  const offHere = cloud || ((s.resume || s.handoff) && runsInCloud(t));
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (yield { type: 'file-budget', key }) return yield skip;
   if (yield { type: 'fix-try-stale', key }) return yield skip;
@@ -108,7 +115,7 @@ export function* decideSpawn(s) {
   // Its last round's upload running in the machine's upload queue (another repo's pass may be running
   // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
   // the job is dropped by the claim, in the same locked step, so no pump can start it before the worker runs.
-  if (!s.resume && !s.handoff && !runsInCloud(t)) {
+  if (!s.resume && !s.handoff && !offHere) {
     const claim = yield { type: 'claim-upload', key };
     if (!claim.ok) {
       yield wait(`the machine's upload queue could not be read to drop its last round's upload (${claim.why}), so no worker was spawned. The next pass looks again`);
@@ -120,7 +127,7 @@ export function* decideSpawn(s) {
       return yield skip;
     }
   }
-  if (!runsInCloud(t)) {
+  if (!offHere) {
     const failures = yield { type: 'read-repos' };
     if (failures.length) {
       const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${failures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
@@ -139,6 +146,8 @@ export function* decideSpawn(s) {
   // has its own, so it still goes ahead.
   const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
   if (!s.resume && !pick) return yield skip;
+  // Its place at start, with why: recorded on the ticket for desk-q, and location set to match.
+  yield { type: 'place', key, where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
   yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };

@@ -225,9 +225,37 @@ export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
 // A killed worker waiting to resume, and a session handed off to its next stage (both run here).
 export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
 export const toHandoff = (r) => r.handoff === 'pending';
-// A ticket the spawn loop starts in a cloud session, taking one of §3b "Cloud sessions at once" and no
-// local slot: a resume or handoff of one runs here.
-export const startsInCloud = (t) => runsInCloud(t) && !toResume(t) && !toHandoff(t);
+// A ticket that can run in a cloud session: its triage record needs nothing this computer has (admission
+// writes cloud_ok; a ticket admitted before that carries location=cloud), no PR of its is read yet, and
+// it has not started on this computer (its work is then in a local worktree, and stays there). Where it
+// runs is decided when it starts (placeAtStart), not at admission.
+export const cloudAble = (t) => (t?.cloud_ok === true || t?.location === 'cloud') && !cloudPrHere(t)
+  && t.result?.pr == null && t.start_place?.where !== 'local';
+// A ticket the spawn loop may start in a cloud session, taking one of §3b "Cloud sessions at once" and
+// no local slot: a resume or handoff of one runs here.
+export const startsInCloud = (t) => cloudAble(t) && !toResume(t) && !toHandoff(t);
+
+// Where a ticket starts, decided as its turn in the spawn loop comes: -> { where, why }, where 'cloud',
+// 'local' or null (it waits; `full` then says which kind it waits for).
+//   able        it may start in the cloud (startsInCloud)
+//   cloudRoom   a cloud session is free this pass; cloudRunning / cloudLimit the count it says
+//   localRoom   a local slot is free this pass
+//   localSpare  a local slot stayed free for the whole of the last pass (the batch's local_free_at)
+//   reserve     local-only tickets still to come in this pass's order: the local slots they would take
+//   free        local slots still free this pass (slots - attempts)
+//   personUse   the person is using this computer (person-use.mjs)
+// Cloud first: a cloud-able ticket goes to the cloud while its cap has room. Local slots go first to
+// local-only tickets: a cloud-able one takes one only with the cloud full, a local slot free for the
+// whole last pass, one free now beyond those the local-only tickets still to come want, and the person
+// not using the computer.
+export function placeAtStart({ able, cloudRoom, localRoom, localSpare = false, reserve = 0, free = 0, personUse = false, cloudRunning = null, cloudLimit = null }) {
+  if (!able) return localRoom ? { where: 'local', why: 'it must run on this computer' } : { where: null, why: 'waits for a local slot', full: 'local' };
+  const count = cloudLimit != null ? ` (${cloudRunning} of ${cloudLimit} running, §3b "Cloud sessions at once")` : '';
+  if (cloudRoom) return { where: 'cloud', why: `cloud first: a cloud session is free${count}` };
+  if (personUse) return { where: null, why: `you're using this computer, so it goes only to the cloud, which is full${count}`, full: 'cloud' };
+  if (localRoom && localSpare && free > reserve) return { where: 'local', why: `the cloud is full${count}, and a local slot stayed free all last pass` };
+  return { where: null, why: `waits for a cloud session${count}; local slots go first to tickets that must run here`, full: 'cloud' };
+}
 // The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its
 // session ended with where there is one, which the ticket ledger's failed event records.
 export const failedField = (why, { subtype = null, at = new Date().toISOString() } = {}) =>

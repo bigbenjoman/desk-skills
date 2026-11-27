@@ -684,7 +684,8 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
     ...(pin ? { levers: pin } : {}),
-    ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
+    // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs placeAtStart).
+    ...(placed.where === 'cloud' ? { cloud_ok: true } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';

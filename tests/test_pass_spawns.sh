@@ -597,6 +597,33 @@ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-ll" DESK_CONFIG="$T/config
 check "#1458 AC2 with only the light queue full, a new ticket starts and a resume into Stage 4 is held, naming the light lock queue" \
   '[ "$(spawns_of LL-1)" = 1 ] && [ "$(spawns_of LL-2)" = 0 ] && [ "$(field LL-2 resume)" = "\"pending\"" ] && echo "$out" | grep -qF "light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2" && echo "$out" | grep -q "Stage 4 (LL-2)"'
 for k in LL-1 LL-2; do q set "$k" state=done session_id=null; done
+# issue-1587: while the person uses this computer (processes not desk's over the machine profile's
+# baseline by its threshold), the local cap is person-use-floor; the cap comes back once their use has
+# stayed under it for person-use-calm-min. A desk worker's own tree never counts.
+pu_prev=$DESK_QUEUE; export DESK_QUEUE="$T/queue-pu.json"
+q init pu; q set-batch concurrency=3
+for k in PU-1 PU-2 PU-3; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+pu_machine(){ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `person-baseline-gb` | `1` | test |\n| `person-use-gb` | `2` | test |\n| `person-baseline-cpu` | `1` | test |\n| `person-use-cpu` | `8` | test |\n| `person-use-floor` | `2` | test |\n| `person-use-calm-min` | `%s` | test |\n' "$1" > "$T/machine-pu.md"; }
+pu_machine 10
+printf '  100     1 4194304 10.0 /Applications/IDE.app/ide\n  200     1 8388608 90.0 bash -c x desk-worker claude -p go\n' > "$T/ps-pu.out"
+pu_pass(){ out=$(AUTOPILOT_PERSON_USE=on AUTOPILOT_PERSON_USE_PS="$T/ps-pu.out" DESK_MACHINE="$T/machine-pu.md" node "$B/pass.mjs" 2>&1); }
+pu_pass
+# The floor counts every batch's local workers: batch X-1 has one running, so a floor of 2 leaves one.
+check "issue-1587 AC3 with the person using the computer, one local worker starts of three ready: the floor of 2, less the sibling batch's running one" \
+  '[ $(( $(spawns_of PU-1) + $(spawns_of PU-2) + $(spawns_of PU-3) )) = 1 ]'
+check "issue-1587 AC3 AC4 the pass says the mode and why (the IDE counts, the desk worker does not), and records it for desk-q" \
+  'echo "$out" | grep -qF "you'"'"'re using this computer: local cap 2, cloud first — other processes hold 4 GB, 3 over the 1 GB baseline" && [ "$(bfield person_use.on)" = true ]'
+check "issue-1587 AC4 the started ticket records its place at start, and why" \
+  '[ "$(jq -r "[.tickets[] | select(.start_place.where == \"local\") | .start_place.why] | join(\",\")" "$DESK_QUEUE")" = "it must run on this computer" ]'
+printf '  100     1 102400 1.0 /Applications/IDE.app/ide\n' > "$T/ps-pu.out"
+pu_pass
+check "issue-1587 AC3 back under the threshold, the mode stays on until it has stayed under for person-use-calm-min" \
+  '[ "$(bfield person_use.on)" = true ] && [ "$(bfield person_use.calm_since)" != null ] && [ $(( $(spawns_of PU-1) + $(spawns_of PU-2) + $(spawns_of PU-3) )) = 1 ]'
+pu_machine 0; pu_pass
+check "issue-1587 AC3 once it has, the mode switches off and the pass says the local cap is back" \
+  '[ "$(bfield person_use.on)" = false ] && echo "$out" | grep -qF "person in use: off, under the threshold for 0 min; the local cap is back"'
+for k in PU-1 PU-2 PU-3; do q set "$k" state=done session_id=null; done
+export DESK_QUEUE="$pu_prev"
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
