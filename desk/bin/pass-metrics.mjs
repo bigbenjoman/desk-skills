@@ -79,6 +79,24 @@ export function readWarnings(state) {
   return out;
 }
 
+// Every placed ticket a pass moved (§3b "Queue order: placed tickets" `move-and-say`), as the metrics
+// file holds them: [{at, key, from, to, gain_min, text}]. A torn line is skipped.
+export function readQueueMoves(state) {
+  const path = metricsPath(state);
+  if (!existsSync(path)) return [];
+  let raw;
+  try { raw = readFileSync(path, 'utf8'); } catch { return []; }
+  const out = [];
+  for (const l of raw.split('\n')) {
+    if (!l.includes('"queue_moves"')) continue;
+    try {
+      const e = JSON.parse(l);
+      if (e?.moved_at && Array.isArray(e.queue_moves)) for (const m of e.queue_moves) out.push({ at: e.moved_at, ...m });
+    } catch { /* a torn line */ }
+  }
+  return out;
+}
+
 // setup-worktree.sh's `steps=` line as {step: seconds}, in the order run; null when the output has none.
 export function parseSetupSteps(out) {
   const m = [...String(out ?? '').matchAll(/\[setup-worktree\] steps=(\S*)/g)].pop();

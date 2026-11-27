@@ -518,6 +518,7 @@ export const TYPES = Object.freeze({
   'merge-method': oneOf('squash', 'merge', 'rebase'),
   'suite-weight': oneOf('heavy', 'light'),
   'status-table': oneOf('full', 'quiet'),
+  'placed-order': oneOf('keep', 'move-and-say'),
   'batches-run-by': oneOf('supervisor', 'session'),
   'ai-attribution': oneOf('forbidden', 'allowed'),
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
@@ -699,6 +700,8 @@ export const ROWS = Object.freeze([
   v('triage-concurrency', '3b', 'Triage concurrency', 'whole', '1', dflt('1')),
   v('slot-candidates', '3b', 'Propose candidates for a free slot', 'on-off', 'off', dflt('off')),
   l('checkout-worklogs', '3b', 'Check-out work logs', 'text', ['~/notes/worklog.md', '~/notes/daily/*.md'], dflt(['none'])),
+  v('placed-order', '3b', 'Queue order: placed tickets', 'placed-order', 'keep', dflt('keep')),
+  v('move-threshold', '3b', 'Queue order: move threshold', 'whole', '30', dflt('30')),
   // §4 Tracker
   v('tracker', '4', 'Tracker', 'tracker', 'jira'),
   v('jira-site', '4', 'Jira site', 'text', 'yourteam.atlassian.net'),

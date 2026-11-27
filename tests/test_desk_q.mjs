@@ -267,6 +267,18 @@ t('#1623 AC4 a placed row keeps * and gives no re-sort reason', `${/^\s+\*2\s+VP
 t('#1623 AC4 a started row and an unmoved one carry no mark', `${/\^|moved up/.test(rsRow('VPL-3'))} ${/\^|moved up/.test(rsRow('VPL-4'))}`, 'false false');
 t('#1623 AC4 the foot explains ^', rsOut.includes('^ moved up by the pass\'s re-sort, so the whole queue finishes soonest'), true);
 
+// #1625 AC4: a placed row the pass moved (placed_move) is marked ~ and says from where to where and
+// the gain, in place of any re-sort reason; placed again, it shows * and no note.
+const PM = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
+  'VPL-1': { state: 'triaged', open_questions: 0, resort_why: 'gates 2' },
+  'VPL-2': { state: 'triaged', open_questions: 0, resort_why: 'gates 1', placed_move: { from: 1, to: 2, gain_min: 45 } },
+  'VPL-3': { state: 'triaged', open_questions: 0, placed: true, placed_move: { from: 1, to: 3, gain_min: 50 } } } } } });
+const pmOut = lines(PM.run('--plain', 'voicepa').out);
+const pmRow = (k) => pmOut.find((l) => new RegExp(`\\s${k}\\s`).test(l)) ?? '';
+t('#1625 AC4 a moved placed row is marked ~ with from, to and the gain', `${/^\s+~2\s+VPL-2\s/.test(pmRow('VPL-2'))} ${pmRow('VPL-2').includes('· moved 1→2, 45m sooner')} ${pmRow('VPL-2').includes('moved up')}`, 'true true false');
+t('#1625 AC4 a row placed again shows * and no move note', `${/^\s+\*3\s+VPL-3\s/.test(pmRow('VPL-3'))} ${pmRow('VPL-3').includes('moved 1→')}`, 'true false');
+t('#1625 AC4 the foot explains ~', pmOut.some((l) => l.startsWith('~ placed by you, then moved by the pass')), true);
+
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
 const pq = qPath(W, 'pranicuk');
