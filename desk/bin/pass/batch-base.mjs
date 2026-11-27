@@ -46,7 +46,8 @@
 //   end-try {outcome, path, extra}  -> base_fix once its last try ends with `outcome`
 //   fix-login {login}           -> the login the fix try's session lives in
 //   lifted {limit, login}       -> whether the limit on that login has lifted
-//   usage-hold {hold}           the batch's usage hold: { type, resetsAt, preflight, login }
+//   usage-hold {hold}           -> the batch's usage hold: { type, resetsAt, preflight, login }; true
+//                               when new work moved to the fallback login instead, and nothing holds
 //   usage-stop                  no more workers start this pass
 //   origin-sha {branch}         -> origin's head of branch, or null
 //   sync {path}                 -> base-sync.mjs syncBase's result for the base worktree
@@ -188,14 +189,16 @@ export function* decideBaseSync(s) {
       else if (up) yield say('paused', `${KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
       else if (paused || awaitsLift) {
         yield say('paused', `${KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
-        // On the repo's login its limit holds the batch, as a paused ticket's worker does.
+        // On the repo's login its limit holds the batch, as a paused ticket's worker does, unless new
+        // work moves to the fallback login, where this worker alone waits for its own login.
         if (sameLogin(s.repoLogin, from) && !(yield { type: 'lifted', limit: atLimit, login: from })) {
+          let moved = false;
           if (!s.usageHold) {
             const hold = { type: atLimit.type, resetsAt: atLimit.resetsAt, preflight: null, login: from };
-            yield { type: 'usage-hold', hold };
-            yield say('stalled', `${KEY}: ${usageHeldText(hold)}`);
+            moved = (yield { type: 'usage-hold', hold }) === true;
+            if (!moved) yield say('stalled', `${KEY}: ${usageHeldText(hold)}`);
           }
-          yield { type: 'usage-stop' };
+          if (!moved) yield { type: 'usage-stop' };
         }
       }
       else if (idle >= QUIET_PASSES) yield say('quiet', `${KEY}: quiet for ${idle} passes`);
