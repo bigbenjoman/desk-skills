@@ -984,6 +984,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .marks{position:absolute;inset:0;pointer-events:none}
 .mark{position:absolute;top:0;bottom:0;width:0}
 .mark::before{content:'';position:absolute;left:0;top:12%;bottom:16%;border-left:1px dashed #6B7280}
+.mark::after{content:'';position:absolute;left:-4px;width:9px;top:12%;bottom:16%;pointer-events:auto}
 .mark:focus{outline:none}
 .mark-n{position:absolute;left:0;transform:translateX(-50%);width:16px;height:16px;border:1px solid #6B7280;border-radius:50%;background:#FFFFFF;color:#374151;font-size:10px;font-weight:600;line-height:14px;text-align:center;pointer-events:auto;cursor:default}
 .mark:hover .mark-n,.mark:focus .mark-n{background:#111827;border-color:#111827;color:#F9FAFB}
