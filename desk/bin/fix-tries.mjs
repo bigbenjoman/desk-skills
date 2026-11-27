@@ -1396,7 +1396,9 @@ function classedRerun(mine, checks, ctx) {
   const starts = inRuns.map((c) => Date.parse(c.started ?? '')).filter((x) => x > 0);
   const names = mine.map((f) => `"${f.name}"`).join(', '), one = mine.length === 1;
   if (going.length && starts.length && (ctx.now ?? Date.now()) - Math.min(...starts) < PENDING_LIMIT_MS) {
-    return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ${runner ? `ones ${CLASSED}` : names}, re-run once they finish` };
+    // The outside case says why it waits as the rerun does, so the ticket reads as waiting on checks
+    // (batch-state.mjs checksRerun) before the rerun as well as after it.
+    return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ${runner ? `ones ${CLASSED}` : `${names}, whose failed ${one ? 'log names' : 'logs name'} no file this PR changes`}, re-run once they finish` };
   }
   if (runner) return { call: 'rerun', why: `its ${names} ${one ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${one ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
   return { call: 'rerun', why: `its ${names} ${one ? 'check\'s failed log names' : 'checks\' failed logs name'} no file this PR changes, so ${one ? 'its run is' : 'their runs are'} re-run once at this head, every job, before any fix worker`, gate: { ...rerun.gate, full: true } };

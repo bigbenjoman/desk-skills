@@ -280,6 +280,8 @@ t('#1640 AC2 nor a path in the folder printed only on a passing line', draftOf([
 const away = draftOf([red('CI (shard 6/6)', '9')], [shard(2, { conclusion: 'success' }), shard(6, { log_paths: ['tests/test_queue.mjs', 'desk/lib/queue.mjs'], log_fail_paths: ['tests/test_queue.mjs'] })], off1640({ changed: ['desk/bin/holds.mjs'] }));
 t('#1640 AC1 a failure naming only untouched files is re-run', away?.call, 'rerun');
 t('#1640 AC3 the rerun names the shard that failed, not one that passed', `${away?.why.includes('"CI (shard 6/6)"')} ${away?.why.includes('shard 2/6')}`, 'true false');
+const held = draftOf([red('CI (shard 6/6)', '9')], [shard(6, { log_paths: ['desk/lib/queue.mjs'], log_fail_paths: [] }), running('CI (shard 5/6)', '9')], off1640({ changed: ['desk/bin/holds.mjs'] }), { now: NOW });
+t('#1640 AC4 before its rerun, while the run\'s other jobs go on, its wait says why as the rerun does', `${held?.call} | ${held?.why}`, 'wait | checks still running (CI (shard 5/6)) in the run of "CI (shard 6/6)", whose failed log names no file this PR changes, re-run once they finish');
 const rerunRed = draftOf([red('CI (shard 2/6)', '9')], [shard(6, { conclusion: 'success' }), shard(2, { log_paths: ['desk/lib/queue.mjs'], log_fail_paths: ['desk/lib/queue.mjs'] })], off1640({ changed: ['desk/bin/holds.mjs'] }));
 t('#1640 AC3 and when another shard fails at the next attempt, it names that one', `${rerunRed?.why.includes('"CI (shard 2/6)"')} ${rerunRed?.why.includes('shard 6/6')}`, 'true false');
 }

@@ -59,6 +59,15 @@ export const openUnknowns = (unknowns, t) => {
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 
+// A done ticket whose draft's red checks name no file its PR changes, so the pass re-runs them once before
+// any fix try (fix-tries.mjs classedRerun): its `rerun`, or its `wait` for the run's other jobs to finish
+// first. Its PR is open but nothing is done with it: the ticket waits on checks, which the queue table and
+// desk-q both show as its state.
+export const checksRerun = (t) => {
+  const u = t?.undraft, ps = prStatusOf(t);
+  return ps?.state === 'OPEN' && ps.isDraft === true && (u?.call === 'rerun' || (u?.call === 'wait' && /^checks/.test(u.why ?? ''))) && /names? no file this PR changes/.test(u.why ?? '');
+};
+
 // The words for a pending handoff that full slots hold, `heldBy` naming what holds them: the pass report
 // (pass/deadlines.mjs) and desk-q both say it in these words.
 export const slotWaitWords = (heldBy) => `waiting for a slot (held by ${heldBy.join(', ')})`;

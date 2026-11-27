@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
 import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
 import { modeLine as personModeLine } from './person-use.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -95,12 +95,13 @@ export { LIVE_MS };
 // by who moves the ticket next; the rest are reasons inside one of them: an untriaged ticket is
 // ready, and one held outside the batch or whose worker stopped needs the user.
 // `finishing`: a running ticket whose worker said it finished, holding no worker until a pass records it.
-const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 'waiting' };
+// `checks`: a draft whose red checks name no file it changes, waiting on their one rerun (checksRerun).
+const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 'waiting', checks: 'merging' };
 const groupOf = (k) => GROUP_OF[k] ?? k;
 // A reason key draws as its group: the same glyph, word and colour (STATE_SGR), unless it has a word of its own.
 const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] ??= m[groupOf(k)]; return m; };
 // Every label desk-q can draw, by state key; exported for the test that each one shown has key text.
-export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing' });
+export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing', checks: '▸ on checks' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -609,8 +610,9 @@ function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   if (u?.call === 'rerun' && /failed on a GitHub read error/.test(u.why ?? '')) return merging(['draft', null], [' · state check re-run once after a GitHub read error, out of draft once green', null]);
   if ((u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) && /ended by the runner/.test(u.why ?? '')) return merging(['draft', null], [' · checks the runner ended re-run once, out of draft once green', null]);
   // Checks whose failed logs name no file the PR changes are re-run once before any fix worker
-  // (fix-tries.mjs classedRerun): the ticket waits on them, not on a worker.
-  if (u?.call === 'rerun' && /names? no file this PR changes/.test(u.why ?? '')) return merging(['draft', null], [' · waiting on checks: re-run once as their failed logs name no file this PR changes, out of draft once green', null]);
+  // (fix-tries.mjs classedRerun), after the rest of their run finishes: the ticket waits on them, not on a
+  // worker, so it reads as on checks rather than merging.
+  if (checksRerun(t)) return { ...merging(['draft', null], [` · waiting on checks: ${u.call === 'wait' ? 'their run finishing, then ' : ''}re-run once as their failed logs name no file this PR changes, out of draft once green`, null]), k: 'checks' };
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
@@ -3571,7 +3573,7 @@ function prSegs(r, t, now) {
   if (r.live) {
     // A Merging PR with no change for STALL_MS keeps its first reason and says so, which a 52-column
     // row has room for; the rest is moving nothing.
-    const m = prNeed(r.q, t, r.ctx, now), stall = m.k === 'merging' ? stalledFor(t, now) : null;
+    const m = prNeed(r.q, t, r.ctx, now), stall = groupOf(m.k) === 'merging' ? stalledFor(t, now) : null;
     return [...lead, ...(stall != null ? [m.segs[0], [` · no change for ${span(stall)}`, null]] : m.segs), ...tail];
   }
   return [...lead, [`as of ${clock(Date.parse(prStatusOf(t).at))}: ${segText(prNeed(r.q, t, r.ctx, null).segs)}${held ? ` · ${held}` : ''}`, GREY]];
@@ -3920,7 +3922,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
 // What each shown state means, for the key line under a Queue.
 const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', merging: 'merges by itself once green', waiting: 'moves by itself',
   needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes',
-  finishing: 'worker done, the next pass records it' };
+  finishing: 'worker done, the next pass records it', checks: 'red checks re-run once, then it merges or gets a fix try' };
 // The key line: each label on screen (keyLabels) in its colour, its meaning grey. Narrower than the
 // line, it breaks between labels, each further line indented under the first.
 export function stateKey(ks, width) {
