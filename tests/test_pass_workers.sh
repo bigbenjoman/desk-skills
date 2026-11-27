@@ -1235,6 +1235,40 @@ respawn issue-73
 check "#1483 AC2 a criterion changed with a PR open writes a dated Decisions entry naming it" 'grep -qF "desk pass: issue #73 changed after PR #61 was opened" "$T/state-h/tickets/issue-73.md" && grep -qF "the badge shows on the card and the list" "$T/state-h/tickets/issue-73.md"'
 check "#1483 AC2 the handed-off worker restarts at Stage 3 to build and re-review it, not at Stage 7" 'spawned_for issue-73 | grep -q "stage=3 " && brief issue-73 | grep -qF "## New decisions since PR #61" && brief issue-73 | grep -qF "Build and re-review it before taking the PR as done" && echo "$out" | grep -q "issue-73 fresh session from Stage 3 .*refreshed from issue #73"'
 q set issue-73 state=done
+# A spawn that does not start after the refresh: the stub refuses a ticket named in $T/refuse-spawn,
+# and records each resume prompt in $T/resume-prompt-<key>.
+cp "$T/desk/bin/spawn-worker.sh" "$T/spawn-worker.h"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+if grep -qx "\$1" "$T/refuse-spawn"; then echo "no slot for \$1"; exit 1; fi
+printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"
+echo "\$1 \$3 stage=\${AUTOPILOT_START_STAGE:-} branch=\${AUTOPILOT_BRANCH:-} brief=\${4:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"
+EOF
+echo issue-74 > "$T/refuse-spawn"
+admitted issue-74; gh_issue 74 2026-11-20T10:00:00Z "$same_body" "Also: AC2 the badge shows on the list page."
+q add issue-74; q set issue-74 state=triaged lane=A branch=fix/issue-74
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 a refresh whose spawn does not start keeps what it changed for the next spawn" '! spawned_for issue-74 && field issue-74 issue_refresh.what | grep -qF "new or edited comments: ben at 2026-11-20T10:00:00Z" && [ "$(field issue-74 issue_read)" = "\"2026-11-20T10:00:00Z\"" ]'
+: > "$T/refuse-spawn"; q requeue issue-74; : > "$GH_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 the next spawn, with the issue unchanged, delivers it and clears it" 'spawned_for issue-74 >/dev/null && [ "$(grep -c "^issue view 74 " "$GH_CALLS")" = 1 ] && echo "$out" | grep -q "issue-74 .*ticket file refreshed from issue #74 before a spawn that did not start: new or edited comments: ben" && [ "$(field issue-74 issue_refresh)" = null ]'
+q set issue-74 state=done
+# An unfinished fix try keeps its own task: its issue is not read, and the spawn line says so.
+q add issue-75; q set issue-75 state=triaged lane=A branch=fix/issue-75 'fix={"try":1,"of":2,"pr":65,"kind":"review","what":"a P1 review finding"}'
+admitted issue-75; gh_issue 75 2026-11-20T10:00:00Z $'## Acceptance criteria\n- AC1: the badge shows on the card and the list'
+cp "$T/state-h/tickets/issue-75.md" "$T/issue-75.before"
+: > "$GH_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 an unfinished fix try does not read the issue, and the spawn line says the next spawn checks it" '! grep -q "^issue view 75 " "$GH_CALLS" && diff -q "$T/issue-75.before" "$T/state-h/tickets/issue-75.md" >/dev/null && echo "$out" | grep -q "issue-75 .*its ticket file was not checked against issue #75: an unfinished fix try keeps its own task, and the next spawn checks it"'
+q set issue-75 state=done
+# A killed worker with a PR open, resumed after a criterion changed: its prompt carries the change, and
+# the delivery is recorded so its next handoff does not restart it at Stage 3 for that entry again.
+handing issue-76; q set issue-76 session_id=sess-76 port=47760 draft_pr=66
+say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-h/logs/issue-76.log"; touch -t 202601010000 "$T/state-h/logs/issue-76.log"
+admitted issue-76; gh_issue 76 2026-11-20T10:00:00Z $'## Acceptance criteria\n- AC1: the badge shows on the card and the list'
+out=$(DESK_BOOT_TIME=2026-06-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "#1483 a killed worker resumed after a criterion change is told of it in its resume prompt" 'echo "$out" | grep -q "issue-76 resumed after it was killed .*refreshed from issue #76" && grep -qF "was refreshed from its issue since you read it: acceptance criteria added or changed" "$T/resume-prompt-issue-76" && grep -qF "desk pass: issue #76 changed after PR #66 was opened" "$T/state-h/tickets/issue-76.md"'
+check "#1483 the resume records the delivery as decisions_seen and clears what it kept" 'field issue-76 decisions_seen | grep -qE "^\"20[0-9]{2}-" && [ "$(field issue-76 issue_refresh)" = null ]'
+q set issue-76 state=done
+mv "$T/spawn-worker.h" "$T/desk/bin/spawn-worker.sh"
 cp "$T/config.keep" "$T/config.md"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 

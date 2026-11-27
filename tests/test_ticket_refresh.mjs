@@ -39,7 +39,24 @@ t('the entry goes into the issue\'s own Decisions section, so the restart reads 
 const again = refreshTicket({ ...args, today: '2026-11-28', old: withPr.text, issue: issue({ body: edited, title: 'Badge on the card and list' }), pr: 9 });
 t('a later refresh keeps the earlier refresh\'s entry and adds none for a title change', [ticketDecisions(again.text).map((d) => d.date), again.entry], [['2026-11-27'], null]);
 
-const handAdmitted = `# issue-7\n\nSource: GitHub issue acme/widgets#7\n\nBadge on the card\n\n${body}\n\n## Comments\nben, 26 Nov: ${comment.body}\n`;
+const ownEntry = ticketDecisions(withPr.text)[0].line;
+const issueDecided = (line) => body.replace('## Design', `## Decisions\n* ${line}\n\n## Design`);
+const priorOld = issueText({ ...args, issue: issue({ body: issueDecided('2026-11-20 ben: the badge is green') }), extra: [`* ${ownEntry}`] });
+const editedOnIssue = refreshTicket({ ...args, today: '2026-11-28', old: priorOld, issue: issue({ body: issueDecided('2026-11-20 ben: the badge is blue') }), pr: 9 });
+t('a Decisions entry edited on the issue is not kept in its old form, while the earlier desk pass entry is', ticketDecisions(editedOnIssue.text).map((d) => d.line), ['2026-11-20 ben: the badge is blue', ownEntry]);
+const deletedOnIssue = refreshTicket({ ...args, today: '2026-11-28', old: priorOld, issue: issue(), pr: 9 });
+t('a Decisions entry deleted on the issue is gone, while the earlier desk pass entry is kept', ticketDecisions(deletedOnIssue.text).map((d) => d.line), [ownEntry]);
+const otherIssue = ownEntry.replace('issue #7 ', 'issue #8 ');
+t('a desk pass entry naming another issue is not taken for this one\'s', ticketDecisions(refreshTicket({ ...args, old: issueText({ ...args, issue: issue(), extra: [`* ${otherIssue}`] }), issue: issue(), pr: 9 }).text).length, 0);
+
+const wikiBody = 'h2. Problem\nThe badge is missing.\n\nh2. Acceptance criteria\n- AC1: the badge shows on the card';
+const wiki = issueText({ ...args, issue: issue({ body: wikiBody }), extra: ['* 2026-11-27 desk pass: x'] });
+t('a body in wiki headings gains an h2. Decisions heading, which the restart reads', [wiki.includes('\nh2. Decisions\n'), wiki.includes('## Decisions'), ticketDecisions(wiki).map((d) => d.line)], [true, false, ['2026-11-27 desk pass: x']]);
+const wikiOwn = issueText({ ...args, issue: issue({ body: `${wikiBody}\n\nh2. Decisions\n* 2026-11-20 ben: green\n\nh2. Design\nNo UI.` }), extra: ['* 2026-11-27 desk pass: x'] });
+t('an extra entry goes after the last entry of a wiki Decisions section, before the next heading', [ticketDecisions(wikiOwn).map((d) => d.date), wikiOwn.includes('* 2026-11-20 ben: green\n* 2026-11-27 desk pass: x\n\nh2. Design')], [['2026-11-20', '2026-11-27'], true]);
+t('an extra entry goes straight under an empty Decisions heading', issueText({ ...args, issue: issue({ body: body.replace('## Design', '## Decisions\n\n## Design') }), extra: ['* 2026-11-27 desk pass: x'] }).includes('## Decisions\n* 2026-11-27 desk pass: x\n'), true);
+
+const handAdmitted =`# issue-7\n\nSource: GitHub issue acme/widgets#7\n\nBadge on the card\n\n${body}\n\n## Comments\nben, 26 Nov: ${comment.body}\n`;
 t('a comment already in a hand-written file is not new', refreshTicket({ ...args, old: handAdmitted, issue: issue({ comments: [comment] }), pr: 9 }).comments.length, 0);
 
 const b = refreshBrief({ key: 'issue-7', n: '7', file: '/s/tickets/issue-7.md', what: fromComment.what });
