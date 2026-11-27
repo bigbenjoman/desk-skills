@@ -15,13 +15,13 @@ import { readSubscriptions, tilde } from './logins.mjs';
 
 const short = (sha) => String(sha ?? '').slice(0, 8);
 const yes = (v) => /^yes\b/i.test(String(v ?? '').trim());
-const yesOrAsk = (v) => v === 'yes' || v === 'ask';
 
-// What §3 pr-merge-green does, read with autopilot-merge as desk-env mergeGrant reads the two. `perm(id)`
-// reads the repo's §3 rows. Settings has no batch, so a batch's Stage 3 approval is said, not read.
+// What §3 pr-merge-green does, as desk-env mergeGrant reads it with autopilot-merge. `perm(id)` reads
+// the repo's §3 rows. Settings has no batch, so mergeGrant is asked with no batch and with one that
+// approved merging at Stage 3, and the second is said, not read.
 export function mergeMeaning(v, perm) {
   if (E.mergeGrant(null, perm).by === 'config') return 'Workers merge a PR once its checks pass.';
-  if (yesOrAsk(v) && yesOrAsk(perm('autopilot-merge'))) {
+  if (E.mergeGrant({ approved: { merge: true } }, perm).by === 'batch') {
     return `Workers merge on green only in a batch you approve merging for at Stage 3${v === 'ask' ? '; otherwise desk asks you before each merge' : ''}.`;
   }
   if (v === 'yes') return "A PR merges once its checks pass, in a session you run; workers leave theirs for you (autopilot-merge isn't yes).";
@@ -134,8 +134,9 @@ export function stateLine({ installed, head, check, release = {} }) {
   if (head === installed) return { glyph: '✓', text: `✓ Up to date. Installed ${at} is GitHub main.` };
   if (release.blocked?.sha === head && release.blocked.why) return { glyph: '✕', text: `✕ Not installing ${to}: ${release.blocked.why}.` };
   if (check?.state === 'failure') return { glyph: '✕', text: `✕ main's tests check failed on ${to}, not installing. You stay on ${at} until a newer commit passes.` };
-  // A check it could not read is waited on, as the release itself waits on it (maintenance.mjs).
-  if (check?.state === 'pending' || check?.error) return { glyph: '·', text: `· Waiting for main's tests check on ${to}. desk installs it once the check passes.` };
+  // A check it could not read, or has no answer for yet, is waited on, as the release itself waits on
+  // it (maintenance.mjs): only a check that passed says so.
+  if (check?.state !== 'success') return { glyph: '·', text: `· Waiting for main's tests check on ${to}. desk installs it once the check passes.` };
   return { glyph: '·', text: `· ${to} passed its tests check. desk installs it at the next pass.` };
 }
 
@@ -155,7 +156,7 @@ export async function installView({ check = null, release = null, updates = null
     checkout: src ? tilde(src) : null,
     checked_at: rel.fetched_at ?? null,
     installed: installed && { commit: installed, at: inst.at ?? null },
-    main: head && { commit: head, ahead, check: c?.state ?? (c?.error ? 'pending' : head === installed ? 'success' : null) },
+    main: head && { commit: head, ahead, check: head === installed ? 'success' : c?.state ?? 'pending' },
     state: stateLine({ installed, head, check: c, release: rel }),
     updates,
   };

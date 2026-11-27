@@ -156,6 +156,25 @@ t('the other state lines', [
 
 const unread = await S.installView({ check: async () => ({ error: 'gh: HTTP 502' }), release: {} });
 t('a check it couldn\'t read is waited on, as the release waits on it', [unread.main.check, unread.state.glyph], ['pending', '·']);
+const none = await S.installView({ check: async () => null, release: {} });
+t('a check with no answer yet is waited on, never read as passed', [none.main.check, none.state.text],
+  ['pending', `· Waiting for main's tests check on ${head.slice(0, 8)}. desk installs it once the check passes.`]);
+
+// A request waiting on one commit's check gets that commit's answer, though main moves on meanwhile.
+let answer;
+checkWord = new Promise((r) => { answer = r; });
+const third = commit(4);
+git('update-ref', 'refs/remotes/origin/main', third);
+const slow = get('/api/settings/install');
+for (let i = 0; i < 80 && !checks.includes(third); i++) await sleep(25);
+checkWord = { state: 'pending', word: 'queued' };
+const fourth = commit(5);
+git('update-ref', 'refs/remotes/origin/main', fourth);
+const quick = await get('/api/settings/install');
+answer({ state: 'failure', word: 'failure' });
+const late = await slow;
+t('each request reads its own commit\'s check, not the one that replaced it', [late.main.commit, late.main.check, late.state.glyph, quick.main.commit, quick.main.check],
+  [third, 'failure', '✕', fourth, 'pending']);
 
 // ---- AC7, AC9, AC11, AC12: the app build and the installed commit, on the change stream
 const meta0 = await get('/api/meta');
@@ -180,6 +199,13 @@ for (let i = 0; i < 40 && heard.length === n; i++) await sleep(25);
 t('a move back to an older commit is no release: no toast', [heard.length > n, heard.at(-1)?.[1].installed, heard.at(-1)?.[1].released], [true, installed, undefined]);
 heard.length = 0;
 t('a server stopped on the code it runs says nothing', [server.restarting(), heard.length], [undefined, 0]);
+// A commit off main: installed, then moved from to a commit on main. Neither move is a release.
+const side = git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', `${installed}^{tree}`, '-p', installed, '-m', 'side');
+writeFileSync(join(DESK_HOME, 'installed.json'), JSON.stringify({ commit: side, at: '2026-11-27T10:20:00Z', from: src }));
+for (let i = 0; i < 40 && heard.length < 1; i++) await sleep(25);
+writeFileSync(join(DESK_HOME, 'installed.json'), JSON.stringify({ commit: head, at: '2026-11-27T10:21:00Z', from: src }));
+for (let i = 0; i < 40 && heard.length < 2; i++) await sleep(25);
+t('a move off main, or back from off it, is no release: no toast', heard.map(([, d]) => [d.installed, d.released]), [[side, undefined], [head, undefined]]);
 
 // ---- AC11 Open install log
 const openLog = () => call('POST', '/api/settings/install-log', { headers: { ...signed, Origin: ORIGIN } });

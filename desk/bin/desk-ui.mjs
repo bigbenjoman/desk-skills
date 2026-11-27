@@ -82,7 +82,7 @@ import { makeFeed } from './desk-ui-events.mjs';
 import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
 import { makePrReader } from './desk-ui-ticket.mjs';
 import * as S from './desk-ui-settings.mjs';
-import { AGENTS, oldCode, readInstalled, runningVersion } from './installed.mjs';
+import { AGENTS, forwardOnMain, gitIn, oldCode, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
@@ -679,10 +679,12 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     if (JSON.stringify(next) === JSON.stringify(appWas)) return;
     const was = appWas;
     appWas = next;
-    // A release is the installed commit moving forward on main: a move back (a rollback) or one it
-    // can't count is no release, so the window shows no toast for it.
-    const commits = next.installed && was.installed && next.installed !== was.installed
-      ? S.commitsBetween(readInstalled()?.from, was.installed, next.installed) : null;
+    // A release is the installed commit moving forward along origin/main, as the release watch reads
+    // one (installed.mjs forwardOnMain): a move back (a rollback), off main or one it can't count is
+    // no release, so the window shows no toast for it.
+    const from = readInstalled()?.from;
+    const commits = next.installed && was.installed && next.installed !== was.installed && typeof from === 'string' && from && existsSync(from)
+      ? forwardOnMain(gitIn(from), was.installed, next.installed).merges : null;
     feed.announce('server', { ...appNow(), ...(commits > 0 ? { released: { from: was.installed, commits } } : {}) });
   }, appEveryMs);
   appWatch.unref?.();
@@ -698,19 +700,22 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   };
   // main's tests check on one commit, read again at most once a minute and never on the request's own
   // thread: gh can take up to a minute. A commit's first read is waited on; after that the last answer
-  // stands while the next one is read in the background.
+  // stands while the next one is read in the background. Each read resolves to its own commit's answer,
+  // so a request waiting on one commit never takes the answer of another that replaced it meanwhile.
   const checked = { sha: null, at: -Infinity, value: null, running: null };
   const checkOf = (src, sha, real) => {
     if (checked.sha !== sha) Object.assign(checked, { sha, at: -Infinity, value: null, running: null });
     if (!checked.running && clock() - checked.at >= CHECK_EVERY_MS) {
       checked.at = clock();
-      const mine = (v) => { if (checked.running === p) checked.value = v; };
       const p = Promise.resolve().then(() => (check ?? real)(src, sha))
-        .then(mine, (e) => mine({ error: String(e?.message ?? e).split('\n')[0] }))
-        .finally(() => { if (checked.running === p) checked.running = null; });
+        .catch((e) => ({ error: String(e?.message ?? e).split('\n')[0] }))
+        .then((v) => {
+          if (checked.running === p) Object.assign(checked, { value: v, running: null });
+          return v;
+        });
       checked.running = p;
     }
-    return checked.value ?? (checked.running ?? Promise.resolve()).then(() => checked.value);
+    return checked.value ?? checked.running;
   };
   async function settingsRoute(req, res, path, method, query) {
     const fail = (what, e) => { console.error(`desk-ui: settings ${what}: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); };
