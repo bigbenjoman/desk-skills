@@ -7,7 +7,7 @@ the user once, then re-run with the flag the note names (`--include <slug>`, `--
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
-| **Jira** | `jira_activity.py`: REST through `desk-jira api` for each in-scope repo whose §4 Tracker is `jira` | `read-own-work` | Tickets raised, status moves, reassignments, field changes, the user's comments, and what others did to their tickets the same day |
+| **Jira** | `jira_activity.py`: REST through `desk-jira api` for each in-scope repo whose §4 Tracker is `jira` | `read-own-work` | Tickets raised, status moves with the account that made each and when, reassignments, field changes, the user's comments, and what others did to their tickets the same day |
 | **GitHub PRs** | `github_activity.py` via `gh` | `read-own-work`; everyone's merged count needs `read-others` | PRs opened, merged, closed or pushed to, with review decision and failing checks for open ones; reviews given; merged counts per repo, yours and everyone's |
 | **GitHub issues** | `github_activity.py`, the same run | `read-own-work` | Issues the user opened, closed or commented on in the window, grouped by repo, then by label (or the title's `prefix:`). Each gives number, title, state, and created or closed time. With §4 Tracker `none` these are the repo's tickets |
 | **Work logs** | `worklog_activity.py`: the files or globs in each in-scope repo's §3b **Check-out work logs** row (default `none`) | `read-own-work` | Work done outside PRs and tickets that the user wrote down: entries on timestamped lines (`- HH:MM …` under a date heading, or ISO date-times), or a file's last lines when it has no times and was modified in the window |

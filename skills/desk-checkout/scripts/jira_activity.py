@@ -27,7 +27,7 @@ import subprocess
 import sys
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.dont_write_bytecode = True  # a __pycache__ in the installed skill reads as a user edit to install.sh
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -110,6 +110,12 @@ def repo_activity(repo, start, end):
     prio_field = prio.group(0) if prio else "priority"
 
     since, until = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+    # A window that crosses midnight (from the previous check-out) needs the day on each time.
+    stamp_fmt = "%H:%M" if start.date() == (end - timedelta(microseconds=1)).date() else "%a %H:%M"
+
+    def stamp(when):
+        return when.astimezone().strftime(stamp_fmt)
+
     s, e = f'"{start:%Y-%m-%d %H:%M}"', f'"{end:%Y-%m-%d %H:%M}"'
     jql = (
         f"(creator = currentUser() AND created >= {s} AND created < {e})"
@@ -141,17 +147,19 @@ def repo_activity(repo, start, end):
         if (f.get("creator") or {}).get("accountId") == my_id and since <= created < until:
             actions.append("raised")
         # Net change per field, so an assign-then-unassign during triage reads as nothing.
-        first_from, last_to, order, others = {}, {}, [], []
+        first_from, last_to, last_at, order, others = {}, {}, {}, [], {}
         for h in jira.changelog(key):
             when = parse_jira_time(h["created"])
             if not (since <= when < until):
                 continue
-            if (h.get("author") or {}).get("accountId") != my_id:
-                # On your own tickets, what others did the same day is part of the story.
-                who = (h.get("author") or {}).get("displayName", "someone").split()[0]
+            author = h.get("author") or {}
+            if author.get("accountId") != my_id:
+                # Others' status moves on your tickets, netted per account rather than per hop.
+                who = author.get("accountId") or author.get("displayName") or "someone"
                 for item in h.get("items", []):
                     if item.get("field") == "status":
-                        others.append((who, item.get("fromString"), item.get("toString")))
+                        frm = others[who][1] if who in others else item.get("fromString")
+                        others[who] = (author.get("displayName", "someone"), frm, item.get("toString"), when)
                 continue
             for item in h.get("items", []):
                 field = item.get("field")
@@ -162,20 +170,22 @@ def repo_activity(repo, start, end):
                     first_from[field] = item.get("fromString")
                     order.append(field)
                 last_to[field] = item.get("toString")
+                last_at[field] = when
         for field in order:
             if first_from[field] != last_to[field]:
-                actions.append(f"{field}: {first_from[field] or '—'} → {last_to[field] or '—'}")
+                act = f"{field}: {first_from[field] or '—'} → {last_to[field] or '—'}"
+                if field == "status":
+                    # Changes made with the user's own token (a script or batch included) are theirs.
+                    act += f", by {me['displayName']} (you) at {stamp(last_at[field])}"
+                actions.append(act)
         comments = jira.get(f"/rest/api/3/issue/{key}/comment", orderBy="-created", maxResults=50)
         for c in comments.get("comments", []):
             when = parse_jira_time(c["created"])
             if (c.get("author") or {}).get("accountId") == my_id and since <= when < until:
                 actions.append("commented: " + adf_text(c.get("body")))
         if actions and others:
-            # Net per person: "then Sam: To Do → Done", not three hops.
-            net = {}
-            for who, frm, to in others:
-                net[who] = (net.get(who, (frm, None))[0], to)
-            actions += [f"then {who}: {frm} → {to}" for who, (frm, to) in net.items() if frm != to]
+            actions += [f"then status: {frm or '—'} → {to or '—'}, by {name} at {stamp(when)}"
+                        for name, frm, to, when in others.values() if frm != to]
         return issue, actions
 
     def grade(value):
