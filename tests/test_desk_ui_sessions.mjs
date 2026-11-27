@@ -308,6 +308,33 @@ t('AC3 a full window in the reading refuses it with 429', [full.status, full.jso
 await until(() => false, 200);
 t('AC3 nothing started', starts().length, n3);
 
+// ---- a fallback switch: the pass keeps the default's limit in login_fallback and clears usage_hold, so
+// the default is still at its limit with no full window in its reading (a preflight's refusal)
+writeFileSync(join(H, '.desk-autopilot', 'usage', 'probe.log'), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: {
+  five_hour: { utilization: 0.2, resetsAt: Math.floor(NOW / 1000) + 3600 }, seven_day: { utilization: 0.4, resetsAt: Math.floor(NOW / 1000) + 86400 } } } })}\n`);
+const vpQueue = join(DH, 'repos', 'acme__voicepa', 'queue.json');
+const vpBefore = readFileSync(vpQueue, 'utf8');
+const withFallback = (rec) => writeFileSync(vpQueue, JSON.stringify({ ...JSON.parse(vpBefore), login_fallback: rec }));
+const fbRec = { since: new Date(NOW).toISOString(), login: 'login-2', why: 'at the usage limit', type: 'five_hour', resets_at: Math.floor(NOW / 1000) + 2 * 3600 };
+withFallback(fbRec);
+const nfb = starts().length;
+const fb = await start({ purpose: 'blank', repo: 'acme__voicepa' });
+t('a fallback switch\'s limit on the default refuses it with 429', [fb.status, fb.json?.error?.code, /^voicepa's subscription, ben@example\.com, is at the [a-z0-9 -]*limit until /.test(fb.json?.error?.message ?? '')], [429, 'usage_limit', true]);
+const fbOther = await start({ purpose: 'blank', repo: 'acme__voicepa', login: 'ops@studia.example' });
+t('and naming another subscription is no longer refused as the default having room', fbOther.json?.error?.code === 'subscription', false);
+if (fbOther.status === 201) await call('DELETE', `/api/sessions/${fbOther.json.id}`, { headers: auth });
+withFallback({ ...fbRec, type: 'pace', resets_at: null });
+const fbPace = await start({ purpose: 'blank', repo: 'acme__voicepa' });
+t('a switch made for pacing is not a limit, so the default still starts it', fbPace.status === 429, false);
+if (fbPace.status === 201) await call('DELETE', `/api/sessions/${fbPace.json.id}`, { headers: auth });
+withFallback({ ...fbRec, resets_at: Math.floor(NOW / 1000) - 60 });
+const fbPast = await start({ purpose: 'blank', repo: 'acme__voicepa' });
+t('nor is one whose reset has passed', fbPast.status === 429, false);
+if (fbPast.status === 201) await call('DELETE', `/api/sessions/${fbPast.json.id}`, { headers: auth });
+writeFileSync(vpQueue, vpBefore);
+await until(() => starts().length - nfb === 3);
+t('the refused one started nothing: the other three each started one', [fbOther.status, fbPace.status, fbPast.status, starts().length - nfb], [201, 201, 201, 3]);
+
 const reg = JSON.parse(readFileSync(join(H, '.desk-autopilot', 'ui', 'sessions.json'), 'utf8'));
 t('the registry is readable only by this user', (await import('node:fs')).statSync(join(H, '.desk-autopilot', 'ui', 'sessions.json')).mode & 0o777, 0o600);
 t('the registry holds every conversation', reg.items.length >= 15, true);

@@ -2492,9 +2492,23 @@ function limitOf(x, now) {
   const f = fullWindow(x.reading, now);
   return f ? { type: f.type, at: f.resetsAt } : null;
 }
-// One Claude login's limit as the Usage screen reads it (limitOf): -> { type, at } | null.
+// While a repo's new work runs on the fallback (fallback-login.mjs), the pass keeps the default's limit in
+// the queue's login_fallback rather than usage_hold. One still holding, a limit and not pacing, its reset
+// not passed, is the default login's limit as { at, type }; null for any other login, or with none.
+function fallbackOut(repos, l, now) {
+  let def = null;
+  try { def = loginUses().defaults.claude; } catch { return null; }
+  if (!def || def.dir !== l.dir) return null;
+  for (const q of withOthers(repos).flatMap((r) => (r.batches ?? [r]).map((b) => b.q))) {
+    const f = q?.login_fallback;
+    if (f?.type && f.type !== 'pace' && (f.resets_at == null || now < f.resets_at * 1000)) return { at: f.resets_at ?? null, type: f.type };
+  }
+  return null;
+}
+// One Claude login's limit as the Usage screen reads it (limitOf), with the default's limit a fallback
+// switch keeps (fallbackOut): -> { type, at } | null.
 export const loginLimit = (repos, login, now = Date.now()) =>
-  limitOf({ out: holdOut(repos, login, now), reading: readUsage({ dirs: stateDirs({ self: usageDir() }), login, now }) }, now);
+  limitOf({ out: holdOut(repos, login, now) ?? fallbackOut(repos, login, now), reading: readUsage({ dirs: stateDirs({ self: usageDir() }), login, now }) }, now);
 
 // Each subscription at its limit that repos run on, earliest reset first (the default first on a tie):
 //   -> [{ x, limit, repos }], `repos` the repo-table rows whose subscription is that login, the most
