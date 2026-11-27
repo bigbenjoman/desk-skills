@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: compare_pass (a fixture comparison lists what a head's pass.mjs does differently from its base's)
+# budget: 150 (main 2200) GH-1598 a pull request's smoke replay ran 61-81 CPU s, a main push's full one 1442-1822
 # layer: L3
 # tests/compare_pass.sh over scratch trees whose stand-in pass.mjs writes one queue field and prints one
 # line: a head that matches lists nothing; one that writes a field or prints a line differently lists
@@ -8,7 +9,6 @@
 # changed. Then the real pass suite against itself lists nothing: all of it on a main push or the
 # nightly run, otherwise only test_pass_other_repo.sh. Scratch dirs only.
 # covers: tests/test_pass*.sh
-# budget: 60 (main 1500) DS-942 a pull request's smoke replay ran 28 CPU s, a main push's full one 1004
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -205,7 +205,7 @@ fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(
 cmp "$T/stamp1" "$T/stamp3"
 check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
-# The free memory a memory hold read, as a pass record's hold keeps it (DS-1047): a raw reading on each
+# The free memory a memory hold read, as a pass record's hold keeps it (pass/report.mjs holdOf): a raw reading on each
 # tree, as two runs on one machine read it; and the gate's floor, which is config, differing.
 fieldtree mem1 'hold: { cause: "memory", numbers: { availGB: 13.427597045898438, minAvailGB: 2 } }' 'A-1 running'
 fieldtree mem2 'hold: { cause: "memory", numbers: { availGB: 13.51816177368164, minAvailGB: 2 } }' 'A-1 running'
