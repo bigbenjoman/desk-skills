@@ -54,7 +54,7 @@ import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
-import { LIVE_MS, idlePass, lastBeat, liveBeat, loopFrom, machineCap, stoppedAt } from './borrow.mjs';
+import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
 import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -865,7 +865,9 @@ function whoRuns(r) {
 // What the pass record (pass.mjs recordPass) and the supervisor's own files say about a batch whose
 // passes run but move nothing, or cannot run:
 //   noProgress  how long nothing started, merged or was released, once that is NO_PROGRESS_MS or more
-//               while the last pass held something it could have started (`held`, its reason)
+//               while the last pass held something it could have started (`held`, its reason), counted
+//               only while a ticket was ready, running or waiting; a requeue restarts that ticket's clock
+//   idle        { since }: the batch holds no unfinished ticket or PR, `since` its last progress or null
 //   errors      { n, error } once ERROR_STREAK passes in a row have errored
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
 //   cannotStart the loaded agent's failed last run, { code, why }, `why` its own log's last line
@@ -885,8 +887,14 @@ function stallOf(r, now) {
   const rec = r.q.pass && typeof r.q.pass === 'object' ? r.q.pass : {};
   const sup = r.run?.by === 'supervisor' ? readJson(join(r.stateDir, 'supervisor.json')) : null;
   const loaded = r.run?.agent === 'loaded';
-  // With no progress recorded yet, the batch has had none since its first ticket was added.
-  const from = timeOf(rec.progress_at) ?? Math.min(...Object.values(r.q.tickets ?? {}).map((t) => timeOf(t.added_at) ?? Infinity));
+  // The clock runs only while a ticket is ready, running or waiting: from the later of the last progress
+  // and the earliest such ticket's admission or requeue, so time the queue sat empty, or a ticket sat
+  // parked or failed, is not counted.
+  const open = r.rows.filter((x) => MOVABLE_STATES.includes(x.k));
+  const openSince = (t) => { const at = [timeOf(t.added_at), timeOf(t.requeued_at)].filter((v) => v != null); return at.length ? Math.max(...at) : Infinity; };
+  const admitted = Math.min(...open.map((x) => openSince(x.t)));
+  const progress = timeOf(rec.progress_at);
+  const from = !open.length ? null : progress == null ? admitted : Number.isFinite(admitted) ? Math.max(progress, admitted) : progress;
   const quiet = r.live && rec.held && Number.isFinite(from) && now - from >= NO_PROGRESS_MS ? now - from : null;
   const session = timeOf(rec.session_at ?? (rec.by === 'session' ? rec.at : null));
   const errors = Number(rec.errors) >= ERROR_STREAK ? { n: Number(rec.errors), error: String(rec.error ?? 'no error recorded') } : null;
@@ -917,7 +925,7 @@ function stallOf(r, now) {
   const installed = readInstalled();
   const old = { supervisor: loaded && oldCode(agentVersion(r.slug), installed),
     driver: r.run?.by === 'supervisor' && typeof holder === 'number' && oldCode(lockVersion(r.stateDir), installed) };
-  return { noProgress: quiet, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
+  return { noProgress: quiet, idle: unfinished(r) ? null : { since: progress }, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
     oldCode: old.supervisor || old.driver ? old : null };
 }
 // The batch's hold on a usage limit, as the last pass recorded it (pass.mjs usage_hold), in one
@@ -949,7 +957,19 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
-export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+const workersOf = (r) => (r.error ? r.cap ?? 0 : workersRunning(r));
+export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + workersOf(r), 0);
+// The same workers weighed against the machine profile's memory ceiling, each at its repo's config §3b
+// "Worker memory weight (GB)" (borrow.mjs repoWeights). `weightOf` gives a repo's raw row by slug.
+//   -> { used, ceiling, light, heavy } in GB (light and heavy the least and most a repo's worker weighs),
+//      or null with no ceiling or no machine cap
+export function machineMemory(repos, { cap, ceiling = machineCeiling(), weightOf = repoWeightRaw } = {}) {
+  if (cap == null || ceiling == null) return null;
+  const all = withOthers(repos);
+  const gb = repoWeights(all.map((r) => r.slug), { ceiling, cap, raw: weightOf });
+  const each = all.length ? Object.values(gb) : [flatShare(ceiling, cap)];
+  return { used: weighedGB(all.map((r) => [r.slug, workersOf(r)]), (s) => gb[s]), ceiling, light: Math.min(...each), heavy: Math.max(...each) };
+}
 // A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
 // writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
 function driverUp(b, now = Date.now()) {
@@ -2157,7 +2177,8 @@ const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGat
 // 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
 // when the batch was handed to a supervisor that is not loaded; stopped, how long since the last
 // pass, yellow under a day and red beyond. Live but not moving, in amber: a session running passes
-// beside the supervisor, or passes that held everything for NO_PROGRESS_MS.
+// beside the supervisor, or passes that held everything for NO_PROGRESS_MS. Live with nothing left in
+// the batch, in grey: "● idle since 06:08".
 const LAST_W = 26;
 // ALL DONE BY fits "passes stopped".
 const QD_W = 14;
@@ -2166,6 +2187,7 @@ function lastPass(r, now) {
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, FAIL];
   if (r.live && r.stall?.sessionToo) return ['▲ supervisor + session', WARN];
   if (r.live && r.stall?.noProgress != null) return [`▲ no progress ${since(r.stall.noProgress)}`, WARN];
+  if (r.live && r.stall?.idle) return [`● idle${r.stall.idle.since == null ? '' : ` since ${calendarDays(r.stall.idle.since, now) === 0 ? clock(r.stall.idle.since) : when(r.stall.idle.since, now)}`}`, GREY];
   if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
   if (idleStopped(r)) return [`■ idle · ${since(age)}`, GREY];
@@ -2180,6 +2202,15 @@ const liveAllowed = (repos) => repos.filter((r) => r.live && r.q).reduce((a, r) 
 export function headroom({ running, cap, avail, gate, perWorker }) {
   const byMemory = Math.max(0, Math.floor((avail - gate) / perWorker));
   return cap == null ? byMemory : Math.max(0, Math.min(cap - running, byMemory));
+}
+// headroom's `room` under the memory ceiling as well (machineMemory's `mem`): how many of the heaviest
+// repo's workers fit in the GB the running workers' weights leave, else, where only a lighter repo's
+// fit, how many of the lightest's, `light` true.   -> { room, light }
+export function weightedRoom(room, mem) {
+  if (!mem) return { room, light: false };
+  const heavy = Math.min(room, memoryRoom(mem.ceiling, mem.used, mem.heavy));
+  if (heavy > 0 || mem.light === mem.heavy) return { room: heavy, light: false };
+  return { room: Math.min(room, memoryRoom(mem.ceiling, mem.used, mem.light)), light: true };
 }
 
 // Ready tickets beyond the batch's free slots: they start only as its running workers finish.
@@ -2216,12 +2247,17 @@ function needsLine(list, now, count = needsCount) {
   return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
 
-// The overview's second line: workers running, the machine cap and the room it leaves, free memory.
-function machineLine(running, cap, room, avail, drivers = 0) {
+// The overview's second line: workers running, the machine cap, the GB their weights hold of the memory
+// ceiling (machineMemory's `mem`, where there is one), the room left, free memory.
+function machineLine(running, cap, room, avail, drivers = 0, mem = null) {
+  const w = weightedRoom(room, mem);
+  const fits = w.light && w.room > 0 ? [w.room === 1 ? 'a light worker' : `${w.room} light workers`, BOLD] : [`${w.room} more`, BOLD];
   return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY],
     ...(drivers ? [[' · ', GREY], [`▸ ${drivers} merge driver${drivers === 1 ? '' : 's'} running`, STATE_SGR.merging]] : []), BAR,
     ...(cap == null ? [['no machine cap (/desk-setup writes a machine profile)', GREY]] : [['machine cap ', GREY], [String(cap), BOLD]]),
-    [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
+    ...(mem ? [[' · ', GREY], [`${mem.used} of ${mem.ceiling} GB`, mem.used >= mem.ceiling ? WARN : BOLD]] : []),
+    [' · ', GREY], ['room for ', GREY], fits, ...(w.light && w.room > 0 ? [[` (${mem.light} GB)`, GREY]] : []),
+    BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
 // The Levers line, under the machine line: the levers' headline, its figures, then a link to the page
@@ -2758,15 +2794,20 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
 }
 
 // With accounts pinned, the lines under the key: that desk's sign-ins are its own, the selected
-// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds.
+// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds: removed, and
+// when, where the file's Removed table names ~/.claude.
 function accountLines(t, rows, selected, w) {
   if (!t.claude.some((x) => x.multi)) return [];
   const x = rows.find((r) => r.id != null && r.id === selected) ?? rows.find((r) => r.id != null);
   const own = accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null;
   const unpinned = own && !t.claude.some((c) => c.login.account === own) ? own : null;
+  let gone = null;
+  try { gone = readSubscriptions(subscriptionsPath()).removed.find((r) => r.tool === 'claude' && r.dir === defaultLogin('claude').dir) ?? null; } catch { /* unreadable: said as not added */ }
+  const said = !gone ? `${unpinned} isn't one of desk's accounts yet. Press `
+    : `${unpinned} was removed from desk's accounts ${gone.at ? `on ${ymdText(gone.at)}` : '(the date was not recorded)'}, when accounts were pinned. Press `;
   return [...leadLines('  ', [['Desk keeps its own sign-ins, so switching account in your own Claude Code changes nothing here.', GREY]], w),
     ...(x?.login?.tool === 'claude' && x.login.account ? leadLines('  ', [[`${x.login.account} signs in for desk through ${x.login.folder}.`, GREY]], w) : []),
-    ...(unpinned ? leadLines('  ', [[`${unpinned} isn't one of desk's accounts yet. Press `, GREY], ['a', BOLD], [' to add it.', GREY]], w) : [])];
+    ...(unpinned ? leadLines('  ', [[said, GREY], ['a', BOLD], [gone ? ' to add it again.' : ' to add it.', GREY]], w) : [])];
 }
 
 // The note for a row desk won't use: what is wrong and the command that puts it right, which y copies.
@@ -2969,7 +3010,7 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null, count = needsCount } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now, count), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)), ...(levers ? [levers] : []),
+  return [...list.flatMap(bandsOf), needsLine(each, now, count), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now), machineMemory(repos, { cap })), ...(levers ? [levers] : []),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -4337,7 +4378,11 @@ export function homeJson(repos, { all = false, now = Date.now(), avail = availab
   const parts = overviewParts(repos, { all, now, avail, cap, gate, perWorker, checkin });
   return envelope('home', now, { queues: queueAges(list, now), usage: inputAge(usage.reading?.at, now), levers: inputAge(levers.builtAt, now), memory: inputAge(now, now) }, {
     needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
-    machine: { running, cap: cap ?? null, room: headroom({ running, cap, avail, gate, perWorker }), avail_gib: avail },
+    machine: (() => {
+      const mem = machineMemory(repos, { cap });
+      const w = weightedRoom(headroom({ running, cap, avail, gate, perWorker }), mem);
+      return { running, cap: cap ?? null, room: w.room, avail_gib: avail, ...(mem ? { gb_used: mem.used, gb_ceiling: mem.ceiling, room_light: w.light } : {}) };
+    })(),
     levers: leversJson(levers, now),
     usage: usageJson(usage),
     repos: list.map((r) => repoFigures(r, needs.get(r), now, checkin)),
@@ -4471,6 +4516,12 @@ function systemCopier(text, out = null) {
 // login's CLI, or a rule change that checks first, never holds the screen. done({ code, out, err }).
 const DESK_ENV_MJS = join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs');
 const deskEnvLogins = (args, done) => deskEnvRun(['logins', ...args], done);
+// What a desk-env logins run that migrated the file printed (the dated backup, each row's before and
+// after, why ~/.claude moved), as lines for the message, or [] when it moved and changed nothing.
+function migrationSaid(r) {
+  const out = String(r?.code === 0 ? r.out ?? '' : '').split('\n').filter((l) => l.trim());
+  return out.some((l) => / -> | moved to Removed: /.test(l)) ? out.filter((l) => / -> | moved to Removed: |\(previous copy: /.test(l)) : [];
+}
 const deskEnvSubscription = (args, done) => deskEnvRun(['subscription', ...args], done);
 function deskEnvRun(args, done) {
   const p = spawn(process.execPath, [DESK_ENV_MJS, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -4917,8 +4968,11 @@ export function interactive({
     if (!args) return;
     tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
     saveStarted();
-    loginsWith(args, () => {
+    loginsWith(args, (r) => {
       lastLogins = null;
+      // A migration (or a pin that moved ~/.claude to Removed) shows what it printed in the terminal.
+      const said = migrationSaid(r);
+      if (said.length) msg = said.join('\n');
       saveEnded(true);
     });
   }
@@ -4982,15 +5036,16 @@ export function interactive({
     saveStarted();
     msg = 'Saving…';
     const fail = (r) => { stopAdding(); msg = notSaved(r); saveEnded(); if (!done) draw(); };
-    const next = () => {
+    const next = (r) => {
       lastLogins = null;
       adding = { tool: a.tool, login: a.first.next, label: null };
       selId = 'adding';
-      msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
+      // The pin moved ~/.claude to Removed: what that migration printed comes first.
+      msg = [...migrationSaid(r), `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`].join('\n');
       saveEnded(true);
       if (!done) draw();
     };
-    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
+    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next(r)));
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.

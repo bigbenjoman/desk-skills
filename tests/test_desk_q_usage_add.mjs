@@ -124,11 +124,12 @@ account(join(L('login-1'), '.claude.json'), 'me@example.test', 'Ultra');
 f = await A.until((x) => folderOf(x) === 'login-2');
 t('AC8 the file has the Account column', /^\| Tool \| Name \| Folder \| Account \| Rule \|$/m.test(subsText()), true);
 t('AC8 with the first folder pinned to the current account, the default as ~/.claude was', pinRow('login-1', 'me@example.test', 'default').test(subsText()), true);
-t('AC8 and ~/.claude in the Removed table', /## Removed[\s\S]*^\| `claude` \| `default` \| `~\/\.claude` \|$/m.test(subsText()), true);
+t('AC8 and ~/.claude in the Removed table', /## Removed[\s\S]*^\| `claude` \| `default` \| `~\/\.claude` \| `\d{4}-\d\d-\d\d` \|$/m.test(subsText()), true);
 t('AC8 the panel moves on to the new account', `${stepText(f, 1)} | ${stepText(f, 2)}`,
   '1 In another terminal, run CLAUDE_CONFIG_DIR=~/.claude-logins/login-2 claude | 2 Type /login and sign in to the account you want to add.');
 t('AC8 its row reads new account', waitingRow(f), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in…', null, '0'));
 t('AC8 and the footer names the folder the account signs in through', has(f, 'me@example.test signs in for desk through ~/.claude-logins/login-1. esc stops adding the new account.'), true);
+t('#1489 AC1 and above it, that ~/.claude moved to Removed and how to list it again', f.join(' ').replace(/\s+/g, ' ').includes('claude default (~/.claude) moved to Removed: once a Claude login is pinned to an account'), true);
 
 // ---- AC9: the second folder signs in to a new account: it is pinned on standby
 account(join(L('login-2'), '.claude.json'), 'new@example.test', 'Pro');

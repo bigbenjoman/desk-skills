@@ -88,6 +88,7 @@ function put(T, env, name, r) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n` +
     (r.runBy ? `| Batches run by | \`supervisor\` | \`${r.runBy}\` |\n` : '') +
     (r.gate ? `| Spawn gate (available memory) | \`start work > 8 GiB\` | \`${r.gate}\` |\n` : '') +
+    (r.weight ? `| Worker memory weight (GB) | \`none\` | \`${r.weight}\` |\n` : '') +
     (r.jira ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${r.jira}\` |\n` : '') +
     (r.perms ? `\n## 3. Permissions\n\n| Key | Your setting |\n|---|---|\n${Object.entries(r.perms).map(([k, v]) => `| \`${k}\` | \`${v}\` |\n`).join('')}` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -527,6 +528,28 @@ const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
   unbanded(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
+// issue-1523 AC5: the machine line's GB, each running worker at its repo's weight against the ceiling.
+{
+  const fake = (slug, n) => ({ slug, rows: Array.from({ length: n }, () => ({ k: 'running' })), prs: [] });
+  const weights = { heavy: '5', light: '2' };
+  const mem = Q.machineMemory([fake('heavy', 2), fake('light', 1)], { cap: 4, ceiling: 15, weightOf: (s) => weights[s] ?? null });
+  t('issue-1523 AC5 GB in use sums each repo\'s weight', JSON.stringify(mem), JSON.stringify({ used: 12, ceiling: 15, light: 2, heavy: 5 }));
+  t('issue-1523 AC5 a repo with no weight weighs the flat share', Q.machineMemory([fake('plain', 2)], { cap: 3, ceiling: 15, weightOf: () => null }).used, 10);
+  t('issue-1523 AC5 no memory ceiling, no GB figure', Q.machineMemory([fake('heavy', 2)], { cap: 4, ceiling: null, weightOf: () => '5' }), null);
+  t('issue-1523 AC5 3 GB free fits a light worker, not a heavy one', JSON.stringify(Q.weightedRoom(1, mem)), JSON.stringify({ room: 1, light: true }));
+  t('issue-1523 AC5 room for heavy workers reads as plain room', JSON.stringify(Q.weightedRoom(3, { used: 5, ceiling: 15, light: 2, heavy: 5 })), JSON.stringify({ room: 2, light: false }));
+  t('issue-1523 AC5 no ceiling leaves the count\'s room', JSON.stringify(Q.weightedRoom(3, null)), JSON.stringify({ room: 3, light: false }));
+}
+// issue-1523 AC5: with a memory ceiling in the machine profile the header line shows the GB beside the count.
+{
+  const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null,
+    heavy: { port: 3100, conc: '2 / 3', beat: 1, weight: '5', queue: { batch: 'h', concurrency: 2, tickets: { 'H-1': { state: 'running', stage: '4/9' }, 'H-2': { state: 'running', stage: '3/9' } } } },
+    light: { port: 3200, conc: '2 / 3', beat: 1, weight: '2', queue: { batch: 'l', concurrency: 2, tickets: { 'L-1': { state: 'running', stage: '4/9' } } } } });
+  writeFileSync(gw.env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n| memory-ceiling-gb | `15` | x |\n');
+  const head = lines(spawnSync('node', [BIN, '--plain', '--all'], { env: { ...gw.env, DESK_MEM_AVAIL_GB: '30' }, encoding: 'utf8' }).stdout).find((l) => l.startsWith('● '));
+  t('issue-1523 AC5 the machine line shows GB in use against the ceiling, alongside the worker count, and room for a light worker',
+    head, '● 3 workers running │ machine cap 10 · 12 of 15 GB · room for a light worker (2 GB) │ 30.0 GiB free');
+}
 // The room uses the spawn gate the repos set, the highest of them, and 8 GiB only for a repo that sets none.
 const gateRoom = (over, avail) => {
   const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null, ...over });
@@ -2014,6 +2037,23 @@ const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
 t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note naming what held them',
   `${cell219('np')} | ${notesOf('np').join(' / ')} | ${cell219('moved')} ${notesOf('moved').length}`,
   `▲ no progress 3h 5m | nothing started or merged for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
+// Time the queue held nothing to work on is not counted as no progress.
+const merged1519 = { state: 'done', result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } };
+const pass1519 = { at: minsAgo(1), by: 'session', held: held219, errors: 0, progress_at: minsAgo(485) };
+put219('idle1519', 5960, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519 } });
+put219('admit1519', 5970, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'AD-1': { ...ready, added_at: minsAgo(1) } } });
+put219('stall1519', 5980, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'SL-1': { ...ready, added_at: minsAgo(480) } } });
+put219('requeue1519', 5990, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'RQ-1': { ...ready, added_at: minsAgo(480), requeued_at: minsAgo(1) } } });
+const ov1519 = Q.overview(Q.loadRepos(NOW).filter((r) => r.name.endsWith('1519')), { now: NOW, avail: 30 });
+const cell1519 = (name) => (rowOf(ov1519, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
+t('issue-1519 AC2 a live batch with nothing left in it reads idle since its last merge, with no no-progress note',
+  `${/^● idle since (\d\d:\d\d|\d+ [A-Z][a-z]{2})$/.test(cell1519('idle1519'))} ${notesIn(lines(ov1519), 'idle1519').length}`, 'true 0');
+t('issue-1519 AC1/AC3 a ticket admitted a minute ago to a batch idle since a merge 8h ago: the clock starts at its admission',
+  `${cell1519('admit1519')} ${notesIn(lines(ov1519), 'admit1519').length}`, '● session · 1m ago 0');
+t('issue-1519 AC1 a ticket added 8h ago and parked until its requeue a minute ago: the clock starts at the requeue',
+  `${cell1519('requeue1519')} ${notesIn(lines(ov1519), 'requeue1519').length}`, '● session · 1m ago 0');
+t('issue-1519 AC4 a ready ticket waiting 8h with no start or merge still reads no progress',
+  `${cell1519('stall1519')} | ${notesIn(lines(ov1519), 'stall1519').join(' / ')}`, `▲ no progress 8h 0m | nothing started or merged for 8h 0m. Last pass: ${held219}.`);
 t('DS-219 AC2 two errored passes in a row: the red band above the header names the repo and the error\'s first line; one does not',
   `${bandAt219('err: the last 2 passes errored: no repo config found for acme/err')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
 t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervisor + session, and one note with both fixes',

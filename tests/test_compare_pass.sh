@@ -205,15 +205,14 @@ fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(
 cmp "$T/stamp1" "$T/stamp3"
 check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
-# The free memory a memory hold read, as a pass record's hold keeps it (pass/report.mjs holdOf): a raw reading on each
-# tree, as two runs on one machine read it; and the gate's floor, which is config, differing.
-fieldtree mem1 'hold: { cause: "memory", numbers: { availGB: 13.427597045898438, minAvailGB: 2 } }' 'A-1 running'
-fieldtree mem2 'hold: { cause: "memory", numbers: { availGB: 13.51816177368164, minAvailGB: 2 } }' 'A-1 running'
+# #1567 the memory a held pass read (its hold's numbers.availGB) is the machine's, which no two runs share.
+fieldtree mem1 'hold: { cause: "memory", numbers: { availGB: 2.9478759765625, minAvailGB: 4 } }' 'A-1 running'
+fieldtree mem2 'hold: { cause: "memory", numbers: { availGB: 2.910675048828125, minAvailGB: 4 } }' 'A-1 running'
 cmp "$T/mem1" "$T/mem2"
-check "issue-1598 a memory hold's free-memory reading that differs between runs is not reported" "$same0"
-fieldtree mem3 'hold: { cause: "memory", numbers: { availGB: 13.51816177368164, minAvailGB: 4 } }' 'A-1 running'
+check "#1567 a held pass's availGB that differs between runs is not reported" "$same0"
+fieldtree mem3 'hold: { cause: "memory", numbers: { availGB: 2.9478759765625, minAvailGB: 6 } }' 'A-1 running'
 cmp "$T/mem1" "$T/mem3"
-check "issue-1598 a memory hold's floor that differs is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 hold.numbers.minAvailGB: base 2, head 4" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+check "#1567 its spawn gate (minAvailGB) is still compared" '[ $rc = 1 ] && echo "$out" | grep -qF "minAvailGB: base 4, head 6"'
 
 # A test-lock hold whose holder had held the lock a second longer on one tree, as a pass reads its age
 # under load; and one whose holder's age the head could not read.
