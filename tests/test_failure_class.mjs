@@ -321,7 +321,7 @@ t('#805 with the lever off, a runner fault naming no changed file is re-run as s
   // The FAIL lines a job log gives, as the test names compared.
   const log = ['2026-11-27T10:00:00.1234567Z \x1b[31mFAIL\x1b[0m DS-226 AC1 FileVault on is reported: got on (want off)',
     '2026-11-27T10:00:01.0000000Z FAIL DS-226 AC1 FileVault on is reported: got 12 (want off)', 'FAIL src/a.test.ts (5.2 s)', 'ok   DS-1 passes', 'FAILURES above (3 checks passed)'].join('\n');
-  t('issue-1605 AC1 a log\'s FAIL lines give its failing tests, once each, without what differs between runs', JSON.stringify(failingTestNames(log)), '["DS-226 AC1 FileVault on is reported","src/a.test.ts"]');
+  t('issue-1605 AC1 a log\'s runner failure lines give its failing tests, once each, without what differs between runs', JSON.stringify(failingTestNames(log)), '["DS-226 AC1 FileVault on is reported","src/a.test.ts"]');
   t('issue-1605 an unread log names none', JSON.stringify(failingTestNames(null)), '[]');
   // The reads, through gh: the PR's job by name in its failed run, the base's by the job in its check run's URL.
   const R = 'acme/widgets', JOB_PR = '140393593637', JOB_BASE = '777';
