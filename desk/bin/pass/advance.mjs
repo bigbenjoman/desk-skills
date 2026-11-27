@@ -325,10 +325,13 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
-    // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
-    // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
-    // answer given before this pass saw the park still counts as its answer.
-    yield set(t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question, at: new Date(log.mtimeMs).toISOString() })}`);
+    // The park and the round a requeue's fresh spawn may resume (resumeRound) are both dated by the
+    // log's last write, when the worker parked, not by this pass: an answer given after the worker
+    // exited and before this pass saw the park is its answer (answer.mjs saves it to the briefing,
+    // and the decider and the resume read answers since these times). Only a worker's own park
+    // records a round: a stalled or failed worker starts again at Stage 0.
+    const parkedAt = new Date(log.mtimeMs).toISOString();
+    yield set(t.key, `park.since=${parkedAt}`, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question, at: parkedAt })}`);
     // A park asking only for §4 Live reads waits on the pass, which starts them in its "live reads"
     // section and settles it there.
     const read = wedged ? null : yield { type: 'live-read', key: t.key, question };

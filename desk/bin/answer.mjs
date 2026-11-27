@@ -228,7 +228,12 @@ try {
       granted = true;
       console.log(`${ticket}: approved once: its next worker may run \`git push --force-with-lease=${g.grant.branch}:${g.grant.lease} origin ${g.grant.branch}\`, and nothing wider.`);
     } else if (neverStep(t.park?.question)) {
-      console.log(`${ticket}: ${g.why}: do not requeue it for a worker. Open an interactive session and run /desk-ticket ${ticket}.`);
+      // What the answer still asks the worker to do decides it, not the park's words: an answer that
+      // drops or defers the step (anything but --approve or a plain yes to it, approvesStep) leaves the
+      // worker nothing it cannot run, so it is not a session's step.
+      console.log(approveFlag || approvesStep(text)
+        ? `${ticket}: ${g.why}: do not requeue it for a worker. Open an interactive session and run /desk-ticket ${ticket}.`
+        : `${ticket}: its park names a step no worker can run (${neverStep(t.park.question)}), but this answer does not ask for it, so it is not flagged as a session's step.`);
     } else {
       console.log(`${ticket}: no grant recorded (${g.why}).`);
     }

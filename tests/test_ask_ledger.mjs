@@ -203,6 +203,18 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   const none = [answer(parkedQ('N-4'), ['N-4', 'not now']), answer({ version: 1, batch: 'b', tickets: { 'N-5': { key: 'N-5', state: 'triaged', open_questions: 1 } } }, ['N-5', 'yes']), answer(parkedQ('N-6'), ['N-6', 'yes'], { DESK_CONFIG: OFF })];
   t('a "not now", an answer to a ticket not parked, and an answer with the lever off each record no ask, and still exit 0',
     j([p.ev.length, ...none.map((o) => `${o.r.status} ${o.ev.length}`)]), j([1, '0 0', '0 0', '0 0']));
+
+  // issue-1668: whether the answer leaves the worker a step no worker can run is read from the answer, not
+  // the park: a park naming a refused `.claude/` write, answered by dropping or deferring that step, is
+  // not flagged as a session's; a yes to it still is.
+  const claudePark = (key) => parkedQ(key, SINCE, { park: { kind: 'question', question: 'Writing the scratch repo\'s `.claude/settings.json` was refused. Shall I go on?', since: SINCE } });
+  const SESSION = /never a worker's.*run \/desk-ticket/;
+  const dropped = answer(claudePark('S-1'), ['S-1', 'Drop that step: the scratch repo needs no .claude/settings.json, carry on without it']);
+  const deferred = answer(claudePark('S-2'), ['S-2', 'Defer the .claude/ step to a follow-up ticket and finish the rest']);
+  const yes = answer(claudePark('S-3'), ['S-3', 'yes']);
+  t('issue-1668 an answer dropping or deferring a refused .claude/ step is not flagged as a session\'s; a yes to it is',
+    j([dropped, deferred, yes].map((o) => `${o.r.status} ${SESSION.test(o.r.stdout)}`)), j(['0 false', '0 false', '0 true']));
+  t('issue-1668 and it says the answer does not ask for the step', /does not ask for it, so it is not flagged/.test(dropped.r.stdout), true);
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');
