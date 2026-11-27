@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { callersOf, endTarget, orphanActs, orphanReason, readRows, reclaimOrphans, worktreeKey } from '../desk/bin/lock-orphans.mjs';
+import { processCwds } from '../desk/bin/suite-wait.mjs';
 import { endProcs } from '../desk/bin/worker-stop.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -141,8 +142,22 @@ try {
   t('a run whose caller stays runs to its end', [ok.status, ok.stdout.trim()], [0, 'ran']);
   // This test's own watches only, by the run pid each watches: other suites' runs have watches too.
   const runs = new Set([...(pids ?? []).slice(0, 1), ok.pid].map(String));
-  const ours = (r) => { const w = r.args.split(/\s+/); const i = w.findIndex((x) => x.endsWith('/lock-caller-watch.mjs')); return i >= 0 && runs.has(w[i + 1]); };
+  // The run pid a caller watch's process row watches, or null for any other process.
+  const watchedRun = (r) => { const w = r.args.split(/\s+/); const i = w.findIndex((x) => x.endsWith('/lock-caller-watch.mjs')); return i >= 0 ? w[i + 1] : null; };
+  const ours = (r) => runs.has(watchedRun(r));
   t('no caller watch of this test\'s runs is left once they end', await until(() => !(readRows() ?? []).some(ours), 5000), true);
+  // The watch outlives its run by up to a poll, and works from /, never the run's directory: a process
+  // working in a worktree holds it from a spawn (pass.mjs busyWorktree).
+  const W = scratch('lock-caller-wt-');
+  try {
+    const slow = { ...env, DESK_CALLER_WATCH_MS: '10000' };
+    const ran = spawnSync('bash', [script, 'test', '--', 'sh', '-c', 'sleep 1'], { cwd: W, env: slow, encoding: 'utf8' });
+    const watch = (readRows() ?? []).find((r) => watchedRun(r) === String(ran.pid));
+    const cwd = watch ? processCwds()?.find((p) => p.pid === watch.pid)?.cwd ?? null : null;
+    t('a run\'s caller watch is still up just after the run ends', [ran.status, !!watch], [0, true]);
+    t('and it does not work in the run\'s directory', cwd, '/');
+    if (watch) { try { process.kill(watch.pid, 'SIGKILL'); } catch { /* gone */ } }
+  } finally { rmSync(W, { recursive: true, force: true }); }
   if (existsSync(L)) rmSync(L, { recursive: true, force: true });
 } finally { rmSync(L, { recursive: true, force: true }); }
 
