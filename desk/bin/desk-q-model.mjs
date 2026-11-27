@@ -905,8 +905,10 @@ function whoRuns(r) {
 // What the pass record (pass.mjs recordPass) and the supervisor's own files say about a batch whose
 // passes run but move nothing, or cannot run:
 //   noProgress  how long nothing started, merged or was released, once that is NO_PROGRESS_MS or more
-//               while the last pass held something it could have started (`held`, its reason), counted
-//               only while a ticket was ready, running or waiting; a requeue restarts that ticket's clock
+//               while the last pass held something it could have started (`held`, its reason, and
+//               `hold`, the same as the pass's structured hold, or null from a pass that wrote none),
+//               counted only while a ticket was ready, running or waiting; a requeue restarts that
+//               ticket's clock
 //   idle        { since }: the batch holds no unfinished ticket or PR, `since` its last progress or null
 //   errors      { n, error } once ERROR_STREAK passes in a row have errored
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
@@ -965,7 +967,8 @@ function stallOf(r, now) {
   const installed = readInstalled();
   const old = { supervisor: loaded && oldCode(agentVersion(r.slug), installed),
     driver: r.run?.by === 'supervisor' && typeof holder === 'number' && oldCode(lockVersion(r.stateDir), installed) };
-  return { noProgress: quiet, idle: unfinished(r) ? null : { since: progress }, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
+  return { noProgress: quiet, idle: unfinished(r) ? null : { since: progress }, held: rec.held ?? null, hold: rec.hold && typeof rec.hold === 'object' ? rec.hold : null,
+    errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
     oldCode: old.supervisor || old.driver ? old : null };
 }
 // The batch's hold on a usage limit, as the last pass recorded it (pass.mjs usage_hold), in one
@@ -2261,8 +2264,9 @@ const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGat
 // 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
 // when the batch was handed to a supervisor that is not loaded; stopped, how long since the last
 // pass, yellow under a day and red beyond. Live but not moving, in amber: a session running passes
-// beside the supervisor, or passes that held everything for NO_PROGRESS_MS. Live with nothing left in
-// the batch, in grey: "● idle since 06:08".
+// beside the supervisor, or passes that held everything for NO_PROGRESS_MS. A batch only the test lock
+// holds is throttled, not stuck, so a row whose stalled batches are all throttled reads as live, as
+// the grey note on it does (quietNotes). Live with nothing left in the batch, in grey: "● idle since 06:08".
 const LAST_W = 26;
 // ALL DONE BY fits "passes stopped".
 const QD_W = 14;
@@ -2271,7 +2275,8 @@ function lastPass(r, now) {
   const age = r.last == null ? null : now - r.last;
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, FAIL];
   if (r.live && r.stall?.sessionToo) return ['▲ supervisor + session', WARN];
-  if (r.live && r.stall?.noProgress != null) return [`▲ no progress ${since(r.stall.noProgress)}`, WARN];
+  const stuck = (r.batches ?? [r]).filter((b) => b.live && b.stall?.noProgress != null && !throttleOf(b));
+  if (r.live && stuck.length) return [`▲ no progress ${since(Math.max(...stuck.map((b) => b.stall.noProgress)))}`, WARN];
   if (r.live && r.stall?.idle) return [`● idle${r.stall.idle.since == null ? '' : ` since ${calendarDays(r.stall.idle.since, now) === 0 ? clock(r.stall.idle.since) : when(r.stall.idle.since, now)}`}`, GREY];
   if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
@@ -2961,21 +2966,65 @@ const bandsOf = (r) => [
 const holdKey = (held) => String(held).replace(/ \(this pass\)/g, '').split(/[,;:—] /).sort().join('\n');
 const batchName = (r) => (r.batch ? `batch ${r.batch}` : 'the standing batch');
 
+// The test lock is the one hold every repo's passes share: a batch's pass held by it, as its record's
+// structured hold says, or null.
+const throttleOf = (r) => ((h) => (h?.cause === 'test-lock' && h.scope === 'machine' ? h : null))(r.stall?.hold);
+// The test-lock note's mark, which each WAIT cell it explains carries too.
+const THROTTLE_MARK = '⧗';
+// A hold note's hide key: its cause and scope, so holders and queue counts moving on keep it hidden.
+const holdHide = (h) => `hold ${h.cause} ${h.scope}`;
+const structured = (h) => !!(h?.cause && h.scope);
+
 // Each "nothing started or merged" note, keyed by the batch it shows under: one per repo and hold
 // reason, timed from the repo's latest progress, its text the first batch's. Where a repo's batches
-// are held for different reasons, each note names its batches.
+// are held for different reasons, each note names its batches. A batch the test lock holds is in none
+// of those: every such batch, whatever its repo, is one grey note, `shared`, and `marked` holds the
+// slugs of the repos it names.   -> { notes: Map(batch -> { text, hide }), shared, marked }
 function quietNotes(shown) {
-  const groups = new Map();
+  const groups = new Map(), throttled = [];
   for (const r of shown) {
     if (r.stall?.noProgress == null || usageHoldOf(r)) continue;
+    if (throttleOf(r)) { throttled.push(r); continue; }
     const k = `${r.slug}\n${holdKey(r.stall.held)}`;
     groups.set(k, [...(groups.get(k) ?? []), r]);
   }
   const reasons = (slug) => [...groups.values()].filter((g) => g[0].slug === slug).length;
-  return new Map([...groups.values()].map((g) => {
+  const notes = new Map([...groups.values()].map((g) => {
     const named = reasons(g[0].slug) > 1 ? `${andList(g.map(batchName))}: ` : '';
-    return [g[0], `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`];
+    const h = g[0].stall.hold;
+    // The hide key is the cause and scope, never whether the text names its batches: a sibling batch
+    // stalling for another reason adds those, and must not show a hidden note again. A hold on a batch
+    // (its base) is that batch's, so its key names the batches it holds whatever the text says.
+    const hide = !structured(h) ? null : h.scope === 'batch' ? `${andList(g.map(batchName))} ${holdHide(h)}` : holdHide(h);
+    return [g[0], { text: `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`, hide }];
   }));
+  return { notes, shared: throttled.length ? throttleNote(throttled) : null, marked: new Set(throttled.map((r) => r.slug)) };
+}
+
+// The one note for every batch the test lock holds: each lock queue the passes were held on (the test
+// lock or the light one, as each pass named them; a repo's suite weight picks which), at its latest
+// reading, then each repo with the tickets it keeps waiting.
+function throttleNote(rs) {
+  const latest = rs.reduce((a, r) => ((r.last ?? -Infinity) > (a.last ?? -Infinity) ? r : a));
+  const s = (x) => (x === 1 ? '' : 's');
+  const byLock = new Map();
+  for (const r of [...rs].sort((a, b) => (a.last ?? -Infinity) - (b.last ?? -Infinity))) {
+    const n = r.stall.hold.numbers ?? {};
+    if (!n.stall) continue;
+    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }]) {
+      if (Number.isFinite(q?.waiting) && Number.isFinite(q.slots)) byLock.set(q.lock ?? 'test', q);
+    }
+  }
+  const qs = [...byLock.values()];
+  const queue = qs.length
+    ? `${andList(qs.map((q) => `${q.waiting} run${s(q.waiting)} waiting for ${q.slots} ${q.lock ?? 'test'} slot${s(q.slots)}`))}, shared by all repos.`
+    : 'Each pass starts only so many test runs, shared by all repos.';
+  const repos = new Map();
+  for (const r of rs) repos.set(r.repo, [...new Set([...(repos.get(r.repo) ?? []), ...(r.stall.hold.tickets ?? [])])]);
+  const each = [...repos].map(([repo, ts]) => (ts.length ? `${andList(ts)} in ${repo}` : repo));
+  const quiet = since(Math.min(...rs.map((r) => r.stall.noProgress)));
+  return { tag: `${THROTTLE_MARK} tests queued`, sgr: GREY, hide: holdHide(latest.stall.hold),
+    text: [[`${queue} Waiting for a slot: ${andList(each)}. Nothing started or merged for ${quiet}.`, null]] };
 }
 
 // Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
@@ -3002,7 +3051,7 @@ function oldCodeNotes(shown) {
 }
 
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note, and `old`
+// `quiet` is quietNotes's, whose `notes` say which batch carries its repo's no-progress note, and `old`
 // oldCodeNotes's, which batch carries the old desk code notes, and `drivers` which batch carries its
 // repo's stopped merge driver note: the driver is the repo's, so it is one note. With `allOut`, Home's note on the
 // Claude default's limit stands for the batch's hold on it.
@@ -3013,7 +3062,8 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
   const out = [];
   const u = allOut ? null : usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
-  if (quiet.has(r)) out.push(note(quiet.get(r)));
+  const q = quiet.notes.get(r);
+  if (q) out.push({ ...note(q.text), ...(q.hide ? { hide: q.hide } : {}) });
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {
     const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;
@@ -3076,12 +3126,16 @@ function wrapSegs(segs, w) {
 // A note is known by its tag and its wording with each clock time (and its weekday), duration and amount
 // in it masked, so those moving on keep it hidden while new wording shows it again. Any other number, a
 // batch, a port, a ticket or a PR, is wording: a note naming another one is another warning. Each shows
-// again HIDE_MS after it was hidden, so a fault that lasts cannot stay out of sight.
+// again HIDE_MS after it was hidden, so a fault that lasts cannot stay out of sight. A note made from a
+// pass's structured hold carries its own `hide`, its cause and scope, and is known by its tag and that
+// alone, so its holders and queue counts moving on keep it hidden too; such a note can be hidden
+// whatever its tag.
 export const HIDE_MS = DAY;
 export const hiddenWarningsFile = () => join(process.env.HOME || homedir(), '.desk-autopilot', 'machine', 'hidden-warnings.json');
-const isWarning = (n) => typeof n.tag === 'string' && n.tag.startsWith('▲');
+const isWarning = (n) => n.hide != null || (typeof n.tag === 'string' && n.tag.startsWith('▲'));
 const FIGURE = /\$\d[\d,]*(?:\.\d+)?|(?:\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:%|(?:ms|mins?|GiB|GB|MB|KB|[smhdwk])\b)/g;
 export function noteKey(n) {
+  if (n.hide != null) return `${n.tag} ${n.hide}`;
   const words = [n.text, ...(n.more ?? [])].flatMap((segs) => segs.map(([s]) => s)).join('') + (n.cmd ?? '');
   return `${n.tag} ${words.replace(FIGURE, '#').replace(/#(?:\s+#)+/g, '#').replace(/\s+/g, ' ').trim()}`;
 }
@@ -3212,16 +3266,22 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.id, line, open: { kind: 'repo', slug: r.id } });
+  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
+  // The test-lock note's mark shows only while the note does: hidden with h, nothing would explain it.
+  const marks = quiet.shared && !hidden?.has(noteKey(quiet.shared));
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}${runs(r)[0]}queue unreadable: ${r.error}`); continue; }
     const [last, lastSgr] = lastPass(r, now);
-    // Each state count in its state's colour, a zero dim; DONE in the text colour.
+    // Each state count in its state's colour, a zero dim; DONE in the text colour. While the test-lock
+    // note shows, WAIT's last column is its mark on each row it names, so every count still lines up.
     const n = ([, k, cw]) => {
-      if (k === 'needs') { const y = needs.get(r); return [rpad(needsCell(y), cw), y.shown ? STATE_SGR.needs : DIM]; }
-      const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[k]) : DIM];
+      if (k === 'needs') { const y = needs.get(r); return [[rpad(needsCell(y), cw), y.shown ? STATE_SGR.needs : DIM]]; }
+      const c = k === 'done' ? r.done : count(r, k), sgr = c ? (k === 'done' ? null : STATE_SGR[k]) : DIM;
+      if (k !== 'waiting' || !marks) return [[rpad(c, cw), sgr]];
+      return [[rpad(c, cw - 1), sgr], quiet.marked.has(r.slug) ? [THROTTLE_MARK, quiet.shared.sgr] : [' ', null]];
     };
     const qd = queueDone(r, now, checkin);
-    rows.push(segRow(r.id, cutCells([[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
+    rows.push(segRow(r.id, cutCells([[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.flatMap(n),
       ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], width), { kind: 'repo', slug: r.id }));
   }
   if (all) for (const r of none) row(r, cutLine([`  ${pad(r.name, w)}`, runs(r)[0], pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW), `  cap ${r.cap}`], width));
@@ -3230,13 +3290,12 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
-  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const drivers = new Map();
   for (const r of readable) if (r.stall?.driver && !drivers.has(r.slug)) drivers.set(r.slug, r);
   const out = claude?.limit ? claude : null;
   const leases = leaseNotes(repos, now);
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...leases.warn, ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
-    ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+    ...(quiet.shared ? [quiet.shared] : []), ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
   if (pause) notes.unshift(warnNote('▲ uploads', uploadPauseText(pause)));

@@ -3504,7 +3504,25 @@ if (isMain) {
           else for (const [k, v] of [['SUBSCRIPTION', s.email], ['LOGIN', s.login], ['FOLDER', s.folder], ['CONFIG_DIR', s.configDir], ['SOURCE', s.source]]) console.log(`${k}=${shellQuote(v ?? '')}`);
           break;
         }
-        console.error('usage: desk-env.mjs subscription [--json] | list [--json] | set <slug> <default|email>');
+        if (sub === 'cloud-trust' && !rest.length) {
+          // The first-run prompts a cloud start of this repo would wait on, under each login
+          // that may start its cloud sessions (its Subscription's, and a default's fallback), from each
+          // login's .claude.json, read only. Each is printed with the command that answers it from the
+          // checkout. Exit 1 while any is unanswered.
+          const r = thisRepoSubscription(L, subs);
+          const checkout = repoRoot();
+          let open = 0;
+          for (const login of [r.login, r.fallback].filter(Boolean)) {
+            const g = L.firstRunGaps(login, checkout);
+            if (g.unread) console.log(`${login.name}: ${g.file} could not be read (${g.unread}), so its answers are unknown`);
+            else if (!g.gaps.length) console.log(`${login.name}: ${L.tilde(checkout)} is trusted, nothing to answer`);
+            else { open += 1; const f = L.firstRunFix(g.gaps, login, checkout); console.log(`${login.name}: a cloud start would wait on ${f.names}. Run this once in a terminal: ${f.fix}`); }
+          }
+          if (!r.login) console.log(`no login: ${r.from} names ${r.email}, which is not one of this computer's subscriptions`);
+          process.exitCode = open || !r.login ? 1 : 0;
+          break;
+        }
+        console.error('usage: desk-env.mjs subscription [--json] | list [--json] | set <slug> <default|email> | cloud-trust');
         process.exit(2);
         break;
       }
