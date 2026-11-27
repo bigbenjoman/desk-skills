@@ -66,7 +66,8 @@ import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
 const SHA = /^[0-9a-f]{40}$/;
-// The hidden tests' ceiling, wait for the test lock included.
+// The hidden tests' ceiling for each test command, counted from when it holds the test lock: the
+// wait for the lock is not the run's, and is not bounded.
 const SCORE_TIMEOUT_MS = 60 * 60 * 1000;
 
 // argv -> options. Throws, naming the flag, on anything missing or malformed.
@@ -315,7 +316,7 @@ export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
   for (const { dir: d, cmd, files } of testRuns(repo.items, runFiles(task)).runs) {
     const cap = repo.cap && takesFiles(cmd) ? ` --maxWorkers=${repo.cap}` : '';
     const line = `${cmd}${cap} ${files.map(shq).join(' ')}`;
-    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), timeout });
+    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), runFor: timeout });
     log.push(`$ ${line}\n${r.out}\nexit ${r.code}\n`);
     writeFileSync(join(dir, 'test-output.log'), log.join('\n'));
     if (r.stopped) return added({ status: 'failed', why: `the hidden tests did not finish: ${line}` });

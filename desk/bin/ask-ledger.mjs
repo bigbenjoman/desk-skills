@@ -25,7 +25,7 @@ import { append, fold, tokensKey, LOCK_WAIT_MS } from './ticket-ledger.mjs';
 import { ledgerOn, ledgerTarget } from './queue-ledger.mjs';
 import { parkKind } from './batch-state.mjs';
 import { parseLevers, repoConfigValues } from './desk-env.mjs';
-import { markersIn, readLogFile, saidIn } from './harvest.mjs';
+import { markersIn, marksStage, readLogFile, saidIn } from './harvest.mjs';
 import { logRound, resultTokens, workerLogs } from './worker-cost.mjs';
 import { requestOf, requestUsd, transcripts } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
@@ -175,7 +175,6 @@ function sumRequests(events) {
 const main = (d) => d?.type === 'assistant' && !d.parent_tool_use_id;
 const writesPark = (d, key) => main(d) && (d.message?.content ?? []).some((c) => (c?.type === 'tool_use' && JSON.stringify(c.input ?? {}).includes(`parks/${key}.json`))
   || markersIn([saidIn(c) ?? '']).some(([k]) => k === 'AUTOPILOT_PARK'));
-const marksStage = (d) => d?.type === 'assistant' && (d.message?.content ?? []).some((c) => markersIn([saidIn(c) ?? '']).some(([k, v]) => k === 'AUTOPILOT_STAGE' && v.trim()));
 // A ticket's logs, oldest round first, each with its events and when it was last written.
 const roundsOf = (stateDir, key) => workerLogs(stateDir, key).sort((a, b) => logRound(a) - logRound(b)).map((f) => {
   let events = [], mtime = NaN;

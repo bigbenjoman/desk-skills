@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
+import { cloudStartCommand, loginEnv } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -189,6 +190,18 @@ t('the name is <repo>-ticket-<KEY>, from the repo part of owner/name', cloudName
 const refuses = fake('claude-no', `cat "${join(FIX, 'print-refused.txt')}" >&2\nexit 1`);
 t('AC4 a start the CLI refuses returns its error', startCloud(prompt, { claude: refuses, timeout: 30_000 }).error?.startsWith('Error: --cloud cannot be combined with --print.'), true);
 t('AC4 a claude that is not there is an error, not a session', !!startCloud(prompt, { claude: join(S, 'missing'), timeout: 30_000 }).error, true);
+// #1581: the session starts under the login whose env it is given, the repo's subscription's folder.
+const whose = fake('claude-whose', `printf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${join(S, 'login.txt')}"\ncat "${join(FIX, 'created.txt')}"`);
+const loginOf = (env) => { rmSync(join(S, 'login.txt'), { force: true }); startCloud(prompt, { claude: whose, timeout: 30_000, env }); try { return readFileSync(join(S, 'login.txt'), 'utf8'); } catch { return 'not run'; } };
+const studia = { tool: 'claude', name: 'studia', folder: '~/.claude-logins/studia', configDir: '/home/u/.claude-logins/studia' };
+t('#1581 AC1 a login\'s env starts claude --cloud with its folder as CLAUDE_CONFIG_DIR', loginOf(loginEnv(studia, { ...process.env, CLAUDE_CONFIG_DIR: '/home/u/.claude' })), studia.configDir);
+t('#1581 AC1 the default login\'s env starts it with none', loginOf(loginEnv({ tool: 'claude', name: 'default', folder: '~/.claude', configDir: null }, { ...process.env, CLAUDE_CONFIG_DIR: studia.configDir })), 'unset');
+const hangs = fake('claude-hangs', 'sleep 5');
+const hung = startCloud(prompt, { claude: hangs, timeout: 1_000 });
+t('#1581 AC3 a start with no answer in its timeout says so, marked timed out', `${hung.error} ${hung.timedOut}`, 'no answer in 1s true');
+t('#1581 AC3 a refused start is not marked timed out', startCloud(prompt, { claude: refuses, timeout: 30_000 }).timedOut, undefined);
+t('#1581 AC3 the one-time command for a login is its cloud start, run in its folder', cloudStartCommand(studia), 'CLAUDE_CONFIG_DIR=~/.claude-logins/studia claude --cloud "<any prompt>"');
+t('#1581 AC3 and for the default login, with no prefix', cloudStartCommand({ tool: 'claude', name: 'default', folder: '~/.claude', configDir: null }), 'claude --cloud "<any prompt>"');
 
 // ---- the PR it opened (AC2) -------------------------------------------------
 const since = '2026-10-28T10:00:00Z';

@@ -398,6 +398,12 @@ t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+● runn
 t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
 repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
 t('DS-185 AC5: with a free slot, a ready row starts at the next pass', /\sB-3\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('roomy'), { now: FIXED, width: 200 }), 'B-3')), true);
+// #1581: a running cloud session's row names the account it started under; back for a local try, it does not.
+repo('cloudy', 4640, { tickets: { 'C-1': { state: 'running', stage: 'cloud', location: 'cloud', cloud: { started: iso(FIXED - 5 * MIN), login: { name: 'studia', email: 'ops@acme.test' } } },
+  'C-2': { state: 'running', stage: '3/9', location: 'cloud', result: { pr: 7 }, cloud: { pr_at: iso(FIXED - 9 * MIN), login: { name: 'studia', email: 'ops@acme.test' } } } },
+  sizes: { 'C-1': 'M', 'C-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN });
+const cloudy = Q.repoScreen(repoAt('cloudy'), { now: FIXED, width: 200 });
+t('#1581 AC2 a cloud session\'s row names its account', [/\sC-1\s+● running\s+stage cloud as of \d\d:\d\d · on ops@acme\.test\s/.test(bRow(cloudy, 'C-1')), / on ops@acme\.test/.test(bRow(cloudy, 'C-2'))], [true, false]);
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);

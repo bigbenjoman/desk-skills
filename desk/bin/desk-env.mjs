@@ -113,7 +113,9 @@
 //                                             name with no Dev server item (NODEV), a §4 Unit tests or Typecheck
 //                                             item starting Jest with no worker cap or turbo run with no
 //                                             --concurrency, with its bounded form (UNBOUND), a §4 Pre-merge steps item
-//                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
+//                                             keyed to a job of several steps (JOBKEY), a §2 handoff row a fresh
+//                                             worker session's measured start-up use already reaches (STARTUP),
+//                                             a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
@@ -200,6 +202,7 @@ import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import { unbounded as unboundedRun } from './run-bounds.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
+import { quantile } from './quantile.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
@@ -258,7 +261,7 @@ export function currentRepo() {
 // An environment for a child run in another repo's checkout: every override that would pin it to
 // this repo (its dir, config, Jira or git directory) removed, so the checkout decides.
 export const otherRepoEnv = (env = process.env) => Object.fromEntries(Object.entries(env)
-  .filter(([k]) => !/^(DESK_REPO|DESK_CONFIG$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
+  .filter(([k]) => !/^(DESK_REPO|DESK_CONFIG(_FILE)?$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
 
 export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskConfigRoot(), 'repos', slug) : null);
 export const credsDir = () => repoConfigDir();
@@ -341,11 +344,42 @@ const { splitRow } = M;
 let pinned = false, snapshot = null;
 function parseConfig() {
   if (snapshot) return snapshot;
-  const parsed = parseConfigFile(configPathOrNull());
+  const parsed = withConfigFileRows(parseConfigFile(configPathOrNull()));
   if (pinned) snapshot = parsed;
   return parsed;
 }
 const pinConfig = () => { pinned = true; };
+
+// DESK_CONFIG_FILE: a JSON object of config row ids to values (a string, or an array for a list row),
+// read before this repo's config, for a session with no ~/.config/desk (a cloud session). Only this
+// repo's config reads it, and only for value rows (get, list): a §3 permission is not taken from it.
+// A row the file lacks, or holds as null, blank or TODO, reads from the config as before; unset, the
+// variable changes nothing. A file that is set but unreadable, or not such an object, fails loudly.
+//   -> Map(id -> [item]) or null
+const configFileCache = new Map();
+function configFileRows() {
+  const path = process.env.DESK_CONFIG_FILE ? expandHome(process.env.DESK_CONFIG_FILE) : null;
+  if (!path) return null;
+  let st, obj;
+  try { st = statSync(path, { bigint: true }); } catch (e) { throw new DeskConfigError(`desk: DESK_CONFIG_FILE names ${path}, which cannot be read (${e.code ?? e.message}). Fix or unset it.`); }
+  const stamp = fileStamp(st);
+  const hit = configFileCache.get(path);
+  if (hit?.stamp === stamp) return hit.rows;
+  try { obj = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { throw new DeskConfigError(`desk: DESK_CONFIG_FILE ${path} is not JSON (${e.message}). Fix or unset it.`); }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new DeskConfigError(`desk: DESK_CONFIG_FILE ${path} is not a JSON object of row ids to values. Fix or unset it.`);
+  const rows = new Map();
+  for (const [id, v] of Object.entries(obj)) {
+    const items = [].concat(v ?? []).filter((x) => x != null && typeof x !== 'object').map((x) => String(x).trim()).filter((x) => !unset(x));
+    if (items.length) rows.set(id, items);
+  }
+  configFileCache.set(path, { stamp, rows });
+  return rows;
+}
+// This repo's parse with the file's rows beside it as `fileRows`; the shared parse itself is not changed.
+function withConfigFileRows(parsed) {
+  const rows = configFileRows();
+  return rows ? { ...parsed, fileRows: rows } : parsed;
+}
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
 // header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
@@ -377,6 +411,27 @@ export function declaredRows(text) {
   return { rows: rows.filter((r) => r.declared).map(({ section, label }) => ({ section, label })), tables: [...tables.values()] };
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
+// Every row of a config file's text with its items, for comparing two copies of a config:
+// [{ section, label, items }]. A declared row's items are its value cell's as the parse reads them (a
+// trailing note left out); a row of a table of the person's own rows (the §3c ledger, the §4 review
+// asks) is labelled by its `###` heading and first cell, and its items are its other cells. In a table
+// with a List column (the §3c ledger, which holds one rule under each list it is in: harness-rules.py)
+// a row is its first cell and its list, `<label> [<list>]`, so dropping one list's row leaves the
+// other's label as it was. Labels are unique per section: a repeat beyond that is `<label> #<n>`.
+export const configRowValues = (text) => {
+  const seen = new Map();
+  return tableLines(String(text)).rows.filter((r) => r.label).map((r) => {
+    const list = r.declared ? -1 : r.header.indexOf('list');
+    const own = list > 0 ? `${r.label} [${(r.cells[list] ?? '').replace(/`/g, '').trim()}]` : r.label;
+    const base = r.declared || !r.sub ? own : `${r.sub}: ${own}`;
+    const n = (seen.get(`${r.section}\0${base}`) ?? 0) + 1;
+    seen.set(`${r.section}\0${base}`, n);
+    const label = n === 1 ? base : `${base} #${n}`;
+    return r.declared
+      ? { section: r.section, label, items: cellItems(r.cells[settingCol(r.header)] ?? '') }
+      : { section: r.section, label, items: r.cells.slice(1).map((c) => c.trim()) };
+  });
+};
 
 // A config file's parse, by path, kept while its inode, size and modification time are unchanged:
 // desk-q reads many rows of every repo's config on each refresh. A missing file is not kept. Past
@@ -713,6 +768,8 @@ function configValueFrom(parsed, id, rows = CONFIG_ROWS) {
 // The repo's own row, with no machine fallback. Unset is null.
 function repoValueIn(parsed, id, rows = CONFIG_ROWS) {
   const { section, row, table } = rowFor(id, rows);
+  const file = parsed.fileRows?.get(id);
+  if (file) return table ? file.join('\n') : NO_SLUG_EXPANSION.has(id) ? file[0] : expandSlug(file[0]);
   if (table) return tableItemsIn(parsed, id)?.join('\n') ?? null;
   const e = parsed.sections[section]?.byName[norm(row)];
   if (unset(e?.value)) return null;
@@ -809,6 +866,8 @@ function tableItemsIn(parsed, id) {
 // A row's set items as the file has them, before configValuesIn refuses any: -> [item] or null.
 function rowSpansIn(parsed, id, rows = CONFIG_ROWS) {
   const { section, row, table } = rowFor(id, rows);
+  const file = parsed.fileRows?.get(id);
+  if (file) return table || NO_SLUG_EXPANSION.has(id) ? file : file.map(expandSlug);
   if (table) return tableItemsIn(parsed, id);
   const e = parsed.sections[section]?.byName[norm(row)];
   return !e || unset(e.value) ? null : e.items.filter((x) => !unset(x)).map(expandSlug);
@@ -1934,6 +1993,51 @@ function driftValues(parsed, id) {
   try { return configValuesIn(parsed, id); } catch (e) { if (e instanceof DeskConfigError) return null; throw e; }
 }
 
+// A worker session's start-up use, per window: the median share of the window its context held at the
+// handoff hook's first check (the `start` its state in `stateDir` stamps), over the last
+// STARTUP_SESSIONS sessions run in the repo's primary root or under its worktrees directory.
+const STARTUP_SESSIONS = 10;
+export function startupShares(stateDir, root, worktrees) {
+  let files = [];
+  try { files = readdirSync(stateDir).filter((f) => f.endsWith('.json')); } catch { return []; }
+  const by = new Map();
+  for (const f of files) {
+    let s = null;
+    try { s = JSON.parse(readFileSync(join(stateDir, f), 'utf8'))?.start; } catch { continue; }
+    const used = Number(s?.used);
+    const window = Number(s?.window);
+    const at = String(s?.root ?? '');
+    if (!(used > 0 && window > 0) || !(at === root || (worktrees && at.startsWith(`${worktrees}/`)))) continue;
+    if (!by.has(window)) by.set(window, []);
+    by.get(window).push({ share: (100 * used) / window, at: Number(s.at) || 0 });
+  }
+  return [...by].sort((a, b) => a[0] - b[0]).map(([window, list]) => {
+    const last = list.sort((a, b) => b.at - a.at).slice(0, STARTUP_SESSIONS).map((x) => x.share);
+    return { window, n: last.length, median: quantile(last, 0.5) };
+  });
+}
+
+// §2 handoff rows a fresh session's measured start-up use already reaches, read as the hook reads
+// them (45 unset; the 1M row unset is the first row's value; 0 is off): -> [{ row, pct, window, share, n }].
+export function startupDrift(parsed, root, stateDir = join(deskHome(), 'handoff')) {
+  if (!root) return [];
+  const row = (id, fallback) => {
+    let v = '';
+    try { v = String(configValueIn(parsed, id) ?? '').trim().replace(/%$/, ''); } catch { /* unreadable: the default */ }
+    const n = Number(v);
+    return v !== '' && n >= 0 && n < 100 ? n : fallback;
+  };
+  const pct = row('handoff-pct', 45);
+  const pct1m = row('handoff-pct-1m', pct);
+  let worktrees = null;
+  try { worktrees = expandHome(configValueIn(parsed, 'worktrees-dir') ?? '').replace(/\/+$/, '') || null; } catch { /* unset */ }
+  worktrees ??= `${root}-worktrees`;
+  return startupShares(stateDir, root, worktrees).flatMap(({ window, n, median }) => {
+    const p = window >= 1_000_000 ? pct1m : pct;
+    return p > 0 && median >= p ? [{ row: window >= 1_000_000 ? 'Handoff at context % on a 1M window' : 'Handoff at context %', pct: p, window, share: median, n }] : [];
+  });
+}
+
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1971,7 +2075,8 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight,
+    startup: startupDrift(parsed, root), dontAsk: mode === 'dontAsk' ? file : null };
 }
 
 // §4 Unit tests and Typecheck items that start Jest with no worker cap or `turbo run` with no
@@ -2195,7 +2300,10 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], dontAsk }) {
+const startupLine = (s) => `STARTUP  §2 ${s.row} is ${s.pct}, but a fresh session's start-up already uses ${s.share.toFixed(0)}% of its ${s.window.toLocaleString('en-US')}-token window ` +
+  `(the median of its last ${s.n} session${s.n === 1 ? '' : 's'}), so its sessions hand off as soon as they start: set it above ${Math.ceil(s.share)}`;
+
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], startup = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...invalid.map(invalidLine),
@@ -2206,6 +2314,7 @@ export function driftLines({ missing, stalls, unlisted = [], invalid = [], confl
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),
+    ...startup.map(startupLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
@@ -2452,7 +2561,8 @@ function valueRow(id) {
 // throws a GetJsonUsage (exit 2) before any row is read; no config throws NoRepoConfigError (exit 3).
 // With --where it also gives what `where` prints, as `where: { slug, gh_repo, config, creds, exists }`,
 // and with no config it returns that with no rows (`noConfig` set, exit 3) rather than throwing, so a
-// caller learns the repo and its rows in one run. Asked for jira-required-fields as well, it adds
+// caller learns the repo and its rows in one run. A DESK_CONFIG_FILE stands in for a missing config:
+// its rows are read and `config` is null. Asked for jira-required-fields as well, it adds
 // `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
 class GetJsonUsage extends Error {}
 export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
@@ -2483,13 +2593,15 @@ function getJson(args) {
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
-  if (!parsed.exists) {
+  // With no repo config, DESK_CONFIG_FILE's rows (a cloud session) still answer, as get and list do;
+  // a row it lacks reads as unset, and a §3 permission, never taken from it, as `no`.
+  if (!parsed.exists && !parsed.fileRows) {
     if (where) return { where: whereJson(), config: null, rows: {}, noConfig: true };
     throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
   }
   const want = [...new Set([...ids, ...ROWS.filter((e) => sections.includes(e.section)).map((e) => e.id)])];
   const rows = Object.fromEntries(want.map((id) => { const { id: _, ...r } = readRow(id); return [id, r]; }));
-  return { ...(where ? { where: whereJson() } : {}), config: parsed.path, rows,
+  return { ...(where ? { where: whereJson() } : {}), config: parsed.exists ? parsed.path : null, rows,
     ...(where && want.includes('jira-required-fields') ? { required_fields: requiredFieldsByType(requiredFieldRules()) } : {}) };
 }
 

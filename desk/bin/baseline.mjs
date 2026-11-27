@@ -12,6 +12,10 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
+// How run-for.mjs ends a command that ran out of time: this exit code, and this line on stderr.
+export const RUN_FOR_STOPPED = 124;
+export const stoppedLine = (ms) => `run-for.mjs: stopped after ${ms} ms`;
+
 // Each check and the §4 row it runs; the lock each takes is desk-env's lockFor(row).
 export const CHECKS = { typecheck: 'typecheck-cmd', lint: 'lint-cmd' };
 
@@ -135,11 +139,17 @@ export function newProblems(problems, recorded) {
   return extra;
 }
 
-// One command item, in `root`, under its lock. -> { out, code }
-export function runItem({ bin, root, dir, cmd, lock, prefix = '', env, timeout }) {
+// One command item, in `root`, under its lock. -> { out, code, stopped }
+// `timeout` (ms) bounds the whole call, the wait for the lock included; `runFor` (ms) bounds only the
+// command, from when it holds the lock (run-for.mjs). Either running out is `stopped`.
+export function runItem({ bin, root, dir, cmd, lock, prefix = '', env, timeout, runFor }) {
   const full = prefix ? `${prefix} ${cmd}` : cmd;
-  const r = spawnSync(join(bin, 'with-lock.sh'), [lock, '--cwd', dir, '--', 'sh', '-c', full], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env, timeout });
-  return { out: `${r.stdout ?? ''}${r.stderr ?? ''}`, code: r.status ?? 1, stopped: r.status == null };
+  const sh = ['sh', '-c', full];
+  const argv = runFor == null ? sh : [process.execPath, join(bin, 'run-for.mjs'), String(runFor), '--', ...sh];
+  const r = spawnSync(join(bin, 'with-lock.sh'), [lock, '--cwd', dir, '--', ...argv], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env, timeout });
+  const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  const late = runFor != null && r.status === RUN_FOR_STOPPED && out.includes(stoppedLine(runFor));
+  return { out, code: r.status ?? 1, stopped: r.status == null || late };
 }
 
 export const baselineFile = (stateDir) => join(stateDir, 'baseline.json');

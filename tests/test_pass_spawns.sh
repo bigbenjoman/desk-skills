@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (124 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -133,9 +133,11 @@ export DESK_QUEUE="$T/queue-cl.json" DESK_AUTOPILOT_STATE="$T/state-cl"
 mkdir -p "$T/state-cl/logs" "$T/state-cl/tickets"
 cat > "$T/stub/claude" <<EOF
 #!/bin/sh
+[ "\$1" = auth ] && { printf '{"loggedIn":true,"email":"%s@example.com"}\n' "\$(basename "\${CLAUDE_CONFIG_DIR:-default}")"; exit 0; }
 if [ "\$1" = --cloud ]; then
   printf '%s' "\$2" > "$T/cloud-prompt"
   printf '%s|%s\n' "\$3" "\$4" > "$T/cloud-name"
+  printf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "$T/cloud-login"
   [ -e "$T/cloud-fail" ] && { cat "$S/fixtures/cloud/print-refused.txt" >&2; exit 1; }
   # This test script holds the queue lock from the session's start, so the pass's writes after it are refused.
   if [ -e "$T/lock-after-cloud" ]; then mkdir "\$DESK_QUEUE.lock"; echo $$ > "\$DESK_QUEUE.lock/pid"; fi
@@ -144,6 +146,7 @@ fi
 # A follow-up to a session: recorded, and answered as the CLI queues one.
 if [ "\$1" = -p ] && [ "\$3" = --cloud ]; then
   printf '%s|%s|%s\n' "\$4" "\$5" "\$6" >> "$T/cloud-sent"
+  printf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "$T/cloud-send-login"
   [ -e "$T/cloud-send-fail" ] && { cat "$S/fixtures/cloud/stream-json-refused.txt" >&2; exit 1; }
   cat "$S/fixtures/cloud/send-json.json"; exit 0
 fi
@@ -169,7 +172,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field CW-1 state)" = "\"running\"" ] && [ "$(field CW-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
 check "the cloud session is named <repo>-ticket-<KEY>, and the name is kept with it" '[ "$(cat "$T/cloud-name")" = "--name|widgets-ticket-CW-1" ] && [ "$(field CW-1 cloud.name)" = "\"widgets-ticket-CW-1\"" ]'
 check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q "AC1: it saves" "$T/cloud-prompt" && grep -q "feat/CW-1" "$T/cloud-prompt"'
-check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
+check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session on login [a-z]*: https://claude.ai/code/"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field CW-1 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
 # issue-1553 AC2: a session with no PR and no push past its start plus its ETA (its saved first
@@ -309,6 +312,22 @@ printf '%s\n' '{"body":"Done.","commits":[{"oid":"1234567abc","messageHeadline":
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC5 a cloud PR with a commit by another author parks the ticket, naming the commit and its author" '[ "$(field CW-7 state)" = "\"parked\"" ] && [ "$(field CW-7 result)" = null ] && field CW-7 park.question | grep -qF "commit 1234567 authored as claude[bot] <bot@users.noreply.github.com>, not t <t@example.com>"'
 rm -f "$T/cloud-view.json" "$T/cloud-prs.json"
+# #1581: the repo's subscription is login b, not the pass's own ~/.claude: the cloud session starts on b,
+# as a local worker would, and the spawn line and the ticket's cloud record name it.
+mkdir -p "$HOME/.claude-logins/b"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `unused` |\n| `claude` | `b` | `~/.claude-logins/b` | `default` |\n' > "$T/subs-cl.md"
+cloud_ticket CW-12; rm -f "$T/cloud-login"
+out=$(env -u CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS="$T/subs-cl.md" node "$B/pass.mjs" 2>&1)
+check "#1581 AC1 AC4 a cloud ticket starts under the repo's subscription's folder, not the pass's login" '[ "$(cat "$T/cloud-login" 2>/dev/null)" = "$HOME/.claude-logins/b" ] && [ "$(field CW-12 state)" = "\"running\"" ]'
+check "#1581 AC2 the spawn line names the account, and the ticket keeps it for desk-q" 'echo "$out" | grep -qF "CW-12 in a cloud session on b@example.com (login b): https://claude.ai/code/" && [ "$(field CW-12 cloud.login.email)" = "\"b@example.com\"" ]'
+# issue-1553: its retry follow-up goes from the login the session started on, which owns it.
+q set CW-12 "cloud=$(node -e 'const c = JSON.parse(process.argv[1]); c.started = new Date(Date.now() - 6 * 3600e3).toISOString(); console.log(JSON.stringify(c))' "$(field CW-12 cloud)")"
+node -e 'const h = 3600e3, n = Date.now(), i = (t) => new Date(t).toISOString(); console.log(JSON.stringify({ key: "CW-12", at: i(n - 6 * h), starts: i(n - 6 * h), ships: i(n - 3 * h), could_run_to: i(n - 2 * h), model: 2 }))' > "$T/state-cl/eta.jsonl"
+rm -f "$T/cloud-sent" "$T/cloud-send-login"
+out=$(env -u CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS="$T/subs-cl.md" node "$B/pass.mjs" 2>&1)
+check "issue-1553 a cloud session's retry follow-up is sent on the login it started on" '[ "$(field CW-12 cloud.retried_at)" != null ] && [ "$(cat "$T/cloud-send-login" 2>/dev/null)" = "$HOME/.claude-logins/b" ]'
+rm -f "$T/cloud-sent" "$T/cloud-send-login" "$T/state-cl/eta.jsonl"
+q set CW-12 state=done; rm -rf "$HOME/.claude-logins/b"
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
 # queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked
@@ -365,7 +384,7 @@ check "DS-752 AC5 a cloud ticket whose state=running write is refused starts no 
   '[ ! -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"triaged\"" ] && [ "$(field RR-4 cloud)" = null ] && echo "$out" | grep -q "RR-4: queue write refused, not recorded, so no cloud session was started"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 AC6 with the write recorded, the cloud session starts and is recorded running" \
-  '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session: https://claude.ai/code/"'
+  '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session on login [a-z]*: https://claude.ai/code/"'
 q set RR-4 state=done
 # The running write is recorded but the session's, after it started, is refused: the ticket keeps the
 # time it started, so later passes still watch for its PR rather than skip a running ticket with no log.
@@ -1714,6 +1733,36 @@ check "DS-575 AC1 AC3 once the running one stops, the next in queue order starts
 q set RK-147 state=done; : > "$T/fb-spawns"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-575 AC1 the last starts once the second stops" 'spawned RK-181'
+
+# ---- #1515: a ticket handed off between sessions keeps its files' places against new tickets, and
+# a handoff a running ticket's files hold back is said as that collision, not a deadline stall.
+# hot <KEY> <files...>: a ticket handed off to Stage 4b, with its worktree, branch and briefing.
+hot(){ k=$1; shift; fbt "$k" triaged "$@"; git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; q set "$k" lane=A "worktree=$T/wt/$k" handoff=pending handoff_stage=4b; hfile "$k" 4b "typecheck: pass"; }
+fbq hoa '1'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"; q set-batch concurrency=1
+fbt HO-0 running src/solo.ts; q set HO-0 session_id=live-1
+hot HO-1 src/big.ts; fbt HO-2 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1515 AC1 AC2 a new ticket naming a file a handed-off ticket names does not start, and the report names the handoff holding it" \
+  '! spawned HO-2 && [ "$(field HO-2 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-2 (src/big.ts has 1 running or handed off of its 1: HO-1 (handed off))"'
+check "#1515 the metrics line names the handoff among those filling the file" \
+  'tail -n 1 "$T/state-hoa/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"HO-2\")) == [{\"key\":\"HO-2\",\"with\":[\"HO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+q set HO-0 state=done; : > "$T/fb-spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1515 AC3 when the slot frees, the handed-off ticket takes it and the new ticket naming its file still waits" \
+  'spawned HO-1 && ! spawned HO-2 && [ "$(field HO-1 state)" = "\"running\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-2 (src/big.ts has 1 running of its 1: HO-1)"'
+
+fbq hob '1'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+fbt HO-5 running src/edge.ts; q set HO-5 session_id=live-2
+hot HO-6 src/edge.ts
+q set HO-6 'waits={"handoff":{"since":"2026-01-01T00:00:00.000Z","deadline":"2026-01-01T00:15:00.000Z","escalate_to":"requeue","stage":"4b"}}'
+hot HO-7 src/hot.ts; hot HO-8 src/hot.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1515 AC4 a handoff a running ticket's files hold back past its deadline is said as held by that collision, not as a deadline stall" \
+  '! spawned HO-6 && echo "$out" | grep -qF "HO-6: held by collision on src/edge.ts with HO-5 — its Stage 4b session starts once that ticket stops running" && ! echo "$out" | grep -qF "HO-6: HANDOFF NOT STARTED"'
+check "#1515 AC4 its handoff wait records the collision and no deadline, for desk-q to read" \
+  '[ "$(field HO-6 waits.handoff | jq -c "[.collision, .deadline, .escalated]")" = "[[{\"file\":\"src/edge.ts\",\"with\":[\"HO-5\"]}],null,null]" ]'
+check "#1515 two handoffs naming one file do not hold each other: the first in queue order starts and the other waits behind it" \
+  'spawned HO-7 && ! spawned HO-8 && echo "$out" | grep -qF "HO-8: held by collision on src/hot.ts with HO-7"'
 
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and

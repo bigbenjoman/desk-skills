@@ -8,7 +8,8 @@
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only),
 # two sessions in one repo: a reserved name each, and each resuming its own handoff; and the
 # session's /rename name, recorded in the handoff and given back as a /rename line after /clear; and
-# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows.
+# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows;
+# and `pick` (DS-1051): /desk-resume's one fitting handoff in a session started without /clear.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -495,7 +496,8 @@ check "settings_env: unreadable settings.json is exit 2, untouched" '[ $rc -eq 2
 wtranscript(){ transcript "$1" "$2"
   printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"Verified.\\nAUTOPILOT_STAGE: %s\\n"}]}}\n' "$3" >> "$1"; }
 WFILE="$T/state/handoffs/W-1.json"; mkdir -p "$T/state/handoffs"
-whook(){ DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="$WFILE" DESK_LEVER_VALUES="${LV:-}" hook "$@"; }
+# MG: the growth floor (DESK_HANDOFF_MIN_GROWTH), 0 unless set, and empty for the default; HP: a raised threshold.
+whook(){ DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="$WFILE" DESK_LEVER_VALUES="${LV:-}" DESK_HANDOFF_MIN_GROWTH="${MG-0}" DESK_HANDOFF_PCT="${HP:-}" hook "$@"; }
 config '`45`' '`20`'
 before="$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d ' ')"
 LV='question-handling=batched handoff-threshold=30'
@@ -558,6 +560,38 @@ AUTOPILOT_TASK="fix the review" whook PostToolUse wk10 "$T/w46.jsonl"
 check "DS-1037 a task worker past the threshold gets nothing"   '[ -z "$out" ]'
 DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="" hook PostToolUse wk11 "$T/w46.jsonl"
 check "DS-1037 nor does a worker with no briefing file, and no .handoffs/ file is named" '[ -z "$out" ] && [ "$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d " ")" = "$before" ]'
+
+# ---- #1539: a worker hands off only once its context has grown since it started ----
+config '`20`'
+MG=''; LV=''
+wtranscript "$T/g44.jsonl" 44000 "5/9 evidence"
+whook PostToolUse wg1 "$T/g44.jsonl"
+check "#1539 AC1 a session that starts at 22% with the row at 20 does not hand off at once" '[ -z "$out" ]'
+check "#1539 AC3 its state stamps its start-up use, window and root" 'python3 -c "import json,sys; s=json.load(open(sys.argv[1]))[\"start\"]; sys.exit(0 if (s[\"used\"], s[\"window\"], s[\"root\"]) == (44000, 200000, sys.argv[2]) else 1)" "$DESK_HOME/handoff/wg1.json" "$R"'
+wtranscript "$T/g73.jsonl" 73999 "5/9 evidence"
+whook PostToolUse wg1 "$T/g73.jsonl"
+check "#1539 AC1 nor one token short of gaining 30,000" '[ -z "$out" ]'
+wtranscript "$T/g74.jsonl" 74000 "5/9 evidence"
+whook PostToolUse wg1 "$T/g74.jsonl"
+check "#1539 AC1 once it has gained 30,000 tokens it hands off at the row" '[[ "$(ctx)" == *"context is at 37% of a 200,000-token window, past this worker'"'"'s threshold of 20% (config §2 Handoff at context %)"* ]]'
+whook SessionStart wg1 "$T/g74.jsonl" ',"source":"compact"'
+whook PostToolUse wg1 "$T/g74.jsonl"
+check "#1539 after a compaction the growth counts from the next check" '[ -z "$out" ]'
+MG=10000
+whook PostToolUse wg2 "$T/g44.jsonl"
+wtranscript "$T/g54.jsonl" 54000 "5/9 evidence"
+whook PostToolUse wg2 "$T/g54.jsonl"
+check "#1539 DESK_HANDOFF_MIN_GROWTH overrides the 30,000" '[[ "$(ctx)" == *"partway through Stage 5"* ]]'
+# AC2: the ticket's raised threshold (DESK_HANDOFF_PCT) wins over the lever's pin.
+MG=0; LV='handoff-threshold=20'; HP=45
+wtranscript "$T/r44.jsonl" 88000 "5/9 evidence"
+whook PostToolUse wr1 "$T/r44.jsonl"
+check "#1539 AC2 a raised threshold of 45 holds a session at 44% past its pin of 20" '[ -z "$out" ]'
+wtranscript "$T/r46.jsonl" 92000 "5/9 evidence"
+whook PostToolUse wr1 "$T/r46.jsonl"
+check "#1539 AC2 past 45 it hands off, naming the raise" '[[ "$(ctx)" == *"threshold of 45% (raised for this ticket, DESK_HANDOFF_PCT), partway through Stage 5"* ]]'
+unset MG HP; LV=''
+config '`45`'
 config '`0`'
 wtranscript "$T/w90.jsonl" 180000 "5/9 evidence"
 whook PostToolUse wk6 "$T/w90.jsonl"
@@ -565,5 +599,41 @@ check "DS-1037 AC4 rows at 0 and no lever value: a worker never hands off" '[ -z
 config '`45`'
 DESK_HANDOFF_FILE="" hook PostToolUse wk7 "$T/w90.jsonl"
 check "DS-1037 outside a worker, worker mode stays off"                    '[[ "$(ctx)" == *".handoffs/"* ]]'
+
+# ---- DS-1051: /desk-resume in a session started fresh (no /clear) asks the hook to pick ----
+P="$T/pickrepo"; git init -q -b main "$P"; P="$(cd "$P" && pwd -P)"; mkdir -p "$P/.handoffs" "$P/sub"
+pick(){ out=$(CLAUDE_CODE_SESSION_ID="${SID_PICK:-}" DESK_HANDOFF_PID="${PID_PICK:-pkfresh}" python3 "$HOOK" pick "$P/sub" 2>&1); rc=$?; }
+# A session started fresh under Claude process pkfresh; one /clear began under pkclear.
+printf '{"hook_event_name":"SessionStart","session_id":"pkf","source":"startup","cwd":"%s"}' "$P/sub" | DESK_HANDOFF_PID=pkfresh python3 "$HOOK" >/dev/null 2>&1
+check "DS-1051 SessionStart records how the session began"     '[ "$(python3 -c "import json,sys; s=json.load(open(sys.argv[1])); print(s[\"start_source\"], s[\"start_pid\"])" "$DESK_HOME/handoff/pkf.json")" = "startup pkfresh" ]'
+printf '{"root":"%s","start_pid":"pkclear","start_source":"clear","started_at":%s}' "$P" "$(date +%s)" > "$DESK_HOME/handoff/pkc.json"
+printf '<!-- desk handoff placeholder: session z -->\n' > "$P/.handoffs/$DAY-3.md"
+echo "# stale" > "$P/.handoffs/old.md"; age "$P/.handoffs/old.md" 90000
+echo "# done" > "$P/.handoffs/done.md"; echo "done.md" > "$P/.handoffs/.consumed"
+echo "# held" > "$P/.handoffs/held.md"; echo "held.md live" > "$P/.handoffs/.held"
+echo "# the one" > "$P/.handoffs/$DAY-2.md"
+pick
+check "DS-1051 AC1: the one fresh, unconsumed, unheld handoff is picked" '[ $rc -eq 0 ] && [ "$out" = "$P/.handoffs/$DAY-2.md" ]'
+check "DS-1051 AC1: and recorded as consumed"                  'grep -qx "$DAY-2.md" "$P/.handoffs/.consumed"'
+pick
+check "DS-1051 AC2: once consumed it is not picked again"      '[ $rc -eq 1 ] && [ -z "$out" ]'
+echo "# a" > "$P/.handoffs/a.md"; echo "# b" > "$P/.handoffs/b.md"
+pick
+check "DS-1051 AC3: two that fit: none picked, none consumed"  '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qxE "(a|b)\.md" "$P/.handoffs/.consumed"'
+pick_outside="$(python3 "$HOOK" pick "$T" 2>&1)"; rc=$?
+check "DS-1051 outside a git repo: exit 1, silent"            '[ $rc -eq 1 ] && [ -z "$pick_outside" ]'
+rm -f "$P/.handoffs/b.md"
+PID_PICK=pkclear pick
+check "DS-1051 a process whose session /clear began: none picked" '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+SID_PICK=pkc pick
+check "DS-1051 a session id /clear began: none picked"         '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+PID_PICK=nobody pick
+check "DS-1051 a session with no start record: none picked"    '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qx "a.md" "$P/.handoffs/.consumed"'
+# The start record decides, not the repo the session last worked in.
+python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["root"]="/elsewhere"; json.dump(s,open(p,"w"))' "$DESK_HOME/handoff/pkc.json"
+PID_PICK=pkclear pick
+check "DS-1051 /clear's record holds after work in another repo" '[ $rc -eq 1 ] && [ -z "$out" ]'
+SID_PICK=pkf pick
+check "DS-1051 a session started fresh: the one that fits"     '[ $rc -eq 0 ] && [ "$out" = "$P/.handoffs/a.md" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

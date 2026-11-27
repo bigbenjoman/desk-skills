@@ -47,7 +47,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -166,9 +166,10 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-// A pending handoff the last pass found held by full slots waits for a slot, and is not stalled.
-const slotWait = slotHeldBy;
-const slotWaitText = (t) => slotWaitWords(slotHeldBy(t));
+// A pending handoff the last pass found held by full slots, or by a collision with a running ticket's
+// files, waits for it to free, and is not stalled.
+const slotWait = (t) => handoffWaitText(t) != null;
+const slotWaitText = handoffWaitText;
 
 const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
@@ -3382,11 +3383,12 @@ const FINISHING_TEXT = 'worker finished, next pass records it';
 
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from. A worker started on the
-// fallback login (fallback-login.mjs) says which.
+// fallback login (fallback-login.mjs) says which, and a cloud session the account it started under.
 function runningStage(r, x) {
   const { st } = x;
   const p = x.t?.usage_paused;
-  const on = x.t?.login?.fallback ? ` · on fallback ${x.t.login.email ?? x.t.login.name}` : '';
+  const cl = x.t?.stage === 'cloud' ? x.t.cloud?.login : null;
+  const on = x.t?.login?.fallback ? ` · on fallback ${x.t.login.email ?? x.t.login.name}` : cl ? ` · on ${cl.email ?? `login ${cl.name}`}` : '';
   if (p) return `paused on ${limitName(p.type)}${p.resets_at != null ? ` until ${resetsWhen(p.resets_at)}` : ''}, then resumes by itself${on}`;
   if (st.log) return `stage ${st.label}${st.at == null ? '' : ` since ${clock(st.at)}`}${on}`;
   return `stage ${st.label ?? '?'} ${r.last == null ? 'as of an unknown pass' : `as of ${clock(r.last)}`}${on}`;
@@ -3809,7 +3811,7 @@ function moveOf(r, row, k, t, h, now) {
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
   if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
-  if (slotWait(t)) return { text: `Moves without you: ${slotWaitText(t)}. Its Stage ${t.handoff_stage ?? '?'} session starts once one frees.` };
+  if (slotWait(t)) return { text: `Moves without you: ${slotWaitText(t)}. Its Stage ${t.handoff_stage ?? '?'} session starts once ${slotHeldBy(t) ? 'one frees' : 'that ticket stops running'}.` };
   if (planFirstClaim(t)) {
     return { text: `Being worked in session ${planFirstClaim(t).session}, which claimed it. It is plan-first work, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it waits for a session again.` };
   }

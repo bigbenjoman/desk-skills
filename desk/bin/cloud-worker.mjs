@@ -195,6 +195,8 @@ export function parseCloudStart(out) {
 // terminal: BSD script takes the command as arguments, util-linux script a shell string, which
 // reads the prompt from the environment rather than quoting it in. `name` is the session's display
 // name (`--name` also names a new cloud session), so the person can tell which ones are finished.
+// `env` is the login's (logins.mjs loginEnv): its CLAUDE_CONFIG_DIR picks the account the session
+// starts under. A start that does not answer in `timeout` adds `timedOut: true`.
 //   -> parseCloudStart's result
 export function startCloud(prompt, { claude = 'claude', name = null, platform = process.platform, timeout = 120_000, env = process.env } = {}) {
   const args = platform === 'darwin' || platform.endsWith('bsd')
@@ -204,7 +206,8 @@ export function startCloud(prompt, { claude = 'claude', name = null, platform = 
     encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...env, DESK_CLOUD_CLAUDE: claude, DESK_CLOUD_PROMPT: prompt, DESK_CLOUD_NAME: name ?? '' },
   });
-  if (r.error) return { error: r.error.code === 'ETIMEDOUT' ? `no answer in ${timeout / 1000}s` : r.error.message };
+  if (r.error?.code === 'ETIMEDOUT') return { error: `no answer in ${timeout / 1000}s`, timedOut: true };
+  if (r.error) return { error: r.error.message };
   const got = parseCloudStart(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
   return got.error && r.status ? { error: `${got.error} (exit ${r.status})` } : got;
 }

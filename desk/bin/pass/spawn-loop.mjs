@@ -35,7 +35,7 @@
 //   claim-upload {key}   -> { ok: true, up }: up its last round's upload still running, else null and the
 //                           job dropped; { ok: false, why } where the upload queue could not be read
 //   read-repos {}        -> the read-only repos that could not be refreshed, once a pass: [{ repo, why }]
-//   login {key}          -> the login a new session starts on (pass.mjs repoLogin), or null
+//   login {key, cloud?}  -> the login a new session starts on (pass.mjs repoLogin), or null; a cloud one never the fallback
 //   take-slot {key}      one of the pass's slots is taken
 //   setup {key}          -> the worktree setup: { wt, kept, renamed, hung } where origin was found hung
 //                           before it, else { wt, kept, renamed, ok, exitOk, out, retried }
@@ -119,14 +119,15 @@ export function* decideSpawn(s) {
       return yield { type: 'park', key, line: `${failure}. Once it is reachable: queue.mjs requeue ${key}` };
     }
   }
-  // A new session starts on the repo's subscription; a resumed one has its own, so it still goes ahead.
-  const needsLogin = !s.resume && (s.handoff || !runsInCloud(t));
-  const pick = needsLogin ? yield { type: 'login', key } : null;
-  if (needsLogin && !pick) return yield skip;
+  // A new session starts on the repo's subscription, a cloud one too (never its fallback); a resumed one
+  // has its own, so it still goes ahead.
+  const cloud = !s.handoff && runsInCloud(t);
+  const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
+  if (!s.resume && !pick) return yield skip;
   yield { type: 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
-  if (runsInCloud(t)) return yield { type: 'start', key, how: 'cloud' };
+  if (cloud) return yield { type: 'start', key, how: 'cloud', pick };
   // An earlier setup in this pass found the local database down: no other worktree is set up on it.
   if (s.dbDown) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');

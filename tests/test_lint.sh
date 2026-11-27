@@ -34,12 +34,15 @@ done
 # suite_env.sh's budget_of) names the ticket that answers for it and stays at or under BUDGET_CAP CPU
 # seconds. The cap holds the pull-request figure: a `(main M)` after N, the budget of a main push or a
 # local run, is uncapped but must be a whole number. budget_problem prints what is wrong with file
-# $1's, or nothing.
+# $1's, or nothing. A budget line past the first ten lines is refused too: budget_of never reads it, so
+# the suite would be held to the default budget instead of its own.
 # shellcheck source=suite_env.sh
 . "$S/suite_env.sh"
 BUDGET_CAP=600
 budget_problem(){ local l n
-  l=$(head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:') || return 0
+  l=$(head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:') || {
+    l=$(grep -n -m 1 -E '^(#|//) budget:' "$1") && echo "its budget line is on line ${l%%:*}, past the first ten lines budget_of reads: ${l#*:}"
+    return 0; }
   n=$(budget_of "$1" pr)
   if [ -z "$n" ]; then echo "its budget line has no whole number of CPU seconds: $l"
   elif printf '%s\n' "$l" | grep -qE '^(#|//) budget: [0-9]+ \(main' && [ -z "$(budget_main_of "$1")" ]; then
@@ -65,6 +68,10 @@ for e in pull_request push ''; do
 done
 case "$(budget_problem "$BT/test_main_over.sh")" in *"budget of 700 CPU seconds is over the cap of $BUDGET_CAP"*) ok "DS-942 AC2 budget: a pull-request figure over the cap is refused beside a main one" ;; *) bad "DS-942 AC2 budget: a pull-request figure over the cap is not refused beside a main one" ;; esac
 case "$(budget_problem "$BT/test_main_nonumber.sh")" in *"main figure is no whole number"*) ok "DS-942 budget: a main figure that is no number is refused" ;; *) bad "DS-942 budget: a main figure that is no number is not refused" ;; esac
+printf '#!/usr/bin/env bash\n#\n#\n#\n#\n#\n#\n#\n#\n#\n# budget: 60 DS-942\n' > "$BT/test_late.sh"
+case "$(budget_problem "$BT/test_late.sh")" in *"on line 11, past the first ten lines"*) ok "issue-1598 budget: a budget line past the first ten lines is refused" ;; *) bad "issue-1598 budget: a budget line past the first ten lines is not refused" ;; esac
+printf '#!/usr/bin/env bash\n# suite: x\n' > "$BT/test_nobudget.sh"
+[ -z "$(budget_problem "$BT/test_nobudget.sh")" ] && ok "issue-1598 budget: a suite with no budget line passes" || bad "issue-1598 budget: a suite with no budget line is refused"
 for f in tests/test_*.sh tests/test_*.mjs; do
   [ -f "$f" ] || continue
   p=$(budget_problem "$f"); if [ -z "$p" ]; then ok "budget $f"; else bad "budget $f: $p"; fi
