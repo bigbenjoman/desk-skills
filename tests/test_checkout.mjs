@@ -525,12 +525,15 @@ has('#1471 an unread deploy goes under Check before posting', current, 'the line
 
 // #1646 worklog_activity.py: the person's work logs (§3b Check-out work logs) and desk's own records.
 const appCfg = join(CFG, 'repos', 'acme__app', 'config.md');
-const cfgText = readFileSync(appCfg, 'utf8') + ['', '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Check-out work logs | `none` | `~/notes/worklog.md` `~/notes/daily/*.txt` |', ''].join('\n');
+const cfgText = readFileSync(appCfg, 'utf8') + ['', '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Check-out work logs | `none` | `~/notes/worklog.md` `~/notes/daily/*.txt` |', '',
+  '## 1. You', '| Field | Value | Notes |', '|---|---|---|', '| GitHub handle | `me-person` | who opens the PRs |', ''].join('\n');
 writeFileSync(appCfg, cfgText);
 mkdirSync(join(HOME, 'notes', 'daily'), { recursive: true });
 writeFileSync(join(HOME, 'notes', 'worklog.md'), [
   '# Work log', '## 2026-10-25', '- 17:00 SUNDAY-LOG out of the window',
   '## 2026-10-26', '- 09:15 Set up the cloud environment', '- Fixed the logins', '- 2026-10-26T14:30 Tuned the throughput settings',
+  // A time no clock shows is an entry with no time, never a crash; a single-digit hour with an offset is read.
+  '- 2026-10-26 24:00 MIDNIGHT-LOG wrapped up', '- 2:75 BAD-MINUTE-LOG', '- 2026-10-26T9:05Z ZULU-LOG paired on the review',
   '## 2026-10-27', '- 08:00 NEXT-DAY-LOG out of the window',
 ].join('\n'));
 const plainLog = join(HOME, 'notes', 'daily', 'plain.txt');
@@ -542,7 +545,7 @@ utimesSync(oldLog, new Date(before), new Date(before));
 // A config write in the window changed one row (the backup holds the copy from before it); an older
 // backup, from before the window, is not read as a change on the day.
 const bakNew = `${appCfg}.bak-2026-10-26`;
-writeFileSync(bakNew, cfgText.replace('`customfield_10207`', '`customfield_10100`'));
+writeFileSync(bakNew, cfgText.replace('`customfield_10207`', '`customfield_10100`').replace('`me-person`', '`old-person`'));
 utimesSync(bakNew, new Date(at(12)), new Date(at(12)));
 const bakOld = `${appCfg}.bak-2026-10-20`;
 writeFileSync(bakOld, cfgText.replace('`#team`', '`#old-team`'));
@@ -564,7 +567,15 @@ const wl = script('worklog_activity.py', '--day', DAY);
 t('#1646 worklog: exits 0', wl.status, 0);
 const wo = wl.stdout;
 has('#1646 worklog: the header names the window', wo, '# Work logs and desk records, Monday 26 October 2026');
-has('#1646 worklog: timed, untimed and ISO-stamped entries in the window', wo, '### ~/notes/worklog.md (3)\n- 09:15 Set up the cloud environment\n- 14:30 Tuned the throughput settings\n- (no time) Fixed the logins');
+const zulu = hhmm(new Date(Date.UTC(2026, 9, 26, 9, 5)).toISOString());
+has('#1646 worklog: timed, untimed and ISO-stamped entries in the window', wo, '### ~/notes/worklog.md (5)\n');
+has('#1646 worklog: a timed entry', wo, '- 09:15 Set up the cloud environment\n');
+has('#1646 worklog: an ISO-stamped entry', wo, '- 14:30 Tuned the throughput settings\n');
+has('#1646 worklog: an untimed entry under its date', wo, '- (no time) Fixed the logins\n');
+has('#1646 worklog: a single-digit hour with an offset is read', wo, `- ${zulu} ZULU-LOG paired on the review\n`);
+has('#1646 worklog: 24:00 is an entry on its date with no time', wo, '- (no time) MIDNIGHT-LOG wrapped up\n');
+lacks('#1646 worklog: a minute out of range is no entry', wo, 'BAD-MINUTE-LOG');
+has('#1646 worklog: a Value changed in a Field | Value | Notes table is a fact', wo, `- ${hhmm(at(12))} config §1 "GitHub handle": \`old-person\` → \`me-person\` (source: config.md.bak-2026-10-26 vs config.md)`);
 lacks('#1646 worklog: an entry the day before is left out', wo, 'SUNDAY-LOG');
 lacks('#1646 worklog: an entry the day after is left out', wo, 'NEXT-DAY-LOG');
 has('#1646 worklog: a file with no times falls back to its modified time', wo, `### ~/notes/daily/plain.txt (no timestamped lines; modified ${hhmm(at(18))}, in the window, so its last lines)\n  Untimed notes\n  PLAIN-LAST line`);

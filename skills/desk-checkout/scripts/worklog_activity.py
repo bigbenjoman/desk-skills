@@ -12,7 +12,8 @@ printed, said as such.
 
 Desk's own records, for each in-scope repo (~/.config/desk/repos/<slug>/ and ~/.desk-autopilot/<slug>/):
   config rows changed   each config.md.bak* modified in the window, diffed against the next copy (the
-                        next backup, else config.md): one line per row changed, added or removed
+                        next backup, else config.md) by desk-changes.mjs --config-entries: one line
+                        per row changed, added or removed; said as not read when that fails
   lever changes         levers.jsonl events that change a lever's state or the row (see LEVER_KINDS)
   decisions             decisions.jsonl in the repo's state and each batch's: calls taken, checks made
                         and overrides of a taken call
@@ -74,7 +75,22 @@ def parse_iso(value):
 
 
 def local(d, hh, mm):
-    return datetime(d.year, d.month, d.day, int(hh), int(mm)).astimezone()
+    """That date and time on this computer's clock, or None for a time no clock shows (24:00, 9:75)."""
+    try:
+        return datetime(d.year, d.month, d.day, int(hh), int(mm)).astimezone()
+    except ValueError:
+        return None
+
+
+def iso_dt(m):
+    """An ISO_DT match as a time, or None when its time is out of range. A single-digit hour is padded
+    first, as fromisoformat wants two digits."""
+    if not m.group(4):
+        return local(_date(m.group(1)), m.group(2), m.group(3))
+    hh, mm = int(m.group(2)), int(m.group(3))
+    if not (hh < 24 and mm < 60):
+        return None
+    return parse_iso(f"{m.group(1)}T{hh:02d}:{mm:02d}{m.group(0)[m.end(3) - m.start(0):]}")
 
 
 def _date(text):
@@ -106,9 +122,14 @@ def worklog_entries(path, since, until):
         m = ISO_DT.search(line)
         if m and _date(m.group(1)):
             dated = True
-            when = parse_iso(m.group(0).replace(" ", "T")) if m.group(4) else local(_date(m.group(1)), m.group(2), m.group(3))
-            current = when.date()
+            when = iso_dt(m)
             rest = (line[: m.start()] + line[m.end():]).strip(" -–—:*#|")
+            if when is None:  # a time out of range (24:00): an entry on its date with no time
+                current = _date(m.group(1))
+                if first_day <= current <= last_day and rest:
+                    entries.append((None, current, rest))
+                continue
+            current = when.date()
             if since <= when < until and rest:
                 entries.append((when, when.date(), rest))
             continue
@@ -128,7 +149,7 @@ def worklog_entries(path, since, until):
         if t and 0 <= int(t.group(1)) < 24 and t.group(3).strip():
             dated = True
             when = local(current or day_of_file, t.group(1), t.group(2))
-            if since <= when < until:
+            if when and since <= when < until:  # None: a minute out of range (2:75), not an entry
                 entries.append((when, when.date(), t.group(3).strip()))
             continue
         b = BULLET.match(line)
@@ -159,60 +180,44 @@ def worklog_paths(repo):
 
 # ---- desk's own records ---------------------------------------------------------------------------
 
-SECTION = re.compile(r"^##\s+(\S+?)\.?\s")
-
-
-def config_rows(text):
-    """{(section, row label): last cell} for every table row of a config file."""
-    rows, section = {}, "?"
-    for line in text.splitlines():
-        m = SECTION.match(line)
-        if m:
-            section = m.group(1).rstrip(".")
-            continue
-        if not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 2 or set(cells[0]) <= set("-: ") or cells[0] in ("Field", "Key"):
-            continue
-        rows[(section, cells[0].strip("`"))] = cells[-1]
-    return rows
-
-
-def read_text(path):
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            return fh.read()
-    except OSError:
-        return None
+def items_text(items):
+    """A row's items as desk-changes.mjs prints them: each in backticks (unless it already holds one)."""
+    if not items:
+        return "(empty)"
+    return shorten(" ".join(i if "`" in i else f"`{i}`" for i in items), 120)
 
 
 def config_changes(repo, since, until):
-    """One fact per config row a write in the window changed: each backup is the copy from before a
-    write at its modified time, so it is diffed against the next copy (the next backup, else config.md)."""
+    """One fact per config row a write in the window changed, read through desk-changes.mjs
+    --config-entries (configEntries, with desk-env's own row parser), so there is one config diff.
+    desk-env copies the file to its backup at each write, so a pair whose earlier copy is a backup is
+    dated by that backup's time. Returns (facts, why it could not be read, or None)."""
     if not repo.config_path:
-        return []
-    backups = sorted(glob.glob(repo.config_path + ".bak*"), key=os.path.getmtime)
-    copies = backups + [repo.config_path]
+        return [], None
+    cmd = desk_repos.desk_env_cmd()
+    mjs = os.path.join(os.path.dirname(cmd[-1]), "desk-changes.mjs") if cmd and cmd[-1].endswith(".mjs") else None
+    if not mjs or not os.path.isfile(mjs):
+        return [], "desk-changes.mjs not found beside desk-env.mjs"
+    out, rc = desk_repos._run(["node", mjs, "--config-entries", repo.config_path])
+    try:
+        entries = json.loads(out) if rc == 0 and out else None
+    except ValueError:
+        entries = None
+    if not isinstance(entries, list):
+        return [], f"desk-changes.mjs --config-entries failed (exit {rc})"
     facts = []
-    for i, bak in enumerate(backups):
-        at = datetime.fromtimestamp(os.path.getmtime(bak)).astimezone()
-        if not (since <= at < until):
+    for e in entries:
+        was_file = e.get("was_file") or ""
+        at = parse_iso(e.get("was_at"))
+        if ".bak" not in os.path.basename(was_file) or not at or not (since <= at < until):
             continue
-        before, after = read_text(bak), read_text(copies[i + 1])
-        if before is None or after is None:
-            continue
-        old, new = config_rows(before), config_rows(after)
-        src = f"{os.path.basename(bak)} vs {os.path.basename(copies[i + 1])}"
-        for key in sorted(set(old) | set(new), key=lambda k: (k[0], k[1])):
-            was, now = old.get(key), new.get(key)
-            if was == now:
-                continue
-            row = f'config §{key[0]} "{key[1]}"'
-            what = (f"added: {shorten(now, 120)}" if was is None else f"removed (was {shorten(was, 120)})" if now is None
-                    else f"{shorten(was, 120)} → {shorten(now, 120)}")
-            facts.append((at, f"{row}: {what} (source: {src})"))
-    return facts
+        section, _, label = str(e.get("row", "")).partition(" ")
+        was, now = e.get("from"), e.get("to")
+        what = (f"added: {items_text(now)}" if was is None else f"removed (was {items_text(was)})" if now is None
+                else f"{items_text(was)} → {items_text(now)}")
+        src = f"{os.path.basename(was_file)} vs {os.path.basename(e.get('file') or '')}"
+        facts.append((at, f'config {section} "{label}": {what} (source: {src})'))
+    return facts, None
 
 
 def jsonl(path):
@@ -328,9 +333,12 @@ def main():
         print()
 
     for r in readable:
-        facts = config_changes(r, since, until) + lever_changes(r.slug, since, until) + decisions(r.slug, since, until) + answered(r.slug, since, until)
+        config, unread = config_changes(r, since, until)
+        facts = config + lever_changes(r.slug, since, until) + decisions(r.slug, since, until) + answered(r.slug, since, until)
         print(f"## Desk records: {r.slug} ({len(facts)})")
         print("\n".join(f"- {at:%H:%M} {text}" for at, text in sorted(facts, key=lambda f: f[0])) if facts else "none in the window")
+        if unread:
+            print(f"config rows changed: not read ({unread})")
         print()
     if skipped:
         print("## Skipped by permission")
