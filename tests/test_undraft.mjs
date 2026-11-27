@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
+import { followOnIn, followOnPending, unreadableFollowOn } from '../desk/bin/harvest.mjs';
 import { undraftWrite } from '../desk/bin/pass/undraft.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK, doneVerdictLine } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bin/gate.mjs';
@@ -457,14 +457,44 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
     `ask | PR #871 is green at ${HEAD.slice(0, 9)} with a clean review, and desk does not merge it because config §3 pr-merge-green is "ask" with no batch approval: undraft and merge it on GitHub, or set that row to yes with /desk-setup, and desk merges it; the ticket is then done`);
   t('DS-509 AC4 pr-ready not yes: the question names it too', /config §3 pr-ready is "no"/.test(mp(COND, pr871(), { ready: 'no' })?.question ?? ''), true);
   // AC2: the DONE marker's follow-on steps.
-  const fo = (s) => JSON.stringify(followOnIn(s));
+  const fo = (s) => { const { steps, error } = followOnIn(s); return JSON.stringify({ steps, error }); };
   t('DS-509 AC2 a DONE line with follow_on keeps each step and its row',
     fo('pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}, {"step": "start staging-crons frequent"}] said=two steps wait on the merge'),
     JSON.stringify({ steps: [{ step: 'run provision-telnyx-assistant.ts --env staging', row: 'staging-write' }, { step: 'start staging-crons frequent', row: null }], error: null }));
   t('DS-509 AC2 a step naming a ] in its text still reads', followOnIn('pr=1 follow_on=[{"step": "run x [staging]", "row": null}]').steps[0]?.step, 'run x [staging]');
   t('DS-509 AC2 no follow_on: none', fo('pr=871 jira=In Review'), JSON.stringify({ steps: [], error: null }));
   t('DS-509 AC2 one that does not read says so and keeps none', followOnIn('pr=1 follow_on=[{"step": 3}]').error?.startsWith('an entry is not'), true);
-  t('DS-509 AC2 one that is not JSON says so', followOnIn('pr=1 follow_on=run it').error, 'not a JSON array');
+  t('DS-509 AC2 one that is not JSON says so', followOnIn('pr=1 follow_on={} said=x').error, 'not a JSON array');
+  const word = followOnIn('pr=1 jira=none follow_on="studia-web-peak-check" said=one step');
+  t('issue-1549 AC1 a bare word is kept as one step, with a repair',
+    JSON.stringify([word.steps, word.error, word.raw, word.repaired]),
+    JSON.stringify([[{ step: 'studia-web-peak-check', row: null }], null, '"studia-web-peak-check"', 'not a JSON array, read as [{"step":"studia-web-peak-check","row":null}]']));
+  const list = followOnIn('pr=1 follow_on="a, b"');
+  t('issue-1549 AC1 a comma-separated list is kept as one step a name, with a repair',
+    `${JSON.stringify(list.steps)} ${!!list.repaired}`, '[{"step":"a","row":null},{"step":"b","row":null}] true');
+  t('issue-1549 AC1 a bare word stops at the next field', followOnIn('pr=1 follow_on=peak-check jira=none').steps[0]?.step, 'peak-check');
+  for (const field of ['"a", "b"', "'a', 'b'", "'a, b'", 'a,b'])
+    t(`issue-1549 AC1 the list ${field} is kept as one step a name`, JSON.stringify(followOnIn(`pr=1 follow_on=${field} said=x`).steps), '[{"step":"a","row":null},{"step":"b","row":null}]');
+  for (const field of ['none', 'null', '"none"', 'N/A', '-', ''])
+    t(`issue-1549 AC1 follow_on=${field} keeps no step and reads as none, repaired`,
+      ((f) => `${f.steps.length} ${f.error} ${!!f.repaired}`)(followOnIn(`pr=1 follow_on=${field} said=x`)), '0 null true');
+  const obj = followOnIn('pr=1 follow_on={} said=x');
+  t('issue-1549 AC2 an object keeps nothing, with its raw text to report',
+    `${obj.steps.length} ${obj.repaired} ${obj.raw} ${unreadableFollowOn(obj.raw)}`, '0 null {} follow-on unreadable: {}');
+  t('issue-1549 AC2 an array that does not read gives its raw text too', followOnIn('pr=1 follow_on=[{"step": 3}] said=x').raw, '[{"step": 3}]');
+  const proper = followOnIn('pr=1 follow_on=[{"step": "run x", "row": null}]');
+  t('issue-1549 AC3 a well-formed array is unchanged, with no repair',
+    JSON.stringify([proper.steps, proper.error, proper.repaired]), JSON.stringify([[{ step: 'run x', row: null }], null, null]));
+  // AC4: the worker's check before it prints its DONE line rejects a bare word and passes the array.
+  const HARVEST = fileURLToPath(new URL('../desk/bin/harvest.mjs', import.meta.url));
+  const check = (line) => { const r = spawnSync(process.execPath, [HARVEST, '--check-done', line], { encoding: 'utf8' }); return `${r.status} ${(r.stdout + r.stderr).trim()}`; };
+  t('issue-1549 AC4 the self-check rejects a bare word, naming the array form',
+    check('AUTOPILOT_DONE: pr=1 jira=none follow_on=peak-check').startsWith('1 follow_on= is not a JSON array, read as [{"step":"peak-check","row":null}]; write it as the JSON array: follow_on=[{"step"'), true);
+  t('issue-1549 AC4 and an object', check('AUTOPILOT_DONE: pr=1 follow_on={} said=x').startsWith('1 not a JSON array: follow_on=['), true);
+  t('issue-1549 AC4 the array passes', check('AUTOPILOT_DONE: pr=1 jira=none follow_on=[{"step": "run x", "row": null}] said=y'), '0 reads as 1 follow-on step(s)');
+  t('issue-1549 AC4 no follow_on= passes', check('AUTOPILOT_DONE: pr=1 jira=none'), '0 no follow_on=');
+  t('issue-1549 AC4 follow_on=none is rejected, saying to leave it out',
+    check('AUTOPILOT_DONE: pr=1 jira=none follow_on=none').startsWith('1 follow_on= "none" names no step, read as none; with no steps leave follow_on= out'), true);
   t('DS-785 AC1 a step whose "after" is production keeps that gate',
     fo('pr=1 follow_on=[{"step": "open Osteopaths in the production portal", "row": null, "after": "production"}, {"step": "call staging", "row": null, "after": "main"}]'),
     JSON.stringify({ steps: [{ step: 'open Osteopaths in the production portal', row: null, after: 'production' }, { step: 'call staging', row: null, after: 'main' }], error: null }));

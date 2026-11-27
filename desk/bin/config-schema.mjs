@@ -700,6 +700,7 @@ export const ROWS = Object.freeze([
   v('triage-concurrency', '3b', 'Triage concurrency', 'whole', '1', dflt('1')),
   v('slot-candidates', '3b', 'Propose candidates for a free slot', 'on-off', 'off', dflt('off')),
   v('queue-priority', '3b', 'Queue order: priority', 'queue-priority', 'soft', dflt('soft')),
+  l('checkout-worklogs', '3b', 'Check-out work logs', 'text', ['~/notes/worklog.md', '~/notes/daily/*.md'], dflt(['none'])),
   // §4 Tracker
   v('tracker', '4', 'Tracker', 'tracker', 'jira'),
   v('jira-site', '4', 'Jira site', 'text', 'yourteam.atlassian.net'),

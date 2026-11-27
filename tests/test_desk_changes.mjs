@@ -4,8 +4,9 @@
 // A fixture git history of merge and squash commits, config backups with set modification times, spawn
 // records, per-ticket rows and audit rows; the log built from them and its before/after figures.
 import { mkdirSync, writeFileSync, utimesSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { join, dirname, basename } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { changeLog, isWorkerFacing, prOf, ticketOf, configEntries, claudeEntries, sideOf, logLines } from '../desk/bin/desk-changes.mjs';
 import { configRowValues } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
@@ -108,6 +109,9 @@ const entry = (row) => ce.find((e) => e.row === row || (row === 'ask' && /Small 
 t('AC3: one entry per changed row between consecutive copies', ce.length, 4);
 t('AC3: the entry names the row and its old and new value', JSON.stringify([entry('§3 git-push').from, entry('§3 git-push').to]), '[["ask"],["yes"]]');
 t('AC3: dated by the later copy', entry('§3 git-push').at, iso(NOW - 3 * DAY));
+t('#1646: each entry names the earlier copy and its time', `${basename(entry('§3 git-push').was_file)} ${entry('§3 git-push').was_at}`, `config.md.bak ${iso(NOW - 4 * DAY)}`);
+const cli = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-changes.mjs', import.meta.url)), '--config-entries', join(CFG, 'config.md')], { encoding: 'utf8' });
+t('#1646: --config-entries prints configEntries as JSON', cli.status === 0 && JSON.stringify(JSON.parse(cli.stdout)) === JSON.stringify(ce), true);
 t('AC3: one item split in two is a change', JSON.stringify([entry('§4 Required checks').from, entry('§4 Required checks').to]), '[["Lint Unit tests"],["Lint","Unit tests"]]');
 t('AC3: a note alone is no change; the live file is compared too', `${JSON.stringify(entry('§3b Preferred dev-server port').to)} ${entry('§3b Preferred dev-server port').at === iso(NOW - 2 * DAY)}`, '["3200"] true');
 t('AC3: an edited review ask is a change', JSON.stringify([entry('ask')?.from, entry('ask')?.to]), '[["Keep diffs small"],["Keep diffs smaller"]]');

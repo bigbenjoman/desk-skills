@@ -19,6 +19,12 @@ Google-only sign-in is a security control, not presentation. The portal offers A
 Created a fix, split into 3 PRs and running adversarial reviews. WIP.
 
 Every transactional email we send was failing DKIM (the signature that proves the mail is really from us), so failures drift towards spam. The DKIM records were proxied at the DNS provider, so the CNAMEs never resolved. The email provider reported "valid" throughout, which is why nobody caught it. Fixed and verified. ABC-1756 takes DMARC to enforcement (telling providers to actually reject failures), due 5 Oct.
+Three separate things moved under the launch-readiness ticket ABC-1700:
+Booking reminders went out an hour late for anyone outside UK time. ABC-1700: 3 PRs merged (#1430, #1433, #1437), reminders now follow the attendee's timezone.
+The nightly import timed out on large schools, so their timetables went stale. ABC-1700: #1441 (merged), it now runs in batches of 500.
+Staff couldn't see who had cancelled a session. ABC-1700: #1444 (in review).
+Payment code could merge with one approval. Branch protection on the payments paths now needs two, in effect since 15:00.
+
 Parked BIMI to ~March 2027 (ABC-1747): that's our logo showing next to the sender name in Gmail. It needs a Mark Certificate, which requires twelve months of provable continuous logo use. [...] We can't buy that evidence window, only start it. ABC-1756 is not parked with it.
 The review bot's API budget is exhausted: $10.06 against $10. Failing on every PR since ~17:15, repo-wide, until someone raises the cap. Not the usual flake we ignore. @Sam Taylor
 Three PRs need a human approval: #1425, #1422, #1398 (protected paths and size). All substantive CI passes on every one; everything red is a gate. #1398 has a real gitleaks hit: two candidate secrets that need triaging rather than waving through. And #1048 has been open 11 days for a 24-line change.
@@ -34,6 +40,13 @@ Side project (internal agent framework) - The first version was too large and bl
 - **The problem comes before the fix, in terms a non-engineer can follow.** "The portal
   middleware can be bypassed with a URL suffix", then the mechanism, then the consequence
   ("reaches real data"), then the state ("PR #1425, waiting on approval").
+- **One item per outcome, not per ticket.** ABC-1700 carried three different changes, so it is
+  three items, each naming the ticket, each with its own problem, change and state.
+  `references/items.md` says when to split and how to rank.
+- **A change with no ticket is still an item.** The branch-protection setting has no key, and gets
+  its own line with when it took effect, read from the setting itself.
+- **Counts, not lists.** "3 PRs merged (#1430, #1433, #1437)" rather than a key per line; a large
+  group gives its count and the few numbers worth opening.
 - **Jargon gets explained inline, once.** "DKIM (the signature that proves the mail is really
   from us)". "BIMI: that's our logo showing next to the sender name in Gmail".
 - **Say why nobody caught it, when that's the interesting part.** "The email provider reported
