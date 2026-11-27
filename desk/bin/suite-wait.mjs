@@ -235,14 +235,20 @@ export function lockWaiters({ procs, holders, locks = 'test' }) {
   return waitingRuns(procs, holders, locks).length;
 }
 
+// The repo a run working in `cwd` is in, as a function of cwd: `repos` [{name, dirs}] as lockRunsByRepo
+// takes them, the first that holds it, else `other` (a cwd not read included).
+export function runRepo(repos) {
+  const ins = repos.map((r) => ({ name: r.name, in: r.dirs.filter(Boolean).map(insideOf) }));
+  return (cwd) => (cwd && ins.find((r) => r.in.some((f) => f(cwd)))?.name) || 'other';
+}
+
 // The runs holding or waiting on the test lock (or `locks`), counted by the repo each works in, as a Map
 // of name to count: `repos` is [{name, dirs}] (each repo's main checkout and worktrees directory), and a
 // run in none of them counts under `other`. `held` from lockHolderRuns. Null when ps or the processes'
 // working directories cannot be read, so whose runs they are is unknown.
 export function lockRunsByRepo(repos, { procs, holders, cwds, held = [], locks = 'test' }) {
   if (!procs || !cwds) return null;
-  const ins = repos.map((r) => ({ name: r.name, in: r.dirs.filter(Boolean).map(insideOf) }));
-  const repoOf = (cwd) => (cwd && ins.find((r) => r.in.some((f) => f(cwd)))?.name) || 'other';
+  const repoOf = runRepo(repos);
   // Each run once: a run.sh with one suite holding a job token and another waiting for one both holds
   // and waits, under the same pid (runOf), and is one of its repo's runs, not two.
   const runs = new Map(held.map((r) => [r.pid, r.cwd]));
@@ -294,13 +300,22 @@ export function lockHolderRuns({ procs, holders, cwds, ages, stamps, locks = 'te
 // holder files as lockHolderRuns takes them.
 export const holdersNow = (dir, locks = 'test') => lockHolderRuns({ procs: processList(), holders: lockHolders(dir, { locks }), cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(dir, { locks }), locks });
 
-// Each holder as `<where>: <command>, held <age>`, the command cut to 80 characters, `; `-separated.
-export function holdersText(runs) {
-  return runs.map((r) => {
-    const cmd = r.args.length > 80 ? `${r.args.slice(0, 79)}…` : r.args;
-    return `${r.cwd ? tilde(r.cwd) : `pid ${r.pid}`}: ${cmd}, ${r.seconds == null ? 'held for an unknown time' : `held ${since(r.seconds * 1000)}`}`;
+// A holder run (lockHolderRuns, with the `repo` it works in and its usual hold `expectedS` where the
+// caller adds them) as a pass record's hold names it: { pid, repo, where, cmd, heldS, expectedS }, where
+// is its working directory, ~-shortened, or `pid <n>` where that was not read; repo, heldS and expectedS
+// null where unknown.
+export const holderOf = (r) => ({ pid: r.pid, repo: r.repo ?? null, where: r.cwd ? tilde(r.cwd) : `pid ${r.pid}`, cmd: r.args, heldS: r.seconds ?? null, expectedS: r.expectedS ?? null });
+
+// Each holder (holderOf) as `<where>: <command>, held <age>`, the command cut to 80 characters,
+// `; `-separated.
+export function holdersTextOf(holders) {
+  return holders.map((h) => {
+    const cmd = h.cmd.length > 80 ? `${h.cmd.slice(0, 79)}…` : h.cmd;
+    return `${h.where}: ${cmd}, ${h.heldS == null ? 'held for an unknown time' : `held ${since(h.heldS * 1000)}`}`;
   }).join('; ');
 }
+// The same, of holder runs (lockHolderRuns).
+export const holdersText = (runs) => holdersTextOf(runs.map(holderOf));
 
 // How many suite-bound workers repo `self` may start this pass on the test lock (`room`), and whether
 // it is held (`holds`, no room). The hold point `at` is `slots` x `factor`; the queue is `deep` with
@@ -309,37 +324,54 @@ export function holdersText(runs) {
 // runs in `counts` (lockRunsByRepo). Below the hold, at - waiting may start, so a pass cannot overshoot
 // it. `counts` null (unread) gives no room while deep. `waiting` null is a queue not read, which holds
 // nothing. `held` (lockHolderRuns) names who holds the lock, so a batch held behind it shows what it
-// waits on. `lock` is the lock the reading is of, `test` or `light`, as its line names it.
+// waits on. `lock` is the lock the reading is of, `test` or `light`, as its line names it. The reading
+// keeps what its line is made of (queueLine): slots, factor, active (repos counted in the share),
+// runsByRepo ([[name, count]], most first; null unread) and holders (holderOf each of `held`).
 export function lockQueue({ waiting, slots, factor, held = [], counts, self, lock = 'test' }) {
   const at = slots * factor;
-  if (waiting == null) return { lock, deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, line: `${lock} lock queue: not read (ps could not be read), so workers start as they would without it` };
+  const holders = held.map(holderOf);
+  if (waiting == null) {
+    const r = { lock, deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, slots, factor, active: null, runsByRepo: null, holders };
+    return { ...r, line: queueLine(r) };
+  }
   const deep = waiting >= at;
-  let room = Math.max(0, at - waiting), share = null, own = null, byRepo = '';
+  let room = Math.max(0, at - waiting), share = null, own = null, active = null, runsByRepo = null;
   if (counts == null) {
     if (deep) room = 0;
-    byRepo = '; whose runs they are is unknown (working directories could not be read)';
   } else {
     own = counts.get(self) ?? 0;
-    const active = new Set([...counts.keys(), self]).size;
+    active = new Set([...counts.keys(), self]).size;
     share = Math.ceil(at / active);
     if (deep) room = Math.max(0, share - own);
-    const each = [...counts].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])).map(([n, c]) => `${n} ${c}`).join(', ');
-    byRepo = `; runs by repo: ${each || 'none'}`;
-    if (deep) byRepo += `; this repo's share ceil(${at} / ${active}) = ${share}, ${own} its own`;
+    runsByRepo = [...counts].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
   }
-  const by = held.length ? `; held by ${holdersText(held)}` : '';
-  return { lock, deep, holds: room <= 0, room, share, own, unread: false, waiting, at, line: `${lock} lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${byRepo}${by}` };
+  const r = { lock, deep, holds: room <= 0, room, share, own, unread: false, waiting, at, slots, factor, active, runsByRepo, holders };
+  return { ...r, line: queueLine(r) };
+}
+
+// A lock queue reading's line (lockQueue), from its numbers and holders alone.
+export function queueLine(q) {
+  if (q.unread) return `${q.lock} lock queue: not read (ps could not be read), so workers start as they would without it`;
+  let byRepo = '; whose runs they are is unknown (working directories could not be read)';
+  if (q.runsByRepo) {
+    byRepo = `; runs by repo: ${q.runsByRepo.map(([n, c]) => `${n} ${c}`).join(', ') || 'none'}`;
+    if (q.deep) byRepo += `; this repo's share ceil(${q.at} / ${q.active}) = ${q.share}, ${q.own} its own`;
+  }
+  const by = q.holders.length ? `; held by ${holdersTextOf(q.holders)}` : '';
+  return `${q.lock} lock queue: ${q.waiting} run(s) waiting on its ${q.slots} slot(s), ${q.deep ? 'at or over' : 'under'} the hold at ${q.slots} x ${q.factor} = ${q.at}${byRepo}${by}`;
 }
 
 // The gate over the lock queues a repo's suite-bound workers would join (lockQueue readings; a null is
 // left out), or null with none: its room is the least any leaves, it holds when any holds, and its line
-// is each holding queue's, else the tightest's. `queues` keeps every reading, so one not read is said.
+// is each holding queue's, else the tightest's. `queues` keeps every reading, so one not read is said;
+// `named` the readings its line names.
 export function lockGate(queues) {
   const read = queues.filter(Boolean);
   if (!read.length) return null;
   const tight = read.reduce((a, b) => (b.room < a.room ? b : a));
   const holding = read.filter((q) => q.holds);
-  return { ...tight, holds: holding.length > 0, line: holding.length ? holding.map((q) => q.line).join('; and ') : tight.line, queues: read };
+  const named = holding.length ? holding : [tight];
+  return { ...tight, holds: holding.length > 0, line: named.map((q) => q.line).join('; and '), queues: read, named };
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.
