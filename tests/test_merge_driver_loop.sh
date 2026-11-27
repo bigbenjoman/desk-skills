@@ -333,14 +333,14 @@ q add T-836 Task A; q set T-836 branch=fix/T-836 state=done result.pr=836
 q add T-837 Task A; q set T-837 branch=fix/T-837 state=done result.pr=837
 cat > "$T/prs.json" <<EOF
 {
-  "836": { "head": "fix/T-836", "base": "main", "sha": "$SHA836", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "someone-else" },
+  "836": { "head": "fix/T-836", "base": "main", "sha": "$SHA836", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "someone-else", "premergedHead": "8361111111111111111111111111111111111111" },
   "837": { "head": "fix/T-837", "base": "main", "sha": "$SHA837", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "" }
 }
 EOF
 : > "$T/merges.log"
 all=; for i in 1 2 3; do loop; all="$all$out"; done
 check "DS-1030 AC4: a PR GitHub shows merged at the driver's merge is not merged again, and its line names the GitHub user" \
-  '[ -z "$(merged)" ] && echo "$all" | grep -q "#836 already merged on GitHub by github someone-else — not merged by this driver" && node "$B/merge-log.mjs" show --repo acme/widgets --pr 836 --latest | jq -e ".by == \"github someone-else\" and .merged_by == \"someone-else\" and .ticket == \"T-836\"" >/dev/null'
+  '[ -z "$(merged)" ] && echo "$all" | grep -q "#836 already merged on GitHub by github someone-else at 836111111, not the head checked, 836836836: something merged unchecked — not merged by this driver" && node "$B/merge-log.mjs" show --repo acme/widgets --pr 836 --latest | jq -e ".by == \"github someone-else\" and .merged_by == \"someone-else\" and .ticket == \"T-836\" and .sha == \"8361111111111111111111111111111111111111\"" >/dev/null'
 check "DS-1030 AC4: merged by someone GitHub does not name, the driver records the merger unknown" \
   'node "$B/merge-log.mjs" show --repo acme/widgets --pr 837 --latest | jq -e ".by == \"unknown\" and .merged_by == null" >/dev/null'
 q drop T-836; q drop T-837

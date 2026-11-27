@@ -109,6 +109,23 @@ writeFileSync(answer, 'not json');
 cliGh('record', '44', 'beef123', '--by', D, '--event', 'merged');
 t('DS-1030 GitHub unread keeps the merger given, with no merged_by', [mergedLine('44')?.by, 'merged_by' in (mergedLine('44') ?? {})], [D, false]);
 t('DS-1030 an outside merger is github <login>, or unknown', [M.outsideMerger('someone'), M.outsideMerger(null)], ['github someone', 'unknown']);
+// `outside`: a PR GitHub already shows merged is recorded as its outside merger's, at the head GitHub merged.
+writeFileSync(answer, '{"state":"MERGED","headRefOid":"beef1234567","mergedBy":{"login":"someone-else"}}');
+const o1 = cliGh('outside', '45', 'beef123', '--ticket', 'DS-9');
+t('DS-1030 AC1 outside: GitHub showing it merged records github <login> at its head, exit 0',
+  [o1.status, o1.stdout.trim(), mergedLine('45')?.by, mergedLine('45')?.merged_by, mergedLine('45')?.sha, mergedLine('45')?.ticket],
+  [0, 'already merged on GitHub by github someone-else', 'github someone-else', 'someone-else', 'beef1234567', 'DS-9']);
+writeFileSync(answer, '{"state":"MERGED","headRefOid":"0dd0dd0dd0d","mergedBy":null}');
+const o2 = cliGh('outside', '46', 'beef123');
+t('DS-1030 AC3 outside: a head other than the one checked is recorded and named, the merger unknown',
+  [o2.status, o2.stdout.trim(), mergedLine('46')?.by, mergedLine('46')?.sha],
+  [0, 'already merged on GitHub by unknown at 0dd0dd0dd, not the head checked, beef123: something merged unchecked', 'unknown', '0dd0dd0dd0d']);
+writeFileSync(answer, '{"state":"OPEN","headRefOid":"beef123","mergedBy":null}');
+const o3 = cliGh('outside', '47', 'beef123');
+writeFileSync(answer, 'not json');
+const o4 = cliGh('outside', '48', 'beef123');
+t('DS-1030 outside: open or unread on GitHub exits 1 and writes nothing',
+  [o3.status, o4.status, o3.stdout + o4.stdout, M.readLog(path).filter((e) => ['47', '48'].includes(e.pr)).length], [1, 1, '', 0]);
 
 // DS-835: the ticket on a record, and a PR's latest outcome.
 M.record({ repo: R, pr: 50, sha: 'f0f0f0f', by: D, event: 'merged', ticket: 'DS-1', now: NOW, path });
