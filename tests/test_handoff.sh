@@ -19,7 +19,7 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mk
 : > "$GIT_CONFIG_GLOBAL"
 mkdir -p "$T/desk"; ln -s "$SRC/desk/bin" "$T/desk/bin"
 export DESK_HOME="$T/desk" DESK_CONFIG="$T/config.md" DESK_MACHINE="$T/machine.md"
-unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT CLAUDE_AUTOCOMPACT_PCT_OVERRIDE DESK_START_STAGE
 HOOK="$SRC/hooks/desk-handoff.py"
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -555,6 +555,33 @@ check "DS-1037 a stage echoed at the start of a Bash command is the stage, as ha
 printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"- `AUTOPILOT_STAGE: 7/9 pr`"}]}}\n' >> "$T/wecho.jsonl"
 whook PostToolUse wk9 "$T/wecho.jsonl"
 check "DS-1037 and a decorated stage line is read too"         '[[ "$(ctx)" == *"partway through Stage 7"* ]]'
+# A fresh session started partway through a stage may print no stage line before the next one:
+# until it prints one, the stage it was started at is its stage.
+LV='handoff-threshold=20'
+transcript "$T/wnostage.jsonl" 60000
+whook PostToolUse wk12 "$T/wnostage.jsonl"
+check "DS-1037 a worker with no stage line and no start stage still never hands off" '[ -z "$out" ]'
+DESK_START_STAGE=4b whook PostToolUse wk13 "$T/wnostage.jsonl"
+c="$(ctx)"
+check "DS-1046 a fresh session started at 4b hands off at 4b before printing a stage line" '[[ "$c" == *"threshold of 20% (handoff-threshold 20), partway through Stage 4b"* ]] && [[ "$c" == *"--stage 4b"* ]]'
+check "DS-1046 and its state is armed at the drawn value" '[ "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"arm\"][\"pct\"])" "$DESK_HOME/handoff/wk13.json")" = "20.0" ]'
+wtranscript "$T/wstage6.jsonl" 60000 "6/9 hygiene"
+DESK_START_STAGE=4b whook PostToolUse wk14 "$T/wstage6.jsonl"
+check "DS-1046 a stage line it printed wins over the start stage" '[[ "$(ctx)" == *"partway through Stage 6"* ]]'
+# A stage line older than the hook's 8 MB tail still beats the start stage.
+python3 - "$T/wlong.jsonl" <<'PY'
+import sys
+pad = '{"type":"user","isSidechain":false,"message":{"role":"user","content":"' + "x" * 1000 + '"}}\n'
+with open(sys.argv[1], "w") as f:
+    f.write('{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"AUTOPILOT_STAGE: 5/9 evidence"}]}}\n')
+    f.write(pad * 9000)
+PY
+transcript "$T/wlongtail.jsonl" 60000; cat "$T/wlongtail.jsonl" >> "$T/wlong.jsonl"
+DESK_START_STAGE=4b whook PostToolUse wk16 "$T/wlong.jsonl"
+check "DS-1046 a stage line beyond the tail wins over the start stage" '[[ "$(ctx)" == *"partway through Stage 5"* ]]'
+DESK_START_STAGE=0 whook PostToolUse wk15 "$T/wnostage.jsonl"
+check "DS-1046 a start before Stage 3 is no stage to hand off at" '[ -z "$out" ]'
+LV=''
 before="$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d ' ')"
 AUTOPILOT_TASK="fix the review" whook PostToolUse wk10 "$T/w46.jsonl"
 check "DS-1037 a task worker past the threshold gets nothing"   '[ -z "$out" ]'

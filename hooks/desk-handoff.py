@@ -70,7 +70,8 @@ each on both windows, else the §2 rows as above. The state stamps the context a
 check (`start`: used, window, time and root), which `desk-env drift` reads as start-up use. Past the
 threshold, once the context has also grown by MIN_GROWTH tokens since that first check (or the last
 compaction; DESK_HANDOFF_MIN_GROWTH overrides it), and partway through a stage a session can start at
-(the last `AUTOPILOT_STAGE:` line the worker printed names Stage 3 or later), inject once: commit, write the handoff briefing with `handoff.mjs write
+(the last `AUTOPILOT_STAGE:` line the worker printed names Stage 3 or later, else, before it prints
+one, the stage a fresh session was started at, DESK_START_STAGE), inject once: commit, write the handoff briefing with `handoff.mjs write
 --stage <stage> --left …`, print `AUTOPILOT_HANDOFF: <stage>` and end the turn; pass.mjs then starts
 a fresh worker at that stage from the briefing. Stop blocks once while DESK_HANDOFF_FILE is unwritten
 since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
@@ -617,32 +618,50 @@ def min_growth():
 
 
 def current_stage(transcript):
-    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None."""
-    try:
-        lines = transcript_lines(transcript)
-    except Exception:
-        return None
-    for raw in reversed(lines):
-        if b"AUTOPILOT_STAGE" not in raw:
-            continue
+    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None.
+
+    The tail usually holds it; the whole file is read only when the tail does not, so a None means
+    the worker has printed no stage line at all."""
+    for limit in (TAIL_LIMIT, None):
         try:
-            e = json.loads(raw)
+            lines = transcript_lines(transcript, limit)
         except Exception:
-            continue
-        if e.get("type") != "assistant" or e.get("isSidechain"):
-            continue
-        for c in reversed((e.get("message") or {}).get("content") or []):
-            if not isinstance(c, dict):
+            return None
+        for raw in reversed(lines):
+            if b"AUTOPILOT_STAGE" not in raw:
                 continue
-            if c.get("type") == "text":
-                found = STAGE_LINE.findall(c.get("text") or "")
-                if found:
-                    return found[-1].lower()
-            elif c.get("type") == "tool_use" and c.get("name") == "Bash":
-                m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
-                if m:
-                    return m.group(2).lower()
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            if e.get("type") != "assistant" or e.get("isSidechain"):
+                continue
+            for c in reversed((e.get("message") or {}).get("content") or []):
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text":
+                    found = STAGE_LINE.findall(c.get("text") or "")
+                    if found:
+                        return found[-1].lower()
+                elif c.get("type") == "tool_use" and c.get("name") == "Bash":
+                    m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
+                    if m:
+                        return m.group(2).lower()
+        if os.path.getsize(transcript) <= TAIL_LIMIT:
+            break  # the tail was the whole file
     return None
+
+
+def worker_stage(transcript):
+    """The stage the worker is in: its last stage line, else the stage spawn-worker.sh started this
+    session at (DESK_START_STAGE, from AUTOPILOT_START_STAGE). A fresh session after a handoff or a
+    park starts partway through a stage and may print no stage line until the next one; without
+    this it could never hand off before then."""
+    stage = current_stage(transcript)
+    if stage:
+        return stage
+    start = (os.environ.get("DESK_START_STAGE") or "").strip().lower()
+    return start if start in RESUME_STAGES else None
 
 
 def on_worker_context(event, data, session, root, path):
@@ -666,7 +685,7 @@ def on_worker_context(event, data, session, root, path):
         state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     grown = used - state["base_used"] >= min_growth()
-    stage = current_stage(transcript) if pct and now >= pct and grown else None
+    stage = worker_stage(transcript) if pct and now >= pct and grown else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
     if stage not in RESUME_STAGES:
         save_state(session, state)
