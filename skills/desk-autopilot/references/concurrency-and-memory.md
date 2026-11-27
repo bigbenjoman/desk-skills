@@ -109,6 +109,17 @@ profile, the lock held past two minutes), the batch starts up to its own number 
 off, and the line says why. Borrowed workers are not a reason to lower the count: the ladder leaves
 the batch's own number as it is.
 
+**The machine budget weighs workers by their repo's memory, not only counts them.** Where the
+machine profile sets `memory-ceiling-gb` beside its `autopilot-concurrency` cap, each running worker
+in every queue counts its repo's config §3b "Worker memory weight (GB)" (`desk-env get
+worker-memory`) against that ceiling, and a pass starts one of its own only while the weights leave
+room for it. The cap still holds as a backstop. A repo with no weight set weighs the flat share, the
+ceiling over the cap (5 on a 15 GB, 3-worker machine), so it behaves as before. So with a 15 GB
+ceiling and a cap of 4, two workers of a repo weighted 5 and two weighted 2 run (14 GB), and a third
+at 5 beside one at 2 (17 GB) does not. The report's `machine budget:` line gives the GB in use, and
+desk-q's machine line shows it against the ceiling, with the room left for a light repo's worker
+where a heavy one no longer fits.
+
 **Tickets that name one file share it up to a per-file budget**, config §3b "Per-file collision
 budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 2; serial: none`: up to
 three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
@@ -174,7 +185,8 @@ kind `off` the pass reads no harm signal and judges memory by the ladder alone. 
 the count when you lower it. On macOS only `WORKER-OOM` is read.
 
 **Memory is reserved from the machine's ceiling as leases**, where the machine profile sets
-`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the profile's
+`memory-ceiling-gb`. Each worker a pass starts reserves its repo's weight, §3b "Worker memory weight
+(GB)", or where that is unset its share (that ceiling over the profile's
 `autopilot-concurrency` cap, or over the cap of §3b "Autopilot worker concurrency" where the profile
 sets none, at least 1 GiB), held by the worker's process and returned when it
 exits. Before a heavy run of your own (a full suite, a build), reserve for it so every pass counts

@@ -47,17 +47,19 @@ const tickets = (running, ready) => {
   for (let i = 1; i <= ready; i++) out[`Y-${i}`] = { key: `Y-${i}`, state: 'triaged', open_questions: 0, branch: `fix/Y-${i}` };
   return out;
 };
-// Another repo: its §3b concurrency row and its queue (`running` workers, or `raw` text).
-function other(W, slug, { conc = '4 / 4', running = 0, raw = null } = {}) {
+// A §3b worker memory weight row, or none.
+const weightRow = (weight) => (weight == null ? '' : `| Worker memory weight (GB) | \`none\` | \`${weight}\` |\n`);
+// Another repo: its §3b concurrency row, its weight row, and its queue (`running` workers, or `raw` text).
+function other(W, slug, { conc = '4 / 4', running = 0, raw = null, weight = null } = {}) {
   mkdirSync(dirname(configPath(W, slug)), { recursive: true });
-  writeFileSync(configPath(W, slug), `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | \`2 / 3\` | \`${conc}\` |\n`);
+  writeFileSync(configPath(W, slug), `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | \`2 / 3\` | \`${conc}\` |\n${weightRow(weight)}`);
   mkdirSync(dirname(queuePath(W, slug)), { recursive: true });
   writeFileSync(queuePath(W, slug), raw ?? JSON.stringify({ version: 1, batch: slug, tickets: tickets(running, 0) }));
 }
 // This repo: a git checkout, a config at `conc` with a memory ceiling row, and a queue; runs one pass.
 // -> { out, running }
 let floor = 46100;
-function pass(W, slug, { conc = '2 / 3', ceiling = '56', running = 0, ready = 3 } = {}) {
+function pass(W, slug, { conc = '2 / 3', ceiling = '56', running = 0, ready = 3, weight = null } = {}) {
   const R = join(W, slug);
   const gitEnv = { ...process.env, HOME: join(W, 'home'), GIT_CONFIG_GLOBAL: join(W, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '[user]\n  email = t@example.com\n  name = t\n');
@@ -73,7 +75,7 @@ function pass(W, slug, { conc = '2 / 3', ceiling = '56', running = 0, ready = 3 
     '## 2. Paths', '| Field | Value |', '|---|---|', `| Primary repo root | \`${join(R, 'repo')}\` |`, `| Worktrees directory | \`${join(R, 'wt')}\` |`, '',
     '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `autopilot-workers` | Run workers | `yes` | `yes` |', '',
     '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', `| Autopilot worker concurrency | \`2 / 3\` | \`${conc}\` |`,
-    `| Memory ceiling for parallel work (GB) | \`16\` | \`${ceiling}\` |`, '',
+    `| Memory ceiling for parallel work (GB) | \`16\` | \`${ceiling}\` |`, weightRow(weight).trimEnd(), '',
   ].join('\n'));
   const q = queuePath(W, slug);
   mkdirSync(dirname(q), { recursive: true });
@@ -110,7 +112,7 @@ other(W, 'acme__three', { running: 2 });
 r = pass(W, 'acme__four', { conc: '2 / 3', ready: 2 });
 t('AC2 a fourth repo starts nothing', r.started, 0);
 t('AC2 its report says the machine is at its cap', line(r.out, 'machine budget:'),
-  'machine budget: 10 of the machine\'s 10 worker(s) running across every repo: the machine is at its cap, so nothing starts this pass');
+  'machine budget: 10 of the machine\'s 10 worker(s) running across every repo, 30G of the 32G memory ceiling by worker weight (this repo\'s 3G each, the flat share): the machine is at its cap, so nothing starts this pass');
 
 // AC3: a machine cap of 10 with 8 running across the repos: a pass with 3 ready starts at most 2.
 W = world({ cap: 10 });
@@ -118,7 +120,7 @@ other(W, 'acme__one', { running: 5 });
 other(W, 'acme__two', { running: 3 });
 r = pass(W, 'acme__three', { conc: '3 / 4', ready: 3 });
 t('AC3 it starts 2 of its 3 ready', r.started, 2);
-t('AC3 its report says it starts at most 2', line(r.out, 'machine budget:'), 'machine budget: 8 of the machine\'s 10 worker(s) running across every repo: starting at most 2');
+t('AC3 its report says it starts at most 2', line(r.out, 'machine budget:'), 'machine budget: 8 of the machine\'s 10 worker(s) running across every repo, 24G of the 32G memory ceiling by worker weight (this repo\'s 3G each, the flat share): starting at most 2');
 
 // AC4: another repo's queue cannot be parsed: it counts at its own cap of 4, and the report names it.
 W = world({ cap: 10 });
@@ -127,7 +129,7 @@ other(W, 'acme__one', { running: 4 });
 r = pass(W, 'acme__two', { conc: '3 / 4', ready: 3 });
 t('AC4 the unreadable repo counts at its cap, so 2 start rather than 3', r.started, 2);
 const ac4 = line(r.out, 'machine budget:') ?? '';
-t('AC4 the report names the unreadable queue', ac4.startsWith('machine budget: 8 of the machine\'s 10 worker(s) running across every repo; acme/broken\'s queue cannot be read (')
+t('AC4 the report names the unreadable queue', ac4.startsWith('machine budget: 8 of the machine\'s 10 worker(s) running across every repo, 24G of the 32G memory ceiling by worker weight (this repo\'s 3G each, the flat share); acme/broken\'s queue cannot be read (')
   && ac4.includes(queuePath(W, 'acme__broken')) && ac4.endsWith('so it counts at its cap of 4 workers: starting at most 2'), true);
 
 // AC5: no machine profile: each repo uses its own rows, and the report says there is no budget.
@@ -142,6 +144,40 @@ t('AC5 the repo\'s own memory ceiling is used', line(r.out, 'memory ceiling'), '
 const setup = readFileSync(join(SRC, 'skills', 'desk-setup', 'SKILL.md'), 'utf8');
 t('AC6 desk-setup proposes the machine\'s figure for a ceiling row above it, saying why',
   /row already holds a figure above the\s+machine's, propose the machine's figure in its place and say why/.test(setup) && /a repo\s+row may be lower but never higher/.test(setup), true);
+
+// issue-1523: the budget sums each repo's worker memory weight against the machine's memory ceiling.
+// AC1, AC2: a 15 GB ceiling and a cap of 4; two heavy (5) and one light (2) running leave 1 GB short
+// of a heavy worker but room for one light one: two heavy and two light is 14 GB.
+W = world({ cap: 4, ceiling: 15 });
+other(W, 'acme__heavy', { running: 2, weight: 5 });
+other(W, 'acme__light', { running: 1, weight: 2 });
+r = pass(W, 'acme__lite', { conc: '3 / 4', ready: 3, weight: 2 });
+t('issue-1523 AC2 a light repo starts one worker into the 3 GB the weights leave', r.started, 1);
+t('issue-1523 AC1 the report sums the weights against the ceiling', line(r.out, 'machine budget:'),
+  'machine budget: 3 of the machine\'s 4 worker(s) running across every repo, 12G of the 15G memory ceiling by worker weight (this repo\'s 2G each): starting at most 1');
+// AC2: three heavy running fill the 15 GB, so a light worker does not start though the cap has a slot.
+W = world({ cap: 4, ceiling: 15 });
+other(W, 'acme__heavy', { running: 3, weight: 5 });
+r = pass(W, 'acme__lite', { conc: '3 / 4', ready: 3, weight: 2 });
+t('issue-1523 AC2 three heavy and one light (17 GB) does not start', r.started, 0);
+t('issue-1523 AC2 the report says the memory ceiling, not the cap, holds it', line(r.out, 'machine budget:'),
+  'machine budget: 3 of the machine\'s 4 worker(s) running across every repo, 15G of the 15G memory ceiling by worker weight (this repo\'s 2G each): the memory ceiling has no room for another 2G worker, so nothing starts this pass');
+// AC3: no weight set anywhere: each worker weighs the flat share, 15 / 3 = 5, and the cap decides as before.
+W = world({ cap: 3, ceiling: 15 });
+other(W, 'acme__one', { running: 2 });
+r = pass(W, 'acme__two', { conc: '2 / 3', ready: 3 });
+t('issue-1523 AC3 unweighted repos start as the worker count allows', r.started, 1);
+t('issue-1523 AC3 they weigh the flat share', line(r.out, 'machine budget:'),
+  'machine budget: 2 of the machine\'s 3 worker(s) running across every repo, 10G of the 15G memory ceiling by worker weight (this repo\'s 5G each, the flat share): starting at most 1');
+// AC4: light weights leave memory room, but the worker cap still holds as a backstop.
+W = world({ cap: 2, ceiling: 32 });
+other(W, 'acme__one', { running: 2, weight: 2 });
+r = pass(W, 'acme__two', { conc: '2 / 3', ready: 3, weight: 2 });
+t('issue-1523 AC4 the worker cap holds though the weights leave room', r.started, 0);
+t('issue-1523 AC4 the report names the cap', (line(r.out, 'machine budget:') ?? '').endsWith(': the machine is at its cap, so nothing starts this pass'), true);
+// AC6: /desk-setup proposes a weight from a per-repo peak source where one exists, else the flat share, and asks.
+t('issue-1523 AC6 desk-setup proposes the weight from measured peaks, else none, and asks to confirm',
+  /\*\*Worker memory weight\*\*: propose the repo's measured peak/.test(setup) && /With none, propose `none`[^.]*, say so, and ask to confirm/.test(setup), true);
 
 console.log(fails ? `${fails} check(s) did not pass` : 'machine budget: all checks passed');
 process.exit(fails ? 1 : 0);
