@@ -87,7 +87,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { resortQueue, resortLine, plannedFiles, priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank, unstarted, reach } from './spawn-order.mjs';
+import { resortQueue, resortLine, plannedFiles, priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank, deferringOrder, unstarted, reach } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -4747,32 +4747,29 @@ const loopFrom = { attempts, running: localKeys().length };
 // The memory share a local start was refused: no later local ticket starts this pass, though a cloud one may.
 let memStop = false;
 // Priority (§3b "Queue order: priority"): an unstarted ticket waits while a higher-priority unstarted one
-// would lose time by its start (spawn-order.mjs priorityHold). `tried` are the candidates this loop has
-// reached, so the rest may still start; `startedNow` those it started. A ticket held only for a slot a
-// pending higher one needs is deferred, not skipped: tried again after every ticket in `spawnable`, so a
-// higher one the loop then refused without taking a slot (a busy worktree, the lock queue) leaves that
-// slot to it rather than idle. `spawnOrder` is `spawnable` with those retries after it.
-const tried = new Set();
-const spawnOrder = [...spawnable];
-const deferredLow = new Set();
+// would lose time by its start (spawn-order.mjs priorityHold); `startedNow` are those this loop started.
+// A ticket held only for a slot a pending higher one needs is deferred, not skipped: read again after
+// every ticket in `spawnable` (spawn-order.mjs deferringOrder), so a higher one the loop then refused
+// without taking a slot (a busy worktree, the lock queue) leaves that slot to it rather than idle. What
+// may still start is the entries not reached yet, deferred retries included, so a deferred ticket still
+// holds a lower one behind it.
 const startedNow = new Set();
 const blockerSucc = {};
 for (const x of Object.values(fresh.tickets)) for (const p of blockersOf(x)) (blockerSucc[p] ??= []).push(x.key);
-const priorityHeldBy = (t) => {
+const priorityHeldBy = (t, ahead) => {
   if (PRIORITY.mode === 'off' || !unstarted(t) || toResume(t) || toHandoff(t)) return null;
   const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key)).map((x) => x.key);
-  const pending = new Set(spawnable.filter((x) => !tried.has(x.key) && x.key !== t.key && !toResume(x) && !toHandoff(x) && !startsInCloud(x) === !startsInCloud(t)).map((x) => x.key));
+  const pending = new Set(ahead.filter((x) => x.key !== t.key && !toResume(x) && !toHandoff(x) && !startsInCloud(x) === !startsInCloud(t)).map((x) => x.key));
   const free = startsInCloud(t) ? cloudSlots - cloudAttempts : (memStop ? 0 : ticketSlots) - attempts;
   // With no slot left, decideSpawn says so: priority holds nothing that would not start anyway.
   if (free <= 0) return null;
   return priorityHold(t.key, { mode: PRIORITY.mode, rank: heldRankOf, waiting, pending, free, files: budgetFiles,
     blocks: (a, b) => reach(a, blockerSucc[a] ?? [], blockerSucc).has(b) });
 };
-// spawnOrder grows while it is read: a deferred ticket is pushed onto its end, once.
-for (const t of spawnOrder) {
-  const pHold = priorityHeldBy(t);
-  tried.add(t.key);
-  if (pHold?.defer && !deferredLow.has(t.key)) { deferredLow.add(t.key); spawnOrder.push(t); continue; }
+for (const step of deferringOrder(spawnable, (x) => x.key)) {
+  const t = step.item;
+  const pHold = priorityHeldBy(t, step.ahead);
+  if (pHold?.defer && step.defer()) continue;
   if (pHold) { report.waiting.push(priorityHoldLine(t.key, pHold, PRIORITY.mode, PRIORITY_ROW)); continue; }
   const [verdict] = runSteps({
     name: 'spawn loop',
@@ -4790,7 +4787,7 @@ for (const t of spawnOrder) {
   // Its slots full: a later ticket that starts in a cloud session may still start, on its own limit.
   if (verdict?.type === 'skip' && verdict.full) {
     // A deferred retry comes after every ticket in spawnable: none is left behind it.
-    if (!verdict.cloud && !memStop && slotStopAt == null) slotStopAt = deferredLow.has(t.key) ? spawnable.length : spawnable.indexOf(t);
+    if (!verdict.cloud && !memStop && slotStopAt == null) slotStopAt = step.deferred ? spawnable.length : spawnable.indexOf(t);
     continue;
   }
   if (verdict?.type !== 'start') continue;

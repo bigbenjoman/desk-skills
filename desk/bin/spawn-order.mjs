@@ -162,6 +162,29 @@ export function priorityHold(key, { mode, rank, waiting, pending = new Set(), fr
   return null;
 }
 
+// The pass's spawn loop order: `list`, with each entry deferred while it is read pushed onto the end
+// and read again there. Yields { item, ahead, deferred, defer } per entry: `ahead` the entries not
+// reached yet, deferred retries included (so a deferred ticket still counts as pending for one behind
+// it); `deferred` whether this entry was deferred before; `defer()` pushes it onto the end, true, or
+// false once its key has been deferred `cap` times. With priorityHold a ticket defers only while a
+// higher one is ahead of it, and the highest left never does, so the order ends; the cap holds it anyway.
+export function* deferringOrder(list, keyOf = (x) => x, cap = list.length) {
+  const order = [...list];
+  const count = new Map();
+  for (let at = 0; at < order.length; at += 1) {
+    const item = order[at];
+    const key = keyOf(item);
+    const defer = () => {
+      const n = count.get(key) ?? 0;
+      if (n >= cap) return false;
+      count.set(key, n + 1);
+      order.push(item);
+      return true;
+    };
+    yield { item, ahead: order.slice(at + 1), deferred: count.has(key), defer };
+  }
+}
+
 // The pass's line for a ticket priorityHold holds.
 export const priorityHoldLine = (key, hold, mode, row = 'Queue order: priority') =>
   `${key}: waits for ${hold.key}, a higher priority (§3b "${row}" ${mode}: ${hold.why})`;

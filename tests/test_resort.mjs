@@ -1,7 +1,7 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
 // covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs desk/bin/config-schema.mjs
-import { resortQueue, resortLine, chainName, priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank } from '../desk/bin/spawn-order.mjs';
+import { resortQueue, resortLine, chainName, priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank, deferringOrder } from '../desk/bin/spawn-order.mjs';
 import { ROWS } from '../desk/bin/config-schema.mjs';
 import { readFileSync } from 'node:fs';
 import { layOrder } from '../desk/bin/queue-writer.mjs';
@@ -138,6 +138,28 @@ t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainN
   t('#1624 a ticket the queue has started passes on no rank', inheritedRank([tk('K'), tk('J'), tk('H', { state: 'running', spawned_at: 'x', held_by: 'J' })], (k) => tr[k])('J'), 2);
   t('#1624 soft: a hold for a slot is deferred, one for a shared file is not',
     `${triHold('K', 'soft', {}) === null} ${priorityHold('K', { mode: 'soft', rank: inh, files: () => [], waiting: ['H', 'K'], pending: new Set(['H']), free: 1 })?.defer} ${triHold('K', 'soft', { H: ['f'], K: ['f'] })?.defer}`, 'true true undefined');
+  // The pass's spawn loop at soft, as pass.mjs runs it: placed K (rank 1), then H (rank 0), then L (rank 2),
+  // `slots` free, no files shared; `refused` are refused at spawn without taking a slot (a busy worktree).
+  const loop = (list, slots, refused = []) => {
+    const lr = { K: 1, H: 0, L: 2, D: 1 };
+    const started = [];
+    for (const step of deferringOrder(list)) {
+      const free = slots - started.length;
+      const waiting = list.filter((k) => !started.includes(k));
+      const hold = free <= 0 ? null : priorityHold(step.item, { mode: 'soft', rank: (k) => lr[k], waiting, pending: new Set(step.ahead.filter((k) => k !== step.item)), free, files: () => [] });
+      if (hold?.defer && step.defer()) continue;
+      if (hold || refused.includes(step.item) || free <= 0) continue;
+      started.push(step.item);
+    }
+    return started.join(' ');
+  };
+  t('#1624 soft: a ticket deferred for a higher one refused at spawn takes the slot, not a lower one behind it', loop(['K', 'H', 'L'], 1, ['H']), 'K');
+  t('#1624 soft: the higher one takes the slot when it can start', loop(['K', 'H', 'L'], 1), 'H');
+  t('#1624 soft: with a slot each, nothing defers', loop(['K', 'H', 'L'], 3), 'K H L');
+  t('#1624 soft: deferred tickets start in priority order once the higher one is refused', loop(['L', 'K', 'H'], 1, ['H']), 'K');
+  t('#1624 deferringOrder reads a deferred entry again after the rest, and caps its deferrals',
+    (() => { const seen = []; for (const s of deferringOrder(['a', 'b'], (x) => x, 2)) { seen.push(`${s.item}${s.deferred ? '*' : ''}:${s.ahead.join('')}`); if (s.item === 'a') s.defer(); } return seen.join(' '); })(),
+    'a:b b:a a*: a*:');
   t('#1624 a blocker still starts before what it blocks, whatever its priority', resortQueue([tk('LO'), tk('HI', { state: 'parked', held_by: 'LO' })], { scope: () => [], fileCount: () => 0, rank: (k) => (k === 'HI' ? 0 : 3), priority: 'strict' }).order.join(' '), 'LO HI');
 }
 
