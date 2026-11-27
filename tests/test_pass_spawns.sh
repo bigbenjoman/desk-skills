@@ -732,7 +732,7 @@ rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 AC2 and the next pass pushes it and requeues it for the steps its park named" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" != "\"parked\"" ] && [ "$(field P-3 state)" != "\"done\"" ] && echo "$out" | grep -qF "P-3: \"git push origin fix/P-3 succeeds\" holds: requeued"'
 # #1532 AC4: the live red spell's repair, its worker failed with the fix committed and not pushed while main
 # is still red, has its branch pushed and its draft opened by the pass (pushRepairFix), not asked about.
-RK=base-red-main-20261126175511; MS=$(git -C "$T/repo" rev-parse main)
+RK="base-red-main-20261126175511"; MS=$(git -C "$T/repo" rev-parse main)
 git -C "$T/repo" worktree add -q -b "fix/$RK" "$T/wt/$RK" main
 echo g > "$T/wt/$RK/guard.txt"; git -C "$T/wt/$RK" add guard.txt; git -C "$T/wt/$RK" commit -q -m "fix(guards): $RK add the missing guard"
 printf '{"branch":"main","sha":"%s","checks":[{"name":"tests","sha":"%s","url":null}],"merges":[],"repair_key":"%s","since":"2026-11-26T17:55:11Z","at":"%s"}\n' "$MS" "$MS" "$RK" "$(node -e 'console.log(new Date().toISOString())')" > "$T/state-rc/base-red.json"
