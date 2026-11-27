@@ -71,6 +71,7 @@ const WHAT = Object.freeze({
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const DASH = '—';
 const MINUS = '−';
 const trim = (s) => (s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s);
@@ -392,8 +393,8 @@ function tiles(v, today) {
       const c = metric.callouts;
       const n = metric.counts ?? {};
       const fig = (x) => (x == null ? DASH : m.v(scaled(m, x)));
-      const tickets = (k) => (n[k] == null ? '' : `, ${n[k]} ticket${n[k] === 1 ? '' : 's'}`);
-      const window = metric.first_recorded ? `Since ${dayLabel(metric.first_recorded)}${n.to_date == null ? '' : ` · ${n.to_date} ticket${n.to_date === 1 ? '' : 's'}`}` : 'Nothing recorded yet';
+      const tickets = (k) => (n[k] == null ? '' : `, ${plural(n[k], 'ticket')}`);
+      const window = metric.first_recorded ? `Since ${dayLabel(metric.first_recorded)}${n.to_date == null ? '' : ` · ${plural(n.to_date, 'ticket')}`}` : 'Nothing recorded yet';
       const recent = `Last week ${fig(c.last_week)}${tickets('last_week')} · Yesterday ${fig(c.yesterday)}${tickets('yesterday')}`;
       return { label: m.tile, value: fig(c.to_date), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: window, sub2: recent, spark: spark(metric, m, openOn(ms)) };
     };
@@ -451,6 +452,8 @@ function dataSection({ id, title, intro, cols, groups, fold = null }) {
     + `<p class="muted small fold-intro">${esc(intro)}</p>${table}</details></section>`;
 }
 const repoAttr = (repo) => (repo && repo !== '*' ? ` data-repo="${esc(repo)}"` : '');
+// The repos the repo filter offers, in config order: none until there are two to pick between.
+const repoNames = (v) => { const n = (v.repos ?? []).map((r) => r.name).filter(Boolean); return n.length < 2 ? [] : n; };
 
 // The outside reviewer's re-reviews per PR and undraft-to-approval time, before and after the learned
 // review bar began (review-misses.mjs beforeAfter), for each repo with one. Nothing until a check has
@@ -469,8 +472,7 @@ function learned(v) {
 // A repo's slowest stage at the median, as the closed section's headline.
 function stagesHeadline(r) {
   const slow = MS.STAGES.filter((k) => r.stages?.[k]?.n && r.stages[k].median != null).sort((a, b) => r.stages[b].median - r.stages[a].median)[0];
-  const prs = `${r.prs} merged PR${r.prs === 1 ? '' : 's'}`;
-  return { repo: r.name, text: slow ? `${r.name}: ${MS.STAGE_NAMES[slow]} takes ${MS.fmt(r.stages[slow].median)} at the median, over ${prs}` : `${r.name}: ${prs}` };
+  return { repo: r.name, text: slow ? `${r.name}: ${MS.STAGE_NAMES[slow]} takes ${MS.fmt(r.stages[slow].median)} at the median, over ${plural(r.stages[slow].n, 'merged PR')}` : `${r.name}: ${plural(r.prs, 'merged PR')}` };
 }
 
 // Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
@@ -482,9 +484,9 @@ function mergeStages(v) {
     id: 'ms-h', title: 'Merge time by stage', intro: 'How long each stage of a merged PR took: the median, and the time 3 in 4 PRs came in under.',
     cols: [{ label: 'Stage' }, { label: 'Median', num: true }, { label: 'p75', num: true }, { label: 'PRs', num: true }],
     groups: repos.map((r) => ({
-      repo: r.name, head: `${r.name} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}`,
+      repo: r.name, head: `${r.name} · ${plural(r.prs, 'merged PR')}`,
       rows: MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => [esc(MS.STAGE_NAMES[k]), esc(MS.fmt(r.stages[k].median)), esc(MS.fmt(r.stages[k].p75)), String(r.stages[k].n)]),
-      note: r.outage ? `${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.` : null,
+      note: r.outage ? `${plural(r.outage, 'external review wait')} inside a gate reviewer outage left out of the medians.` : null,
     })),
     fold: repos.map(stagesHeadline),
   });
@@ -554,7 +556,7 @@ function stuckTime(v) {
   const weeks = repos.flatMap((r) => r.weeks.filter((w) => w.tickets).map((w) => ({ name: r.name, w })));
   const linked = weeks.some(({ w }) => w.causes.some((c) => c.link));
   const issue = (l) => (!l ? DASH : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
-  const over = (g) => `${fmtHours(g.hours)} over ${g.tickets} ticket${g.tickets === 1 ? '' : 's'}`;
+  const over = (g) => `${fmtHours(g.hours)} over ${plural(g.tickets, 'ticket')}`;
   const rows = (causes) => causes.map((c) => [esc(c.cause), esc(fmtHours(c.hours)), String(c.tickets), ...(linked ? [issue(c.link)] : [])]);
   const grouped = ({ stalled, held }) => [
     { sub: `Stalled · ${over(stalled)}` }, ...(stalled.causes.length ? rows(stalled.causes) : [{ empty: 'No stalls this week' }]),
@@ -573,7 +575,7 @@ function stuckTime(v) {
       const i = r.weeks.findIndex((w) => w.tickets);
       const w = r.weeks[i];
       const top = w.causes[0];
-      return { repo: r.name, text: `${r.name} ${i === 0 ? 'this week' : 'last week'}: ${fmtHours(w.hours)} parked over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}${top ? `, the most hours on ${top.cause} (${fmtHours(top.hours)})` : ''}` };
+      return { repo: r.name, text: `${r.name} ${i === 0 ? 'this week' : 'last week'}: ${fmtHours(w.hours)} parked over ${plural(w.tickets, 'ticket')}${top ? `, the most hours on ${top.cause} (${fmtHours(top.hours)})` : ''}` };
     }),
   });
 }
@@ -583,12 +585,15 @@ const keptAt = (v, lever, repo) => ((v.panels.changes?.all ?? v.panels.changes?.
   .filter((e) => e.kind === 'transition' && KEPT.includes(e.to) && e.lever === lever && e.repo === repo)
   .map((e) => e.at).sort().pop() ?? null);
 
-// One row per lever: its overall status across repos, and the cell its result is read from.
-function leverRows(v) {
-  const needs = leverItems(v);
-  const anyAuto = (v.repos ?? []).some((r) => r.row === 'auto');
+// One row per lever: its overall status across repos, and the cell its result is read from. With
+// `repo`, the same from that repo's cell and asks alone, and no row for a lever with no cell there.
+function leverRows(v, repo = null) {
+  const needs = leverItems(v).filter((n) => !repo || n.repo === repo);
+  const anyAuto = (v.repos ?? []).some((r) => r.row === 'auto' && (!repo || r.name === repo));
   const order = { kept: 0, testing: 1, needs: 2, pinned: 3, off: 4, error: 5 };
-  return (v.panels.board.levers ?? []).map((l, i) => {
+  return (v.panels.board.levers ?? []).flatMap((lever, i) => {
+    const l = repo ? { ...lever, cells: lever.cells.filter((c) => c.repo === repo) } : lever;
+    if (repo && !l.cells.length) return [];
     const evalCells = l.cells.filter((c) => c.sample);
     const status = needs.some((n) => n.lever === l.lever) ? 'needs'
       : evalCells.some((c) => KEPT.includes(c.state)) ? 'kept'
@@ -605,7 +610,7 @@ function leverRows(v) {
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
     const asks = needs.filter((n) => n.lever === l.lever);
-    return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, asks, i, rank: order[status] };
+    return [{ lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, asks, i, rank: order[status] }];
   }).sort((a, b) => a.rank - b.rank || a.i - b.i);
 }
 
@@ -646,7 +651,7 @@ function plainWords(c) {
   const gs = (c.guardrails ?? []).map((g) => g.status);
   const watching = gs.filter((g) => g === 'watching').length;
   if (gs.includes('breached')) parts.push('a guardrail breached');
-  else if (watching) parts.push(`${watching} guardrail${watching === 1 ? '' : 's'} being watched`);
+  else if (watching) parts.push(`${plural(watching, 'guardrail')} being watched`);
   else if (gs.length && gs.every((g) => g === 'ok')) parts.push('nothing worse');
   return cap(parts.join(', '));
 }
@@ -731,6 +736,14 @@ function decisionPanel(row, a) {
 function leverTable(v, today) {
   const p = v.panels.board;
   const rows = leverRows(v);
+  // With a repo filter, each row also carries what it reads in each repo, and shows only in the repos
+  // it has a cell in; the filter shows the picked repo's reading in place of the one across repos.
+  const names = repoNames(v);
+  const inRepo = new Map(names.map((n) => [n, new Map(leverRows(v, n).map((r) => [r.lever, r]))]));
+  const per = (r, f) => (names.length
+    ? `<div data-all>${f(r)}</div>${names.filter((n) => inRepo.get(n).has(r.lever)).map((n) => `<div${repoAttr(n)}>${f(inRepo.get(n).get(r.lever))}</div>`).join('')}`
+    : f(r));
+  const repos = (cells) => (names.length ? ` data-repos="${esc([...new Set(cells.map((c) => c.repo))].join(' '))}"` : '');
   const badge = (s) => `<span class="badge" style="${STYLE[s].badge}"><span class="dot" style="background:${STYLE[s].dot}"></span>${STYLE[s].label}</span>`;
   const name = (r, audited) => `<td class="td"><div class="stack3"><span class="b">${esc(r.lever)}</span><span class="muted small">${esc(WHAT[r.lever] ?? '')}</span>${audited && r.layer === 'quality-risk' ? '<span class="tiny" style="color:#4B5563">Each change checked by a blind review after merge</span>' : ''}</div></td>`;
   const stale = p.state === 'stale' && p.age ? `<div role="status" class="note"><span class="dot" style="background:${C.amber};margin-top:6px"></span><span>No new results for ${esc(p.age.words.replace(/ ago$/, ''))}. These are from ${esc(since(p.age.as_of, v.tz))}.</span></div>` : '';
@@ -740,19 +753,24 @@ function leverTable(v, today) {
   if (today) {
     intro = 'No lever is being tested yet, so there are no results. Here’s where each one stands.';
     head = '<tr><th class="th" style="width:34%">Lever</th><th class="th" style="width:18%">Status</th><th class="th">What happens next</th></tr>';
-    body = rows.map((r) => `<tr data-lever="${esc(r.lever)}">${name(r, false)}<td class="td">${badge(r.status)}</td><td class="td muted small next">${esc(r.next)}</td></tr>`).join('');
+    body = rows.map((r) => `<tr data-lever="${esc(r.lever)}"${repos(r.cells)}>${name(r, false)}<td class="td">${per(r, (x) => badge(x.status))}</td><td class="td muted small next">${per(r, (x) => esc(x.next))}</td></tr>`).join('');
   } else {
     intro = 'One row per lever. Testing means it’s on for half of new tickets, so desk can compare the two halves.';
     head = '<tr><th class="th" style="width:26%">Lever</th><th class="th" style="width:15%">Status</th><th class="th" style="width:20%">Result so far</th><th class="th" style="width:17%">Progress to a decision</th><th class="th">By repo</th></tr>';
+    const resultHtml = (x) => {
+      const res = result(x);
+      return `<div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div>`;
+    };
+    const progressHtml = (x) => {
+      const pr = progress(x, v.tz);
+      return `<div class="stack6"><div class="bar${pr.wait ? ' bar-wait' : ''}" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="${pr.wait ? 'wait' : 'muted'} tiny">${esc(pr.text)}</span></div>`;
+    };
     body = rows.map((r) => {
-      const res = result(r);
-      const pr = progress(r, v.tz);
       const asks = r.status === 'needs' ? r.asks.filter((a) => a.choices) : [];
-      return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' class="needs"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
-        + `<td class="td num"><div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div></td>`
-        + `<td class="td num"><div class="stack6"><div class="bar${pr.wait ? ' bar-wait' : ''}" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="${pr.wait ? 'wait' : 'muted'} tiny">${esc(pr.text)}</span></div></td>`
+      return `<tr data-lever="${esc(r.lever)}"${repos(r.cells)}${r.status === 'needs' ? ' class="needs"' : ''}>${name(r, true)}<td class="td">${per(r, (x) => badge(x.status))}</td>`
+        + `<td class="td num">${per(r, resultHtml)}</td><td class="td num">${per(r, progressHtml)}</td>`
         + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c, v.tz); return `<span class="repo"${repoAttr(c.repo)}${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`
-        + (asks.length ? `<tr class="decide-row"><td colspan="5" class="decide-cell"><div class="stack12">${asks.map((a) => decisionPanel(r, a)).join('')}</div></td></tr>` : '');
+        + (asks.length ? `<tr class="decide-row"${repos(asks)}><td colspan="5" class="decide-cell"><div class="stack12">${asks.map((a) => decisionPanel(r, a)).join('')}</div></td></tr>` : '');
     }).join('');
   }
   const legend = today ? '' : `<div class="legend-row muted tiny">${['kept', 'testing', 'needs', 'off'].map((s) => `<span><span class="dot" style="background:${STYLE[s].dot}"></span>${s === 'off' ? 'Off or waiting' : STYLE[s].label}</span>`).join('')}</div>`;
@@ -818,7 +836,6 @@ const shownReason = (e) => (MACHINE_REASONS.includes(e.kind) || e.missing ? e.wo
 const LOG_KIND = Object.freeze({ pr: { label: 'Merged PR', word: 'PR' }, config: { label: 'Settings', word: 'setting' }, claude: { label: 'Claude version', word: 'version' } });
 const MIN_SIDE = 5;
 const rowItems = (x) => (x == null ? 'none' : (Array.isArray(x) ? x : [x]).join(' ') || 'none');
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // A change log entry's title and the muted line under it.
 function logHead(e) {
@@ -845,13 +862,13 @@ function tooEarly(e) {
 }
 
 // One side's cost and blind review figures, as the before-and-after table and the chart tooltips word them.
-const sideCost = (s) => (s?.median_usd == null ? null : `$${s.median_usd.toFixed(2)}`);
+const sideCost = (s) => (s?.median_usd == null ? null : usd(s.median_usd));
 const sideCostCell = (s) => (sideCost(s) == null ? notRecorded : `${sideCost(s)} · ${plural(s.costed, 'ticket')}`);
 const sideAuditCell = (s) => (!s?.audited ? notRecorded : `P0 ${s.p0} · P1 ${s.p1} · P2 ${s.p2} · ${plural(s.audited, 'review')}`);
 
 function beforeAfter(e) {
   const days = e.window_days;
-  const col = (side) => (days ? `${days} day${days === 1 ? '' : 's'} ${side}` : cap(side));
+  const col = (side) => (days ? `${plural(days, 'day')} ${side}` : cap(side));
   const row = (label, f) => `<tr><th scope="row">${label}</th><td class="mono">${f(e.before)}</td><td class="mono">${f(e.after)}</td></tr>`;
   return `<div class="ba"><table class="ba-t"><thead><tr><td></td><th scope="col">${col('before')}</th><th scope="col">${col('after')}</th></tr></thead><tbody>`
     + `${row('Cost per ticket', sideCostCell)}${row('Blind review findings per PR', sideAuditCell)}</tbody></table>`
@@ -1119,13 +1136,17 @@ Array.prototype.forEach.call(copies, function (b) {
   });
 });
 // The repo filter and the change list's kind filter: an element carrying a repo or a kind other than the
-// one picked is hidden; one carrying neither always shows. The change list says so when nothing is left.
+// one picked is hidden; one carrying neither always shows. With a repo picked, a reading across all
+// repos (data-all) hides, and so does a row whose repos (data-repos) leave it out. The change list says
+// so when nothing is left.
 var pick = { repo: '', kind: '' };
 function apply() {
-  Array.prototype.forEach.call(document.querySelectorAll('[data-repo],[data-kind]'), function (el) {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-repo],[data-kind],[data-all],[data-repos]'), function (el) {
     var r = el.getAttribute('data-repo');
     var k = el.getAttribute('data-kind');
-    el.hidden = !!((pick.repo && r !== null && r !== pick.repo) || (pick.kind && k !== null && k !== pick.kind));
+    var rs = el.getAttribute('data-repos');
+    var offRepo = r !== null ? r !== pick.repo : el.getAttribute('data-all') !== null || (rs !== null && rs.split(' ').indexOf(pick.repo) < 0);
+    el.hidden = !!((pick.repo && offRepo) || (pick.kind && k !== null && k !== pick.kind));
   });
   var none = document.querySelector && document.querySelector('.ch-none');
   if (none) none.hidden = Array.prototype.some.call(document.querySelectorAll('.change,.change-log'), function (el) { return !el.hidden; });
@@ -1169,8 +1190,8 @@ function sideMenu(v) {
 
 // The repo filter, once there are two repos to pick between.
 function repoChips(v) {
-  const names = (v.repos ?? []).map((r) => r.name).filter(Boolean);
-  if (names.length < 2) return '';
+  const names = repoNames(v);
+  if (!names.length) return '';
   return `<div role="group" aria-label="Repo" class="chips"><button type="button" data-pick-repo="" aria-pressed="true">All repos</button>${names.map((n) => `<button type="button" data-pick-repo="${esc(n)}" aria-pressed="false">${esc(n)}</button>`).join('')}</div>`;
 }
 

@@ -590,7 +590,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }));
   const changesAll = mergePerLever(changesRaw, tz).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
   const week = changesAll.filter((e) => Date.parse(e.at) >= weekAgo);
-  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
+  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll }, errs(repos.map((r) => r.log)));
 
   // P7 experiment overhead.
   const audits = repos.flatMap((r) => r.audit.rows.filter((a) => Date.parse(a.at) >= weekAgo).map((a) => ({ ...a, repo: r.name })));

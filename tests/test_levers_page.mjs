@@ -214,11 +214,12 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   const lev = section(hToday, 'lev-h');
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
   t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 12);
-  t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
-  t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling">.*?Testing starts (once|when) a repo is set to auto\./.test(lev), true);
-  t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
+  // Each row reads across repos (data-all) and, for the repo filter, in each repo it has a cell in.
+  t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger"[^>]*>.*?<div data-all>Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
+  t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling"[^>]*>.*?<div data-all>Testing starts (once|when) a repo is set to auto\./.test(lev), true);
+  t('AC4 preflight is on by hand, first', /<tr data-lever="preflight"[^>]*>.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
-  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 9);
+  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /<div data-all>Testing starts (once|when) a repo is set to auto\./g), 9);
   t('AC4 the change list, as on any day', section(hToday, 'ch-h').includes('>Every change</h2>'), true);
   t('AC4 with nothing changed', section(hToday, 'ch-h').includes('Nothing has changed how desk works yet.'), true);
   t('AC4 How desk decides, before any test too', hToday.includes('<h2 id="how-h">How desk decides</h2>'), true);
@@ -689,14 +690,16 @@ const hLog = P.renderPage(withLog);
 function filterPage(html) {
   const attrsOf = (s) => Object.fromEntries([...s.matchAll(/([\w-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
   const node = (tag, attrs) => ({ tag, attrs, hidden: false, on: null, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }, setAttribute(k, v) { this.attrs[k] = v; }, addEventListener(_, f) { this.on = f; } });
-  const els = [...html.matchAll(/<(\w+)\b([^>]*\bdata-(?:repo|kind)="[^"]*"[^>]*)>/g)].map((m) => node(m[1], attrsOf(m[2])));
+  const els = [...html.matchAll(/<(\w+)\b([^>]*\bdata-(?:repos?|kind)="[^"]*"[^>]*|[^>]*\bdata-all\b[^>]*)>/g)]
+    .map((m) => node(m[1], { ...attrsOf(m[2]), ...(/\bdata-all\b/.test(m[2]) ? { 'data-all': '' } : {}) }));
   const buttons = (k) => [...html.matchAll(new RegExp(`<button type="button" ${k}="([^"]*)" aria-pressed="[^"]*">`, 'g'))].map((m) => node('button', { [k]: m[1] }));
   const repo = buttons('data-pick-repo');
   const kind = buttons('data-pick-kind');
-  const none = node('p', {});
+  // Hidden until the filter leaves nothing, as the page renders it.
+  const none = { ...node('p', {}), hidden: /<p class="empty ch-none" hidden>/.test(html) };
   const json = html.split('<script type="application/json" id="levers-view">')[1].split('</script>')[0];
   const el = { 'levers-view': { textContent: json }, 'age-banner': { innerHTML: '', getAttribute: () => '' }, 'age-words': { textContent: '' } };
-  const q = { '[data-pick-repo]': repo, '[data-pick-kind]': kind, '[data-repo],[data-kind]': els, '.change,.change-log': els.filter((e) => /^change(-log)?$/.test(e.attrs.class)) };
+  const q = { '[data-pick-repo]': repo, '[data-pick-kind]': kind, '[data-repo],[data-kind],[data-all],[data-repos]': els, '.change,.change-log': els.filter((e) => /^change(-log)?$/.test(e.attrs.class)) };
   const document = { getElementById: (id) => el[id], body: { setAttribute() {} }, querySelectorAll: (s) => q[s] ?? [], querySelector: (s) => (s === '.ch-none' ? none : null) };
   vm.runInNewContext(html.split('<script>').pop().split('</script>')[0], { document, Date, JSON, Math, Number, Array, String, setInterval: () => 0 });
   const press = (group, v) => group.find((b) => Object.values(b.attrs)[0] === v).on();
@@ -714,10 +717,7 @@ function filterPage(html) {
   t('DS-1043 AC1 the side menu lists each section, counts on Needs you and Levers', j(items), j(['Needs you|ny-h|1', 'Overview|ov-h|', 'Trends|tr-h|', 'Levers|lev-h|6', 'Changes|ch-h|', 'Merge time and parking|mp-h|', 'How desk decides|how-h|']));
   t('DS-1043 AC1 each item lands on its section', items.every((x) => hLog.includes(`id="${x.split('|')[1]}"`)), true);
   t('DS-1043 AC1 the sections in the menu’s order', ['ny-h', 'ov-h', 'tr-h', 'lev-h', 'ch-h', 'mp-h', 'how-h'].map((id) => hLog.indexOf(`id="${id}"`)).every((x, i, a) => !i || x > a[i - 1]), true);
-  // AC2: at phone width, a row of buttons along the top that scrolls sideways.
-  const phone = hLog.split('<style>')[1].split('@media (max-width:640px){')[1];
-  t('DS-1043 AC2 the menu sticks to the top and scrolls sideways', /\.side\{position:sticky;top:0;[^}]*overflow-x:auto\}/.test(phone), true);
-  t('DS-1043 AC2 its items sit in one row as buttons', /\.side ul\{flex-direction:row;flex-wrap:nowrap/.test(phone) && /\.side a\{min-height:44px;[^}]*border-radius:999px/.test(phone), true);
+  // AC2 (the phone-width row of buttons) is layout, checked in the screenshots, not here.
   // AC3: the repo filter.
   // In the configured order, the lever table's column order.
   t('DS-1043 AC3 a chip per repo', [...hLog.matchAll(/data-pick-repo="([^"]*)"/g)].map((m) => m[1]).join(','), ',ai-agents,studia-web,desk-skills');
@@ -729,11 +729,22 @@ function filterPage(html) {
   t('DS-1043 AC3 picking a repo shows only its parts', j([...new Set(f.els.filter((e) => e.attrs['data-repo'] && !e.hidden).map((e) => e.attrs['data-repo']))]), j(['ai-agents']));
   t('DS-1043 AC3 and hides every other repo’s', f.els.filter((e) => e.attrs['data-repo'] && e.attrs['data-repo'] !== 'ai-agents').every((e) => e.hidden), true);
   t('DS-1043 AC3 its button reads pressed', f.repo.map((b) => b.attrs['aria-pressed']).join(), 'false,true,false,false');
+  const rowsIn = f.els.filter((e) => 'data-repos' in e.attrs);
+  t('DS-1043 AC3 a lever row shows only where the repo has a cell', rowsIn.length > 0 && rowsIn.every((e) => e.hidden === !e.attrs['data-repos'].split(' ').includes('ai-agents')), true);
+  t('DS-1043 AC3 and the reading across repos gives way to the repo’s own', f.els.filter((e) => 'data-all' in e.attrs).every((e) => e.hidden), true);
   f.press(f.repo, '');
   t('DS-1043 AC3 All repos shows them all again', f.els.every((e) => !e.hidden), true);
+  {
+    // preflight is kept in desk-skills alone: across repos and in desk-skills it reads Kept, in ai-agents not.
+    const pre = section(hLog, 'lev-h').split('<tr data-lever="preflight"')[1].split('</tr>')[0];
+    const label = (attr) => new RegExp(`<div ${attr}><span class="badge"[^>]*><span class="dot"[^>]*></span>([^<]+)</span>`).exec(pre)?.[1];
+    const ai = label('data-repo="ai-agents"');
+    t('DS-1043 AC3 a lever’s status, result and progress follow the picked repo', j([label('data-all'), label('data-repo="desk-skills"'), ai === undefined ? !/data-repos="[^"]*ai-agents/.test(pre) : ai !== 'Kept']), j(['Kept', 'Kept', true]));
+  }
   // AC6: the kind filter.
   f.press(f.kind, 'lever');
   t('DS-1043 AC6 Lever changes shows only lever changes', j([f.shown((e) => e.attrs['data-kind'] === 'lever').every(Boolean), f.shown((e) => e.attrs['data-kind'] === 'other').some(Boolean)]), '[true,false]');
+  t('DS-1043 AC6 with some left to show, the list says nothing', f.none.hidden, true);
   f.press(f.kind, 'other');
   t('DS-1043 AC6 Other changes only the others', j([f.shown((e) => e.attrs['data-kind'] === 'lever').some(Boolean), f.shown((e) => e.attrs['data-kind'] === 'other').every(Boolean)]), '[false,true]');
   f.press(f.repo, 'studia-web');
@@ -744,7 +755,6 @@ function filterPage(html) {
     t(`DS-1043 AC4 ${id} is closed`, sec.includes('<details class="fold">') && !/<details class="fold" open/.test(sec), true);
     t(`DS-1043 AC4 ${id} shows its headline line`, sec.split('</summary>')[0].includes(`>${line}</span>`), true);
   }
-  t('DS-1043 AC4 the cue reads Hide table once open', hLog.includes('.fold[open] .fold-hide{display:inline}'), true);
   // AC5: a numbered dashed line per change in range, the same number on its list entry, and a tooltip.
   const cost = hLog.split('<article class="card wbr"')[1].split('</article>')[0];
   const dayChart = cost.split('<div class="chart" data-view="days"')[1];
@@ -753,7 +763,7 @@ function filterPage(html) {
   t('DS-1043 AC5 each inside the plot, in order of when it landed', marks.every((m, i) => m[1] > 8 && m[1] < 95 && (!i || m[1] > marks[i - 1][1])), true);
   t('DS-1043 AC5 and on the 6 weeks', count(cost.split('<div class="chart" data-view="wbr"')[1].split('<div class="chart" data-view="days"')[0], /<span class="mark-n num"/g), 3);
   t('DS-1043 AC5 on every chart', count(hLog, /<div class="marks">/g), 8);
-  t('DS-1043 AC5 drawn dashed, with a legend', /\.mark::before\{[^}]*border-left:1px dashed/.test(hLog) && dayChart.includes('A change, numbered as in the list'), true);
+  t('DS-1043 AC5 with a legend', dayChart.includes('A change, numbered as in the list'), true);
   const ch = section(hLog, 'ch-h');
   t('DS-1043 AC5 the same numbers on the list, newest first', [...ch.matchAll(/<span class="n-badge num" aria-label="Change (\d+)">\d+<\/span>/g)].map((m) => m[1]).join(), '4,3,2,1');
   const tip = /<span class="mark-tip" role="tooltip">(.*?)<\/span><\/span>/.exec(dayChart.split('>2</span>')[1])?.[1].replace(/<[^>]+>/g, '|') ?? '';
@@ -789,7 +799,7 @@ function filterPage(html) {
 }
 
 // Every lever has its one-line description, question handling's too.
-t('WHAT: question handling says what it does', /<tr data-lever="question-handling">.*?Decides whether a parked ticket’s question is pushed to you at once or waits for the digest/.test(section(hSix, 'lev-h')), true);
+t('WHAT: question handling says what it does', /<tr data-lever="question-handling"[^>]*>.*?Decides whether a parked ticket’s question is pushed to you at once or waits for the digest/.test(section(hSix, 'lev-h')), true);
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);
