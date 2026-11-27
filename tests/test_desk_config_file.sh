@@ -44,6 +44,12 @@ check "#1560 AC2: a row in neither exits 3, as today" '[ "$miss_rc" = 3 ]'
 rm "$HOME/.config/desk/repos/acme__widgets/config.md"
 nocfg="$(node "$M" get review-bar)"
 check "#1560: with no ~/.config/desk config at all (a cloud session), the file still answers" '[ "$nocfg" = file-bar ]'
+json="$(node "$M" get --json --where review-bar required-checks done-state 2>/dev/null)"; json_rc=$?
+check "#1560 AC1: get --json --where reads the file's rows with no config, exit 0" '[ "$json_rc" = 0 ] && [ "$(jq -r ".rows[\"review-bar\"].value" <<<"$json")" = file-bar ] && [ "$(jq -c ".rows[\"required-checks\"].items" <<<"$json")" = "[\"Lint\",\"Unit tests\"]" ] && [ "$(jq -r ".rows[\"done-state\"].set" <<<"$json")" = false ] && [ "$(jq -r ".config" <<<"$json")" = null ] && [ "$(jq -r ".where.slug" <<<"$json")" = acme__widgets ]'
+out="$(node "$M" get --json review-bar 2>&1)"; rc=$?
+check "#1560 AC1: get --json without --where reads the file with no config too" '[ "$rc" = 0 ] && [ "$(jq -r ".rows[\"review-bar\"].value" <<<"$out")" = file-bar ]'
+out="$(DESK_CONFIG_FILE= node "$M" get --json --where review-bar 2>/dev/null)"; rc=$?
+check "#1560 AC3: unset, get --json --where with no config still exits 3 with no rows" '[ "$rc" = 3 ] && [ "$(jq -c ".rows" <<<"$out")" = "{}" ]'
 cat > "$HOME/.config/desk/repos/acme__widgets/config.md" <<'EOF'
 ## 4. Tracker, tools and team
 | Field | Value |

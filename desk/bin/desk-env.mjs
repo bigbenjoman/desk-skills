@@ -2482,7 +2482,8 @@ function valueRow(id) {
 // throws a GetJsonUsage (exit 2) before any row is read; no config throws NoRepoConfigError (exit 3).
 // With --where it also gives what `where` prints, as `where: { slug, gh_repo, config, creds, exists }`,
 // and with no config it returns that with no rows (`noConfig` set, exit 3) rather than throwing, so a
-// caller learns the repo and its rows in one run. Asked for jira-required-fields as well, it adds
+// caller learns the repo and its rows in one run. A DESK_CONFIG_FILE stands in for a missing config:
+// its rows are read and `config` is null. Asked for jira-required-fields as well, it adds
 // `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
 class GetJsonUsage extends Error {}
 export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
@@ -2513,13 +2514,15 @@ function getJson(args) {
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
-  if (!parsed.exists) {
+  // With no repo config, DESK_CONFIG_FILE's rows (a cloud session) still answer, as get and list do;
+  // a row it lacks reads as unset, and a §3 permission, never taken from it, as `no`.
+  if (!parsed.exists && !parsed.fileRows) {
     if (where) return { where: whereJson(), config: null, rows: {}, noConfig: true };
     throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
   }
   const want = [...new Set([...ids, ...ROWS.filter((e) => sections.includes(e.section)).map((e) => e.id)])];
   const rows = Object.fromEntries(want.map((id) => { const { id: _, ...r } = readRow(id); return [id, r]; }));
-  return { ...(where ? { where: whereJson() } : {}), config: parsed.path, rows,
+  return { ...(where ? { where: whereJson() } : {}), config: parsed.exists ? parsed.path : null, rows,
     ...(where && want.includes('jira-required-fields') ? { required_fields: requiredFieldsByType(requiredFieldRules()) } : {}) };
 }
 
