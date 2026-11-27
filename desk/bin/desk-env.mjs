@@ -2669,11 +2669,14 @@ function getJson(args) {
 
 // `show --rows <id>...`: the named rows as `get --json` reads them, one line each, for a skill that
 // uses a handful of rows rather than whole sections: `§<section> <label> (<id>) = <value>`, a list's
-// items joined by ` · `. An unset row says `UNSET`, with what its reader takes instead where it takes
-// something, so the skill can name it. The CLI has checked the ids (checkIds) before the config.
+// items joined by ` · `, and so are a value row's when its cell holds more than one (a People row
+// naming two people), since its value is the first alone. An unset row says `UNSET`, with what its
+// reader takes instead where it takes something, so the skill can name it. The CLI has checked the
+// ids (checkIds) before the config.
 function showRows(ids) {
   return Object.entries(getJson(ids).rows).map(([id, r]) => {
-    const shown = r.kind === 'list' && r.items?.length ? r.items.join(' · ') : r.value;
+    const many = r.items?.length > 1 || (r.kind === 'list' && r.items?.length);
+    const shown = many ? r.items.join(' · ') : r.value;
     const value = r.set ? shown : `UNSET${shown == null ? '' : ` (reads as ${shown})`}`;
     const errors = r.errors.map((e) => ` [${e.error}]`).join('');
     return `§${r.section} ${r.label} (${id}) = ${value}${errors}`;

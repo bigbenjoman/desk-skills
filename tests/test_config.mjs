@@ -720,14 +720,16 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const help = `(${'help text a reader of this row needs and the checkout does not. '.repeat(40)})`;
   writeFileSync(join(T, 'rows.md'), ['## 1. You', '| Field | Value |', '|---|---|', '| Name | `Pat Example` |', '| Short form colleagues use | `TODO` |', '',
     '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `read-calendar` | read | `yes` | `yes` |', '',
-    '## 4. Project', '| Field | Value |', '|---|---|', '| Check-out destination | `#team` (where the post goes) |', `| Check builds | \`none\` ${help} |`, ''].join('\n'));
-  const rowsRun = showRun(['--rows', 'name', 'short-name', 'read-calendar', 'read-slack-own', 'checkout-destination'], { ...showEnv, DESK_CONFIG: join(T, 'rows.md') });
+    '## 4. Project', '| Field | Value |', '|---|---|', '| Check-out destination | `#team` (where the post goes) |', `| Check builds | \`none\` ${help} |`,
+    '| No longer on the team | `Ana` `Bo` |', ''].join('\n'));
+  const rowsRun = showRun(['--rows', 'name', 'short-name', 'read-calendar', 'read-slack-own', 'checkout-destination', 'former-members'], { ...showEnv, DESK_CONFIG: join(T, 'rows.md') });
   t('issue-1533 AC1 show --rows prints the named rows alone, one line each', `${rowsRun.status}\n${rowsRun.stdout}`, ['0',
     '§1 Name (name) = Pat Example',
     '§1 Short form colleagues use (short-name) = UNSET',
     '§3 read-calendar (read-calendar) = yes',
     '§3 read-slack-own (read-slack-own) = UNSET (reads as no)',
-    '§4 Check-out destination (checkout-destination) = #team', ''].join('\n'));
+    '§4 Check-out destination (checkout-destination) = #team',
+    '§4 No longer on the team (former-members) = Ana · Bo', ''].join('\n'));
   t('issue-1533 an unknown id exits 2, naming it', (({ status, stderr }) => `${status} ${/"nope"/.test(stderr)}`)(showRun(['--rows', 'name', 'nope'])), '2 true');
   t('issue-1533 no id exits 2', showRun(['--rows']).status, 2);
   t('issue-1533 with no config it exits 3', showRun(['--rows', 'name'], { ...showEnv, DESK_CONFIG: join(T, 'missing.md') }).status, 3);
