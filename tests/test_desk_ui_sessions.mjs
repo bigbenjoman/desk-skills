@@ -315,7 +315,9 @@ writeFileSync(join(H, '.desk-autopilot', 'usage', 'probe.log'), `${JSON.stringif
 const vpQueue = join(DH, 'repos', 'acme__voicepa', 'queue.json');
 const vpBefore = readFileSync(vpQueue, 'utf8');
 const withFallback = (rec) => writeFileSync(vpQueue, JSON.stringify({ ...JSON.parse(vpBefore), login_fallback: rec }));
-const fbRec = { since: new Date(NOW).toISOString(), login: 'login-2', why: 'at the usage limit', type: 'five_hour', resets_at: Math.floor(NOW / 1000) + 2 * 3600 };
+// A limit's reset is read on the real clock (desk-ui's events clock), not the conversations' NOW.
+const REAL = Math.floor(Date.now() / 1000);
+const fbRec = { since: new Date().toISOString(), login: 'login-2', why: 'at the usage limit', type: 'five_hour', resets_at: REAL + 2 * 3600 };
 withFallback(fbRec);
 const nfb = starts().length;
 const fb = await start({ purpose: 'blank', repo: 'acme__voicepa' });
@@ -327,9 +329,9 @@ withFallback({ ...fbRec, type: 'pace', resets_at: null });
 const fbPace = await start({ purpose: 'blank', repo: 'acme__voicepa' });
 t('a switch made for pacing is not a limit, so the default still starts it', fbPace.status === 429, false);
 if (fbPace.status === 201) await call('DELETE', `/api/sessions/${fbPace.json.id}`, { headers: auth });
-withFallback({ ...fbRec, resets_at: Math.floor(NOW / 1000) - 60 });
+withFallback({ ...fbRec, resets_at: REAL - 60 });
 const fbPast = await start({ purpose: 'blank', repo: 'acme__voicepa' });
-t('nor is one whose reset has passed', fbPast.status === 429, false);
+t('nor is one whose reset has passed', [fbPast.status, fbPast.json?.error?.code ?? null, fbPast.json?.error?.message ?? null], [201, null, null]);
 if (fbPast.status === 201) await call('DELETE', `/api/sessions/${fbPast.json.id}`, { headers: auth });
 // The fallback since made the default (the login named `default` here): the record was for the one before it.
 withFallback({ ...fbRec, login: 'default' });
