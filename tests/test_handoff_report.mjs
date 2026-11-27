@@ -644,6 +644,15 @@ t('the text names the arm below start-up cost as one that loops, with both figur
 t('a worker session\'s first request is its start-up, so a worker arm below it is flagged; a session with no stage line counts none',
   [rec(p13, 200_000).startup, s13('wloop1').resume_overheads, s13('wbase1').resume_overheads],
   [{ overhead: 60_000, samples: 5, below: [{ arm: '20% of 200,000', threshold_tokens: 40_000, overhead: 60_000, samples: 5 }] }, [60_000], []]);
+// A worker whose only stage is echoed at the start of a Bash command (the contract's fallback) is a worker too.
+const ROOT14 = join(T, 'projects14');
+const WT14 = join(ROOT14, '-x-repo-worktrees-issue-8');
+mkdirSync(WT14, { recursive: true });
+const echoReq = (id, min, uncached) => { const r = req(id, min, { uncached }); r.message.content = [{ type: 'tool_use', id: `${id}-t`, name: 'Bash', input: { command: 'echo "AUTOPILOT_STAGE: 3/9 implement"' } }]; return r; };
+session(WT14, 'wecho', [user(0), echoReq('wecho-r', 1, 60_000), req('wecho-r2', 2, { uncached: 1000 })]);
+stamp('wecho', { arm: { pct: 20, window: 200_000 } });
+const s14 = JSON.parse(spawnSync(process.execPath, [BIN, '--root', ROOT14, '--tickets', NONE, '--offline', '--json'], { cwd: T, env, encoding: 'utf8' }).stdout).sessions.find((x) => x.id === 'wecho');
+t('a worker whose only stage is a Bash command starting with echo "AUTOPILOT_STAGE: …" is a worker: its first request counts as start-up', s14?.resume_overheads, [60_000]);
 
 // --help and -h print the usage and exit 0, reading no GitHub and writing no cache.
 for (const flag of ['--help', '-h']) {
