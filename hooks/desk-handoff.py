@@ -991,10 +991,16 @@ def consume(root, name):
         f.write(name + "\n")
 
 
-def settled_at_start(root):
-    """Whether this Claude process's newest session in this repo began with /clear or a compaction.
-    SessionStart has then already chosen its handoff, or chosen none on purpose (its own is
-    unwritten, stale or resumed), so no other session's handoff is taken for it."""
+def started_fresh():
+    """Whether this session began fresh (a new or resumed session), as SessionStart recorded it, and
+    not by /clear or a compaction: SessionStart has then already chosen its handoff, or chosen none
+    on purpose (its own is unwritten, stale or resumed), so no other session's is taken for it. Read
+    from the session's own state (CLAUDE_CODE_SESSION_ID) and from this Claude process's newest
+    session; either saying /clear or a compaction, or neither found, is not fresh."""
+    sources = []
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid and load_state(sid).get("start_source"):
+        sources.append(load_state(sid)["start_source"])
     pid, best = claude_pid(), None
     for p in glob.glob(os.path.join(STATE_DIR, "*.json")):
         try:
@@ -1003,19 +1009,21 @@ def settled_at_start(root):
             at = float(s.get("started_at") or 0)
         except Exception:
             continue
-        if s.get("start_pid") == pid and s.get("root") == root and (best is None or at > best[0]):
+        if s.get("start_pid") == pid and (best is None or at > best[0]):
             best = (at, s.get("start_source"))
-    return bool(best) and best[1] in ("clear", "compact")
+    if best:
+        sources.append(best[1])
+    return bool(sources) and not any(s in ("clear", "compact") for s in sources)
 
 
 def pick(args):
     """`desk-handoff.py pick [<dir>]`: /desk-resume in a session the hook named no handoff for
     because it started fresh rather than by /clear or a compaction. Where exactly one handoff fits
     the /clear rule (written, under 24 hours old, not consumed, not held), print its path, mark it
-    consumed and exit 0; with none or several, or in a session /clear or a compaction began, print
-    nothing and exit 1, and the person chooses."""
+    consumed and exit 0; with none or several, or in a session not known to have started fresh,
+    print nothing and exit 1, and the person chooses."""
     root = git(args[0] if args else os.getcwd(), "rev-parse", "--show-toplevel")
-    if not root or settled_at_start(root):
+    if not root or not started_fresh():
         return 1
     skip = set(held_names(root)) | set(consumed_names(root))
     fits = [f for f in handoffs(root) if os.path.basename(f) not in skip
