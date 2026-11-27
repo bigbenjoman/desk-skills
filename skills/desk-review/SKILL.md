@@ -28,6 +28,8 @@ unread file list, a failed fetch, an unresolved agent or an unrefuted finding is
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
+**Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. A path there: read `references/plugin.md` first.
+
 Read rows with `desk-env` (`desk-env ids` lists ids; a worker cannot read `CONFIG`). `EXISTS=no`
 means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a §3 row is a `no`
 (report-only, never a stop). A `TODO` in another row this skill needs: stop, ask, offer
@@ -42,8 +44,6 @@ means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a 
   `desk-env list review-experts`, `desk-env get clean-verdict`).
 - §5 Repo instructions: the repo's own files (`CLAUDE.md`, `AGENTS.md`…) win over this skill on
   anything they cover, and every finder is pointed at them.
-
-**Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. A path there: read `references/plugin.md` first.
 
 **A review row missing from an older config is not a stop.** §4 Review bar missing or `default`
 means the bar in `references/review-bar.md`; §4 Review domain experts missing or `none` means no

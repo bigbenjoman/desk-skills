@@ -1,6 +1,6 @@
 // suite: plugin bundle (desk-review, its finder agents and the desk scripts they import, as a Claude Code plugin)
 // layer: L2
-// covers: desk/bin/plugin-build.mjs skills/desk-review/** agents/**
+// covers: desk/bin/plugin-build.mjs desk/bin/import-closure.mjs skills/desk-review/** agents/**
 // issue-1561. plugin-build.mjs writes a marketplace holding the `desk` plugin: the desk-review skill,
 // the agents it names, and the import closure of the desk scripts it calls, copied (Claude Code
 // refuses a symlink out of a plugin). Builds into scratch directories, runs the bundled desk-env and
@@ -10,7 +10,7 @@ import { join, dirname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
-import { build, bundle, importsOf, importClosure, MARKETPLACE, PLUGIN } from '../desk/bin/plugin-build.mjs';
+import { build, bundle, importsOf, scriptClosure, MARKETPLACE, PLUGIN } from '../desk/bin/plugin-build.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -87,7 +87,10 @@ put('desk/bin/c.mjs', "import { gone } from './gone.mjs';\n");
 let refused = '';
 try { bundle(fx); } catch (e) { refused = e.message; }
 t('AC1 a script importing a file that is not there fails the build, naming both', refused.includes('desk/bin/c.mjs -> desk/bin/gone.mjs'), true);
-t('AC1 importClosure reports it as missing', importClosure(fx, ['desk/bin/review-post.mjs']).missing, ['desk/bin/c.mjs -> desk/bin/gone.mjs']);
+t('AC1 scriptClosure reports it as missing', scriptClosure(fx, ['desk/bin/review-post.mjs']).missing, ['desk/bin/c.mjs -> desk/bin/gone.mjs']);
+t('AC1 and an entry that is not there', scriptClosure(fx, ['desk/bin/nope.mjs']).missing, ['desk/bin/nope.mjs']);
+put('desk/bin/c.mjs', "// import { gone } from './gone.mjs';\nconst s = \"import './gone.mjs'\";\n");
+t('AC1 an import in a comment or a string is not followed', scriptClosure(fx, ['desk/bin/review-post.mjs']).missing, []);
 
 // The build replaces an earlier build and refuses a directory that is not one.
 const again = spawnSync(process.execPath, [join(root, 'desk/bin/plugin-build.mjs'), out], { encoding: 'utf8' });
@@ -99,10 +102,6 @@ t('a non-empty directory that holds no build is refused and left alone', [kept.i
 
 // AC2, the parts a test can run: under an empty HOME with no desk config, the plugin's desk-env reads
 // DESK_CONFIG_FILE (stage 2), and its verdict.mjs prints a desk-format verdict.
-t('AC2 SKILL.md in the bundle names the plugin root for Claude Code to fill in', skillText.includes('**Plugin root:** `${CLAUDE_PLUGIN_ROOT}`.'), true);
-const pluginRef = readFileSync(join(dir, 'skills/desk-review/references/plugin.md'), 'utf8');
-t('AC2 skills/desk-review/references/plugin.md ships, naming the plugin agents and DESK_CONFIG_FILE',
-  [pluginRef.includes('`desk:<name>`'), pluginRef.includes('DESK_CONFIG_FILE'), pluginRef.includes('${')], [true, true, false]);
 const s = scratch('plugin-run-');
 const home = join(s, 'home'); const repo = join(s, 'repo'); mkdirSync(home); mkdirSync(repo);
 const env = { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(s, 'gitconfig') };

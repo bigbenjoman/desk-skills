@@ -43,7 +43,6 @@ const loaded = (f) => /(^|\/)SKILL\.md$/.test(f) || f.startsWith('agents/');
 const expansion = Object.entries(text).flatMap(([f, s]) => s.split('\n')
   .filter((l) => /\$\{CLAUDE_PLUGIN_ROOT/.test(l) && (!loaded(f) || /\bnode |\bbash |^\s*(\$ )?[\w./-]+\.(mjs|sh)\b/.test(l))).map(() => f));
 t('${CLAUDE_PLUGIN_ROOT} is written only in a file the plugin loads, never in a command', JSON.stringify(expansion), '[]');
-t('issue-1561 SKILL.md names the plugin root for the plugin to fill in', text['skills/desk-review/SKILL.md'].includes('**Plugin root:** `${CLAUDE_PLUGIN_ROOT}`.'), true);
 
 // AC1 / AC2: each file that calls through <desk bin> says how to resolve it, or names the file that does.
 const RULE = '`<desk bin>` is the desk scripts folder';

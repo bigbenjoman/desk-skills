@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds desk-review as a Claude Code plugin (issue-1561), so a repo can enable it in its
+// Builds desk-review as a Claude Code plugin, so a repo can enable it in its
 // .claude/settings.json and a session with no desk install (a cloud session) gets the review.
 //
 //   node desk/bin/plugin-build.mjs <out>      write the marketplace to <out>, replacing an earlier build
@@ -17,9 +17,10 @@
 // Files are copied, never linked: Claude Code refuses a symlink that leads out of a plugin. The
 // scripts are the import closure of what the skill calls, so no batch, pass or setup machinery ships.
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, rmSync, realpathSync } from 'node:fs';
-import { join, dirname, relative, resolve, posix } from 'node:path';
+import { join, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { importClosure, relativeImports } from './import-closure.mjs';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const MARKETPLACE = 'desk-skills';
@@ -48,27 +49,18 @@ export function entryScripts(root = ROOT) {
   return [...new Set([...called, ...Object.values(SHIMS), ...own])].sort();
 }
 
-const IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(\.{1,2}\/[^'"]+)\1/g;
 // The relative imports of one script, as repo paths: static, re-exported, side-effect and dynamic.
-export const importsOf = (root, file) => [...new Set([...read(root, file).matchAll(IMPORT)]
-  .map((m) => posix.normalize(posix.join(posix.dirname(file), m[2]))))].sort();
+export const importsOf = (root, file) => [...new Set(relativeImports(file, read(root, file)))].sort();
 
-// Every script the entries reach through their imports. `missing` names an import with no file
-// behind it, as `<importer> -> <import>`: the bundle would fail at run time, so build refuses it.
-export function importClosure(root, entries) {
-  const seen = new Set(); const missing = []; const queue = [...entries];
-  while (queue.length) {
-    const f = queue.shift();
-    if (seen.has(f)) continue;
-    if (!existsSync(join(root, f))) { missing.push(f); continue; }
-    seen.add(f);
-    if (!/\.m?js$/.test(f)) continue;
-    for (const i of importsOf(root, f)) {
-      if (!existsSync(join(root, i))) missing.push(`${f} -> ${i}`);
-      else if (!seen.has(i)) queue.push(i);
-    }
-  }
-  return { files: [...seen].sort(), missing: [...new Set(missing)].sort() };
+// Every script the entries reach through their imports. `missing` names an entry with no file, or an
+// import with no file behind it as `<importer> -> <import>`: the bundle would fail at run time, so
+// build refuses it.
+export function scriptClosure(root, entries) {
+  const has = (f) => existsSync(join(root, f));
+  const files = [...new Set(entries.flatMap((e) => importClosure(e, (f) => (has(f) ? read(root, f) : ''))))].filter(has).sort();
+  const missing = [...entries.filter((e) => !has(e)),
+    ...files.flatMap((f) => importsOf(root, f).filter((i) => !has(i)).map((i) => `${f} -> ${i}`))];
+  return { files, missing: [...new Set(missing)].sort() };
 }
 
 const shim = (script) => `#!/usr/bin/env bash\n# desk plugin: runs ${script.split('/').pop()} from this plugin's desk/bin.\n`
@@ -83,8 +75,8 @@ const version = (root) => {
 export function bundle(root = ROOT) {
   const agents = finderAgents(root);
   const skill = skillFiles(root).filter((f) => !/\.(bak|tmp-desk)/.test(f));
-  const scripts = importClosure(root, entryScripts(root).filter((f) => f.startsWith('desk/bin/')));
-  const own = importClosure(root, entryScripts(root).filter((f) => !f.startsWith('desk/bin/')));
+  const scripts = scriptClosure(root, entryScripts(root).filter((f) => f.startsWith('desk/bin/')));
+  const own = scriptClosure(root, entryScripts(root).filter((f) => !f.startsWith('desk/bin/')));
   const missing = [...scripts.missing, ...own.missing];
   if (missing.length) throw new Error(`plugin-build: imported but not in the repo, so the bundle cannot run: ${missing.join(', ')}`);
   const strays = own.files.filter((f) => !f.startsWith(`${SKILL}/`));
