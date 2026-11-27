@@ -16,7 +16,7 @@ SHA4=4444444444444444444444444444444444444444; SHA5=5555555555555555555555555555
 cat > "$T/prs.json" <<EOF
 {
   "101": { "head": "fix/T-1", "base": "main",    "sha": "$SHA1", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
-  "102": { "head": "fix/T-2", "base": "main",    "sha": "$SHA2", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "102": { "head": "fix/T-2", "base": "main",    "sha": "$SHA2", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "mergedBy": null },
   "104": { "head": "fix/T-4", "base": "main",    "sha": "$SHA4", "state": "open", "draft": false, "checks": [["test", "SUCCESS"], ["lint", "FAILURE"]] },
   "105": { "head": "fix/T-5", "base": "release", "sha": "$SHA5", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
 }
@@ -48,6 +48,8 @@ check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-
 ml101=$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 --latest)
 check "DS-835 AC1: the merged entry names the PR, its head, the ticket and the merge driver" \
   '[ "$(jq -r "[.event, .pr, .sha, .ticket, .repo] | join(\" \")" <<< "$ml101")" = "merged 101 $SHA1 T-1 acme/widgets" ] && jq -e ".by | startswith(\"merge-driver \")" <<< "$ml101" >/dev/null'
+check "DS-1030 AC4: the driver's merged line names the driver, with the GitHub user GitHub reports" \
+  'jq -e "(.by | startswith(\"merge-driver \")) and .merged_by == \"tester\"" <<< "$ml101" >/dev/null'
 check "DS-835 AC3: the reader gives the latest entry back with its time" 'jq -e ".at | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T\")" <<< "$ml101" >/dev/null && ! echo "$out" | grep -q "merge not written to the merge log"'
 
 check "DS-899 AC1: the ticket's merge record names the driver, the PR, the head it merged at and the base, which desk-q shows" \
@@ -71,6 +73,8 @@ rm -f "$T/state/merge-driver/backoff-102"
 # ---- loop 3: the second green PR merges ---------------------------------------------------------
 loop
 check "AC2: both green PRs merged within three loops, one per loop" '[ "$(merged)" = "101 102" ] && grep -qx "102 main $SHA2" "$T/merges.log"'
+check "DS-1030 AC4: GitHub naming no merger, the driver's merged line records it unknown, not the driver" \
+  'node "$B/merge-log.mjs" show --repo acme/widgets --pr 102 --latest | jq -e ".by == \"unknown\" and .merged_by == null" >/dev/null'
 check "a merged ticket with no spawn record gets its merge time and no history line" '[ "$(qf T-2 .merged_at)" != null ] && [ "$(wc -l < "$T/state/eta-history.jsonl" | tr -d " ")" = 1 ] && echo "$out" | grep -q "no spawn record: T-2"'
 
 # ---- pass.mjs: a release due with no driver running is released by the pass, as the driver would ---
@@ -322,6 +326,24 @@ loop; loop
 check "DS-835 AC2: a refused merge is backed off, recorded failed for its ticket, and has no merged entry" \
   'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(jq -r "select(.pr == \"835\") | .event" "$HOME/.desk-autopilot/merges.jsonl" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
 q drop T-835
+
+# ---- a PR someone else merged after the gate read it is not merged again, and its line names them --
+SHA836=8368368368368368368368368368368368368368; SHA837=8378378378378378378378378378378378378378
+q add T-836 Task A; q set T-836 branch=fix/T-836 state=done result.pr=836
+q add T-837 Task A; q set T-837 branch=fix/T-837 state=done result.pr=837
+cat > "$T/prs.json" <<EOF
+{
+  "836": { "head": "fix/T-836", "base": "main", "sha": "$SHA836", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "someone-else", "premergedHead": "8361111111111111111111111111111111111111" },
+  "837": { "head": "fix/T-837", "base": "main", "sha": "$SHA837", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "" }
+}
+EOF
+: > "$T/merges.log"
+all=; for i in 1 2 3; do loop; all="$all$out"; done
+check "DS-1030 AC4: a PR GitHub shows merged at the driver's merge is not merged again, and its line names the GitHub user" \
+  '[ -z "$(merged)" ] && echo "$all" | grep -q "#836 already merged on GitHub by github someone-else at 836111111, not the head checked, 836836836: something merged unchecked — not merged by this driver" && node "$B/merge-log.mjs" show --repo acme/widgets --pr 836 --latest | jq -e ".by == \"github someone-else\" and .merged_by == \"someone-else\" and .ticket == \"T-836\" and .sha == \"8361111111111111111111111111111111111111\"" >/dev/null'
+check "DS-1030 AC4: merged by someone GitHub does not name, the driver records the merger unknown" \
+  'node "$B/merge-log.mjs" show --repo acme/widgets --pr 837 --latest | jq -e ".by == \"unknown\" and .merged_by == null" >/dev/null'
+q drop T-836; q drop T-837
 
 # ---- DS-850: a red main takes no merge but its repair ticket's; green or unread, it merges as before --
 # main's tip R1 has Lint's run still going; its parent R0's run of the required check `test` failed.

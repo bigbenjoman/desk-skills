@@ -41,7 +41,8 @@ ld="\${AUTOPILOT_LOGIN_DIR:-${H}/.claude}"
 if [ "$3" = preflight ]; then
   if grep -qF "$ld " "${LIMITED}" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
 else echo "[spawn] ticket=$1"; fi\n`);
-// Sign-in per folder: a folder's name is its account, and a signed-out folder answers loggedIn false.
+// Sign-in per folder: a folder's name is its account (its .account file's, where it has one), and a
+// signed-out folder answers loggedIn false.
 // Every `auth` call is recorded.
 const AUTHS = join(T, 'auths');
 writeFileSync(join(W, 'stub', 'claude'), `#!/bin/sh
@@ -50,7 +51,7 @@ case "$1" in
   agents) echo '[]' ;;
   auth) echo "$d" >> "${AUTHS}"
     if grep -qx "$d" "${SIGNED_OUT}" 2>/dev/null; then echo '{"loggedIn":false}'; exit 1; fi
-    printf '{"loggedIn":true,"email":"%s@example.com"}\\n' "$(basename "$d")" ;;
+    printf '{"loggedIn":true,"email":"%s@example.com"}\\n' "$(cat "$d/.account" 2>/dev/null || basename "$d")" ;;
   -p) lim="$(grep -F "$d " "${LIMITED}" 2>/dev/null | head -n 1 | cut -d' ' -f2)"
     if [ "$lim" = none ]; then echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}'; echo '{"type":"result","is_error":true}'; exit 1; fi
     if [ -n "$lim" ]; then printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":%s}}\\n' "$lim"; echo '{"type":"result","is_error":true}'; exit 1; fi
@@ -69,12 +70,13 @@ spawnSync('git', ['-C', join(W, 'repo'), 'commit', '-q', '--allow-empty', '-m', 
 const state = join(H, '.desk-autopilot', slug);
 const config = join(process.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
 mkdirSync(dirname(config), { recursive: true });
-// `sub` is the repo's §3b Subscription row, left out when null; `levers` sets the Phase 0 levers row to auto.
-const writeConfig = (sub, to = config, levers = false) => writeFileSync(to, [
+// `sub` is the repo's §3b Subscription row, left out when null; `levers` sets the Phase 0 levers row to
+// auto; `pacing` is the Usage pacing headroom row (off unless a check turns it on).
+const writeConfig = (sub, to = config, levers = false, pacing = 'off') => writeFileSync(to, [
   '## 0. Repo', '| Field | Value |', '|---|---|', '| GitHub repo | `acme/widgets` |', '| Default branch | `main` |', '',
   '## 2. Paths', '| Field | Value |', '|---|---|', `| Primary repo root | \`${join(W, 'repo')}\` |`, `| Worktrees directory | \`${join(W, 'wt')}\` |`, '',
   '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `autopilot-workers` | Run workers | `yes` | `yes` |', '',
-  '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Autopilot worker concurrency | `3 / 3` | `3 / 3` |', '| Usage pacing headroom (points) | `5` | `off` |',
+  '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Autopilot worker concurrency | `3 / 3` | `3 / 3` |', `| Usage pacing headroom (points) | \`5\` | \`${pacing}\` |`,
   ...(sub ? [`| Subscription | \`default\` | \`${sub}\` |`] : []), ...(levers ? ['| Phase 0 levers | `auto` | `auto` |'] : []), '',
 ].join('\n'));
 const QF = join(process.env.DESK_HOME, 'repos', slug, 'queue.json');
@@ -92,12 +94,12 @@ function writeSubs(logins) {
   const rows = logins.map(([n, r]) => `| \`claude\` | \`${n}\` | \`${n === 'default' ? '~/.claude' : `~/.claude-logins/${n}`}\` | \`${r}\` |`);
   writeFileSync(process.env.DESK_SUBSCRIPTIONS, `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.join('\n')}\n`);
 }
-function world(logins, tickets, { sub = null, levers = false } = {}) {
+function world(logins, tickets, { sub = null, levers = false, pacing = 'off' } = {}) {
   for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins'), join(H, '.claude.json')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
-  writeConfig(sub, config, levers);
+  writeConfig(sub, config, levers, pacing);
   if (logins) {
     writeSubs(logins);
     for (const [n, , five, week] of logins) {
@@ -205,10 +207,53 @@ t('AC7 the refused ticket keeps its place, and nothing else spawns or preflights
 t('AC7 the hold is recorded with the reset time', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at]), JSON.stringify(['Y-1', RESET]));
 t('AC7 nothing went to the other subscription', readFileSync(CALLS, 'utf8').includes(dirOf('c')), false);
 t('AC7 the report says the batch holds', out.includes('Y-1: its preflight was refused at the 5-hour usage limit — not failed, and nothing else spawns until the limit lifts'), true);
+t('issue-1490 AC4 with no fallback the refused preflight is reported once', out.split('Y-1: its preflight was refused at the 5-hour usage limit').length - 1, 1);
 out = pass(env);
 t('AC7 a pass later it starts and preflights nothing', `${calls('Y-1').length} ${calls('Y-2').length} ${row('Y-1').state} ${row('Y-2').state}`, '1 0 triaged triaged');
 t('AC7 and the hold reads with its reset', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
 t('AC7 nothing is benched or moved', `${batchOf().benched ?? null} ${row('Y-1').login_move ?? null}`, 'null null');
+
+// A fallback login: the pass whose preflight on the default is refused at the limit starts that ticket,
+// and the next, on the fallback; once the default has room the next new worker starts on it again.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO);
+atLimit(dirOf('b'));
+out = pass(env);
+t('fallback AC1 the refused ticket was preflighted on the default first', calls('Y-1').map(loginArg).slice(0, 2).join(' '), `${dirOf('b')} ${dirOf('c')}`);
+t('fallback AC1 the same pass starts new work on the fallback', `${row('Y-1').state} ${on('Y-1')} ${row('Y-1').login.fallback} ${loginArg(calls('Y-1').at(-1))} ${row('Y-2').state} ${on('Y-2')}`, `running c true ${dirOf('c')} running c`);
+t('fallback AC3 the switch is logged with its reason', out.includes('login: new workers start on fallback login c, as default login b is at the 5-hour usage limit'), true);
+t('fallback AC3 the spawn line names the login', /Y-1 port=.* login=c \(fallback\);/.test(out), true);
+t('fallback the switch is recorded and the default\'s hold no longer holds the batch', `${batchOf().login_fallback?.login} ${batchOf().usage_hold ?? null}`, 'c null');
+rmSync(LIMITED);
+// As a pass minutes later: the last probe of b is not one started under a minute ago, so it is not shared.
+rmSync(join(process.env.DESK_USAGE_DIR, 'probe.b.at'), { force: true });
+addTicket('Y-3');
+out = pass(env);
+t('fallback AC2 once the default has room the next worker starts on it', `${row('Y-3').state} ${on('Y-3')} ${loginArg(calls('Y-3').at(-1))}`, `running b ${dirOf('b')}`);
+t('fallback AC2 a worker on the fallback stays there', on('Y-1'), 'c');
+t('fallback AC3 the switch back is logged', out.includes('login: new workers start on default login b again, as it has room; workers on fallback login c finish there'), true);
+t('fallback the record is cleared', batchOf().login_fallback ?? null, null);
+// issue-1490: a limit met mid-pass, after pacing read the default, with the fallback past its own pacing
+// headroom: new work does not move there, and the pass holds as before, saying why.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 99]], TWO, { pacing: '5' });
+atLimit(dirOf('b'));
+out = pass(env);
+t('issue-1490 a fallback past its pacing headroom takes no work mid-pass', `${row('Y-1').state} ${row('Y-2').state} ${batchOf().usage_hold?.preflight} ${batchOf().login_fallback ?? null}`, 'triaged triaged Y-1 null');
+t('issue-1490 nothing was preflighted on the fallback', readFileSync(CALLS, 'utf8').includes(dirOf('c')), false);
+t('issue-1490 and the report says why', out.includes('fallback login c is past its usage pacing headroom'), true);
+// A repo pinned to an email never falls back.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO, { sub: 'b@example.com' });
+atLimit(dirOf('b'));
+pass(env);
+pass(env);
+t('fallback a pinned repo holds as before', `${row('Y-1').state} ${row('Y-2').state} ${calls('Y-2').length} ${batchOf().login_fallback ?? null}`, 'triaged triaged 0 null');
+// A fallback folder signed in to the default's own account shares its limits: the pass holds and says why.
+env = world([['b', 'default', 10, 10], ['c', 'fallback', 10, 10]], TWO);
+writeFileSync(join(dirOf('c'), '.account'), 'b');
+atLimit(dirOf('b'));
+pass(env);
+out = pass(env);
+t('fallback on the default\'s own account holds as before', `${row('Y-1').state} ${row('Y-2').state} ${batchOf().login_fallback ?? null}`, 'triaged triaged null');
+t('fallback on the default\'s own account says why', out.includes('fallback login c is signed in to b@example.com, the default\'s own account, so it shares the default\'s limits'), true);
 
 // AC8, AC9: a worker whose session ended at b's limit, c with room.
 const PAUSED = { key: 'K-2', state: 'running', open_questions: 0, session_id: 'sess-2', branch: 'fix/K-2', worktree: join(W, 'wt', 'K-2'), stage: '4/9', login: { name: 'b', config_dir: dirOf('b') } };

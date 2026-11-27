@@ -21,7 +21,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { markRearmed } from './loop-tick.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
@@ -414,7 +414,9 @@ function requeue(q, key, { handedBack = false } = {}) {
   Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     // Done by another's PR no longer, once sent back for work of its own.
-    spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null, updated_at: new Date().toISOString() });
+    spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null,
+    // A red-base repair the pass closed as needless is owed its own work again, so what it commits next is pushed.
+    ...(t.closed_superseded ? { closed_superseded: null } : {}), updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
@@ -988,7 +990,11 @@ switch (cmd) {
     try { handle = githubHandle(); } catch { /* unset: the driver refuses to start, so it is not checked here */ }
     if (handle && pr.author?.login && pr.author.login.toLowerCase() !== handle.toLowerCase()) throw new Error(`PR #${prArg} is by ${pr.author.login}, and the merge driver merges only PRs by ${handle}: nothing adopted`);
     const owner = Object.values(q.tickets).find((t) => t.branch === pr.headRefName);
-    if (owner) throw new Error(`PR #${prArg}'s branch ${pr.headRefName} is already ${owner.key}'s: nothing adopted`);
+    // A red-base repair recorded done (closed on a green read, say) whose branch holds the fix PR gives
+    // the branch up: the fix is this PR now, and the done entry has nothing left to merge.
+    const takeOver = owner && owner.state === 'done' && isBaseRedKey(owner.key, base);
+    if (owner && !takeOver) throw new Error(`PR #${prArg}'s branch ${pr.headRefName} is already ${owner.key}'s: nothing adopted`);
+    if (takeOver) { owner.branch = null; owner.updated_at = new Date().toISOString(); }
     const now = new Date().toISOString();
     q.tickets[key] = {
       key, type: 'Task', lane: '?', state: 'done',
@@ -998,6 +1004,7 @@ switch (cmd) {
       added_at: now, updated_at: now,
     };
     save(q);
+    if (takeOver) console.log(`${owner.key} is a done red-base repair, so it gave up its branch ${pr.headRefName}`);
     console.log(`${key} adopted PR #${pr.number} (${pr.headRefName} into ${base}): the merge driver merges it with the batch's tickets, and the pass and desk-q list it until it does`);
     break;
   }

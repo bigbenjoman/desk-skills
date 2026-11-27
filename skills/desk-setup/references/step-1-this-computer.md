@@ -61,8 +61,8 @@ the file exists. A folder under either of those that the check leaves out is not
 both, and list each such folder as signed out.
 
 - **A subscriptions file** (the file exists): open with "Subscriptions on this computer: already
-  set, so nothing to ask". Show each login as `desk-env logins list` names it (`default`, `unused`
-  or `off`), as an email for a Claude login and as its name for a Codex login. Then say "To change the
+  set, so nothing to ask". Show each login as `desk-env logins list` names it (`default`, `fallback`,
+  `unused` or `off`), as an email for a Claude login and as its name for a Codex login. Then say "To change the
   default, open desk-q and press 6." Ask nothing.
 - **No file, two or more signed-in logins of a tool**: say "I found <n> Claude logins and <m> Codex
   logins signed in here". Name each such tool's default first: the login named `default`, the
@@ -70,8 +70,8 @@ both, and list each such folder as signed out.
   other signed-in login as `unused`: a Claude login by its email, plan and folder, and a Codex login
   by its name and folder (desk reads no Codex account). Say in one line that desk runs every repo's
   work on the default unless the repo is pinned to another (*This repo's subscription*, below), never
-  switches on its own, and that desk-q view 6 changes the default for every repo here. Ask nothing,
-  and write nothing.
+  moves a running worker to another login, and that desk-q view 6 changes the default for every repo
+  here. Ask nothing, and write nothing.
 - **Fewer than two signed-in logins of a tool**: name the one desk uses, and ask nothing.
 - **A login that is not signed in is listed, and is never a default or a pin here.** For a signed-out
   login, mark it `signed out` and give the sign-in command from the check's note, or, for a folder
@@ -84,7 +84,11 @@ To add a login, say how, and run none of it: `CLAUDE_CONFIG_DIR=~/.claude-logins
 `/login` with the other account; `desk-env logins check` then lists it with its account and plan; and
 `desk-env logins default claude <name>` makes it the default here, or *This repo's subscription*,
 below, pins this repo to it. desk-q view 6 does the same: `a` adds a login, and the default is chosen
-there.
+there. `desk-env logins set claude <name> fallback` makes one Claude login the fallback: new workers of
+the repos following the default start there while the default is at its 5-hour or 7-day limit or past
+the usage pacing headroom, and on the default again once it has room. Workers already running stay on
+the login they started on, and a repo pinned to an email never falls back. Without a fallback, a full
+default holds new workers until it has room.
 
 ### This repo's subscription
 

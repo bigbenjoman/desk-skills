@@ -289,12 +289,12 @@ export function spawnGateOf(row) {
 // §3b "Per-file collision budget": how many running tickets may name one file before a ticket naming
 // it waits. `<big> over <lines> lines, else <small>` gives a file longer than <lines> on the batch base
 // <big> places and any other <small>; a bare `<k>` gives every file k. `; serial: <glob>, ...` (or
-// `none`) keeps the files it names at 1. Unset (null) is `3 over 1000 lines, else 1; serial: none`. A
+// `none`) keeps the files it names at 1. Unset (null) is `3 over 1000 lines, else 2; serial: none`. A
 // row that does not read is 1 for every file, with `bad` saying so: a typo never loosens the guard. The
 // row is one code span: a cell of more than one is read whole and does not read, since its first span
 // alone would drop the serial list without a word.
 //   -> { big, lines, small, serial: [glob], bad: string | null }
-const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 1, serial: [] };
+const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 2, serial: [] };
 export function fileBudget(row) {
   if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
   const spans = [].concat(row);
@@ -667,7 +667,7 @@ export const ROWS = Object.freeze([
   v('harm-swap-growth', '3b', 'Swap growth that holds spawns (GB)', 'gb', '2', dflt('2')),
   v('harm-tmpfs', '3b', 'tmpfs /tmp size that holds spawns (GB)', 'gb', '2', dflt('2')),
   v('harm-vmmem', '3b', 'WSL VM share of its grant that holds spawns (%)', 'whole', '90', dflt('90')),
-  v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 1; serial: none', dflt('3 over 1000 lines, else 1; serial: none')),
+  v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 2; serial: none', dflt('3 over 1000 lines, else 2; serial: none')),
   v('test-cap', '3b', 'Test worker cap under the test lock', 'whole', '4', { machine: 'test-cap' }),
   v('light-lock-slots', '3b', 'Light lock slots', 'whole', '2', dflt('1', { machine: 'light-lock-slots' })),
   v('worker-budget', '3b', 'Autopilot per-worker budget (USD)', 'budget', '25', dflt('25')),
