@@ -220,7 +220,7 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   const conflict = { ok: false, reason: 'conflict', files: ['src/a.ts'] };
   const moved = sync(snap({ base_fix: running }, { repoLogin: { dir: '/login-3', name: 'login-3' } }), { ...exitedLog, ...onL4, 'end-try': endedMoved, sync: conflict });
   const movedEnd = moved.find((a) => a.type === 'end-try');
-  t('DS-1057 AC1 a fix worker gone at a limit on a login new work moved off has its try ended', j([movedEnd?.extra, (movedEnd?.outcome ?? '').startsWith('exited at the weekly usage limit') && movedEnd.outcome.includes('on login login-4') && movedEnd.outcome.includes('on login login-3')]), j([{ usage_moved: true }, true]));
+  t('DS-1057 AC1 a fix worker gone at a limit on a login new work moved off has its try ended', j([movedEnd?.extra, (movedEnd?.outcome ?? '').startsWith('exited at the weekly usage limit') && movedEnd.outcome.endsWith('on login login-4, which new work has moved off, so it ends')]), j([{ usage_moved: true }, true]));
   t('DS-1057 AC1 AC2 the base no longer waits on it: the sync runs and a new try starts', j([state(moved).baseFixLive, types(moved).includes('sync'), state(moved).baseFix?.fix.try]), j([false, true, 1]));
   t('DS-1057 AC2 the report says it ended, spending no try, and that a new try starts', j([lines(moved)[0].endsWith('; it spends no try'), lines(moved).some((l) => l.includes('Conflict fix try 1 of 2 starts this pass'))]), '[true,true]');
   t('no usage hold or stop is raised for it', j(['usage-hold', 'usage-stop'].map((x) => types(moved).includes(x))), '[false,false]');
@@ -228,7 +228,12 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   const own = sync(snap({ base_fix: running }, { repoLogin: { dir: '/login-4', name: 'login-4' } }), { ...exitedLog, ...onL4 });
   t('DS-1057 AC4 one gone at a limit with no other login free waits for it', j([types(own).includes('end-try'), state(own).baseFixLive, types(own).includes('usage-stop')]), '[false,true,true]');
   t('DS-1057 AC4 the batch shows a usage item naming the limit', own.some((a) => a.type === 'report' && a.list === 'stalled' && a.line.includes('weekly')), true);
-  t('DS-1057 AC4 and its line names the limit, not a try still merging', j([lines(own).some((l) => l.includes('is merging')), lines(own).some((l) => l.includes('exited at the weekly usage limit') && l.includes('on login login-4'))]), '[false,true]');
+  t('DS-1057 AC4 and its line names the limit, not a try still merging', j([lines(own).some((l) => l.includes('is merging')), lines(own).some((l) => l.includes('exited at the weekly usage limit') && l.includes('on login login-4') && l.includes(', and no other login takes new work: it resumes its own session there once the limit lifts'))]), '[false,true]');
+  // A review try waits on its own login whatever new work does, so its line never says no other login takes it.
+  const review = { ...running, tries: [{ kind: 'review', try: 1, head: HEAD, pr: 300 }] };
+  const rv = sync(snap({ base_fix: review }, { repoLogin: { dir: '/login-3', name: 'login-3' } }), { ...exitedLog, ...onL4 });
+  const rvLine = lines(rv).find((l) => l.includes('exited at the weekly usage limit')) ?? '';
+  t('a review try gone at a limit on another login waits for it, its line not claiming no other login is free', j([types(rv).includes('end-try'), state(rv).baseFixLive, rvLine.includes('on login login-4 (session sid-fix): it resumes its own session there once the limit lifts'), rvLine.includes('no other login')]), '[false,true,true,false]');
   // Once its limit has lifted it resumes its own session, wherever new work starts.
   const upMoved = sync(snap({ base_fix: running }, { repoLogin: { dir: '/login-3', name: 'login-3' } }), { ...exitedLog, ...onL4, lifted: true });
   t('one whose limit lifted resumes rather than ending', j([types(upMoved).includes('end-try'), !!state(upMoved).baseFixResume]), '[false,true]');

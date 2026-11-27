@@ -11,9 +11,10 @@ S="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=base_sync_setup.sh
 . "$S/base_sync_setup.sh"
 
-# DS-620: a base worker try (an epic PR review) whose session exited at its login's limit waits for
-# that limit, with another login with room, and then resumes its own session there as the same try: it
-# never starts on another login. A conflict fix try no longer does (DS-1057): it ends instead. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
+# A base worker try whose session exited at its login's limit, with another login taking new work: an
+# epic PR review try waits for that limit and then resumes its own session there as the same try, never
+# starting on another login; a conflict fix try ends, spending no try, so the base syncs (or a new try
+# starts) on the login new work starts on. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
 # ~/.claude-logins/b), the first the default and the rest unused. A folder listed in $LIM, as `<folder> <reset>`, is at its
 # limit: its preflight and its probe are refused. The spawn line records the login it was given.
 LB="$HOME/.claude-logins/b"; LD="$HOME/.claude"; LIM="$T/limited"
@@ -61,16 +62,16 @@ stopped(){
   limit_event "$(( $(date +%s) + 3600 ))"; age_log
   echo "$on $(( $(date +%s) + 3600 ))" > "$LIM"
 }
-# DS-1057: a conflict fix try no longer waits on its own login while new work starts on another: its
-# try ends, spending none, and the base syncs (or a new try starts) on the login new work starts on.
+# A conflict fix try gone at its login's limit, while new work starts on another login: its try ends,
+# spending none, and the base syncs on the login new work starts on.
 logins default b; stopped m1conflict conflict; pass
 check "DS-1057 a conflict try gone at b's limit, the default with room, ends rather than waiting on b" \
-  '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x exited at the 5-hour usage limit until "*" on login b, which new work has moved off, so it ends and a new try starts on login default; it spends no try"* ]] && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"base-feat-x on the 5-hour usage limit until "* ]] && ! grep -q "RESUME session=sid-old" "$T/spawns"'
+  '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x exited at the 5-hour usage limit until "*" on login b, which new work has moved off, so it ends; it spends no try"* ]] && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"base-feat-x on the 5-hour usage limit until "* ]] && ! grep -q "RESUME session=sid-old" "$T/spawns"'
 # AC10, for a review try: login b at its limit, the default login with room. The try waits on b, then
 # resumes there.
 logins default b; stopped m1review review; pass
 check "DS-620 AC10 review: it waits on its own login, with no session started on another" \
-  '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+  '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]] && [[ "$out" == *"on login b (session sid-old): it resumes its own session there once the limit lifts"* ]] && [[ "$out" != *"no other login takes new work"* ]]'
 : > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
 check "DS-620 AC10 review: once b's limit lifts it resumes its own session there, as the same try" \
   'grep -q "^base-feat-x $C/wt/base-feat-x login=$LB .*RESUME session=sid-old" "$T/spawns" && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ]'
