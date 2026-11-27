@@ -2014,18 +2014,21 @@ const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
 t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note naming what held them',
   `${cell219('np')} | ${notesOf('np').join(' / ')} | ${cell219('moved')} ${notesOf('moved').length}`,
   `▲ no progress 3h 5m | nothing started or merged for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
-// issue-1519: time the queue held nothing to work on is not counted as no progress.
+// Time the queue held nothing to work on is not counted as no progress.
 const merged1519 = { state: 'done', result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } };
 const pass1519 = { at: minsAgo(1), by: 'session', held: held219, errors: 0, progress_at: minsAgo(485) };
 put219('idle1519', 5960, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519 } });
 put219('admit1519', 5970, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'AD-1': { ...ready, added_at: minsAgo(1) } } });
 put219('stall1519', 5980, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'SL-1': { ...ready, added_at: minsAgo(480) } } });
+put219('requeue1519', 5990, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'RQ-1': { ...ready, added_at: minsAgo(480), requeued_at: minsAgo(1) } } });
 const ov1519 = Q.overview(Q.loadRepos(NOW).filter((r) => r.name.endsWith('1519')), { now: NOW, avail: 30 });
 const cell1519 = (name) => (rowOf(ov1519, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
 t('issue-1519 AC2 a live batch with nothing left in it reads idle since its last merge, with no no-progress note',
   `${/^● idle since (\d\d:\d\d|\d+ [A-Z][a-z]{2})$/.test(cell1519('idle1519'))} ${notesIn(lines(ov1519), 'idle1519').length}`, 'true 0');
 t('issue-1519 AC1/AC3 a ticket admitted a minute ago to a batch idle since a merge 8h ago: the clock starts at its admission',
   `${cell1519('admit1519')} ${notesIn(lines(ov1519), 'admit1519').length}`, '● session · 1m ago 0');
+t('issue-1519 AC1 a ticket added 8h ago and parked until its requeue a minute ago: the clock starts at the requeue',
+  `${cell1519('requeue1519')} ${notesIn(lines(ov1519), 'requeue1519').length}`, '● session · 1m ago 0');
 t('issue-1519 AC4 a ready ticket waiting 8h with no start or merge still reads no progress',
   `${cell1519('stall1519')} | ${notesIn(lines(ov1519), 'stall1519').join(' / ')}`, `▲ no progress 8h 0m | nothing started or merged for 8h 0m. Last pass: ${held219}.`);
 t('DS-219 AC2 two errored passes in a row: the red band above the header names the repo and the error\'s first line; one does not',

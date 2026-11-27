@@ -866,7 +866,7 @@ function whoRuns(r) {
 // passes run but move nothing, or cannot run:
 //   noProgress  how long nothing started, merged or was released, once that is NO_PROGRESS_MS or more
 //               while the last pass held something it could have started (`held`, its reason), counted
-//               only while a ticket was ready, running or waiting
+//               only while a ticket was ready, running or waiting; a requeue restarts that ticket's clock
 //   idle        { since }: the batch holds no unfinished ticket or PR, `since` its last progress or null
 //   errors      { n, error } once ERROR_STREAK passes in a row have errored
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
@@ -888,9 +888,11 @@ function stallOf(r, now) {
   const sup = r.run?.by === 'supervisor' ? readJson(join(r.stateDir, 'supervisor.json')) : null;
   const loaded = r.run?.agent === 'loaded';
   // The clock runs only while a ticket is ready, running or waiting: from the later of the last progress
-  // and the earliest such ticket's admission, so time the queue sat empty is not counted.
-  const open = r.rows.filter((x) => ['running', 'ready', 'waiting'].includes(groupOf(x.k)));
-  const admitted = Math.min(...open.map((x) => timeOf(x.t.added_at) ?? Infinity));
+  // and the earliest such ticket's admission or requeue, so time the queue sat empty, or a ticket sat
+  // parked or failed, is not counted.
+  const open = r.rows.filter((x) => MOVABLE_STATES.includes(x.k));
+  const openSince = (t) => { const at = [timeOf(t.added_at), timeOf(t.requeued_at)].filter((v) => v != null); return at.length ? Math.max(...at) : Infinity; };
+  const admitted = Math.min(...open.map((x) => openSince(x.t)));
   const progress = timeOf(rec.progress_at);
   const from = !open.length ? null : progress == null ? admitted : Number.isFinite(admitted) ? Math.max(progress, admitted) : progress;
   const quiet = r.live && rec.held && Number.isFinite(from) && now - from >= NO_PROGRESS_MS ? now - from : null;
