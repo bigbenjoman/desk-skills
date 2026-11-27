@@ -17,7 +17,11 @@ out"). Every fix is one command, run alone, measured before and after.
 - **Fix:** `docker volume prune -f`. It removes unused anonymous volumes only; never add `-a`, which
   takes named volumes too.
 - **Restore:** none. A pruned volume is gone; the container that made it recreates an empty one.
-- **Stops it coming back:** run throwaway containers with `--rm`.
+- **Stops it coming back:** run throwaway containers with `--rm`, or remove them with
+  `docker rm -v`. A script that removes its container on purpose with plain `docker rm -f`
+  still leaks one volume per run, because images such as `postgres` declare a data volume.
+  Seen 2026-11-27: two test-database scripts did this (a pytest harness and a `test-like-ci.sh`),
+  and they were the 3,745 volumes. Find the script from the leftover containers' names.
 
 ## docker-build-cache
 
