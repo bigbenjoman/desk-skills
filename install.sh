@@ -7,8 +7,8 @@
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
 #   ./install.sh --rollback     makes the release before the current one current, installs nothing
-#   ./install.sh --uninstall-ui stops the desk app's server and its pty daemon, removes their launchd
-#                               jobs and Desk.app, nothing else
+#   ./install.sh --uninstall    stops the desk app's server and its pty daemon, removes their launchd
+#                               jobs and Desk.app, nothing else (--uninstall-ui is the same)
 #   ./install.sh --accept=<id,...> --decline=<id,...>   answers the prompts named, with or without a
 #                               terminal; each prompt's id is shown in the Skipped list (and below)
 #
@@ -61,7 +61,7 @@ for arg in "$@"; do
     --check) CHECK_ONLY=1 ;;
     --any-branch) ANY_BRANCH=1 ;;
     --rollback) ROLLBACK=1 ;;
-    --uninstall-ui) UNINSTALL_UI=1 ;;
+    --uninstall|--uninstall-ui) UNINSTALL_UI=1 ;;
     --accept=*) ACCEPT="$ACCEPT,${arg#--accept=}," ;;
     --decline=*) DECLINE="$DECLINE,${arg#--decline=}," ;;
     -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
@@ -1456,7 +1456,7 @@ install_desk_ptyd() {
     warn "Desk's terminals are unavailable: npm is not on PATH to install node-pty"
   elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-ptyd.mjs" install --src "$SRC/desk/ptyd" 2>&1)"; then
     ok "$out"
-    case "$out" in *"already running"*) ;; *) wrote "desk-ptyd ~/Library/LaunchAgents/com.desk-skills.ptyd.plist, ~/.claude/desk/ptyd (./install.sh --uninstall-ui removes them)" ;; esac
+    case "$out" in *"already running"*) ;; *) wrote "desk-ptyd ~/Library/LaunchAgents/com.desk-skills.ptyd.plist, ~/.claude/desk/ptyd (./install.sh --uninstall removes them)" ;; esac
   else
     warn "Desk's terminals are unavailable; the rest of Desk works"; show_err "$out"
   fi

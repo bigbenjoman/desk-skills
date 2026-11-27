@@ -77,7 +77,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,7 +93,7 @@ import { AGENTS, forwardOnMain, gitIn, oldCode, readInstalled, runningVersion } 
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
-import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
+import { agentLoaded, launchctl, launchdDomain as domain, platform, plist, unloadAgent } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = 4823;
@@ -649,8 +649,9 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const batches = typeof slug === 'string' ? all.filter((r) => r.slug === slug) : [];
     if (!batches.length) return no('repo', 'That is not a configured repo.');
     const main = batches.find((r) => r.batch == null) ?? batches[0];
-    let cwd;
-    try { cwd = Q.checkoutOf(main, `open ${skill} in`).cwd; } catch (e) { return no('checkout', e.message); }
+    let root;
+    try { root = Q.checkoutOf(main, `open ${skill} in`).cwd; } catch (e) { return no('checkout', e.message); }
+    let cwd = root;
     if (ticket) {
       if (batches.some((b) => b.q?.tickets?.[ticket]?.state === 'running')) return no('running', `A worker is running ${ticket} in its worktree, so nothing opened: wait for it to finish.`);
       const trees = E.repoDirs(slug).worktrees;
@@ -659,7 +660,8 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     const chosen = chooseLogin(Q, all, slug, main.repo, other, 'terminal');
     if (chosen.refuse) return no(chosen.refuse[1], chosen.refuse[2]);
     const argv = ['claude', `/${skill}${ticket ? ` ${ticket}` : ''}`];
-    const env = { DESK_REPO_DIR: cwd, DESK_REPO_ROOT: cwd, ...(chosen.login.configDir ? { CLAUDE_CONFIG_DIR: chosen.login.configDir } : {}) };
+    // DESK_REPO_ROOT stays the primary checkout, as a worker's does, even when claude runs in a worktree.
+    const env = { DESK_REPO_DIR: cwd, DESK_REPO_ROOT: root, ...(chosen.login.configDir ? { CLAUDE_CONFIG_DIR: chosen.login.configDir } : {}) };
     const r = await terminals.open({ argv, cwd, env, cols, rows });
     audit('terminal', argv, r.ok ? 'started' : null, { repo: slug, ticket: ticket ?? null, subscription: chosen.email, id: r.id ?? null, refused: r.ok ? null : r.error?.code ?? null });
     return r.ok ? { ...r, cwd: tilde(cwd), subscription: chosen.email } : r;
@@ -929,7 +931,7 @@ async function serve() {
 
 // ---- launchd ---------------------------------------------------------------------------------
 
-const loaded = () => launchctl('print', `${domain()}/${LABEL}`).status === 0;
+const loaded = () => agentLoaded(LABEL);
 
 // The token file: 32 random bytes, readable only by this user. An existing one is kept.
 function ensureToken() {
@@ -979,14 +981,9 @@ async function install() {
 }
 
 function uninstall() {
-  const was = loaded();
-  if (was) {
-    const r = launchctl('bootout', `${domain()}/${LABEL}`);
-    if (r.status !== 0) { console.error(`desk-ui: launchctl bootout ${domain()}/${LABEL} failed: ${(r.stderr || r.stdout || '').trim()}`); return 1; }
-  }
-  const had = existsSync(plistFile());
-  rmSync(plistFile(), { force: true });
-  console.log(was || had ? `desk-ui: removed ${LABEL}; the server no longer runs` : `desk-ui: ${LABEL} was not installed`);
+  const u = unloadAgent(LABEL, plistFile());
+  if (!u.ok) { console.error(`desk-ui: ${u.error}`); return 1; }
+  console.log(u.removed ? `desk-ui: removed ${LABEL}; the server no longer runs` : `desk-ui: ${LABEL} was not installed`);
   return 0;
 }
 

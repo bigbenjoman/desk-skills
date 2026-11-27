@@ -1,7 +1,7 @@
 // suite: desk-ptyd install and uninstall (node-pty from the lockfile, a failed build, the launchd job)
 // layer: L3
 // covers: desk/bin/desk-ptyd.mjs install.sh
-// desk-ptyd.mjs install, install.sh's install_desk_ptyd and install.sh --uninstall-ui on a throwaway
+// desk-ptyd.mjs install, install.sh's install_desk_ptyd and install.sh --uninstall(-ui) on a throwaway
 // HOME with a fake launchctl and a fake npm: `npm ci` writes a stand-in node-pty, or fails as a native
 // build does where FAKE_NPM_FAIL is set. Nothing touches your real launchd, ~/.claude or state.
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { installShFn } from './install-sh.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -55,15 +56,7 @@ const SRC = join(ROOT, 'desk', 'ptyd');
 const DESKDIR = join(T, 'deskdir');
 mkdirSync(DESKDIR, { recursive: true });
 symlinkSync(join(ROOT, 'desk', 'bin'), join(DESKDIR, 'bin'));
-const shFn = (name, more = {}) => {
-  const r = spawnSync('bash', ['-c', `set -euo pipefail
-eval "$(sed -n '/^${name}() {$/,/^}$/p' "$1")"
-note(){ echo "note: $*"; }; ok(){ echo "ok: $*"; }; warn(){ echo "warn: $*"; }; wrote(){ echo "wrote: $*"; }; show_err(){ echo "err: $*"; }
-has(){ command -v "$1" >/dev/null 2>&1; }
-declare -F ${name} >/dev/null || { echo "no ${name} in install.sh"; exit 9; }
-${name}`, 'sh', join(ROOT, 'install.sh')], { env: { ...env, DESKDIR: DH, SRC: ROOT, OS: 'mac', ...more }, encoding: 'utf8', timeout: 60000 });
-  return { code: r.status, out: r.stdout + r.stderr };
-};
+const shFn = installShFn(ROOT, { ...env, DESKDIR: DH, SRC: ROOT, OS: 'mac' }, 60000);
 // DESKDIR for install_desk_ptyd is DESK_HOME, so the build lands where the daemon loads it from.
 mkdirSync(DH, { recursive: true });
 symlinkSync(join(ROOT, 'desk', 'bin'), join(DH, 'bin'));
@@ -110,10 +103,10 @@ const keep = spawnSync('node', [PTYD, 'install', '--src', SRC2], { env: { ...env
 t('a failed rebuild keeps the previous node-pty and says so', [keep.status, /previous install is still in use/.test(keep.stderr), existsSync(join(PTYDIR, 'node_modules', 'node-pty', 'index.js'))], [1, true, true]);
 t('and leaves the job running', [existsSync(LOADED), calls().filter((c) => c.startsWith('bootout')).length], [true, 0]);
 
-// ---- AC6: install.sh --uninstall-ui unloads the job and removes its plist
+// ---- AC6: install.sh --uninstall unloads the job and removes its plist
 clear();
-const un = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 60000 });
-t('AC6 install.sh --uninstall-ui succeeds', [un.status, /removed com\.desk-skills\.ptyd/.test(un.stdout)], [0, true]);
+const un = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall'], { env, encoding: 'utf8', timeout: 60000 });
+t('AC6 install.sh --uninstall succeeds', [un.status, /removed com\.desk-skills\.ptyd/.test(un.stdout)], [0, true]);
 t('AC6 its launchd job is unloaded', calls().includes(`bootout gui/${UID}/com.desk-skills.ptyd`), true);
 t('AC6 its plist is removed, and node-pty with it', [existsSync(PLIST), existsSync(PTYDIR), existsSync(LOADED)], [false, false, false]);
 const twice = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 60000 });
@@ -130,7 +123,7 @@ writeFileSync(join(OLD, 'bin', 'desk-ui.mjs'), '');
 const gone = shFn('ui_after_rollback', { DESKDIR: OLD });
 t('a rollback onto a release without desk-ptyd removes its plist', [gone.code, calls().includes(`bootout gui/${UID}/com.desk-skills.ptyd`), existsSync(PLIST), /removed com\.desk-skills\.ptyd/.test(gone.out)], [0, true, false, true]);
 
-t('install.sh --help says --uninstall-ui removes the pty daemon', /--uninstall-ui stops the desk app's server and its pty daemon/.test(spawnSync('bash', [join(ROOT, 'install.sh'), '--help'], { env, encoding: 'utf8' }).stdout), true);
+t('install.sh --help says --uninstall removes the pty daemon', /--uninstall {4}stops the desk app's server and its pty daemon/.test(spawnSync('bash', [join(ROOT, 'install.sh'), '--help'], { env, encoding: 'utf8' }).stdout), true);
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

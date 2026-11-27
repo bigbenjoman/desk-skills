@@ -26,16 +26,17 @@
 //   detach { id }  write { id, data }  resize { id, cols, rows }  kill { id }
 // A connection closing detaches it and nothing else: its terminals keep running.
 import { createServer, connect } from 'node:net';
-import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, sep } from 'node:path';
 import { userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { AGENTS, runningVersion } from './installed.mjs';
-import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
+import { loginEnv } from './logins.mjs';
+import { agentLoaded, launchctl, launchdDomain as domain, platform, plist, unloadAgent } from './run-by.mjs';
+import { npmInstall, readStamp, rebuild, stage, step, swapIn } from './desk-app.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const LABEL = 'com.desk-skills.ptyd';
@@ -128,7 +129,7 @@ export function checkOpen(req, known = knownSessions()) {
 // The environment a terminal runs with: the daemon's own, without an API key or another login's
 // folder, so it is billed to the login the request names, or the default one.
 export function terminalEnv(extra, env = process.env) {
-  const { ANTHROPIC_API_KEY: _a, OPENAI_API_KEY: _o, CLAUDE_CONFIG_DIR: _c, CODEX_HOME: _h, ...rest } = E.otherRepoEnv(env);
+  const rest = loginEnv({ tool: 'claude', configDir: null }, E.otherRepoEnv(env));
   return { ...rest, TERM: 'xterm-256color', COLORTERM: 'truecolor', ...extra };
 }
 // claude as the daemon's PATH finds it, never a path a request names.
@@ -321,39 +322,22 @@ export function sourceHash(src) {
   for (const f of ['package.json', 'package-lock.json']) h.update(`${f}\0`).update(readFileSync(join(src, f))).update('\0');
   return h.digest('hex');
 }
-const readStamp = () => { try { return readFileSync(join(ptydDir(), 'source-hash'), 'utf8').trim(); } catch { return null; } };
-function step(log, cmd, args, cwd) {
-  appendFileSync(log, `\n$ ${cmd} ${args.join(' ')}\n`);
-  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  appendFileSync(log, `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? `${r.error.message}\n` : ''}`);
-  if (r.status !== 0) throw new Error(`${cmd} ${args[0] ?? ''} failed`);
-}
-// node-pty installed into a fresh folder, loaded once to prove its native module works for this node,
-// then swapped in: until the swap the previous one stays.
-function build(src, hash) {
-  const log = buildLog();
-  const work = `${ptydDir()}.build`, old = `${ptydDir()}.old`;
-  mkdirSync(dirname(log), { recursive: true });
-  writeFileSync(log, `${new Date().toISOString()} installing node-pty from ${src}\n`);
-  try {
-    rmSync(work, { recursive: true, force: true });
-    mkdirSync(work, { recursive: true });
-    for (const f of ['package.json', 'package-lock.json']) cpSync(join(src, f), join(work, f));
-    step(log, 'npm', ['ci', '--no-audit', '--no-fund'], work);
+// node-pty installed into a fresh folder with npm ci, loaded once to prove its native module works for
+// this node, then swapped in: until the swap the previous one stays. A failure says so and names the
+// build log. -> whether it built
+function build(src, hash, had) {
+  const work = `${ptydDir()}.build`;
+  return rebuild({ label: 'desk-ptyd', what: 'node-pty', src, log: buildLog(), work, had,
+    kept: 'the previous install is still in use', none: 'so Desk\'s terminals are unavailable; the rest of Desk works' }, (log) => {
+    stage(src, work);
+    npmInstall(log, work);
     step(log, process.execPath, ['-e', `require(${JSON.stringify(join(work, 'node_modules', 'node-pty'))}).spawn`], work);
     writeFileSync(join(work, 'source-hash'), `${hash}\n`);
-    rmSync(old, { recursive: true, force: true });
-    if (existsSync(ptydDir())) renameSync(ptydDir(), old);
-    renameSync(work, ptydDir());
-    rmSync(old, { recursive: true, force: true });
-    return null;
-  } catch (e) {
-    rmSync(work, { recursive: true, force: true });
-    return e.message;
-  }
+    swapIn(work, ptydDir(), `${ptydDir()}.old`);
+  });
 }
 
-const loaded = () => launchctl('print', `${domain()}/${LABEL}`).status === 0;
+const loaded = () => agentLoaded(LABEL);
 function job() {
   const env = { PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin' };
   for (const k of ['DESK_HOME', 'DESK_CONFIG_ROOT']) if (process.env[k]) env[k] = process.env[k];
@@ -367,12 +351,9 @@ export function install(src) {
   if (platform() !== 'darwin') { console.log('desk-ptyd: skipped: Desk\'s terminals run under macOS launchd only'); return 0; }
   if (!src || !existsSync(join(src, 'package-lock.json'))) { console.error(`desk-ptyd: no ptyd source at ${src ?? '(none given)'}`); return 2; }
   const hash = sourceHash(src);
-  let failed = null;
-  if (!loadPty() || readStamp() !== hash) failed = build(src, hash);
-  if (failed && !loadPty()) {
-    console.error(`desk-ptyd: node-pty did not install (${failed}), so Desk's terminals are unavailable; the rest of Desk works. Build log: ${tilde(buildLog())}`);
-    return 1;
-  }
+  const had = !!loadPty();
+  const failed = (!had || readStamp(join(ptydDir(), 'source-hash')) !== hash) && !build(src, hash, had);
+  if (failed && !had) return 1;
   mkdirSync(uiDir(), { recursive: true });
   const text = job();
   const same = existsSync(plistFile()) && readFileSync(plistFile(), 'utf8') === text;
@@ -386,21 +367,16 @@ export function install(src) {
     if (r.status !== 0) { console.error(`desk-ptyd: launchctl bootstrap ${domain()} ${plistFile()} failed: ${(r.stderr || r.stdout || '').trim()}`); return 1; }
     said = `${LABEL} loaded (${tilde(socketPath())})`;
   }
-  if (failed) { console.error(`desk-ptyd: node-pty did not reinstall (${failed}); the previous install is still in use. Build log: ${tilde(buildLog())}`); return 1; }
+  if (failed) return 1;
   console.log(`desk-ptyd: ${said}`);
   return 0;
 }
 
 export function uninstall() {
-  const was = loaded();
-  if (was) {
-    const r = launchctl('bootout', `${domain()}/${LABEL}`);
-    if (r.status !== 0) { console.error(`desk-ptyd: launchctl bootout ${domain()}/${LABEL} failed: ${(r.stderr || r.stdout || '').trim()}`); return 1; }
-  }
-  const had = existsSync(plistFile());
-  rmSync(plistFile(), { force: true });
+  const u = unloadAgent(LABEL, plistFile());
+  if (!u.ok) { console.error(`desk-ptyd: ${u.error}`); return 1; }
   rmSync(ptydDir(), { recursive: true, force: true });
-  console.log(was || had ? `desk-ptyd: removed ${LABEL}; Desk's terminals no longer run` : `desk-ptyd: ${LABEL} was not installed`);
+  console.log(u.removed ? `desk-ptyd: removed ${LABEL}; Desk's terminals no longer run` : `desk-ptyd: ${LABEL} was not installed`);
   return 0;
 }
 

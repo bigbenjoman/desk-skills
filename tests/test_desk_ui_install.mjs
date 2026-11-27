@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
 import { freePort } from './local-http.mjs';
+import { installShFn } from './install-sh.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -110,14 +111,7 @@ t('install.sh --help lists --uninstall-ui', spawnSync('bash', [join(ROOT, 'insta
 const DESKDIR = join(T, 'deskdir');
 mkdirSync(DESKDIR, { recursive: true });
 symlinkSync(join(ROOT, 'desk', 'bin'), join(DESKDIR, 'bin'));
-const shFn = (name, more = {}) => {
-  const r = spawnSync('bash', ['-c', `set -euo pipefail
-eval "$(sed -n '/^${name}() {$/,/^}$/p' "$1")"
-note(){ echo "note: $*"; }; ok(){ echo "ok: $*"; }; warn(){ echo "warn: $*"; }; wrote(){ echo "wrote: $*"; }; show_err(){ echo "err: $*"; }
-declare -F ${name} >/dev/null || { echo "no ${name} in install.sh"; exit 9; }
-${name}`, 'sh', join(ROOT, 'install.sh')], { env: { ...env, DESKDIR, OS: 'mac', ...more }, encoding: 'utf8', timeout: 30000 });
-  return { code: r.status, out: r.stdout + r.stderr };
-};
+const shFn = installShFn(ROOT, { ...env, DESKDIR, OS: 'mac' });
 clearCalls();
 const offMac = shFn('install_desk_ui', { OS: 'linux' });
 t('install.sh skips the server off macOS', [offMac.code, /^note: skipped/m.test(offMac.out), calls().length], [0, true, 0]);

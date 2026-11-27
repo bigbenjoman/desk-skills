@@ -74,7 +74,7 @@ writeFileSync(join(STUBS, 'claude'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const dir = process.env.DESK_UI_STUB_DIR;
 fs.appendFileSync(dir + '/starts.jsonl', JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), configDir: process.env.CLAUDE_CONFIG_DIR ?? null,
-  apiKey: process.env.ANTHROPIC_API_KEY ?? null, repoDir: process.env.DESK_REPO_DIR ?? null, cwd: process.cwd() }) + '\\n');
+  apiKey: process.env.ANTHROPIC_API_KEY ?? null, repoDir: process.env.DESK_REPO_DIR ?? null, repoRoot: process.env.DESK_REPO_ROOT ?? null, cwd: process.cwd() }) + '\\n');
 process.stdout.write('START ' + process.argv.slice(2).join(' ') + '\\n');
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => {
@@ -155,6 +155,7 @@ const s1 = starts()[0] ?? {};
 t('AC1 claude runs the skill with its ticket, and nothing else', s1.argv, ['--session-id', opened.sessionId, '/desk-ticket SV-3880']);
 t('AC1 in SV-3880\'s worktree', s1.cwd, realpathSync(TREE));
 t('AC1 on studia-web\'s subscription, with no API key', [s1.configDir, s1.apiKey, s1.repoDir], [OPS, null, TREE]);
+t('AC1 desk still finds the primary checkout as the repo root, not the worktree', s1.repoRoot, ROOT);
 const seenA = [];
 const att = await A.terminals.attach(opened.id, (ev) => { if (ev.ev === 'data') seenA.push(Buffer.from(ev.data, 'base64')); });
 const outA = () => Buffer.concat([Buffer.from(att.scrollback ?? '', 'base64'), ...seenA]).toString('utf8');
@@ -177,12 +178,21 @@ const B = await serverOn(await freePort());
 const listed = await B.terminals.list();
 t('AC2 the next server lists the terminal, still running', (listed.items ?? []).map((i) => [i.id, i.state, i.pid]), [[opened.id, 'running', s1.pid]]);
 const seenB = [];
-const attB = await B.terminals.attach(opened.id, (ev) => { if (ev.ev === 'data') seenB.push(Buffer.from(ev.data, 'base64')); });
+const onB = (ev) => { if (ev.ev === 'data') seenB.push(Buffer.from(ev.data, 'base64')); };
+const attB = await B.terminals.attach(opened.id, onB);
 const back = Buffer.from(attB.scrollback ?? '', 'base64');
 t('AC2 on reconnect the server receives exactly the last 256 KB of output', [attB.ok, back.length, back.equals(all.subarray(all.length - 256 * 1024))], [true, 256 * 1024, true]);
 t('AC2 and the oldest output is gone', back.includes('START '), false);
 await B.terminals.write(opened.id, 'again\n');
 t('AC2 the terminal still answers through the next server', await until(() => Buffer.concat(seenB).toString().includes('echo:again')), true);
+// Two viewers of one terminal: each gets its output, and one leaving does not silence the other.
+const seenC = [];
+const attC = await B.terminals.attach(opened.id, (ev) => { if (ev.ev === 'data') seenC.push(Buffer.from(ev.data, 'base64')); });
+await B.terminals.write(opened.id, 'both\n');
+t('a second viewer attaches with its own scrollback, and both get new output', [attC.ok, Buffer.from(attC.scrollback ?? '', 'base64').length, await until(() => Buffer.concat(seenB).toString().includes('echo:both') && Buffer.concat(seenC).toString().includes('echo:both'))], [true, 256 * 1024, true]);
+await B.terminals.detach(opened.id, onB);
+await B.terminals.write(opened.id, 'one-left\n');
+t('one viewer detaching leaves the other getting output', [await until(() => Buffer.concat(seenC).toString().includes('echo:one-left')), Buffer.concat(seenB).toString().includes('echo:one-left')], [true, false]);
 
 // ---- AC3: anything but claude with a desk skill, or --resume of a known session, is refused and nothing runs
 const before = starts().length;
