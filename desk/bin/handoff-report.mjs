@@ -7,9 +7,11 @@
 // the §2 rows `pct`/`pct_1m` it read at the session's first check, on the window its model and peak
 // context give), else that of the session whose handoff it resumed; a session with none is `unknown`,
 // shown and never recommended. An arm whose threshold, in tokens, is below the mean resume overhead
-// measured on its window is flagged as below start-up cost and never recommended. Per arm: sessions, handoffs per
+// measured on its window is flagged as below start-up cost, one whose sessions hand off in a loop, and
+// never recommended. Per arm: sessions, handoffs per
 // session (compactions, and sessions that start from a .handoffs/*.md file), the resume overhead of
-// each (the input tokens of the first request after it), and the primary metric, API-equivalent
+// each (the input tokens of the first request after it; an autopilot worker session, which starts
+// from its briefing, counts its first request), and the primary metric, API-equivalent
 // dollars per active hour (cache-report.mjs requestUsd, at worker-cost.mjs MODEL_PRICES).
 //
 // The ticket guardrails are levers-evaluate's fix tries and parks, and post-merge reverts, per ticket
@@ -63,6 +65,8 @@ import { closedBy } from './closing-keywords.mjs';
 import { FINISHED, STATES } from './queue-states.mjs';
 import { prOutcomes } from './pr-outcomes.mjs';
 import { WATCH_DAYS } from './post-merge.mjs';
+import { marksStage } from './harvest.mjs';
+import { hookState } from './handoff.mjs';
 
 // The queue states a ticket is still in progress in: neither finished nor parked.
 const IN_PROGRESS = STATES.filter((s) => !FINISHED.includes(s) && s !== 'parked');
@@ -219,6 +223,8 @@ function sessionOf(file, text) {
   let resumed = false;
   let resumedFrom = null;
   let seenRequest = false;
+  let worker = false;
+  let firstInput = null;
   const overheads = [];
   const requests = new Map();
   const times = [];
@@ -231,6 +237,7 @@ function sessionOf(file, text) {
   const work = { prs: [], pushed: [] };
   for (const { d, raw } of lines) {
     const content = Array.isArray(d.message?.content) ? d.message.content : [];
+    if (!worker && marksStage(d)) worker = true;
     for (const c of content) {
       if (c?.type === 'tool_use' && c.id) {
         calls.add(c.id);
@@ -267,6 +274,7 @@ function sessionOf(file, text) {
     peak = Math.max(peak, inputOf(r));
     if (r.model) models.set(r.model, (models.get(r.model) ?? 0) + 1);
     if (!seenRequest && resumed) overheads.push(inputOf(r));
+    firstInput ??= inputOf(r);
     if (afterBoundary) { overheads.push(inputOf(r)); afterBoundary = false; }
     seenRequest = true;
     const key = r.id ?? `line-${requests.size}`;
@@ -274,6 +282,8 @@ function sessionOf(file, text) {
     if (had) had.output = Math.max(had.output, r.output);
     else requests.set(key, r);
   }
+  // A worker session starts from its briefing, never a .handoffs/ file: its first request is its start-up.
+  if (worker && !resumed && firstInput != null) overheads.unshift(firstInput);
   times.sort((a, b) => a - b);
   let active = 0;
   for (let i = 1; i < times.length; i += 1) active += Math.min(times[i] - times[i - 1], IDLE_CAP_MS);
@@ -309,12 +319,6 @@ function stampedArm(state, s) {
   const window = s.peak > SMALL_WINDOW || default1m(state.model ?? s.model) || /\[1m\]/i.test(String(state.model ?? '')) ? LARGE_WINDOW : SMALL_WINDOW;
   const pct = window >= LARGE_WINDOW && typeof state.pct_1m === 'number' ? state.pct_1m : state.pct;
   return pct > 0 ? { pct, window } : null;
-}
-
-// The hook's per-session state for a transcript, or null.
-function hookState(dir, id) {
-  const safe = id.replace(/[^A-Za-z0-9_-]/g, '') || 'unknown';
-  try { return JSON.parse(readFileSync(join(dir, `${safe}.json`), 'utf8')); } catch { return null; }
 }
 
 // Claude Code's project folder name for a directory.
@@ -480,7 +484,7 @@ function ticketGuardrails(arm, base) {
   });
 }
 
-const belowText = (b) => `below start-up cost: its threshold, ${fmt(b.threshold_tokens)} tokens, is under the ${fmt(b.overhead)}-token mean resume overhead on this window (${b.samples} resume(s))`;
+const belowText = (b) => `below start-up cost, so its sessions hand off in a loop: its threshold, ${fmt(b.threshold_tokens)} tokens, is under the ${fmt(b.overhead)}-token mean resume overhead on this window (${b.samples} resume(s))`;
 
 // Per window: the cheapest arm whose guardrails hold, or why there is not enough data.
 function recommend(arms) {

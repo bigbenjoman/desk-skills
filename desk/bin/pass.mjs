@@ -15,7 +15,7 @@ import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnP
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
-  roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
+  roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, STAGELESS_RAISE, raisedThreshold, sessionThreshold } from './handoff.mjs';
 import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief } from './decisions-change.mjs';
 import { issueChanged, refreshTicket, refreshBrief } from './ticket-refresh.mjs';
 import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
@@ -828,6 +828,10 @@ function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
 }
 // Mid-stage handoffs in a row at one stage before the ticket parks (handedOff).
 const MID_STAGE_REPEATS = 2;
+// The ticket's raised handoff threshold (handedOff's handoff_pct) for a worker's env, on every session
+// it runs after the raise: one spawned from its handoff and one resumed after it was stopped.
+const handoffPctEnv = (t) => (t.handoff_pct != null ? { DESK_HANDOFF_PCT: String(t.handoff_pct) } : {});
+
 function handedOff(t, said, { log, h, imgs, stopped }) {
   logDecisions(t, log, null);
   const stage = handoffStage(said);
@@ -839,18 +843,28 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   // one was also mid-way through counts as a repeat, and the third in a row parks, so a stage whose
   // own start fills the context past the threshold cannot hand off for ever.
   const mid = readHandoff(STATE, t.key).data?.midStage ?? null;
-  const repeats = mid && t.handoff_mid != null && String(t.handoff_mid) === stage ? (Number(t.handoff_repeats) || 0) + 1 : 0;
+  let repeats = mid && t.handoff_mid != null && String(t.handoff_mid) === stage ? (Number(t.handoff_repeats) || 0) + 1 : 0;
+  // A session that started at this stage (the last handoff's) and handed off partway through it with
+  // the branch where that handoff left it moved no stage and added no commit. The second such session
+  // in a row raises the ticket's threshold once, for the sessions after it, before any repeat parks.
+  const head = t.worktree ? sh('git', ['-C', t.worktree, 'rev-parse', 'HEAD'], { tolerant: true }) : '';
+  const stageless = Boolean(mid && head && t.handoff_stage != null && String(t.handoff_stage) === stage && head === t.handoff_head);
+  const stuck = stageless ? (Number(t.handoff_stuck) || 0) + 1 : 0;
+  const ran = stuck >= STAGELESS_RAISE && t.handoff_pct == null ? sessionThreshold(E.deskHome(), t.session_id) ?? (Number(mid.threshold) || null) : null;
+  const raise = ran && raisedThreshold(ran) > ran ? raisedThreshold(ran) : null;
+  if (raise) repeats = 0;
   if (repeats >= MID_STAGE_REPEATS) {
-    q('set', t.key, 'handoff_mid=null', 'handoff_repeats=null');
+    q('set', t.key, 'handoff_mid=null', 'handoff_repeats=null', 'handoff_stuck=null');
     return parkIt(`handed off partway through Stage ${stage} ${repeats + 1} times in a row on context (${mid.context}% used; handoff-threshold ${mid.threshold}), so no session was spawned: its sessions leave Stage ${stage} no further. ${FROM_ZERO(t)}`);
   }
   // The session's cost so far, added to the ticket's when its last session finishes.
   const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
   q('set', t.key, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`, `handoff_mid=${mid ? stage : 'null'}`, `handoff_repeats=${mid ? repeats : 'null'}`,
-    `handoffs=${(Number(t.handoffs) || 0) + 1}`,
+    `handoffs=${(Number(t.handoffs) || 0) + 1}`, `handoff_head=${head || 'null'}`, `handoff_stuck=${raise ? 0 : stuck}`, ...(raise ? [`handoff_pct=${raise}`] : []),
     ...(cost ? [`handoff_cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`] : []), ...(imgs ? [`images_dir=${imgs}`] : []));
+  const raised = raise ? `; its last ${stuck} sessions handed off partway through Stage ${stage} without moving a stage or adding a commit, so its handoff threshold is raised from ${ran}% to ${raise}% for the sessions after this` : '';
   report.advanced.push(mid
-    ? `${t.key} handed off partway through Stage ${stage} on context (${mid.context}% used; handoff-threshold ${mid.threshold}): queued for a fresh session from Stage ${stage}${stopped}`
+    ? `${t.key} handed off partway through Stage ${stage} on context (${mid.context}% used; handoff-threshold ${mid.threshold}): queued for a fresh session from Stage ${stage}${raised}${stopped}`
     : `${t.key} handed off at the end of Stage ${HANDOFF_STAGES[stage]}: queued for a fresh session from Stage ${stage}${stopped}`);
   return undefined;
 }
@@ -3643,7 +3657,7 @@ async function resumeKilled(t) {
     return undefined;
   }
   const model = t.model && t.model !== 'default' ? t.model : '';
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir), ...handoffPctEnv(t) };
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) {
     if (preflightHitLimit(t, pre.cost, login)) report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
@@ -3975,7 +3989,7 @@ async function spawnHandoff(t, pick) {
   // requeue raises the same tier it would have.
   const tier = tierFor(t);
   const model = stage === '7' && models.text ? models.text : models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars, ...handoffPctEnv(t) };
   const fail = (why) => {
     markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
   };
@@ -4621,7 +4635,7 @@ for (const t of spawnable) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'images_dir=null',
+    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'handoff_head=null', 'handoff_stuck=null', 'handoff_pct=null', 'images_dir=null',
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.

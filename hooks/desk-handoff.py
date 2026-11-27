@@ -63,10 +63,14 @@ Never fails a session: any error exits 0 with no output.
 
 Worker mode: in an autopilot worker (DESK_AUTOPILOT_WORKER=1 with DESK_HANDOFF_FILE, which
 spawn-worker.sh exports and worker-settings.mjs registers this hook for, on PostToolUse, Stop and
-SessionStart), the threshold is the handoff-threshold lever's value from the worker's pin
-(DESK_LEVER_VALUES `handoff-threshold=<pct>`, on both windows), else the §2 rows as above. Past it,
-partway through a stage a session can start at (the last `AUTOPILOT_STAGE:` line the worker printed
-names Stage 3 or later), inject once: commit, write the handoff briefing with `handoff.mjs write
+SessionStart), the threshold is the ticket's raised one (DESK_HANDOFF_PCT, which pass.mjs sets once
+two sessions in a row handed off without moving a stage or adding a commit), else the
+handoff-threshold lever's value from the worker's pin (DESK_LEVER_VALUES `handoff-threshold=<pct>`),
+each on both windows, else the §2 rows as above. The state stamps the context at the session's first
+check (`start`: used, window, time and root), which `desk-env drift` reads as start-up use. Past the
+threshold, once the context has also grown by MIN_GROWTH tokens since that first check (or the last
+compaction; DESK_HANDOFF_MIN_GROWTH overrides it), and partway through a stage a session can start at
+(the last `AUTOPILOT_STAGE:` line the worker printed names Stage 3 or later), inject once: commit, write the handoff briefing with `handoff.mjs write
 --stage <stage> --left …`, print `AUTOPILOT_HANDOFF: <stage>` and end the turn; pass.mjs then starts
 a fresh worker at that stage from the briefing. Stop blocks once while DESK_HANDOFF_FILE is unwritten
 since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
@@ -88,6 +92,7 @@ import sys
 import time
 
 DEFAULT_PCT = 45
+MIN_GROWTH = 30_000  # tokens a worker session gains before it may hand off (DESK_HANDOFF_MIN_GROWTH)
 SMALL_WINDOW = 200_000
 LARGE_WINDOW = 1_000_000
 FRESH_SECONDS = 24 * 3600
@@ -582,13 +587,32 @@ def lever_value():
     return "config"
 
 
-def lever_pct():
-    """The lever's value as a percentage, or None for `config` or a value that is not one."""
+def as_pct(value):
+    """A percentage from 0 to 100 (both excluded), or None."""
     try:
-        pct = float(lever_value())
-    except ValueError:
+        pct = float(value)
+    except (TypeError, ValueError):
         return None
     return pct if 0 < pct < 100 else None
+
+
+def lever_pct():
+    """The lever's value as a percentage, or None for `config` or a value that is not one."""
+    return as_pct(lever_value())
+
+
+def raised_pct():
+    """The ticket's raised threshold (DESK_HANDOFF_PCT, which pass.mjs sets once its sessions hand off
+    without moving a stage), or None."""
+    return as_pct(os.environ.get("DESK_HANDOFF_PCT"))
+
+
+def min_growth():
+    """Tokens the context must gain since the session started (or last compacted) before it hands off."""
+    try:
+        return max(0, int(os.environ.get("DESK_HANDOFF_MIN_GROWTH", MIN_GROWTH)))
+    except ValueError:
+        return MIN_GROWTH
 
 
 def current_stage(transcript):
@@ -624,20 +648,24 @@ def on_worker_context(event, data, session, root, path):
     state = load_state(session)
     if state.get("fired_at"):
         return
-    pin = lever_pct()
-    pct, pct_1m = (pin, pin) if pin else session_threshold(state, root)
+    raised, pin = raised_pct(), lever_pct()
+    pct, pct_1m = (raised, raised) if raised else (pin, pin) if pin else session_threshold(state, root)
     transcript = data.get("transcript_path") or ""
     used = context_used(transcript)
     if used is None:
         save_state(session, state)
         return
     w = window(state, used)
+    # The context at the session's first check: its start-up use, which `desk-env drift` reads.
+    state.setdefault("start", {"used": used, "window": w, "at": time.time(), "root": root})
+    state.setdefault("base_used", used)
     if w >= LARGE_WINDOW:
         pct = pct_1m
     if pct:
         state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
-    stage = current_stage(transcript) if pct and now >= pct else None
+    grown = used - state["base_used"] >= min_growth()
+    stage = current_stage(transcript) if pct and now >= pct and grown else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
     if stage not in RESUME_STAGES:
         save_state(session, state)
@@ -646,7 +674,8 @@ def on_worker_context(event, data, session, root, path):
     save_state(session, state)
     key = os.path.splitext(os.path.basename(path))[0]
     value = lever_value()
-    source = (f"handoff-threshold {value}" if pin else
+    source = ("raised for this ticket, DESK_HANDOFF_PCT" if raised else
+              f"handoff-threshold {value}" if pin else
               "config §2 Handoff at context %" + (" on a 1M window" if w >= LARGE_WINDOW else ""))
     inject(event, (
         f"desk handoff: context is at {now:.0f}% of a {w:,}-token window, past this worker's "
@@ -689,7 +718,7 @@ def on_worker_session_start(data, session):
         m = data["model"]
         state["model"] = m.get("id") if isinstance(m, dict) else str(m)
     if data.get("source") == "compact":
-        for k in ("fired_at", "blocked", "stage"):
+        for k in ("fired_at", "blocked", "stage", "base_used"):
             state.pop(k, None)
     save_state(session, state)
 

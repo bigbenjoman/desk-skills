@@ -113,7 +113,9 @@
 //                                             name with no Dev server item (NODEV), a §4 Unit tests or Typecheck
 //                                             item starting Jest with no worker cap or turbo run with no
 //                                             --concurrency, with its bounded form (UNBOUND), a §4 Pre-merge steps item
-//                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
+//                                             keyed to a job of several steps (JOBKEY), a §2 handoff row a fresh
+//                                             worker session's measured start-up use already reaches (STARTUP),
+//                                             a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
@@ -200,6 +202,7 @@ import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import { unbounded as unboundedRun } from './run-bounds.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
+import { quantile } from './quantile.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
@@ -1934,6 +1937,51 @@ function driftValues(parsed, id) {
   try { return configValuesIn(parsed, id); } catch (e) { if (e instanceof DeskConfigError) return null; throw e; }
 }
 
+// A worker session's start-up use, per window: the median share of the window its context held at the
+// handoff hook's first check (the `start` its state in `stateDir` stamps), over the last
+// STARTUP_SESSIONS sessions run in the repo's primary root or under its worktrees directory.
+const STARTUP_SESSIONS = 10;
+export function startupShares(stateDir, root, worktrees) {
+  let files = [];
+  try { files = readdirSync(stateDir).filter((f) => f.endsWith('.json')); } catch { return []; }
+  const by = new Map();
+  for (const f of files) {
+    let s = null;
+    try { s = JSON.parse(readFileSync(join(stateDir, f), 'utf8'))?.start; } catch { continue; }
+    const used = Number(s?.used);
+    const window = Number(s?.window);
+    const at = String(s?.root ?? '');
+    if (!(used > 0 && window > 0) || !(at === root || (worktrees && at.startsWith(`${worktrees}/`)))) continue;
+    if (!by.has(window)) by.set(window, []);
+    by.get(window).push({ share: (100 * used) / window, at: Number(s.at) || 0 });
+  }
+  return [...by].sort((a, b) => a[0] - b[0]).map(([window, list]) => {
+    const last = list.sort((a, b) => b.at - a.at).slice(0, STARTUP_SESSIONS).map((x) => x.share);
+    return { window, n: last.length, median: quantile(last, 0.5) };
+  });
+}
+
+// §2 handoff rows a fresh session's measured start-up use already reaches, read as the hook reads
+// them (45 unset; the 1M row unset is the first row's value; 0 is off): -> [{ row, pct, window, share, n }].
+export function startupDrift(parsed, root, stateDir = join(deskHome(), 'handoff')) {
+  if (!root) return [];
+  const row = (id, fallback) => {
+    let v = '';
+    try { v = String(configValueIn(parsed, id) ?? '').trim().replace(/%$/, ''); } catch { /* unreadable: the default */ }
+    const n = Number(v);
+    return v !== '' && n >= 0 && n < 100 ? n : fallback;
+  };
+  const pct = row('handoff-pct', 45);
+  const pct1m = row('handoff-pct-1m', pct);
+  let worktrees = null;
+  try { worktrees = expandHome(configValueIn(parsed, 'worktrees-dir') ?? '').replace(/\/+$/, '') || null; } catch { /* unset */ }
+  worktrees ??= `${root}-worktrees`;
+  return startupShares(stateDir, root, worktrees).flatMap(({ window, n, median }) => {
+    const p = window >= 1_000_000 ? pct1m : pct;
+    return p > 0 && median >= p ? [{ row: window >= 1_000_000 ? 'Handoff at context % on a 1M window' : 'Handoff at context %', pct: p, window, share: median, n }] : [];
+  });
+}
+
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1971,7 +2019,8 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], unbound: unboundRuns(parsed, root), weight,
+    startup: startupDrift(parsed, root), dontAsk: mode === 'dontAsk' ? file : null };
 }
 
 // §4 Unit tests and Typecheck items that start Jest with no worker cap or `turbo run` with no
@@ -2195,7 +2244,10 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], dontAsk }) {
+const startupLine = (s) => `STARTUP  §2 ${s.row} is ${s.pct}, but a fresh session's start-up already uses ${s.share.toFixed(0)}% of its ${s.window.toLocaleString('en-US')}-token window ` +
+  `(the median of its last ${s.n} session${s.n === 1 ? '' : 's'}), so its sessions hand off as soon as they start: set it above ${Math.ceil(s.share)}`;
+
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], unbound = [], weight = null, jobKeyed = [], startup = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...invalid.map(invalidLine),
@@ -2206,6 +2258,7 @@ export function driftLines({ missing, stalls, unlisted = [], invalid = [], confl
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),
+    ...startup.map(startupLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
