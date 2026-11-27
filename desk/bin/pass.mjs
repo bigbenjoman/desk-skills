@@ -3004,7 +3004,8 @@ const placesFor = (f) => {
 // At §3b "Queue order: placed tickets" `move-and-say` it may also move a placed ticket, when that
 // brings the projected finish of the whole queue forward by more than §3b "Queue order: move
 // threshold" (placedMoves): the projection fills this batch's slots under the per-file budget above,
-// each ticket's slot time read from its size as the forecast reads it. Each such move is said in the
+// each ticket's slot time read from its size as the forecast reads it. A ticket so moved stays placed
+// at its new place, so only another such move shifts it again. Each such move is said in the
 // report, on the ticket (`placed_move`, which desk-q shows, kept as `resort_why` is kept) and on this
 // pass's metrics line, which the check-in digest lists.
 const resortOpts = { scope: budgetFiles, fileCount: (k) => plannedFiles(triageRec(k)), cloud: startsInCloud };
@@ -3045,6 +3046,10 @@ if (RESORT.changed) {
     if (!placedNow.has(t.key) && t.placed_move != null) q('set', t.key, 'placed_move=null');
   }
   layOrder(fresh, RESORT.order);
+  for (const m of RESORT.placedMoved) {
+    q('set', m.key, ...placedMoveRecord(m).replace);
+    fresh.tickets[m.key].placed = true;
+  }
   orderLines.push(resortLine(RESORT));
   for (const m of RESORT.placedMoved) orderLines.push(`placed ticket moved (§3b Queue order: placed tickets is move-and-say): ${m.key} ${placedMoveText(m)}`);
 }

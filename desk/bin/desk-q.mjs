@@ -53,7 +53,7 @@ import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefus
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
-import { resortable, gainText } from './spawn-order.mjs';
+import { resortable, unstarted, gainText } from './spawn-order.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
@@ -3657,9 +3657,10 @@ function needSegs(r, x, now = Date.now()) {
 // Why the pass's re-sort moved an unstarted row ahead (pass.mjs resort_why), or null.
 const resortedWhy = (x) => (!x.pr && resortable(x.t) && !x.t.placed_move && x.t.resort_why) || null;
 // How the pass moved a row the person had placed (pass.mjs placed_move: { from, to, gain_min }), as
-// "1→4, 45m sooner", or null once it is placed again.
+// "1→4, 45m sooner", or null. The row stays placed at its new place; the person placing it again clears
+// placed_move (queue.mjs move and front --placed).
 const placedMoved = (x) => {
-  const m = !x.pr && resortable(x.t) ? x.t.placed_move : null;
+  const m = !x.pr && unstarted(x.t) ? x.t.placed_move : null;
   return m && typeof m === 'object' ? `${m.from}→${m.to}, ${gainText(m.gain_min)} sooner` : null;
 };
 const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
@@ -3905,7 +3906,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
   const row = (x) => segRow(x.t.key, cutRuns([
-    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : placedMoved(x) ? '~' : resortedWhy(x) ? '^' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
+    [[`  ${rpad(x.pos == null ? '-' : `${placedMoved(x) ? '~' : x.t.placed ? '*' : resortedWhy(x) ? '^' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
     ...(ww ? [[[pad(wait(x), ww), waitSgr(x)]]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.

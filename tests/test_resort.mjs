@@ -134,12 +134,21 @@ const cloudRun = (tickets, files) => resortQueue(tickets, { scope: (k) => files[
     moved.placedMoved.map((m) => `${m.key} ${m.from}->${m.to} ${Math.round(m.gainH * 60)}m`).join(' | '), 'X 1->6 60m');
   t('#1625 AC4 and says so in words', placedMoveText(moved.placedMoved[0]), 'from 1 to 6, the queue finishes about 60m sooner');
   // The record the pass writes for it: the queue.mjs set pairs, applied as queue.mjs applies them,
-  // clear placed and leave placed_move for desk-q; the metrics entry carries the same for the digest.
+  // clear placed for the order and leave placed_move for desk-q, then place it again where it went;
+  // the metrics entry carries the same for the digest.
   const rec = placedMoveRecord(moved.placedMoved[0]);
   const x = tk('X', { placed: true });
   applySet(x, rec.set);
-  t('#1625 AC4/AC5 the move is recorded on the ticket: placed cleared, placed_move from, to and the gain',
+  t('#1625 AC4/AC5 the move is recorded on the ticket: placed cleared for the order, placed_move from, to and the gain',
     `${x.placed} ${JSON.stringify(x.placed_move)}`, 'null {"from":1,"to":6,"gain_min":60}');
+  applySet(x, rec.replace);
+  t('#1625 AC3 and once laid it is placed again where it went', `${x.placed} ${JSON.stringify(x.placed_move)}`, 'true {"from":1,"to":6,"gain_min":60}');
+  // So the next pass's re-sort leaves it there: only another move past the threshold, said as this
+  // one was, could shift it.
+  const next = Object.values(q.tickets).map((y) => (y.key === 'X' ? x : y));
+  const again = placedMoves(next, { ...opts, thresholdH: 30 / 60 });
+  t('#1625 AC3 the next pass leaves the moved ticket where it went, unsaid moves none', `${again.placedMoved.length} ${laid(next, again)}`, '0 H Y L1 L2 L3 X');
+  t('#1625 AC3 and the plain re-sort does not move it either', laid(next, run(next, files)), 'H Y L1 L2 L3 X');
   t('#1625 AC4/AC5 and on the pass\'s metrics line for the check-in digest', JSON.stringify(rec.line),
     '{"key":"X","from":1,"to":6,"gain_min":60,"text":"from 1 to 6, the queue finishes about 60m sooner"}');
   t('#1625 AC3 a second placed ticket whose move gains nothing more stays placed', `${moved.released.join(' ')} ${q.tickets.Y.placed}`, 'X true');

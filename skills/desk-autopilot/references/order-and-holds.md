@@ -47,7 +47,7 @@ queue order, when that brings the projected finish of the whole queue forward by
 "Queue order: move threshold" (minutes). The projection fills the batch's worker slots in queue order,
 blockers and shared files holding as they do at spawn, with each ticket's slot time read from its
 size: the repo's recent merge times (`desk-q-eta.mjs`) where it has enough, else a fixed time per
-size. A ticket it moves is no longer placed. The pass report, the check-in digest ("Placed tickets
+size. A ticket it moves stays placed at its new place, so only another such move shifts it again. The pass report, the check-in digest ("Placed tickets
 moved") and desk-q (`~`) each say what moved, from where to where, and the time saved. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file

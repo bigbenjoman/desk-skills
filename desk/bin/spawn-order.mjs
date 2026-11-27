@@ -54,7 +54,7 @@ export const chainName = (f) => {
 // both, so a cloud ticket and a local one sharing a file stay sequenced by the per-file budget.
 // -> { order: those tickets' keys in their new order, gates, moved: [{ key, why }] for each that overtook
 //    another, changed }
-const unstarted = (t) => ['queued', 'triaged', 'parked'].includes(t.state) && !t.spawned_at;
+export const unstarted = (t) => ['queued', 'triaged', 'parked'].includes(t.state) && !t.spawned_at;
 // A ticket the re-sort may move: unstarted, and nobody placed it.
 export const resortable = (t) => unstarted(t) && !t.placed;
 export function resortQueue(tickets, { scope, fileCount, cloud = () => false }) {
@@ -174,12 +174,14 @@ export const gainText = (min) => (min >= 120 ? `${Math.round(min / 6) / 10}h` : 
 // How a placed ticket's move reads in the pass report and the digest: "from 2 to 5, the queue
 // finishes about 45m sooner".
 export const placedMoveText = (m) => `from ${m.from} to ${m.to}, the queue finishes about ${gainText(Math.round(m.gainH * 60))} sooner`;
-// How the pass records a placed ticket's move: `set` the queue.mjs set pairs for its ticket (placed
-// cleared, placed_move for desk-q), `line` its entry in the pass's metrics line `queue_moves`, which
-// the check-in digest reads (pass-metrics.mjs readQueueMoves).
+// How the pass records a placed ticket's move: `set` the queue.mjs set pairs for its ticket before the
+// order is laid (placed cleared so the order moves it, placed_move for desk-q), `replace` those after it
+// (placed again at its new place, so only another move past the threshold, said as this one is, moves
+// it again), `line` its entry in the pass's metrics line `queue_moves`, which the check-in digest reads
+// (pass-metrics.mjs readQueueMoves).
 export function placedMoveRecord(m) {
   const move = { from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60) };
-  return { set: ['placed=null', `placed_move=${JSON.stringify(move)}`], line: { key: m.key, ...move, text: placedMoveText(m) } };
+  return { set: ['placed=null', `placed_move=${JSON.stringify(move)}`], replace: ['placed=true'], line: { key: m.key, ...move, text: placedMoveText(m) } };
 }
 
 // The pass's report line for a re-sort, or null when the order did not change.
