@@ -303,7 +303,8 @@ writeFileSync(join(H, '.desk-autopilot', 'usage', 'probe.log'), `${JSON.stringif
   five_hour: { utilization: 1, resetsAt: Math.floor(NOW / 1000) + 3600 }, seven_day: { utilization: 0.4, resetsAt: Math.floor(NOW / 1000) + 86400 } } } })}\n`);
 const n3 = starts().length;
 const full = await start({ purpose: 'blank', repo: 'acme__voicepa' });
-t('AC3 a full window in the reading refuses it with 429', [full.status, full.json?.error?.code, /^voicepa's subscription is at the [a-z0-9 -]*limit until /.test(full.json?.error?.message ?? '')], [429, 'usage_limit', true]);
+// voicepa names no subscription, so it runs on the default login, which is signed in to ben@example.com.
+t('AC3 a full window in the reading refuses it with 429', [full.status, full.json?.error?.code, /^voicepa's subscription, ben@example\.com, is at the [a-z0-9 -]*limit until /.test(full.json?.error?.message ?? '')], [429, 'usage_limit', true]);
 await until(() => false, 200);
 t('AC3 nothing started', starts().length, n3);
 
