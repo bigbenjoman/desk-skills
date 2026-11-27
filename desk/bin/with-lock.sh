@@ -196,8 +196,7 @@ watch_caller() {
   [ -z "$outer" ] && [ -z "$watching" ] || return 0
   watching=1
   # Started from /, never from the run's directory: the watch outlives the run by up to a poll, and a
-  # process working in a worktree holds it (pass.mjs busyWorktree), so a pass's own spec run in a
-  # child's worktree would keep the next pass from spawning there (issue #1636).
+  # process working in a worktree holds it from a spawn (pass.mjs busyWorktree).
   (cd / && exec node "$here/lock-caller-watch.mjs" "$$") 9>&- </dev/null >/dev/null 2>&1 &
 }
 # The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
