@@ -24,7 +24,7 @@ import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAF
   ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey, recordStop } from './desk-env.mjs';
 import { placement, featureRole, runsText, handOver } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
-import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
+import { processRows, workerProcs, endProcs, targetPids } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs, recordedPr } from './queue-store.mjs';
 import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -554,8 +554,7 @@ function stop(key) {
   if (workerMarkers(round).some(([k]) => k === 'AUTOPILOT_DONE')) throw new Error(`${key}'s worker has already printed AUTOPILOT_DONE, so the next pass records it done and stops its session: nothing was changed`);
   // Recorded before any signal goes, so the memory watch never reads the exit 137 its SIGKILL leaves in
   // the worker's log as an OOM kill (desk-env.mjs harmStep); a record that cannot be written stops nothing.
-  const rows = processRows();
-  const pids = rows.filter((r) => target.groups.includes(r.pgid) || target.pids.includes(r.pid)).map((r) => r.pid);
+  const pids = targetPids(target, processRows());
   try { recordStop(stateDir(), { key, at: Date.now(), pids }); } catch (e) { console.error(`queue.mjs stop ${key}: the stop could not be recorded for the memory watch (${e.message}), so it may read the stopped worker as killed for memory and hold spawns for 10m`); }
   const ended = endProcs(target, { graceMs: STOP_GRACE_MS });
   if (ended.left.length) throw new Error(`${key}'s worker did not end: pid ${ended.left.join(', ')} still alive after SIGTERM and SIGKILL. Nothing in the queue was changed`);
