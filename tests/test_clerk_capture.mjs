@@ -19,9 +19,23 @@ const dir = scratch('clerk-capture-');
 const file = join(dir, 'capture.mjs');
 writeFileSync(file, script);
 const check = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
-const stub = script.indexOf('window.__internal_onBeforeSetActive = () => Promise.resolve();');
-t('the script stubs @clerk/nextjs\'s onBeforeSetActive hook before calling setActive', stub > -1 && stub < script.indexOf('window.Clerk.setActive('), true);
 t(`the capture script parses${check.stderr ? `: ${check.stderr.trim()}` : ''}`, check.status, 0);
+
+// Run the script's in-page sign-in against a Clerk whose @clerk/nextjs hook never settles, as it does
+// where middleware 401s the cache-invalidation server action: setActive awaits the hook it finds when
+// called, so the session switches only if the script replaced the hook first.
+const signInSrc = /page\.evaluate\((async \(ticket\) => \{[\s\S]*?\n\}), token\)/.exec(script)?.[1];
+const signedIn = async () => {
+  const win = { __internal_onBeforeSetActive: () => new Promise(() => {}) };
+  win.Clerk = {
+    client: { signIn: { create: async () => ({ status: 'complete', createdSessionId: 'sess_1' }) } },
+    setActive: async ({ session }) => { await win.__internal_onBeforeSetActive(); win.active = session; },
+  };
+  const status = await new Function('window', `return (${signInSrc});`)(win)('ticket');
+  await new Promise((r) => setTimeout(r, 50));
+  return { status, active: win.active };
+};
+t('the in-page sign-in sets the session where the onBeforeSetActive hook never settles', signInSrc ? JSON.stringify(await signedIn()) : 'no page.evaluate sign-in found', JSON.stringify({ status: 'complete', active: 'sess_1' }));
 
 // The script reads the key with desk's own desk-env.mjs from the installed desk home, so give it a
 // home whose ~/.claude/desk/bin is this checkout's.
