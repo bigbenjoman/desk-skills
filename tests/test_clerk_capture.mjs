@@ -19,6 +19,8 @@ const dir = scratch('clerk-capture-');
 const file = join(dir, 'capture.mjs');
 writeFileSync(file, script);
 const check = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+const stub = script.indexOf('window.__internal_onBeforeSetActive = () => Promise.resolve();');
+t('the script stubs @clerk/nextjs\'s onBeforeSetActive hook before calling setActive', stub > -1 && stub < script.indexOf('window.Clerk.setActive('), true);
 t(`the capture script parses${check.stderr ? `: ${check.stderr.trim()}` : ''}`, check.status, 0);
 
 // The script reads the key with desk's own desk-env.mjs from the installed desk home, so give it a
