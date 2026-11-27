@@ -3466,15 +3466,22 @@ const runnerOf = (name) => {
 };
 // An unmerged PR's WHAT IT NEEDS: its number, then prNeed's reason and command. With passes stopped
 // its checks are as old as the last pass, so it says when they were read, and is grey.
+// A change pushed after the PR opened that §4 Merge holds covers (new-holds.mjs) is said after it either way.
+export const NOW_NEEDS = 'now needs your merge';
+// "now needs your merge: <files>" while the ticket has new holds (new-holds.mjs), else null.
+export const nowNeedsText = (t) => (t?.new_holds?.length ? `${NOW_NEEDS}: ${t.new_holds.join(', ')}` : null);
+const heldSegs = (t) => { const held = nowNeedsText(t); return held ? [[` · ${held}`, YOU]] : []; };
 function prSegs(r, t, now) {
   const lead = [[`#${t.result.pr}`, PR_SGR], [' · ', null]];
+  const held = nowNeedsText(t);
+  const tail = heldSegs(t);
   if (r.live) {
     // A Merging PR with no change for STALL_MS keeps its first reason and says so, which a 52-column
     // row has room for; the rest is moving nothing.
     const m = prNeed(r.q, t, r.ctx, now), stall = m.k === 'merging' ? stalledFor(t, now) : null;
-    return [...lead, ...(stall != null ? [m.segs[0], [` · no change for ${span(stall)}`, null]] : m.segs)];
+    return [...lead, ...(stall != null ? [m.segs[0], [` · no change for ${span(stall)}`, null]] : m.segs), ...tail];
   }
-  return [...lead, [`as of ${clock(Date.parse(prStatusOf(t).at))}: ${segText(prNeed(r.q, t, r.ctx, null).segs)}`, GREY]];
+  return [...lead, [`as of ${clock(Date.parse(prStatusOf(t).at))}: ${segText(prNeed(r.q, t, r.ctx, null).segs)}${held ? ` · ${held}` : ''}`, GREY]];
 }
 
 // A ticket on a fix try: its PR, what is wrong with it, and that a worker repairs it, running or next.
@@ -3533,7 +3540,7 @@ function needSegs(r, x, now = Date.now()) {
   const wb = worktreeBusy(t);
   if (wb) return [[`${busyPark(t) ? `${busyPark(t).question} · ` : ''}${worktreeBusyText(wb)}`, null]];
   const f = fixOn(t);
-  if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
+  if (f && groupOf(k) !== 'needs') return [...fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t)), ...heldSegs(t)];
   if (k === 'running') return [[runningStage(r, x), null]];
   if (k === 'finishing') return [[FINISHING_TEXT, null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
@@ -3598,6 +3605,12 @@ export function stalledPrs({ slug, stateDir, queuePath, q, now = Date.now() }) {
     .sort((a, b) => b.ms - a.ms)
     .map(({ key, t, ms }) => ({ ticket: key, pr: t.result.pr, url: prStatusOf(t).url ?? null, for: span(ms), check: prNeed(q, t, ctx, null).segs[0][0] }));
 }
+
+// One repo's unmerged PRs a change pushed after they opened put under §4 Merge holds (new-holds.mjs),
+// for the check-in digest: {ticket, pr, url, text}, by ticket.
+export const newHoldPrs = (q) => Object.entries(q?.tickets ?? {}).filter(([, t]) => prRow(t) && prStatusOf(t).state === 'OPEN' && t.result?.pr != null && nowNeedsText(t))
+  .map(([key, t]) => ({ ticket: key, pr: t.result.pr, url: prStatusOf(t).url ?? null, text: nowNeedsText(t) }))
+  .sort((a, b) => a.ticket.localeCompare(b.ticket));
 
 // A waiting ticket whose every blocker left is landing starts after their PRs merge.
 function afterPrs(r, x) {

@@ -32,6 +32,7 @@
 //   holdKind(hold)           'routine' (it names one), 'person', or 'agent' (a check with no routine)
 //   agentLast(holds)         the holds with every 'agent' one after the rest, the row's order otherwise
 //   matchHolds(files, holds, contents) -> [{ glob, why, routine, files }]
+//   personHolds(held, routinePerm) -> those holds that leave the merge to a person (§3 merge-hold-routine)
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //   codeOwnerHolds(held, { repo, base, merger, run }) -> { held, satisfied }: a code-owner hold whose
 //     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
@@ -69,6 +70,9 @@
 //     owns, so not holding it),
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
+//   node gate.mjs held <number> [--repo owner/name] [--merger <login>] [--files-cache <file>]
+//     one JSON object { head, base, holds: [{ glob, why, files }] }: the holds the PR's files fall under
+//     that leave its merge to a person, read as `pr` reads them; none on a PR into any other base
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
 //     (with no diff to read, a `#<key>` hold on a listed file holds)
 //   node gate.mjs hold-kind [<item>…]             print `<kind>\t<item>` (holdKind) for each item given,
@@ -451,6 +455,10 @@ export function matchHolds(files, holds, contents) {
   }).filter((h) => h.files.length);
 }
 
+// matchHolds' holds that leave the merge to a person: all but one whose routine the merge driver runs
+// itself, which it does only where §3 merge-hold-routine is yes.
+export const personHolds = (held, routinePerm) => held.filter((h) => !(h.routine && routinePerm === 'yes'));
+
 // A hold whose reason is a code-owner approval stands for the approval GitHub asks of the paths' code
 // owners, which it reads from the base branch's CODEOWNERS, the first of these that exists.
 export const CODEOWNERS_PATHS = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
@@ -641,6 +649,33 @@ async function loadConfigLists() {
   const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
   return { E, required: list('required-checks'), advisory: list('advisory-checks'), holds: parseHolds(E.configValues('merge-holds')) };
 }
+// §0 Default branch, `main` where it is unset.
+function defaultOf(E) {
+  const v = String(E.configValue('default-branch') ?? '').trim();
+  return v && !/^(todo|none)\b/i.test(v) ? v : 'main';
+}
+// §3 merge-hold-routine, `no` with no config: the driver then runs no routine (personHolds).
+export function routinePerm(E) {
+  try { return E.permission('merge-hold-routine'); } catch { return 'no'; }
+}
+// A command's `--name <value>` option, or null.
+const optOf = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] || null : null; };
+// The §4 Merge holds a PR's files fall under, as `pr` and `held` read them: codeOwnerHolds' { held,
+// satisfied } with the PR's `files`. Files it cannot read are null, and every hold then holds
+// (UNREAD_FILES). A code-owner hold is met only on the merge into the default branch, against its
+// CODEOWNERS: into a batch base every hold is carried, for that base's own PR to be judged.
+async function prHolds({ repo, n, pr, holds, defaultBranch, cache, merger }) {
+  let files;
+  try {
+    files = prFilesAt({ cache: openCache(cache), repo, n, head: pr.headRefOid,
+      read: () => gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean) });
+  } catch {
+    return { files: null, held: holds.length ? [{ glob: '*', why: UNREAD_FILES, files: [] }] : [], satisfied: [] };
+  }
+  const contents = await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh });
+  const owned = await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger: pr.baseRefName === defaultBranch ? merger : null, run: gh });
+  return { files, ...owned };
+}
 // §4 Known flaky checks, refused whole when any item does not parse: unset or `none` waives nothing.
 function loadFlaky(E) {
   const { flaky, errors } = parseFlaky(E.configValues('flaky-checks'));
@@ -746,8 +781,7 @@ if (isMain) {
       catch { runs = [{ name: 'gh run list (unreadable)', status: 'unknown' }]; }
       // A hold is for the merge that deploys: one into the repo's default branch (§0, never a batch
       // base). A PR into any other base merges past it, and the hold falls on that base's own PR.
-      const repoDefault = String(E.configValue('default-branch') ?? '').trim();
-      const defaultBranch = repoDefault && !/^(todo|none)\b/i.test(repoDefault) ? repoDefault : 'main';
+      const defaultBranch = defaultOf(E);
       let gate = evaluateGate(checks, { required, advisory, runs });
       // A required check that never reported may be one its workflow never runs on this base, or one a
       // base behind the default branch has not yet been given the trigger for.
@@ -797,21 +831,9 @@ if (isMain) {
         for (const s of state) if (s.runId && !toRerun.some((f) => f.runId === s.runId)) ids.delete(String(s.runId));
         for (const r of byJob) ids.delete(r);
       }
-      let files = [];
-      let filesOk = true;
-      const fi = rest.indexOf('--files-cache');
-      try {
-        files = prFilesAt({ cache: openCache(fi >= 0 ? rest[fi + 1] || null : null), repo, n, head: pr.headRefOid,
-          read: () => gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean) });
-      } catch { filesOk = false; }
-      const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
-      // A code-owner hold is met only on the merge into the default branch, against its CODEOWNERS:
-      // into a batch base every hold is carried, for that base's own PR to be judged.
-      const mi = rest.indexOf('--merger');
-      const merger = mi >= 0 && pr.baseRefName === defaultBranch ? rest[mi + 1] : null;
-      const owned = filesOk
-        ? await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger, run: gh })
-        : { held: holds.length ? [{ glob: '*', why: UNREAD_FILES, files: [] }] : [], satisfied: [] };
+      const owned = await prHolds({ repo, n, pr, holds, defaultBranch, cache: optOf(rest, '--files-cache'), merger: optOf(rest, '--merger') });
+      const filesOk = owned.files != null;
+      const files = owned.files ?? [];
       const held = agentLast(owned.held);
       const notes = (f) => { const a = jobAnnotations(repo, jobOf(f)); return a === undefined ? undefined : failureNotes(a); };
       const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null, notes });
@@ -828,6 +850,21 @@ if (isMain) {
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
         waiver, files: filesOk ? files : null,
       }));
+    } else if (cmd === 'held') {
+      const n = rest[0];
+      if (!/^\d+$/.test(n ?? '')) throw new Error('usage: gate.mjs held <number> [--repo owner/name] [--merger <login>] [--files-cache <file>]');
+      const { E, holds } = await loadConfigLists();
+      const repo = optOf(rest, '--repo') ?? E.ghRepo();
+      const pr = JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json', 'headRefOid,baseRefName']));
+      const defaultBranch = defaultOf(E);
+      let held = [];
+      if (pr.baseRefName === defaultBranch && holds.length) {
+        const owned = await prHolds({ repo, n, pr, holds, defaultBranch, cache: optOf(rest, '--files-cache'), merger: optOf(rest, '--merger') });
+        // Unread files are no read: the pass tries this head again rather than record it holding nothing.
+        if (owned.files == null) throw new Error(`PR #${n}'s files could not be read`);
+        held = personHolds(owned.held, routinePerm(E));
+      }
+      console.log(JSON.stringify({ head: pr.headRefOid, base: pr.baseRefName, holds: held.map(({ glob, why, files }) => ({ glob, why, files })) }));
     } else if (cmd === 'holds') {
       const { holds } = await loadConfigLists();
       const files = readFileSync(rest[0] ?? '/dev/stdin', 'utf8').split('\n').filter(Boolean);
@@ -841,7 +878,7 @@ if (isMain) {
     } else if (cmd === 'state') {
       for (const s of loadStateChecks(await import('./desk-env.mjs'))) console.log(`${s.name}\t${s.kind ?? ''}`);
     } else {
-      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file> | gate.mjs hold-kind [<item>…] | gate.mjs flaky | gate.mjs state');
+      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs held <number> | gate.mjs holds <file> | gate.mjs hold-kind [<item>…] | gate.mjs flaky | gate.mjs state');
       process.exit(2);
     }
   } catch (e) {

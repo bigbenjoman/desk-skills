@@ -634,15 +634,20 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
 // whose choice says to run it in exactly one other configured repo and names this one only as where
 // it is taken from. Entries in this repo and another build here. Prefixes naming no configured repo
 // give {unknown: true, names, why}.
+// A files_in_scope entry's place: { name, p } where its `<repo>: ` prefix names a repo other than this
+// one (p: repoPlacement's answer), else { path } in this repo, with a prefix naming this repo taken off.
+// A prefix that is a path's, with a slash or a file extension, and no configured repo's is kept.
+export function scopeEntry(f, root = deskConfigRoot()) {
+  const m = String(f).match(/^\s*([A-Za-z0-9][\w.-]*(?:\/[\w.-]+)?):\s+(?=\S)/);
+  const p = m ? repoPlacement(m[1], root) : null;
+  if (p && !(p.unknown && /\/|\.\w{1,5}$/.test(m[1]))) return { name: m[1], p };
+  return { path: m && !p ? String(f).slice(m[0].length) : String(f) };
+}
+
 export function triagePlacement(rec, root = deskConfigRoot()) {
   if (!rec || typeof rec !== 'object') return null;
-  // Each entry's repo: null for this one (no prefix, this repo's name, or a prefix that is a path's,
-  // with a slash or a file extension, and no configured repo's).
-  const repoOf = (f) => {
-    const name = String(f).match(/^\s*([A-Za-z0-9][\w.-]*(?:\/[\w.-]+)?):\s+\S/)?.[1];
-    const p = name ? repoPlacement(name, root) : null;
-    return p && !(p.unknown && /\/|\.\w{1,5}$/.test(name)) ? { name, p } : null;
-  };
+  // Each entry's repo: null for this one (scopeEntry).
+  const repoOf = (f) => { const e = scopeEntry(f, root); return e.p ? e : null; };
   const files = (Array.isArray(rec.files_in_scope) ? rec.files_in_scope : []).map(String).filter((f) => f.trim());
   const away = files.map(repoOf).filter(Boolean);
   if (away.length && away.length < files.length) return null;

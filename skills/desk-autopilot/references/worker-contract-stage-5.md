@@ -58,6 +58,14 @@ and choosing between them is a product or design decision. Park naming the files
 needed, with the remaining tail (core section 1). Which code shape keeps both is an engineering
 call, and yours.
 
+**A change under a §4 Merge holds path your open PR did not already touch makes its merge the
+person's**, a comment or whitespace edit included (`desk-env list merge-holds`; `gh pr diff <n>
+--name-only` lists what it touches). Before you push one, print `AUTOPILOT_NOTE: PR #<n> now needs your merge: <path>`: the pass then flags the
+PR's row and the digest, and records one needs-you ask. Where that change is only a comment or
+whitespace edit answering a review finding, keep the fix and name the hold path in your reply to
+the finding, saying the merge is left to the person. Record no ask yourself: the pass's recommends
+keeping the fix.
+
 **Every push goes through `push-retry.mjs`**, whatever command a skill or prompt names, in the same
 shape the Stage 3 file's §6 allows, with your Bash timeout at its 600000 maximum:
 

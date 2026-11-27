@@ -2215,6 +2215,8 @@ t('DS-279 AC9 11 failed checks on try 1: a worker repairs it while running, the 
   `${rail279('V-705').includes('11 checks failed · a worker repairs it, try 1 of 2')} ${rail279('V-697').includes('#697 · 11 checks failed · next free worker repairs it, try 1 of 2')}`, 'true true');
 t('DS-279 AC9 no row with a failed check leads with a pass count', q279.filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | '), '');
 t('DS-279 AC10 a DIRTY PR on its first try names the base branch', rail279('V-704'), 'Moves without you: #704 · merge conflict with main · next free worker repairs it, try 1 of 2.');
+t('issue-1530 AC2 a fix try\'s row still says its PR now needs the person\'s merge, after the try',
+  Q.needText(r279, { t: { key: 'V-697', ...board['V-697'], new_holds: ['infra/main.tf'] }, k: 'ready' }), '#697 · 11 checks failed · next free worker repairs it, try 1 of 2 · now needs your merge: infra/main.tf');
 // The machine cap is shared by every repo: a batch with free workers still waits while it is full.
 for (const r of repos279) r.machine = { running: 10, cap: 10 };
 t('desk-q machine cap: a queued fix try waits for a machine slot while every repo\'s workers fill the cap',
@@ -2449,6 +2451,10 @@ t('DS-420 AC4 a PR the driver stopped rerunning says it is red after that many r
 // needText reads the clock, so its running check started 30 minutes before this call.
 const m420 = { ...ds280['M-4'], pr_status: { ...ds280['M-4'].pr_status, checks: ds280['M-4'].pr_status.checks.map((c, i) => (i ? c : { ...c, started: clockAgo(30) })) } };
 t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, m420)} | ${need420(m420)}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
+t('issue-1530 AC2 a PR a later change put under a merge hold says it now needs the person\'s merge, after its reason',
+  need420({ ...m420, new_holds: ['infra/main.tf'] }), '#904 · check 1 running, 30m · 2 of 3 done · now needs your merge: infra/main.tf');
+t('issue-1530 AC2 with passes stopped the row says it too',
+  Q.needText({ ...r280, live: false }, { t: { ...m420, new_holds: ['infra/main.tf'] }, k: 'merging', pr: true }).endsWith(' · now needs your merge: infra/main.tf'), true);
 const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
 t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
   Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');
