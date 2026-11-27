@@ -360,6 +360,37 @@ const lastLine = (s) => String(s ?? '').split('\n').filter(Boolean).at(-1) ?? ''
 // The merge driver's record that this head, merged into the base, fails §4 Merged-tree check: what git
 // and GitHub call clean, two migrations taking one revision above all. Held at a later head, it is spent.
 export const treeHeld = (t, s) => (t?.tree_check?.head && t.tree_check.head === s?.head ? t.tree_check : null);
+// A requeued ticket about to resume at Stage 7 (a handoff to it, or a parked round it resumes) whose PR
+// is in conflict with its base, or whose requeue note names a conflict, goes to a conflict fix try
+// instead (issue-1669): a Stage 7 session reads its PR as done and finishes with nothing to push, never
+// bringing the base in. An unfinished fix try keeps its own task, so it is never one of these.
+export const resumesAtSeven = (t) => !(t?.fix && !t.fix.finished) && t?.state === 'triaged'
+  && /^\s*7(?:\/9)?\b/.test(String((t?.handoff === 'pending' ? t.handoff_stage : t?.last_round?.stage) ?? ''));
+// A note that asks for the base to be brought in: names a conflict, a rebase, or merging the base in.
+// "No conflicts" names none.
+const CONFLICT_NOTE = /\bconflict(?:s|ing|ed)?\b|\brebas(?:e|ing)\b|\bmerge\s+(?:in\s+)?(?:origin\/)?(?:main|master|the base|base)\b/i;
+export const notesConflict = (notes) => (notes ?? []).some((n) => CONFLICT_NOTE.test(String(n).replace(/\bno (?:merge )?conflicts?\b/gi, '')));
+export const prInConflict = (s) => s?.mergeable === 'CONFLICTING' || s?.mergeState === 'DIRTY';
+// The park a Stage 7 session's DONE becomes when its PR is in conflict (pass/advance.mjs): the pass
+// sends a ticket parked so to the conflict fix try as it would a resume (pass.mjs).
+export const STAGE7_CONFLICT = 'CONFLICT at Stage 7 —';
+export const stageSevenConflictPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(STAGE7_CONFLICT);
+// t: the queue ticket (resumesAtSeven); s: its PR's status as readPrStatus reads it; base: the default
+// branch; files: () -> the files the PR conflicts on, or null (read only for a try); notes: the answers
+// recorded since its last park. -> null where Stage 7 goes ahead (the PR not open, or neither in
+// conflict nor named so), else fixCall's conflict answer: a requeue with the try, or stuck once the
+// PR's conflict tries are spent; `why` says which of the two sent it, and `noted` that the note did.
+export function resumeConflict(t, s, { base, files, notes }) {
+  if (s?.state !== 'OPEN' || !s.head) return null;
+  const dirty = prInConflict(s);
+  const noted = !dirty && notesConflict(notes);
+  if (!dirty && !noted) return null;
+  const why = dirty ? `PR #${s.pr} conflicts with ${base}` : `its requeue note names a conflict with ${base}`;
+  const done = t.fix_tries ?? [];
+  if (conflictSpent(done, s.head)) return { call: 'stuck', why: `${why}, and it is ${stillInConflict(t, done, base, null)}`, noted };
+  const named = typeof files === 'function' ? files() : files;
+  return { ...nextConflictTry(done, s.pr, s.head, conflictTry(base, named, s.isDraft !== false, null)), why, noted };
+}
 // A merged-tree failure goes the conflict's way, as a base's does (base-fix.mjs), with the check's output.
 const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), what: `fails §4 Merged-tree check merged into ${base}`, check: { command: held.command, output: held.output } });
 

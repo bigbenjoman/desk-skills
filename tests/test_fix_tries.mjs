@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -1415,6 +1415,38 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const both = { ...rec, pr: 701, checks: [{ name: 'Vercel Preview', command: 'red on main too' }, { name: 'Deploy preview', command: 'red on main too' }] };
   t('stuckLessHeld: whole, an entry for a check still red on the base stays', JSON.stringify(stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: partBase?.base_red_checks ?? [] })?.checks), JSON.stringify([{ name: 'Deploy preview', command: 'red on main too' }]));
   t('stuckLessHeld: whole, with every one still red on the base, the record is unchanged', stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: ['Vercel Preview', 'Deploy preview'] }), undefined);
+}
+
+// issue-1669: a requeued ticket about to resume at Stage 7 whose PR is CONFLICTING, or whose requeue note
+// names a conflict, goes to a conflict fix try (merge the base in, resolve, push), not a Stage 7 session.
+{
+  const seven = tk({ state: 'triaged', handoff: 'pending', handoff_stage: 7 });
+  t('issue-1669 a handoff to Stage 7 resumes at Stage 7', resumesAtSeven(seven), true);
+  t('issue-1669 so does a parked round at 7/9 requeued with no handoff', resumesAtSeven(tk({ state: 'triaged', last_round: { stage: '7/9' } })), true);
+  t('issue-1669 a handoff to 4b does not', resumesAtSeven(tk({ state: 'triaged', handoff: 'pending', handoff_stage: '4b' })), false);
+  t('issue-1669 nor one with an unfinished fix try, which keeps its own task', resumesAtSeven({ ...seven, fix: { kind: 'checks' } }), false);
+  t('issue-1669 nor one still running', resumesAtSeven({ ...seven, state: 'running' }), false);
+  const conflicting = pr([], { pr: 1655, mergeable: 'CONFLICTING', mergeState: 'DIRTY', isDraft: true });
+  let read = 0;
+  const files = () => { read += 1; return ['src/a.ts']; };
+  const c = resumeConflict(seven, conflicting, { base: 'main', files, notes: [] });
+  t('issue-1669 AC1 a CONFLICTING PR resumed at Stage 7 goes to a conflict fix try', JSON.stringify([c?.call, c?.fix?.kind, c?.fix?.try, c?.fix?.of, c?.fix?.pr, c?.fix?.head, c?.fix?.draft, c?.fix?.files, c?.noted]), JSON.stringify(['requeue', 'conflict', 1, FIX_TRIES_MAX, 1655, HEAD, true, ['src/a.ts'], false]));
+  t('issue-1669 AC1 and says why', c?.why, 'PR #1655 conflicts with main');
+  t('issue-1669 a ready PR\'s try is not marked draft', resumeConflict(seven, { ...conflicting, isDraft: false }, { base: 'main', files, notes: [] })?.fix?.draft, undefined);
+  t('issue-1669 DIRTY alone is a conflict too', resumeConflict(seven, { ...conflicting, mergeable: 'UNKNOWN' }, { base: 'main', files, notes: [] })?.call, 'requeue');
+  // Every other value GitHub sets: MERGEABLE or UNKNOWN with any merge state but DIRTY is no conflict.
+  const before = read;
+  const clean = ['BEHIND', 'BLOCKED', 'CLEAN', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE'].flatMap((m) => ['MERGEABLE', 'UNKNOWN'].map((g) => resumeConflict(seven, { ...conflicting, mergeable: g, mergeState: m }, { base: 'main', files, notes: [] })));
+  t('issue-1669 a PR not in conflict resumes at Stage 7 as before, its files unread', JSON.stringify([clean.every((x) => x === null), read - before]), '[true,0]');
+  t('issue-1669 a merged or closed PR is no try', JSON.stringify(['MERGED', 'CLOSED'].map((st) => resumeConflict(seven, { ...conflicting, state: st }, { base: 'main', files, notes: [] }))), '[null,null]');
+  const mergeable = { ...conflicting, mergeable: 'MERGEABLE', mergeState: 'BLOCKED' };
+  const noted = resumeConflict(seven, mergeable, { base: 'main', files, notes: ['Merge main in and resolve the conflict with #1656.'] });
+  t('issue-1669 AC1 a requeue note naming a conflict does the same', JSON.stringify([noted?.call, noted?.fix?.kind, noted?.noted, noted?.why]), JSON.stringify(['requeue', 'conflict', true, 'its requeue note names a conflict with main']));
+  t('issue-1669 notes: a rebase and merging the base in name one too', JSON.stringify([notesConflict(['rebase onto main']), notesConflict(['please merge origin/main in']), notesConflict(['merge in main first'])]), '[true,true,true]');
+  t('issue-1669 notes: "no conflicts", or none, name none', JSON.stringify([notesConflict(['There are no conflicts; fix the title.']), notesConflict([]), notesConflict(undefined)]), '[false,false,false]');
+  const spent = resumeConflict({ ...seven, fix_tries: [{ kind: 'conflict', head: HEAD, try: 1 }] }, conflicting, { base: 'main', files, notes: [] });
+  t('issue-1669 with a conflict try already at this head it is stuck, naming the conflict', JSON.stringify([spent?.call, /^PR #1655 conflicts with main, and it is still in conflict with main after/.test(spent?.why)]), '["stuck",true]');
+  t('issue-1669 the advance step\'s park is told apart from any other', JSON.stringify([stageSevenConflictPark({ state: 'parked', park: { question: `${STAGE7_CONFLICT} PR #1 conflicts with main` } }), stageSevenConflictPark({ state: 'parked', park: { question: 'which colour?' } }), stageSevenConflictPark({ state: 'triaged', park: { question: `${STAGE7_CONFLICT} x` } })]), '[true,false,false]');
 }
 
 process.exit(fails ? 1 : 0);

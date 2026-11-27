@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
+import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage, ownPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -63,7 +63,7 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumeConflict, resumesAtSeven, prInConflict, stageSevenConflictPark } from './fix-tries.mjs';
 import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
@@ -1417,6 +1417,7 @@ const ADVANCE_HANDLERS = {
     try { return prOwner(a.pr); } catch { return null; }
   },
   'pr-verdict': (a) => prVerdict(a.pr),
+  'pr-conflict': (a) => { const v = readPrStatus(a.pr); return v?.state === 'OPEN' && prInConflict(v) ? { base: v.base ?? DEFAULT_BRANCH } : null; },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -2594,6 +2595,66 @@ runSteps({
   handlers: REPAIR_HANDLERS,
   report,
 });
+
+// ---- a Stage 7 resume whose PR is in conflict (issue-1669) -----------------------
+// A requeued ticket about to resume at Stage 7 whose open PR conflicts with the base, or whose requeue
+// note names a conflict, goes to a conflict fix try (merge the base in, resolve, run the targeted
+// suites, push) rather than a Stage 7 session, which reads its PR as done and pushes nothing
+// (fix-tries.mjs resumeConflict). So does a ticket whose Stage 7 session finished with its PR in conflict,
+// which the advance step parked for it (pass/advance.mjs). A conflict alone goes to a worker only under
+// the §3 row a ready PR's conflict reads; a note naming it is the instruction to resolve it. Otherwise,
+// and once the PR's conflict tries are spent, it is parked naming the conflict (a ticket parked so stays
+// parked). A PR that does not read leaves the ticket as it is.
+for (const t of Object.values(queue().tickets)) {
+  const parked = stageSevenConflictPark(t);
+  if (!parked && (isHeld(t) || !resumesAtSeven(t))) continue;
+  const n = ownPr(t);
+  if (n == null) continue;
+  const s = readPrStatus(n);
+  if (!s) continue;
+  const since = t.last_round?.at ?? t.prev_park?.since ?? null;
+  const briefPath = join(STATE, 'briefings', `${t.key}.md`);
+  const notes = !parked && since && existsSync(briefPath) ? answersSince(readFileSync(briefPath, 'utf8'), since) : [];
+  const c = resumeConflict(t, s, { base: DEFAULT_BRANCH, files: () => conflictFiles(s.branch ?? t.branch), notes });
+  if (!c) {
+    // Its conflict resolved by hand since the advance step parked it: Stage 7 finishes it, requeued.
+    if (parked && !DRY) {
+      const rq = qRun(['requeue', t.key]);
+      report[rq.ok ? 'recovered' : 'waiting'].push(`${t.key}: PR #${n} no longer conflicts with ${DEFAULT_BRANCH}: ${rq.ok ? 'requeued to finish Stage 7' : `its requeue was refused (${lastLine(rq.out)})`}`);
+    }
+    continue;
+  }
+  const parkIt = (why) => {
+    if (parked) { report.waiting.push(`${t.key}: ${why}`); return; }
+    if (DRY) { report.waiting.push(`${t.key} (dry run): would park instead of resuming at Stage 7: ${why}`); return; }
+    q('set', t.key, 'handoff=null', 'handoff_stage=null');
+    q('park', t.key, why);
+    report.parked.push(`${t.key}: ${why}`);
+  };
+  if (c.call === 'stuck') { parkIt(`CONFLICT — ${c.why}: not resumed at Stage 7, which would push nothing. Resolve it on the PR's branch and push`); continue; }
+  if (!c.noted) {
+    const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
+    const perm = E.permission(row);
+    if (perm !== 'yes') { parkIt(`CONFLICT — ${c.why}, and config §3 ${E.permissionKey(row)} is "${perm}", so no fix worker resolves it and it is not resumed at Stage 7: resolve it on the PR's branch and push`); continue; }
+  }
+  const fc = fixClass(c.fix, t);
+  const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule, at: PASS_AT };
+  if (DRY) { report.recovered.push(`${t.key} (dry run): ${c.why}: would send it to a conflict ${tryLabel(f)} instead of resuming at Stage 7`); continue; }
+  // The try is written first, so the spawn reads it; a parked ticket is then requeued, as applyFix does,
+  // with its handoff stage cleared first so the requeue starts the try and not Stage 7. A refused
+  // requeue takes the try back.
+  q('set', t.key, `fix=${JSON.stringify(f)}`, 'handoff=null', 'handoff_stage=null');
+  if (parked) {
+    const rq = qRun(['requeue', t.key]);
+    if (!rq.ok) {
+      q('set', t.key, 'fix=null');
+      report.waiting.push(`${t.key}: ${c.why}, and its conflict fix try could not be requeued (${lastLine(rq.out)})`);
+      continue;
+    }
+  }
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...fixTryQuote(f), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`);
+  report.recovered.push(`${t.key}: ${c.why}: sent to a conflict ${tryLabel(f)} on PR #${n} (merge ${DEFAULT_BRANCH} in, resolve, run the targeted suites, push) instead of ${parked ? 'finishing' : 'resuming at'} Stage 7`);
+}
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
