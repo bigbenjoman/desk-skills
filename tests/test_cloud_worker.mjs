@@ -63,13 +63,22 @@ t('issue-1569 AC1 it names the git author, PR title and body shapes and merge me
 t('issue-1569 AC5 it names the author as git user.name and user.email, and says another author\'s commits are rewritten',
   ['git config user.name "Ada Lovelace"', 'git config user.email "ada@example.com"', 'authored as anyone else has its commits rewritten before it merges'].every((x) => ruled.includes(x)), true);
 t('issue-1569 the no-attribution rule names every mark the check looks for', ATTRIBUTION_MARKS.every(([, what]) => ruled.includes(what)), true);
-// The hook is installed on its own (install.sh), so it keeps its own BANNED: the two must match, mark for mark.
-const hookSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'deny-ai-attribution.py'), 'utf8');
-const hookBanned = [...(hookSrc.match(/^BANNED = \(\n([\s\S]*?)\n\)/m)?.[1] ?? '').matchAll(/re\.compile\(r?"((?:[^"\\]|\\.)*)"(,\s*re\.I)?\)/g)]
-  .map(([, src, i]) => `${src.replace(/\\"/g, '"').replace(/\\N\{ROBOT FACE\}/g, '\\u{1F916}')}/${i ? 'i' : ''}`);
-const jsBanned = ATTRIBUTION_MARKS.map(([re]) => `${re.source.replace(/\\\//g, '/')}/${re.flags.replace('u', '')}`);
-t('issue-1569 the check\'s marks are the attribution hook\'s BANNED: same count, order, patterns and flags', `${hookBanned.length}:${JSON.stringify(hookBanned)}`, `${jsBanned.length}:${JSON.stringify(jsBanned)}`);
-t('issue-1569 and the hook has some to compare', hookBanned.length > 0, true);
+// The hook is installed on its own (install.sh), so it keeps its own BANNED: run both on one table of
+// samples, each a mark or a near miss, and they must flag the same marks, in the same order, on each.
+const samples = [
+  'Co-Authored-By: Claude <x@y.z>', 'co-authored-by = Anthropic bot', 'Co-Authored-By: Jane <jane@example.com>',
+  'Claude-Session: abc', 'claude-session=1', 'Claude session notes',
+  '🤖 Generated with [Claude Code](https://claude.ai/code)', 'generated with claude code', 'Generated with Claude',
+  'NOREPLY@anthropic.com', 'noreply@anthropic.org', 'https://claude.ai/code/session_01X', 'https://claude.ai/code', '🤖', 'a plain commit message',
+];
+const hookPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'deny-ai-attribution.py');
+const hookHits = JSON.parse(execFileSync('python3', ['-c',
+  'import importlib.util, json, sys\ns = importlib.util.spec_from_file_location("h", sys.argv[1]); h = importlib.util.module_from_spec(s); s.loader.exec_module(h)\n' +
+  'print(json.dumps([[i for i, b in enumerate(h.BANNED) if b.search(x)] for x in json.load(sys.stdin)]))', hookPath],
+  { input: JSON.stringify(samples), encoding: 'utf8' }));
+const jsHits = samples.map((x) => ATTRIBUTION_MARKS.flatMap(([re], i) => (re.test(x) ? [i] : [])));
+t('issue-1569 the check\'s marks flag what the attribution hook\'s BANNED flags, mark for mark, on every sample', JSON.stringify(hookHits), JSON.stringify(jsHits));
+t('issue-1569 and every mark is flagged by some sample, and some sample by none', ATTRIBUTION_MARKS.every((_, i) => jsHits.some((h) => h.includes(i))) && jsHits.some((h) => !h.length), true);
 t('issue-1569 AC1 where §5 forbids attribution, it rules out the trailer, session link and footer in commits, PR body and comments',
   ['No AI attribution', 'Co-Authored-By', 'Claude-Session', 'claude.ai/code/session_', 'Generated with Claude Code', 'noreply@anthropic.com', 'commit messages', 'PR title and body', 'PR comments'].every((x) => ruled.includes(x)), true);
 t('issue-1569 AC1 the rules come before the ticket text', ruled.indexOf("## This repo's rules") < ruled.indexOf('## The ticket'), true);

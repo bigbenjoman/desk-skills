@@ -497,7 +497,9 @@ How to turn what you find into rows:
   session reads the repo's checked-in `.claude/settings.json`, not `settings.local.json` and not this
   computer's settings, and no hook here sees its commits. So the same `attribution` setting (empty
   `commit` and `pr` strings) in the checked-in `.claude/settings.json` is what stops a cloud session
-  adding it; the pass otherwise finds it on the PR and parks the ticket. That file is shared with
+  adding it. Without it, the pass finds it on the PR and removes it itself (rewriting the commits and
+  editing the body and comments) where §3 `git-force-with-lease` and `pr-edit` are `yes`, and parks
+  the ticket where either is not, or the removal fails. That file is shared with
   everyone who works on the repo, so setting it is the repo owner's call, not desk's: name it, and do
   not write it.
 - **Whose commits count for AI attribution.** The count in the detect block takes every author's

@@ -1036,7 +1036,7 @@ function advanceCloud(t) {
   const forbidden = E.attributionForbidden(E.configValue('ai-attribution'));
   const author = cloudAuthor();
   if (forbidden || author) {
-    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments,baseRefName,headRefName'], { fresh: true });
+    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments,baseRefName,headRefName,author'], { fresh: true });
     let view = null;
     try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
     if (!view) {
@@ -1053,8 +1053,10 @@ function advanceCloud(t) {
       }
       if (s.park) {
         const why = s.did?.length ? `The pass ${s.did.join(', ')}, but ${s.park}` : `${s.park[0].toUpperCase()}${s.park.slice(1)}`;
-        const line = `cloud PR #${pr.number} breaks this repo's commit and PR rules: ${found.join('; ')}. ${why}. Fix its commits, body and comments, then requeue ${t.key}`;
-        q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`);
+        // Someone else's PR keeps the ticket on its own branch, so a requeue never works theirs.
+        const tail = s.foreign ? `If it is this ticket's PR, fix its commits, body and comments; either way, a requeue of ${t.key} works ${t.branch} locally` : `Fix its commits, body and comments, then requeue ${t.key}`;
+        const line = `cloud PR #${pr.number} breaks this repo's commit and PR rules: ${found.join('; ')}. ${why}. ${tail}`;
+        q('set', t.key, ...(s.foreign ? [] : [`branch=${pr.headRefName}`]), `cloud=${JSON.stringify(cloud)}`);
         q('park', t.key, line);
         report.parked.push(`${t.key}: ${line}`);
         return;
@@ -1071,8 +1073,8 @@ function advanceCloud(t) {
   report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
 }
 
-// Removes from cloud PR `pr` (its `view`, gh pr view --json body,commits,comments,baseRefName,headRefName)
-// what breaks the repo's rules (issue-1569 AC2), without asking: where `forbidden`, the attribution in its
+// Removes from cloud PR `pr` (its `view`, gh pr view --json body,commits,comments,baseRefName,headRefName,author)
+// what breaks the repo's rules, without asking: where `forbidden`, the attribution in its
 // body and comments, and its commits rewritten as `author` with their attribution lines dropped wherever a
 // commit carries a mark or another author. -> { did: [what it did] }, { wait } for a later pass to try
 // again, or { park, did } naming why it stopped and what it had done by then.
@@ -1084,6 +1086,15 @@ function scrubCloudPr(t, pr, view, { forbidden, author }) {
   const rows = [...(commits ? ['git-force-with-lease'] : []), ...(body || comments.length ? ['pr-edit'] : [])].filter((k) => E.permission(k) !== 'yes');
   if (rows.length) return { park: `the pass may not remove it: config §3 ${rows.map((k) => `${E.permissionKey(k)} is "${E.permission(k)}"`).join(' and ')}` };
   if (commits && !author) return { park: 'its commits need rewriting as the repo identity, and neither §1 Git author nor the repo\'s git user.name and user.email is set' };
+  // A PR found only by the key in its title may be someone else's: it is rewritten only on the branch the
+  // session was told to use, or where §1 GitHub handle opened it.
+  const head = view.headRefName || pr.headRefName;
+  let handle = null;
+  try { handle = E.githubHandle() || null; } catch { handle = null; }
+  const opener = String(view.author?.login ?? '');
+  if (head !== t.branch && !(handle && opener.toLowerCase() === handle.toLowerCase())) {
+    return { foreign: true, park: `the pass will not rewrite or edit it: it was found by the key in its title, is on ${head}, not ${t.branch ?? 'the branch the session was given'}, and was opened by ${opener || 'someone unread'}, not ${handle ? `§1 GitHub handle ${handle}` : 'the §1 GitHub handle, which is unset'}` };
+  }
   if (DRY) return { wait: 'this is a dry run' };
   const did = [];
   if (commits) {
