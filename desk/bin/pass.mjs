@@ -2479,12 +2479,12 @@ const countElsewhere = (queues) => {
 };
 countElsewhere(otherQueues({ self: QUEUE_FILE }));
 // A file's length on the batch base (file-budget.mjs lineCounter, its counts kept in line-counts.json).
-const baseLines = FB.lineCounter({ main: MAIN, cacheFile: join(STATE, 'line-counts.json'), write: !DRY });
+const budgetLineCounter = FB.lineCounter({ main: MAIN, cacheFile: join(STATE, 'line-counts.json'), write: !DRY });
 // A fetch, push or sync since the trees were listed may have moved the base: they are listed again.
 let treesAt = 0;
 const linesOnBase = (f) => {
-  if (treesAt !== refsMoved) { treesAt = refsMoved; baseLines.clear(); }
-  return baseLines.lines(f, E.batchBase() ?? DEFAULT_BRANCH);
+  if (treesAt !== refsMoved) { treesAt = refsMoved; budgetLineCounter.clear(); }
+  return budgetLineCounter.lines(f, E.batchBase() ?? DEFAULT_BRANCH);
 };
 const placeOpts = { budget: FILE_BUDGET, serial: budgetSerial, lines: linesOnBase };
 const configuredPlaces = (f) => FB.configuredPlaces(f, placeOpts);
