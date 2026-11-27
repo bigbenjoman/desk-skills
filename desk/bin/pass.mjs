@@ -1225,7 +1225,7 @@ function rewriteCloudCommits(t, head, base, author, strip) {
         keepSlot(slot);
         // Recorded with the rules it enforced, so a later recovery of the branch (busyWorktree) never pushes
         // back commits that break them.
-        q('set', t.key, `pass_rewrite=${JSON.stringify({ sha: r.head, branch: head, at: PASS_AT, author: { name: author.name, email: author.email }, strip: Boolean(strip) })}`);
+        q('set', t.key, `pass_rewrite=${JSON.stringify({ sha: r.head, branch: head, at: PASS_AT, base, author: { name: author.name, email: author.email }, strip: Boolean(strip) })}`);
         return { did: `rewrote its ${r.n} commit(s) as ${author.name} <${author.email}> with the same tree (${head} ${old.out.slice(0, 9)} → ${r.head.slice(0, 9)})` };
       }
       freeSlot(slot);
@@ -4336,9 +4336,14 @@ function busyWorktree(t, { push = false } = {}) {
 }
 // The commits a push of HEAD over `tip` would add that break the rules the pass's attribution rewrite
 // `rw` (pass_rewrite) enforced: an attribution mark where it stripped them, or an author other than its
-// own. -> one line per break, [] for none, or null where git could not list them.
+// own. Like the rewrite, it reads only the commits its base lacks, fetched first, so base commits a
+// worker's rebase brought in are not counted. -> one line per break, [] for none, or null where git could
+// not list them.
 function rewriteUndone(git, tip, rw) {
-  const log = git(['log', '--format=%H%x1f%an%x1f%ae%x1f%B%x1e', 'HEAD', `^${tip}`]);
+  const ref = rw.base ? `refs/remotes/origin/${rw.base}` : null;
+  if (ref) git(['fetch', '-q', 'origin', `+refs/heads/${rw.base}:${ref}`]);
+  const base = ref ? git(['rev-parse', '-q', '--verify', ref]) : null;
+  const log = git(['log', '--format=%H%x1f%an%x1f%ae%x1f%B%x1e', 'HEAD', `^${tip}`, ...(base ? [`^${base}`] : [])]);
   if (log == null) return null;
   const commits = log.split('\x1e').map((s) => s.replace(/^\n+/, '')).filter(Boolean).map((s) => {
     const [oid, name, email, body] = s.split('\x1f');
