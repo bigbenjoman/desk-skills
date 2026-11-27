@@ -90,6 +90,8 @@ const REWRITTEN = [
   ['DS-857', '**No `-c`, `--config`, `-m` or `-p`.**', 1],
   // a desk script is reached through <desk bin>: CLAUDE_PLUGIN_ROOT's, else ~/.claude's (tests/test_plugin_root_paths.mjs)
   ['issue-1559', 'node ~/.claude/desk/bin/review-post.mjs <n>', 1],
+  // trimmed so the core holds the plugin root line under its cap (references/plugin.md has the rest)
+  ['issue-1561', 'heading from the results file, tested by', 1],
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

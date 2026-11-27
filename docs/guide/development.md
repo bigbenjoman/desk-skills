@@ -111,8 +111,8 @@ CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change 
 shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers and fixtures,
 `install.sh` and `desk-config.md` run the suites that name them. A change that only adds exports to
 `desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
-a file no suite names, `tests/run.sh`, `scope_sections.mjs` and the `desk/bin/untracked.mjs` it
-reads, any other change to `desk-env.mjs`, CI itself, or a deletion. `tests/related.sh`, which
+a file no suite names, `tests/run.sh`, `scope_sections.mjs` and the `desk/bin/untracked.mjs` and
+`desk/bin/import-closure.mjs` it reads, any other change to `desk-env.mjs`, CI itself, or a deletion. `tests/related.sh`, which
 decides for the working tree, leaves out the files desk itself leaves untracked there (that module's
 list: a desk-ticket resume file, a desk-review run's scratch files). Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
 shards (the `macOS` workflow, not a required check). Every run, pull requests included, uses

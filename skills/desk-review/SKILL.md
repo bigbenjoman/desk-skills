@@ -28,9 +28,11 @@ unread file list, a failed fetch, an unresolved agent or an unrefuted finding is
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
+**Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. A path there: read `references/plugin.md` first.
+
 Read rows with `desk-env` (`desk-env ids` lists ids; a worker cannot read `CONFIG`). `EXISTS=no`
-means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a §3 row is a `no`,
-so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs: stop, ask, offer
+means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a §3 row is a `no`
+(report-only, never a stop). A `TODO` in another row this skill needs: stop, ask, offer
 `/desk-setup`. Then take:
 
 - §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`).
@@ -45,8 +47,7 @@ so it makes the run report-only, never stops it. A `TODO` in any other row this 
 
 **A review row missing from an older config is not a stop.** §4 Review bar missing or `default`
 means the bar in `references/review-bar.md`; §4 Review domain experts missing or `none` means no
-domain finder. Say which default applied in the report header, and offer `/desk-setup` once to add
-the rows. A missing §3 row is `no`.
+domain finder. Name the default in the report header; offer `/desk-setup` once. A missing §3 row is `no`.
 
 ### Which review bar
 
@@ -326,5 +327,4 @@ to a human skimming and to any regex over the summary.
 - `references/review-bar.md`: the default bar, and how a repo supplies its own.
 - `references/gotchas.md`: the sweep query, tiering patterns, base-merge count, bot comments, and the
   single-call review post. Read it when a command misbehaves.
-- `bin/verdict.mjs`: the review marker, verdict marker and heading from the results file, tested by
-  `tests/test_review_verdict.mjs`.
+- `bin/verdict.mjs`: the review marker, verdict marker and heading from the results file.
