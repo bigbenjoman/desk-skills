@@ -11,9 +11,9 @@ S="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=base_sync_setup.sh
 . "$S/base_sync_setup.sh"
 
-# DS-620: a base worker try (a conflict fix or an epic PR review) whose session exited at its login's
-# limit waits for that limit, with another login with room, and then resumes its own session there as
-# the same try: it never starts on another login. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
+# DS-620: a base worker try (an epic PR review) whose session exited at its login's limit waits for
+# that limit, with another login with room, and then resumes its own session there as the same try: it
+# never starts on another login. A conflict fix try no longer does (DS-1057): it ends instead. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
 # ~/.claude-logins/b), the first the default and the rest unused. A folder listed in $LIM, as `<folder> <reset>`, is at its
 # limit: its preflight and its probe are refused. The spawn line records the login it was given.
 LB="$HOME/.claude-logins/b"; LD="$HOME/.claude"; LIM="$T/limited"
@@ -61,7 +61,12 @@ stopped(){
   limit_event "$(( $(date +%s) + 3600 ))"; age_log
   echo "$on $(( $(date +%s) + 3600 ))" > "$LIM"
 }
-for kind in conflict review; do
+# DS-1057: a conflict fix try no longer waits on its own login while new work starts on another: its
+# try ends, spending none, and the base syncs (or a new try starts) on the login new work starts on.
+logins default b; stopped m1conflict conflict; pass
+check "DS-1057 a conflict try gone at b's limit, the default with room, ends rather than waiting on b" \
+  '[ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ] && [[ "$out" == *"try 1 of 2 on feat/x exited at the 5-hour usage limit until "*" on login b, which new work has moved off, so it ends and a new try starts on login default; it spends no try"* ]] && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"base-feat-x on the 5-hour usage limit until "* ]] && ! grep -q "RESUME session=sid-old" "$T/spawns"'
+for kind in review; do
   # AC10: login b at its limit, the default login with room. The try waits on b, then resumes there.
   logins default b; stopped "m1$kind" "$kind"; pass
   check "DS-620 AC10 $kind: it waits on its own login, with no session started on another" \
@@ -69,6 +74,8 @@ for kind in conflict review; do
   : > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
   check "DS-620 AC10 $kind: once b's limit lifts it resumes its own session there, as the same try" \
     'grep -q "^base-feat-x $C/wt/base-feat-x login=$LB .*RESUME session=sid-old" "$T/spawns" && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ]'
+done
+for kind in conflict review; do
   # One login: it is held and resumed exactly as before.
   logins default; stopped "m5$kind" "$kind" "$LD"; pass
   check "DS-620 $kind: one login: it waits" \
@@ -83,7 +90,7 @@ check "DS-620 a base worker paused on the repo's login holds the batch, with the
   '[ "$(grep -c "^T-1 " "$T/spawns")" = 0 ] && [ "$(jq -r ".tickets[\"T-1\"].state" "$DESK_QUEUE")" = triaged ] && [ "$(jq -r .usage_hold.preflight "$DESK_QUEUE")" = null ] && [ "$(jq -r .usage_hold.resets_at "$DESK_QUEUE")" != null ]'
 logins default b; stopped m8 conflict; node "$B/queue.mjs" set-batch feature=false >/dev/null; rm -f "$C/state/feature.json"; pass
 check "DS-620 a base worker paused on a login that is not the repo's holds nothing else" \
-  '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [ "$(jq -r .usage_hold "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+  '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [ "$(jq -r .usage_hold "$DESK_QUEUE")" = null ] && [[ "$out" == *"which new work has moved off"* ]]'
 unset DESK_SUBSCRIPTIONS; rm -f "$LIM"; probe_off
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3 \$AUTOPILOT_RESUME}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi

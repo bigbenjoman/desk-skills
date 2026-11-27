@@ -4,10 +4,11 @@
 // FIX_TRIES_MAX tries, one per head of the base, as a PR in conflict does (fix-tries.mjs).
 //
 // pass.mjs keeps the tries on the queue as `base_fix`:
-//   { tries: [{ try, head, source, files, at, session, outcome, lock_wait?, kept?, from?, kept_stale? }], running: <session id> | null }
+//   { tries: [{ try, head, source, files, at, session, outcome, lock_wait?, usage_moved?, kept?, from?, kept_stale? }], running: <session id> | null }
 // `kept` is the merge a try committed and did not push ({ ref, sha }), `from` the kept merge a try
 // started from, `kept_stale` why the kept merge could not be, and `lock_wait` a try that parked only
-// on the busy test lock, which counts against no try.
+// on the busy test lock, which counts against no try, as `usage_moved` does: one ended at a usage limit
+// on a login new work had moved off.
 // and asks baseFixCall what to do whenever the sync, or the base gate, meets the conflict:
 //
 //   spawn   start try `fix.try` in the base worktree
@@ -42,8 +43,9 @@ export function baseFixCall(rec, c) {
   const done = (rec?.tries ?? []).filter(mergeTry);
   const last = done[done.length - 1] ?? null;
   if (rec?.running && c.alive) return { call: 'wait', try: last };
-  // A try that parked only on the busy test lock spends nothing.
-  const counted = done.filter((x) => !x.lock_wait);
+  // A try that parked only on the busy test lock spends nothing, nor one ended because its login's usage
+  // limit outlasted new work's move to another login (batch-base.mjs decideBaseSync).
+  const counted = done.filter((x) => !x.lock_wait && !x.usage_moved);
   if (triesSpent(counted, c.head)) {
     return { call: 'stuck', why: `still ${c.check ? 'failing the check' : 'in conflict'} after ${tries(counted.length)}${last?.outcome ? `; the last try ${last.outcome}` : ''}` };
   }

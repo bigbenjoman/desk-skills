@@ -195,8 +195,9 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('a dry run stops no process', types(sync(snap({ base_fix: running }, { dry: true, registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) }),
     { 'fix-log': { raw: Buffer.from(done), text: done, recent: false, bytes: done.length }, 'end-try': ended })).includes('kill'), false);
   const live = sync(snap({ base_fix: running }, { registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) }));
-  t('one still at it, with a quiet log, has its idle count kept', j(batchWrites(live)), j([`base_fix=${JSON.stringify({ ...running, log_bytes: 0, idle_passes: 1 })}`]));
+  t('DS-1057 AC3 one still at it, with a quiet log, waits and has its idle count kept', j(batchWrites(live)), j([`base_fix=${JSON.stringify({ ...running, log_bytes: 0, idle_passes: 1 })}`]));
   t('and the record kept for the rest of the pass', state(live).bf.idle_passes, 1);
+  t('DS-1057 AC3 and the base waits on it, said to be merging', j([state(live).baseFixLive, types(live).includes('end-try'), lines(live).some((l) => l.includes('is merging main into feat/x'))]), '[true,false,true]');
   const woken = sync(snap({ base_fix: running }, { woken: true, registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) }));
   t('DS-695 a pass a worker\'s exit woke counts no quiet pass for it', state(woken).bf.idle_passes, 0);
   // issue-1490: one paused at the limit on the repo's login holds the batch, unless new work moves to
@@ -210,6 +211,27 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   const pausedMoved = sync(snap({ base_fix: running }, liveReg), { ...pausedLog, 'usage-hold': true });
   t('issue-1490 with new work moved to the fallback, nothing stops and nothing stalls', j([types(pausedMoved).includes('usage-stop'), pausedMoved.some((a) => a.type === 'report' && a.list === 'stalled')]), '[false,false]');
   t('issue-1490 and the worker is still reported paused', pausedMoved.some((a) => a.type === 'report' && a.list === 'paused'), true);
+  // A fix worker that exited at a weekly limit on a login new work has moved off (the fallback took
+  // over) no longer holds the base for days: its try ends, spending none, and a new try starts at once.
+  const weekly = `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: Math.floor(NOW / 1000) + 4 * 86400 } })}\n`;
+  const exitedLog = { 'fix-log': { raw: Buffer.from(weekly), text: weekly, recent: false, bytes: weekly.length } };
+  const onL4 = { 'fix-login': { dir: '/login-4', name: 'login-4' } };
+  const endedMoved = { ...running, tries: [{ ...running.tries[0], outcome: 'x', usage_moved: true }], running: null, port: null };
+  const conflict = { ok: false, reason: 'conflict', files: ['src/a.ts'] };
+  const moved = sync(snap({ base_fix: running }, { repoLogin: { dir: '/login-3', name: 'login-3' } }), { ...exitedLog, ...onL4, 'end-try': endedMoved, sync: conflict });
+  const movedEnd = moved.find((a) => a.type === 'end-try');
+  t('DS-1057 AC1 a fix worker gone at a limit on a login new work moved off has its try ended', j([movedEnd?.extra, (movedEnd?.outcome ?? '').startsWith('exited at the weekly usage limit') && movedEnd.outcome.includes('on login login-4') && movedEnd.outcome.includes('on login login-3')]), j([{ usage_moved: true }, true]));
+  t('DS-1057 AC1 AC2 the base no longer waits on it: the sync runs and a new try starts', j([state(moved).baseFixLive, types(moved).includes('sync'), state(moved).baseFix?.fix.try]), j([false, true, 1]));
+  t('DS-1057 AC2 the report says it ended, spending no try, and that a new try starts', j([lines(moved)[0].endsWith('; it spends no try'), lines(moved).some((l) => l.includes('Conflict fix try 1 of 2 starts this pass'))]), '[true,true]');
+  t('no usage hold or stop is raised for it', j(['usage-hold', 'usage-stop'].map((x) => types(moved).includes(x))), '[false,false]');
+  // On the repo's own login it still waits for its limit, holding the batch as before.
+  const own = sync(snap({ base_fix: running }, { repoLogin: { dir: '/login-4', name: 'login-4' } }), { ...exitedLog, ...onL4 });
+  t('DS-1057 AC4 one gone at a limit with no other login free waits for it', j([types(own).includes('end-try'), state(own).baseFixLive, types(own).includes('usage-stop')]), '[false,true,true]');
+  t('DS-1057 AC4 the batch shows a usage item naming the limit', own.some((a) => a.type === 'report' && a.list === 'stalled' && a.line.includes('weekly')), true);
+  t('DS-1057 AC4 and its line names the limit, not a try still merging', j([lines(own).some((l) => l.includes('is merging')), lines(own).some((l) => l.includes('exited at the weekly usage limit') && l.includes('on login login-4'))]), '[false,true]');
+  // Once its limit has lifted it resumes its own session, wherever new work starts.
+  const upMoved = sync(snap({ base_fix: running }, { repoLogin: { dir: '/login-3', name: 'login-3' } }), { ...exitedLog, ...onL4, lifted: true });
+  t('one whose limit lifted resumes rather than ending', j([types(upMoved).includes('end-try'), !!state(upMoved).baseFixResume]), '[false,true]');
   t('an unread registry reads it as still at it, never ended',j([types(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).includes('end-try'), state(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).baseFixLive]), '[false,true]');
 }
 
