@@ -167,10 +167,14 @@ starts from Stage 0.
 
 **A worker also hands off partway through a stage on context.** From Stage 3 on, once a worker's
 context passes its threshold (the ticket's `handoff-threshold` value, else config §2's Handoff at
-context % rows), `hooks/desk-handoff.py` has it commit, write a briefing with what is left of the
-stage, and print `AUTOPILOT_HANDOFF: <that stage>`. The next pass starts a fresh session at that
-same stage (`handed off partway through Stage 5 on context (31% used; handoff-threshold 30)`). The
-third such handoff in a row at one stage parks the ticket instead, naming the stage.
+context % rows) and has grown 30,000 tokens since the session started, `hooks/desk-handoff.py` has
+it commit, write a briefing with what is left of the stage, and print `AUTOPILOT_HANDOFF: <that
+stage>`. The next pass starts a fresh session at that same stage (`handed off partway through Stage
+5 on context (31% used; handoff-threshold 30)`). When two sessions in a row hand off partway through
+the stage they started at with no new commit, the pass raises the ticket's threshold once, to the
+one they ran on plus 25 points (at most 80), and says so on that line. The third such handoff in a
+row at one stage parks the ticket instead, naming the stage. `desk-env drift` names a §2 row that a
+fresh worker's measured start-up use already reaches (`STARTUP`).
 
 **A requeue after a park at Stage 3 or later resumes that round.** When a worker parks, the pass
 records the stage it reached and its question on the ticket (`last_round`). The fresh spawn after a

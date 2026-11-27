@@ -495,7 +495,8 @@ check "settings_env: unreadable settings.json is exit 2, untouched" '[ $rc -eq 2
 wtranscript(){ transcript "$1" "$2"
   printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"Verified.\\nAUTOPILOT_STAGE: %s\\n"}]}}\n' "$3" >> "$1"; }
 WFILE="$T/state/handoffs/W-1.json"; mkdir -p "$T/state/handoffs"
-whook(){ DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="$WFILE" DESK_LEVER_VALUES="${LV:-}" hook "$@"; }
+# MG: the growth floor (DESK_HANDOFF_MIN_GROWTH), 0 unless set, and empty for the default; HP: a raised threshold.
+whook(){ DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="$WFILE" DESK_LEVER_VALUES="${LV:-}" DESK_HANDOFF_MIN_GROWTH="${MG-0}" DESK_HANDOFF_PCT="${HP:-}" hook "$@"; }
 config '`45`' '`20`'
 before="$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d ' ')"
 LV='question-handling=batched handoff-threshold=30'
@@ -558,6 +559,38 @@ AUTOPILOT_TASK="fix the review" whook PostToolUse wk10 "$T/w46.jsonl"
 check "DS-1037 a task worker past the threshold gets nothing"   '[ -z "$out" ]'
 DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="" hook PostToolUse wk11 "$T/w46.jsonl"
 check "DS-1037 nor does a worker with no briefing file, and no .handoffs/ file is named" '[ -z "$out" ] && [ "$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d " ")" = "$before" ]'
+
+# ---- #1539: a worker hands off only once its context has grown since it started ----
+config '`20`'
+MG=''; LV=''
+wtranscript "$T/g44.jsonl" 44000 "5/9 evidence"
+whook PostToolUse wg1 "$T/g44.jsonl"
+check "#1539 AC1 a session that starts at 22% with the row at 20 does not hand off at once" '[ -z "$out" ]'
+check "#1539 AC3 its state stamps its start-up use, window and root" 'python3 -c "import json,sys; s=json.load(open(sys.argv[1]))[\"start\"]; sys.exit(0 if (s[\"used\"], s[\"window\"], s[\"root\"]) == (44000, 200000, sys.argv[2]) else 1)" "$DESK_HOME/handoff/wg1.json" "$R"'
+wtranscript "$T/g73.jsonl" 73999 "5/9 evidence"
+whook PostToolUse wg1 "$T/g73.jsonl"
+check "#1539 AC1 nor one token short of gaining 30,000" '[ -z "$out" ]'
+wtranscript "$T/g74.jsonl" 74000 "5/9 evidence"
+whook PostToolUse wg1 "$T/g74.jsonl"
+check "#1539 AC1 once it has gained 30,000 tokens it hands off at the row" '[[ "$(ctx)" == *"context is at 37% of a 200,000-token window, past this worker'"'"'s threshold of 20% (config §2 Handoff at context %)"* ]]'
+whook SessionStart wg1 "$T/g74.jsonl" ',"source":"compact"'
+whook PostToolUse wg1 "$T/g74.jsonl"
+check "#1539 after a compaction the growth counts from the next check" '[ -z "$out" ]'
+MG=10000
+whook PostToolUse wg2 "$T/g44.jsonl"
+wtranscript "$T/g54.jsonl" 54000 "5/9 evidence"
+whook PostToolUse wg2 "$T/g54.jsonl"
+check "#1539 DESK_HANDOFF_MIN_GROWTH overrides the 30,000" '[[ "$(ctx)" == *"partway through Stage 5"* ]]'
+# AC2: the ticket's raised threshold (DESK_HANDOFF_PCT) wins over the lever's pin.
+MG=0; LV='handoff-threshold=20'; HP=45
+wtranscript "$T/r44.jsonl" 88000 "5/9 evidence"
+whook PostToolUse wr1 "$T/r44.jsonl"
+check "#1539 AC2 a raised threshold of 45 holds a session at 44% past its pin of 20" '[ -z "$out" ]'
+wtranscript "$T/r46.jsonl" 92000 "5/9 evidence"
+whook PostToolUse wr1 "$T/r46.jsonl"
+check "#1539 AC2 past 45 it hands off, naming the raise" '[[ "$(ctx)" == *"threshold of 45% (raised for this ticket, DESK_HANDOFF_PCT), partway through Stage 5"* ]]'
+unset MG HP; LV=''
+config '`45`'
 config '`0`'
 wtranscript "$T/w90.jsonl" 180000 "5/9 evidence"
 whook PostToolUse wk6 "$T/w90.jsonl"

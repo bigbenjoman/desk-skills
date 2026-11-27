@@ -118,7 +118,8 @@ const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification
 // `handoff.mjs write`'s arguments as the briefing it writes, or { error }. Each flag takes the next
 // argument whole, whatever it starts with; the list flags repeat. `--left` makes it a mid-stage
 // handoff: what is left of the stage, with the context share it handed off at (`--context`) and the
-// handoff-threshold value the worker ran on (`env`'s DESK_LEVER_VALUES, `config` with none).
+// handoff-threshold value the worker ran on (`env`'s DESK_HANDOFF_PCT, the ticket's raised one, else
+// its DESK_LEVER_VALUES, `config` with neither).
 export function handoffFromArgs(args, env = process.env) {
   const [key, ...rest] = args;
   if (!key || key.startsWith('--')) return { error: WRITE_USAGE };
@@ -143,7 +144,7 @@ export function handoffFromArgs(args, env = process.env) {
     const pct = Number(String(d.context ?? '').trim().replace(/%$/, ''));
     if (!(pct > 0 && pct <= 100)) return { error: `--context takes the context share the handoff fired at, a percentage, not ${d.context == null ? 'nothing' : `'${d.context}'`}` };
     d.context = pct;
-    d.threshold = leverValue('handoff-threshold', env) ?? 'config';
+    d.threshold = env.DESK_HANDOFF_PCT || (leverValue('handoff-threshold', env) ?? 'config');
   } else delete d.left;
   return { data: d };
 }
@@ -268,6 +269,22 @@ export function branchCommits(worktree, base) {
     return execFileSync('git', ['-C', worktree, 'log', '--reverse', '--format=%h %s', `${base}..HEAD`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .split('\n').filter(Boolean);
   } catch { return []; }
+}
+
+// Handoffs in a row that moved no stage and added no commit before pass.mjs raises the ticket's
+// threshold: to the one its session ran on plus RAISE_POINTS, capped at RAISE_CAP.
+export const STAGELESS_RAISE = 2;
+const RAISE_POINTS = 25;
+const RAISE_CAP = 80;
+export const raisedThreshold = (ran) => Math.min(RAISE_CAP, ran + RAISE_POINTS);
+
+// The threshold a session's handoff hook stamped (<deskHome>/handoff/<session>.json `arm`), or null.
+export function sessionThreshold(deskHome, session) {
+  const safe = String(session ?? '').replace(/[^A-Za-z0-9_-]/g, '') || 'unknown';
+  try {
+    const pct = Number(JSON.parse(readFileSync(join(deskHome, 'handoff', `${safe}.json`), 'utf8')).arm?.pct);
+    return pct > 0 ? pct : null;
+  } catch { return null; }
 }
 
 // A respawn after the worker's own park resumes at the stage that round reached, from Stage 3 on: the

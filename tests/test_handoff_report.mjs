@@ -620,21 +620,30 @@ stamp('legacyPeak', { pct: 20, pct_1m: 10, model: 'claude-sonnet-4-5' });
 work(WT, 'legacyOff', 1, []);
 stamp('legacyOff', { pct: 0, pct_1m: 0 });
 work(NOT_WT, 'decoy', 1, [fire(30, 45, 200_000)]);
+// Worker sessions on a 20% arm of a 200,000-token window, each starting from its briefing at 60,000 tokens.
+const stageReq = (id, min, uncached) => { const r = req(id, min, { uncached }); r.message.content = [{ type: 'text', text: 'Read the ticket.\nAUTOPILOT_STAGE: 3/9 implement' }]; return r; };
+for (let i = 1; i <= 5; i += 1) {
+  session(WT, `wloop${i}`, [user(0), stageReq(`wloop${i}-r`, 1, 60_000), req(`wloop${i}-r2`, 2, { uncached: 1000 })]);
+  stamp(`wloop${i}`, { arm: { pct: 20, window: 200_000 } });
+}
 const r13 = (...args) => JSON.parse(spawnSync(process.execPath, [BIN, '--root', ROOT13, '--tickets', NONE, '--offline', '--json', ...args], { cwd: T, env, encoding: 'utf8' }).stdout);
 const p13 = r13();
 const s13 = (id) => p13.sessions.find((x) => x.id === id);
 t('without --all, a worker session in a worktree project folder is this repo\'s; a folder that only shares the prefix is not',
-  [!!s13('wbase1'), !!s13('decoy'), p13.sessions.length, r13('--all').sessions.length], [true, false, 14, 15]);
+  [!!s13('wbase1'), !!s13('decoy'), p13.sessions.length, r13('--all').sessions.length], [true, false, 19, 20]);
 t('a worker\'s injection names its arm', s13('wlow1').arm, { pct: 5, window: 800_000 });
 t('a session with no injection takes the arm the hook stamped on it', s13('wbase2').arm, { pct: 45, window: 800_000 });
 t('with no stamped arm, the §2 rows the hook cached, on the window its model and peak context give; a row of 0 is no arm',
   ['legacy200', 'legacy1m', 'legacyPeak', 'legacyOff'].map((id) => s13(id).arm), [{ pct: 20, window: 200_000 }, { pct: 10, window: 1_000_000 }, { pct: 10, window: 1_000_000 }, null]);
 const r13w = rec(p13, 800_000);
 t('an arm whose threshold is below the window\'s mean resume overhead is flagged with both figures and never recommended',
-  [r13w.startup, r13w.verdict, r13w.pct, r13w.refused.find((x) => x.arm === '5% of 800,000')?.why.startsWith('below start-up cost: its threshold, 40,000 tokens, is under the 100,000-token mean resume overhead on this window (5 resume(s))')],
+  [r13w.startup, r13w.verdict, r13w.pct, r13w.refused.find((x) => x.arm === '5% of 800,000')?.why.startsWith('below start-up cost, so its sessions hand off in a loop: its threshold, 40,000 tokens, is under the 100,000-token mean resume overhead on this window (5 resume(s))')],
   [{ overhead: 100_000, samples: 5, below: [{ arm: '5% of 800,000', threshold_tokens: 40_000, overhead: 100_000, samples: 5 }] }, 'recommend', 45, true]);
 const t13 = spawnSync(process.execPath, [BIN, '--root', ROOT13, '--tickets', NONE, '--offline'], { cwd: T, env, encoding: 'utf8' }).stdout;
-t('the text names the arm below start-up cost and both figures', t13.includes('    5% of 800,000 is below start-up cost: its threshold, 40,000 tokens, is under the 100,000-token mean resume overhead on this window (5 resume(s)): never recommended'), true);
+t('the text names the arm below start-up cost as one that loops, with both figures', t13.includes('    5% of 800,000 is below start-up cost, so its sessions hand off in a loop: its threshold, 40,000 tokens, is under the 100,000-token mean resume overhead on this window (5 resume(s)): never recommended'), true);
+t('a worker session\'s first request is its start-up, so a worker arm below it is flagged; a session with no stage line counts none',
+  [rec(p13, 200_000).startup, s13('wloop1').resume_overheads, s13('wbase1').resume_overheads],
+  [{ overhead: 60_000, samples: 5, below: [{ arm: '20% of 200,000', threshold_tokens: 40_000, overhead: 60_000, samples: 5 }] }, [60_000], []]);
 
 // --help and -h print the usage and exit 0, reading no GitHub and writing no cache.
 for (const flag of ['--help', '-h']) {
