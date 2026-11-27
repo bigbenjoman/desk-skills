@@ -3,7 +3,7 @@
 // covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -291,6 +291,17 @@ t('AC16 the same missing file is not recorded again the next day', eventsOf(A12,
 const A12b = 'acme__nopostmerge';
 run([repo(A12b, arms(A12b, initial(A12b), 30, better.on, better.off), { postMerge: false })]);
 t('AC12 a missing post-merge.jsonl adopts nothing', [wrappersRow(A12b).decision, wrappersRow(A12b).missing], ['hold', [join(stateOf(A12b), 'post-merge.jsonl')]]);
+// A reason names a file under the state folder by its path there, never the folder's absolute path.
+const a12event = eventsOf(A12, 'evidence_incomplete').find((x) => x.lever === 'wrappers');
+t('an evidence_incomplete event names the missing file under the state folder', [a12event.reason.includes(stateOf(A12)), a12event.reason.endsWith(`: workers/${a12rows[0].key}.findings.jsonl`)], [false, true]);
+t('the evaluation rows name no absolute path either', [...evalsOf(A12), ...evalsOf(A12b)].filter((x) => x.reason.includes(join(T, 'home'))).map((x) => x.reason), []);
+t('the row names the missing file by the same short path', wrappersRow(A12b).reason.endsWith(': post-merge.jsonl'), true);
+const A12d = 'acme__unreadablelog';
+const a12d = repo(A12d, []);
+symlinkSync(logFile(A12d), logFile(A12d));
+run([a12d]);
+const a12dRows = evalsOf(A12d).filter((x) => x.reason_code === 'state_unreadable');
+t('a lever log that cannot be read is named by its file name', [a12dRows.length > 0, a12dRows.filter((x) => x.reason.includes(stateOf(A12d))).length, a12dRows[0]?.reason], [true, 0, 'its lever log, levers.jsonl, cannot be read (ELOOP)']);
 
 // ---- AC15: once a day across every repo, under the machine-wide lock --------------------------------------------------------------------
 const configRoot = join(T, 'config');
