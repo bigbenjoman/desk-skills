@@ -214,14 +214,15 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   const lev = section(hToday, 'lev-h');
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
   t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 12);
-  t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
-  t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling">.*?Testing starts (once|when) a repo is set to auto\./.test(lev), true);
-  t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
+  // Each row reads across repos (data-all) and, for the repo filter, in each repo it has a cell in.
+  t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger"[^>]*>.*?<div data-all>Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
+  t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling"[^>]*>.*?<div data-all>Testing starts (once|when) a repo is set to auto\./.test(lev), true);
+  t('AC4 preflight is on by hand, first', /<tr data-lever="preflight"[^>]*>.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
-  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 9);
-  t('AC4 this week\'s changes', section(hToday, 'ch-h').includes('>What changed this week</h2>'), true);
-  t('AC4 with nothing changed', section(hToday, 'ch-h').includes('No lever changed this week.'), true);
-  t('AC4 no How desk decides', hToday.includes('How desk decides'), false);
+  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /<div data-all>Testing starts (once|when) a repo is set to auto\./g), 9);
+  t('AC4 the change list, as on any day', section(hToday, 'ch-h').includes('>Every change</h2>'), true);
+  t('AC4 with nothing changed', section(hToday, 'ch-h').includes('Nothing has changed how desk works yet.'), true);
+  t('AC4 How desk decides, before any test too', hToday.includes('<h2 id="how-h">How desk decides</h2>'), true);
 }
 
 // AC5: the Main board.
@@ -235,8 +236,8 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 with results and progress', lev.includes('>Result so far</th>') && lev.includes('>Progress to a decision</th>'), true);
   t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,handoff-threshold,ledger,ledger-record');
   const ch = section(hSix, 'ch-h');
-  t('AC5 Every change desk made', ch.includes('>Every change desk made</h2>'), true);
-  t('AC5 since testing started', ch.includes('Newest first, since testing started on 17 Nov.'), true);
+  t('AC5 Every change', ch.includes('>Every change</h2>'), true);
+  t('AC5 its line', ch.includes('<p class="muted small sub">Newest first. Lever changes come from tests. Other changes can’t be tested, so each shows the tickets before and after it. Numbers match the lines on the charts.</p>'), true);
   t('AC5 newest first', [...ch.matchAll(/class="muted num small when">([^<]*)</g)].map((m) => m[1]).join('|'), '9 Dec, 08:02|2 Dec, 08:04|17 Nov, 08:00');
   t('AC5 How desk decides', hSix.includes('<h2 id="how-h">How desk decides</h2>') && hSix.includes('Once 30 tickets on each side'), true);
 }
@@ -388,7 +389,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
 
 // AC11: an expanded change carries its reason, arms, intervals, guardrails, commits and evidence file.
 {
-  const kept = section(hSix, 'ch-h').split('<details class="change">')[1].split('</details>')[0];
+  const kept = section(hSix, 'ch-h').split(/<details class="change"[^>]*>/)[1].split('</details>')[0];
   const dl = Object.fromEntries([...kept.matchAll(/<dt>([^<]*)<\/dt><dd>(.*?)<\/dd>/g)].map((m) => [m[1], m[2].replace(/<[^>]+>/g, '')]));
   t('AC11 the reason', dl.Reason, 'Every adopt condition held adopt_all_conditions');
   t('AC11 tickets per arm', dl['Tickets per arm'], '40 on, 38 off');
@@ -405,7 +406,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   });
   const vchange = valuedView.panels.changes.all.find((c) => c.lever === 'preflight' && c.evidence);
   t('a valued lever: the view names the arms its counts are of, its value and baseline', JSON.stringify([vchange?.evidence?.n?.arms, vchange?.evidence?.n?.on, vchange?.evidence?.n?.off]), '[["batched","one-at-a-time"],40,38]');
-  t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split('<details class="change">')[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
+  t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split(/<details class="change"[^>]*>/)[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
 }
 
 
@@ -479,9 +480,12 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('styles: without the table rules the checks fail', j([bare.subjects.has('grp'), bare.style({ tag: 'td', classes: ['td', 'n'] }, [table])['text-align'] ?? null]), '[false,null]');
   for (const id of ['ms-h', 'lr-h', 'st-h', 'asks-h']) {
     const sec = h.slice(h.lastIndexOf('<section', h.indexOf(`aria-labelledby="${id}"`)), h.indexOf('</section>', h.indexOf(`aria-labelledby="${id}"`)));
-    t(`styles ${id}: a card like the lever table`, /^<section aria-labelledby="[^"]+" class="card levers/.test(sec) && sec.includes('<div class="levers-head">'), true);
+    // Merge time by stage and time parked by cause start closed: the head is the fold's summary, and the
+    // intro opens with the table.
+    const folded = ['ms-h', 'st-h'].includes(id);
+    t(`styles ${id}: a card like the lever table`, /^<section aria-labelledby="[^"]+" class="card levers/.test(sec) && sec.includes(folded ? '<details class="fold"><summary class="levers-head fold-sum">' : '<div class="levers-head">'), true);
     t(`styles ${id}: one table`, count(sec, /<table /g), 1);
-    t(`styles ${id}: a muted intro line`, /<h2 id="[^"]+">[^<]+<\/h2><p class="muted small">[^<]+<\/p>/.test(sec), true);
+    t(`styles ${id}: a muted intro line`, (folded ? /<p class="muted small fold-intro">[^<]+<\/p>/ : /<h2 id="[^"]+">[^<]+<\/h2><p class="muted small">[^<]+<\/p>/).test(sec), true);
     t(`styles ${id}: the repo as a group header row`, /<tr class="grp"[^>]*><th scope="colgroup" colspan="\d+" class="td grp">desk-skills/.test(sec), true);
   }
   const ms = section(h, 'ms-h');
@@ -509,7 +513,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
     now: NOW2, tz: 'UTC', generatedAt: NOW2,
   });
   const ch = section(P.renderPage(v), 'ch-h');
-  const incs = ch.split('<details class="change">').slice(1).filter((d) => d.includes('was incomplete'));
+  const incs = ch.split(/<details class="change"[^>]*>/).slice(1).filter((d) => d.includes('was incomplete'));
   t('change log: one event for the three levers', incs.length, 1);
   t('change log: naming them', incs[0]?.includes('Evidence for codex, memory and wrappers in desk-skills was incomplete'), true);
   t('change log: worded from its reason code', incs[0]?.includes('<span class="muted small">Some outcomes the evaluation reads weren’t recorded</span>'), true);
@@ -532,7 +536,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
     now: NOW2, tz: 'UTC', generatedAt: NOW2,
   });
   const ch = section(P.renderPage(v), 'ch-h');
-  const summaryOf = (what) => ch.split('<details class="change">').slice(1).find((d) => d.includes(what))?.split('</summary>')[0] ?? '';
+  const summaryOf = (what) => ch.split(/<details class="change"[^>]*>/).slice(1).find((d) => d.includes(what))?.split('</summary>')[0] ?? '';
   t('change log: a row change names the reading before and after', summaryOf('The levers row in desk-skills changed').includes('changed from none to auto'), true);
   t('change log: and shows its reason as written', summaryOf('The levers row in desk-skills changed').includes('<span class="muted small">Config §3b &quot;Phase 0 levers&quot; now reads `auto`</span>'), true);
   t('change log: a freeze shows the reason typed for it', summaryOf('Trials frozen').includes('<span class="muted small">Holiday week, nobody to answer</span>'), true);
@@ -565,7 +569,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   const v = structuredClone(six);
   v.panels.board.levers.find((l) => l.lever === 'finder-model').cells = [{ repo: 'desk-skills', state: 'ineligible', status: 'finders already on sonnet', why: 'both arms would be the same', note: 'not tested in desk-skills: both arms would be the same' }];
   const h = P.renderPage(v);
-  t('DS-1000 AC4 the results layout names the reason as a short status, its rationale on hover', h.includes('<span class="repo" title="both arms would be the same"><span class="dot dot-sm" style="background:#9CA3AF"></span><span>desk-skills: not tested, finders already on sonnet</span>'), true);
+  t('DS-1000 AC4 the results layout names the reason as a short status, its rationale on hover', h.includes('<span class="repo" data-repo="desk-skills" title="both arms would be the same"><span class="dot dot-sm" style="background:#9CA3AF"></span><span>desk-skills: not tested, finders already on sonnet</span>'), true);
   t('DS-1000 AC4 not the rationale as the reason', h.includes('not tested here, as'), false);
 }
 
@@ -653,8 +657,152 @@ async function pressCopy(html, which, ok) {
   t('DS-1042 a refused copy selects the command and leaves the button reading Copy', `${refused.selected}|${refused.labels[0]}`, '1|Copy|Copy the keep-it-off command');
 }
 
+// DS-1043: the Changes page. Six weeks in, with each repo's change log read through `changeLogs`: a
+// settings change before the charts' range, a Claude version with enough tickets either side, a merged
+// PR two tickets old and a settings change with few on both sides; studia-web's log can't be read.
+const side = (o) => ({ accepted: 0, costed: 0, median_usd: null, audited: 0, p0: null, p1: null, p2: null, ...o });
+const LOGS = {
+  'desk-skills': [
+    { kind: 'config', at: '2026-11-01T09:00:00.000Z', row: '§3b Phase 0 levers', from: ['none'], to: ['auto'], file: '/c/config.md', before: side({}), after: side({}) },
+    { kind: 'pr', at: '2026-12-20T10:21:00.000Z', pr: 1509, ticket: 'DS-1021', title: 'A worker stops at start-up when its hooks or sign-in didn’t load', sha: 'abc1234def', paths: ['skills/x.md'],
+      before: side({ accepted: 9, costed: 9, median_usd: 15.2 }), after: side({ accepted: 2, costed: 2, median_usd: 9 }) },
+    { kind: 'config', at: '2026-12-22T15:20:00.000Z', row: '§3b Phase 0 levers', from: ['preflight'], to: ['auto', 'preflight'], file: '/c/config.md', before: side({ accepted: 3 }), after: side({ accepted: 1 }) },
+  ],
+  'ai-agents': [
+    { kind: 'claude', at: '2026-12-10T21:57:00.000Z', from: '2.1.330', to: '2.1.331', ticket: 'AA-1', session: 's',
+      before: side({ accepted: 14, costed: 14, median_usd: 15.2, audited: 9, p0: 0, p1: 0.5, p2: 1.25 }), after: side({ accepted: 11, costed: 11, median_usd: 9.8 }) },
+  ],
+};
+const changeLogs = (r) => (r.name === 'studia-web' ? { log: null, error: { file: '/repos/studia-web', line: null, message: 'not a git repository' } } : { log: { window_days: 7, entries: LOGS[r.name] ?? [] }, error: null });
+const withLog = V.buildView({
+  ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${DS}/levers.jsonl`]: jsonl(log), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+  now: NOW2, tz: 'UTC', generatedAt: NOW2, changeLogs,
+});
+withLog.panels.merge_stages = { repos: [
+  { name: 'desk-skills', prs: 4, stages: { desk: { n: 4, median: 96, p75: 108 }, merge: { n: 3, median: 5, p75: 9 } } },
+  { name: 'ai-agents', prs: 1, stages: { merge: { n: 1, median: 30, p75: 30 } } }] };
+withLog.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [{ cause: 'usage', hours: 15, tickets: 2, link: null }, { cause: 'lock', hours: 5, tickets: 3, link: null }] },
+  { week: '2026-W51', hours: 0, tickets: 0, causes: [] }] }] };
+const hLog = P.renderPage(withLog);
+
+// The page's script against a stand-in DOM holding every element that carries a repo or a kind, the
+// filter buttons and the change list's empty line.
+function filterPage(html) {
+  const attrsOf = (s) => Object.fromEntries([...s.matchAll(/([\w-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+  const node = (tag, attrs) => ({ tag, attrs, hidden: false, on: null, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }, setAttribute(k, v) { this.attrs[k] = v; }, addEventListener(_, f) { this.on = f; } });
+  const els = [...html.matchAll(/<(\w+)\b([^>]*\bdata-(?:repos?|kind)="[^"]*"[^>]*|[^>]*\bdata-all\b[^>]*)>/g)]
+    .map((m) => ({ ...node(m[1], { ...attrsOf(m[2]), ...Object.fromEntries(['data-all', 'data-reading'].filter((k) => new RegExp(`\\b${k}\\b(?!=)`).test(m[2])).map((k) => [k, ''])) }), hidden: /\shidden(\s|$)/.test(m[2]) }));
+  const buttons = (k) => [...html.matchAll(new RegExp(`<button type="button" ${k}="([^"]*)" aria-pressed="[^"]*">`, 'g'))].map((m) => node('button', { [k]: m[1] }));
+  const repo = buttons('data-pick-repo');
+  const kind = buttons('data-pick-kind');
+  // Hidden until the filter leaves nothing, as the page renders it.
+  const none = { ...node('p', {}), hidden: /<p class="empty ch-none" hidden>/.test(html) };
+  const json = html.split('<script type="application/json" id="levers-view">')[1].split('</script>')[0];
+  const el = { 'levers-view': { textContent: json }, 'age-banner': { innerHTML: '', getAttribute: () => '' }, 'age-words': { textContent: '' } };
+  const q = { '[data-pick-repo]': repo, '[data-pick-kind]': kind, '[data-repo],[data-kind],[data-all],[data-repos]': els, '.change,.change-log': els.filter((e) => /^change(-log)?$/.test(e.attrs.class)) };
+  const document = { getElementById: (id) => el[id], body: { setAttribute() {} }, querySelectorAll: (s) => q[s] ?? [], querySelector: (s) => (s === '.ch-none' ? none : null) };
+  vm.runInNewContext(html.split('<script>').pop().split('</script>')[0], { document, Date, JSON, Math, Number, Array, String, setInterval: () => 0 });
+  const press = (group, v) => group.find((b) => Object.values(b.attrs)[0] === v).on();
+  const shown = (pred) => els.filter(pred).map((e) => !e.hidden);
+  return { els, repo, kind, none, press, shown };
+}
+
+{
+  // AC8: titled Changes, and the old anchors still land.
+  t('DS-1043 AC8 the title and heading read Changes', hLog.includes('<title>Changes</title>') && hLog.includes('<h1>Changes</h1>'), true);
+  t('DS-1043 AC8 every old section id is still there', ['lev-h', 'tr-h', 'ch-h', 'ms-h', 'st-h', 'how-h'].every((id) => hLog.includes(`id="${id}"`)), true);
+  // AC1: the side menu.
+  const nav = hLog.split('<nav class="side" aria-label="On this page">')[1].split('</nav>')[0];
+  const items = [...nav.matchAll(/<a href="#([^"]+)">([^<]+?)(?: <span class="nav-n[^"]*">(\d+)<\/span>)?<\/a>/g)].map((m) => `${m[2]}|${m[1]}|${m[3] ?? ''}`);
+  t('DS-1043 AC1 the side menu lists each section, counts on Needs you and Levers', j(items), j(['Needs you|ny-h|1', 'Overview|ov-h|', 'Trends|tr-h|', 'Levers|lev-h|6', 'Changes|ch-h|', 'Merge time and parking|mp-h|', 'How desk decides|how-h|']));
+  t('DS-1043 AC1 each item lands on its section', items.every((x) => hLog.includes(`id="${x.split('|')[1]}"`)), true);
+  t('DS-1043 AC1 the sections in the menu’s order', ['ny-h', 'ov-h', 'tr-h', 'lev-h', 'ch-h', 'mp-h', 'how-h'].map((id) => hLog.indexOf(`id="${id}"`)).every((x, i, a) => !i || x > a[i - 1]), true);
+  // AC2 (the phone-width row of buttons) is layout, checked in the screenshots, not here.
+  // AC3: the repo filter.
+  // In the configured order, the lever table's column order.
+  t('DS-1043 AC3 a chip per repo', [...hLog.matchAll(/data-pick-repo="([^"]*)"/g)].map((m) => m[1]).join(','), ',ai-agents,studia-web,desk-skills');
+  t('DS-1043 AC3 the lever cells carry their repo', section(hLog, 'lev-h').includes('<span class="repo" data-repo="desk-skills">'), true);
+  t('DS-1043 AC3 so do the changes', /<div class="change-log" data-kind="other" data-repo="ai-agents"/.test(hLog) && /<details class="change" data-kind="lever" data-repo="desk-skills">/.test(hLog), true);
+  t('DS-1043 AC3 and the merge-time and parking groups', ['<tbody data-repo="ai-agents"><tr class="grp">', '<span class="fold-line" data-repo="desk-skills">'].every((s) => section(hLog, 'ms-h').includes(s)) && section(hLog, 'st-h').includes('<tbody data-repo="desk-skills">'), true);
+  const f = filterPage(hLog);
+  const reading = (e) => 'data-reading' in e.attrs;
+  t('DS-1043 AC3 on opening, each lever reads across repos alone', f.els.some(reading) && f.els.every((e) => e.hidden === reading(e)), true);
+  f.press(f.repo, 'ai-agents');
+  t('DS-1043 AC3 picking a repo shows its own reading of each lever, and no other repo’s', f.els.filter(reading).every((e) => e.hidden === (e.attrs['data-repo'] !== 'ai-agents')), true);
+  t('DS-1043 AC3 picking a repo shows only its parts', j([...new Set(f.els.filter((e) => e.attrs['data-repo'] && !e.hidden).map((e) => e.attrs['data-repo']))]), j(['ai-agents']));
+  t('DS-1043 AC3 and hides every other repo’s', f.els.filter((e) => e.attrs['data-repo'] && e.attrs['data-repo'] !== 'ai-agents').every((e) => e.hidden), true);
+  t('DS-1043 AC3 its button reads pressed', f.repo.map((b) => b.attrs['aria-pressed']).join(), 'false,true,false,false');
+  const rowsIn = f.els.filter((e) => 'data-repos' in e.attrs);
+  t('DS-1043 AC3 a lever row shows only where the repo has a cell', rowsIn.length > 0 && rowsIn.every((e) => e.hidden === !e.attrs['data-repos'].split(' ').includes('ai-agents')), true);
+  t('DS-1043 AC3 and the reading across repos gives way to the repo’s own', f.els.filter((e) => 'data-all' in e.attrs).every((e) => e.hidden), true);
+  f.press(f.repo, '');
+  t('DS-1043 AC3 All repos shows them all again, each lever read across repos', f.els.every((e) => e.hidden === reading(e)), true);
+  {
+    // preflight is kept in desk-skills alone: across repos and in desk-skills it reads Kept, in ai-agents not.
+    const pre = section(hLog, 'lev-h').split('<tr data-lever="preflight"')[1].split('</tr>')[0];
+    const label = (attr) => new RegExp(`<div ${attr}><span class="badge"[^>]*><span class="dot"[^>]*></span>([^<]+)</span>`).exec(pre)?.[1];
+    const ai = label('data-repo="ai-agents" data-reading hidden');
+    t('DS-1043 AC3 a lever’s status, result and progress follow the picked repo', j([label('data-all'), label('data-repo="desk-skills" data-reading hidden'), ai === undefined ? !/data-repos="[^"]*ai-agents/.test(pre) : ai !== 'Kept']), j(['Kept', 'Kept', true]));
+  }
+  // AC6: the kind filter.
+  f.press(f.kind, 'lever');
+  t('DS-1043 AC6 Lever changes shows only lever changes', j([f.shown((e) => e.attrs['data-kind'] === 'lever').every(Boolean), f.shown((e) => e.attrs['data-kind'] === 'other').some(Boolean)]), '[true,false]');
+  t('DS-1043 AC6 with some left to show, the list says nothing', f.none.hidden, true);
+  f.press(f.kind, 'other');
+  t('DS-1043 AC6 Other changes only the others', j([f.shown((e) => e.attrs['data-kind'] === 'lever').some(Boolean), f.shown((e) => e.attrs['data-kind'] === 'other').every(Boolean)]), '[false,true]');
+  f.press(f.repo, 'studia-web');
+  t('DS-1043 AC6 with nothing left to show, the list says so', f.none.hidden, false);
+  // AC4: merge time and parking start closed, each showing its headline line.
+  for (const [id, line] of [['ms-h', 'desk-skills: desk review takes 1.6h at the median, over 4 merged PRs'], ['st-h', 'desk-skills this week: 20h parked over 5 tickets, the most hours on usage (15h)']]) {
+    const sec = section(hLog, id);
+    t(`DS-1043 AC4 ${id} is closed`, sec.includes('<details class="fold">') && !/<details class="fold" open/.test(sec), true);
+    t(`DS-1043 AC4 ${id} shows its headline line`, sec.split('</summary>')[0].includes(`>${line}</span>`), true);
+  }
+  // AC5: a numbered dashed line per change in range, the same number on its list entry, and a tooltip.
+  const cost = hLog.split('<article class="card wbr"')[1].split('</article>')[0];
+  const dayChart = cost.split('<div class="chart" data-view="days"')[1];
+  const marks = [...dayChart.matchAll(/<span class="mark(?: mark-r)?"[^>]*style="left:([\d.]+)%"[^>]*><span class="mark-n num"[^>]*>(\d+)<\/span>/g)].map((m) => [Number(m[2]), Number(m[1])]);
+  t('DS-1043 AC5 the changes in range are numbered lines on the 30 days, the earlier one left off', j(marks.map((m) => m[0])), j([2, 3, 4]));
+  t('DS-1043 AC5 each inside the plot, in order of when it landed', marks.every((m, i) => m[1] > 8 && m[1] < 95 && (!i || m[1] > marks[i - 1][1])), true);
+  t('DS-1043 AC5 and on the 6 weeks', count(cost.split('<div class="chart" data-view="wbr"')[1].split('<div class="chart" data-view="days"')[0], /<span class="mark-n num"/g), 3);
+  t('DS-1043 AC5 on every chart', count(hLog, /<div class="marks">/g), 8);
+  t('DS-1043 AC5 with a legend', dayChart.includes('A change, numbered as in the list'), true);
+  const ch = section(hLog, 'ch-h');
+  t('DS-1043 AC5 the same numbers on the list, newest first', [...ch.matchAll(/<span class="n-badge num" aria-label="Change (\d+)">\d+<\/span>/g)].map((m) => m[1]).join(), '4,3,2,1');
+  const tip = /<span class="mark-tip" role="tooltip">(.*?)<\/span><\/span>/.exec(dayChart.split('>2</span>')[1])?.[1].replace(/<[^>]+>/g, '|') ?? '';
+  t('DS-1043 AC5 hovering a line shows its date, title and cost before and after', tip, '|2 · 10 Dec, 21:57 · Claude version||Claude Code 2.1.330 to 2.1.331||$15.20 before · $9.80 after||Before and after, not a test');
+  t('DS-1043 AC5 the trends say what the lines are', section(hLog, 'tr-h').includes('Numbered lines are changes from the list below.'), true);
+  t('DS-1043 AC5 with no change log, no lines and no such line', [hSix.includes('class="marks"'), hSix.includes('Numbered lines')].join(), 'false,false');
+  // AC7: too early, with the count.
+  t('DS-1043 AC7 a PR with 2 tickets since', ch.includes('<p class="small too-early">Too early: 2 tickets since. Figures show once there are 5 on each side.</p>'), true);
+  t('DS-1043 AC7 a change short on both sides', ch.includes('Too early: 3 before and 1 since. Figures show once there are 5 on each side.'), true);
+  const ba = ch.split('Claude Code 2.1.330 to 2.1.331')[1].split('</table>')[0].replace(/<[^>]+>/g, '|').replace(/\|+/g, '|');
+  t('DS-1043 AC7 one with 5 a side shows its figures', ba, '|First worker start on the new version · ai-agents|7 days before|7 days after|Cost per ticket|$15.20 · 14 tickets|$9.80 · 11 tickets|Blind review findings per PR|P0 0 · P1 0.5 · P2 1.25 · 9 reviews|not recorded|');
+  t('DS-1043 a PR is named, never linked', ch.includes('PR #1509 · DS-1021 · desk-skills') && !ch.includes('href='), true);
+  t('DS-1043 a settings change names its row', ch.includes('Phase 0 levers row in desk-skills: preflight to auto preflight'), true);
+  t('DS-1043 a change log that can’t be read is noted', ch.includes('Couldn’t read <span class="mono">studia-web</span>'), true);
+  t('DS-1043 still nothing reaches the network', /\b(https?:)?\/\/[a-z0-9.-]+\.[a-z]{2,}/i.test(hLog), false);
+}
+// AC8: a link into a closed section opens it.
+{
+  const html = hLog;
+  const details = { tagName: 'DETAILS', open: false, parentElement: null };
+  const h2 = { tagName: 'H2', parentElement: { tagName: 'SUMMARY', parentElement: details } };
+  const json = html.split('<script type="application/json" id="levers-view">')[1].split('</script>')[0];
+  const el = { 'levers-view': { textContent: json }, 'age-banner': { innerHTML: '', getAttribute: () => '' }, 'age-words': { textContent: '' }, 'ms-h': h2 };
+  const handlers = {};
+  const window = { location: { hash: '#ms-h' }, addEventListener: (k, fn) => { handlers[k] = fn; } };
+  const document = { getElementById: (id) => el[id], body: { setAttribute() {} }, querySelectorAll: () => [] };
+  vm.runInNewContext(html.split('<script>').pop().split('</script>')[0], { document, window, Date, JSON, Math, Number, Array, String, setInterval: () => 0 });
+  t('DS-1043 AC8 opening the page at #ms-h opens Merge time by stage', details.open, true);
+  details.open = false;
+  window.location.hash = '#lev-h';
+  handlers.hashchange();
+  t('DS-1043 AC8 a link elsewhere leaves it closed', details.open, false);
+}
+
 // Every lever has its one-line description, question handling's too.
-t('WHAT: question handling says what it does', /<tr data-lever="question-handling">.*?Decides whether a parked ticket’s question is pushed to you at once or waits for the digest/.test(section(hSix, 'lev-h')), true);
+t('WHAT: question handling says what it does', /<tr data-lever="question-handling"[^>]*>.*?Decides whether a parked ticket’s question is pushed to you at once or waits for the digest/.test(section(hSix, 'lev-h')), true);
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

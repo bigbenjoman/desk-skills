@@ -12,7 +12,8 @@
 // under ~/.desk-autopilot/<slug>/ its levers.jsonl, lever-evals.jsonl, audit.jsonl, levers-evidence/
 // (the per-ticket outcome rows each evaluation used), the newest phase0-baseline-*.txt, and in the
 // repo's state folder and each named batch's its supervisor.json, health.json and post-merge.jsonl;
-// plus the machine-wide ~/.desk-autopilot/levers/pooled-evals.jsonl. A line that does not parse makes
+// plus the machine-wide ~/.desk-autopilot/levers/pooled-evals.jsonl, and each repo's change log
+// (desk-changes.mjs: git on its primary checkout, its config backups). A line that does not parse makes
 // the panels that read its file `error`, naming the file and line, and the rest build.
 //
 // The honesty rules: no verdict below the minimum sample in the smaller arm; every effect carries its
@@ -22,7 +23,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, localDay, repoConfigValues, shownNames } from './desk-env.mjs';
+import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, isNone, leverRow, localDay, repoConfigValue, repoConfigValues, repoDirs, shownNames } from './desk-env.mjs';
+import { changeLog } from './desk-changes.mjs';
 import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
@@ -424,7 +426,8 @@ const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'erro
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
 // The view model for the inputs under `root` and the configs under `configRoot`, as of `now`.
-export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(), now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, generatedAt = Date.now() } = {}) {
+// `changeLogs`, given, stands in for reading each repo's change log: (repo) -> { log, error }.
+export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(), now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, generatedAt = Date.now(), changeLogs = null } = {}) {
   const configured = configuredRepos(configRoot);
   const names = shownNames(configured.map((r) => r.slug));
   const repos = configured.map((r, i) => readRepo({ ...r, root: configRoot, name: names[i] }, root));
@@ -587,7 +590,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }));
   const changesAll = mergePerLever(changesRaw, tz).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
   const week = changesAll.filter((e) => Date.parse(e.at) >= weekAgo);
-  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
+  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll }, errs(repos.map((r) => r.log)));
 
   // P7 experiment overhead.
   const audits = repos.flatMap((r) => r.audit.rows.filter((a) => Date.parse(a.at) >= weekAgo).map((a) => ({ ...a, repo: r.name })));
@@ -653,7 +656,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
+    panels: { status, waiting, cost, guardrails, board, changes, change_log: changeLogPanel(repos, changeLogs ?? ((r) => readChangeLog(r, configRoot, now)), tz), overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
     line,
   };
 }
@@ -679,6 +682,40 @@ function armPanel(repos, latest, key) {
     repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e[key] && Object.keys(e[key]).length)
       .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, baseline: REGISTRY[e.lever]?.baseline ?? null, arms: e[key] }))),
   };
+}
+
+// One repo's change log (desk-changes.mjs) over the 30 days the trend charts show, read from its §2
+// Primary repo root against its own default branch, ticket key pattern and config. A repo with no root
+// configured has none to read; one whose read fails is an error naming the root. -> { log, error }
+function readChangeLog(r, configRoot, now) {
+  const { root } = repoDirs(r.slug, configRoot);
+  if (!root) return { log: null, error: null };
+  const value = (id) => { const v = repoConfigValue(r.slug, id, configRoot); return v && !isNone(v) ? v : null; };
+  try {
+    return { log: changeLog({ slug: r.slug, now, root, ref: `origin/${value('default-branch') ?? 'main'}`, pattern: value('ticket-pattern'), configPath: r.config }), error: null };
+  } catch (e) { return { log: null, error: { file: root, line: null, message: e.message } }; }
+}
+
+// Every repo's change log entries as one list, oldest first, each numbered from 1 in that order (the
+// number its line on the trend charts carries) and dated by its day in `tz` and how far through that day
+// it landed, for the charts to place it.
+function changeLogPanel(repos, read, tz) {
+  const errors = [];
+  const entries = [];
+  for (const r of repos) {
+    const { log, error } = read(r) ?? {};
+    if (error) errors.push(error);
+    for (const e of log?.entries ?? []) {
+      const ms = Date.parse(e.at);
+      if (Number.isNaN(ms)) continue;
+      const day = dayKey(ms, tz);
+      const [h, m] = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms)).split(':').map(Number);
+      entries.push({ ...e, repo: r.name, window_days: log.window_days ?? null, day, day_frac: round((h * 60 + m) / 1440, 4) });
+    }
+  }
+  entries.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : 0));
+  entries.forEach((e, i) => { e.n = i + 1; });
+  return panel(entries.length ? 'ok' : 'empty', { entries }, errors);
 }
 
 // Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos
