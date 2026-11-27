@@ -8,7 +8,8 @@
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only),
 # two sessions in one repo: a reserved name each, and each resuming its own handoff; and the
 # session's /rename name, recorded in the handoff and given back as a /rename line after /clear; and
-# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows.
+# worker mode (DS-1037): a mid-stage handoff at the handoff-threshold lever's value or the §2 rows;
+# and `pick` (DS-1051): /desk-resume's one fitting handoff in a session started without /clear.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -565,5 +566,24 @@ check "DS-1037 AC4 rows at 0 and no lever value: a worker never hands off" '[ -z
 config '`45`'
 DESK_HANDOFF_FILE="" hook PostToolUse wk7 "$T/w90.jsonl"
 check "DS-1037 outside a worker, worker mode stays off"                    '[[ "$(ctx)" == *".handoffs/"* ]]'
+
+# ---- DS-1051: /desk-resume in a session started fresh (no /clear) asks the hook to pick ----
+P="$T/pickrepo"; git init -q -b main "$P"; P="$(cd "$P" && pwd -P)"; mkdir -p "$P/.handoffs" "$P/sub"
+pick(){ out=$(python3 "$HOOK" pick "$P/sub" 2>&1); rc=$?; }
+printf '<!-- desk handoff placeholder: session z -->\n' > "$P/.handoffs/$DAY-3.md"
+echo "# stale" > "$P/.handoffs/old.md"; age "$P/.handoffs/old.md" 90000
+echo "# done" > "$P/.handoffs/done.md"; echo "done.md" > "$P/.handoffs/.consumed"
+echo "# held" > "$P/.handoffs/held.md"; echo "held.md live" > "$P/.handoffs/.held"
+echo "# the one" > "$P/.handoffs/$DAY-2.md"
+pick
+check "DS-1051 AC1: the one fresh, unconsumed, unheld handoff is picked" '[ $rc -eq 0 ] && [ "$out" = "$P/.handoffs/$DAY-2.md" ]'
+check "DS-1051 AC1: and recorded as consumed"                  'grep -qx "$DAY-2.md" "$P/.handoffs/.consumed"'
+pick
+check "DS-1051 AC2: once consumed it is not picked again"      '[ $rc -eq 1 ] && [ -z "$out" ]'
+echo "# a" > "$P/.handoffs/a.md"; echo "# b" > "$P/.handoffs/b.md"
+pick
+check "DS-1051 AC3: two that fit: none picked, none consumed"  '[ $rc -eq 1 ] && [ -z "$out" ] && ! grep -qxE "(a|b)\.md" "$P/.handoffs/.consumed"'
+pick_outside="$(python3 "$HOOK" pick "$T" 2>&1)"; rc=$?
+check "DS-1051 outside a git repo: exit 1, silent"            '[ $rc -eq 1 ] && [ -z "$pick_outside" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

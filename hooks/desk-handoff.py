@@ -76,7 +76,8 @@ Any other worker (a fix or base try: AUTOPILOT_TASK, or no DESK_HANDOFF_FILE) ne
 the hook is silent in it.
 
 Run as `desk-handoff.py offer-1m [--asked] [<dir>]` (not a hook event), it is /desk-update's one-time
-offer to lower a 1M threshold of 45 to 20: see offer_1m.
+offer to lower a 1M threshold of 45 to 20: see offer_1m. Run as `desk-handoff.py pick [<dir>]`, it is
+/desk-resume's choice in a session started fresh, which SessionStart names no handoff for: see pick.
 """
 import calendar
 import glob
@@ -924,11 +925,7 @@ def on_session_start(data, session, root):
         return
     name = os.path.basename(latest)
     consumed_path = os.path.join(handoff_dir(root), ".consumed")
-    try:
-        consumed = open(consumed_path).read().split()
-    except Exception:
-        consumed = []
-    if name in consumed:
+    if name in consumed_names(root):
         return
     # A compaction carries on the session that wrote it, which holds the handoff; only a /clear
     # carries it out.
@@ -981,7 +978,38 @@ def offer_1m(args):
     return 0
 
 
+def consumed_names(root):
+    try:
+        return open(os.path.join(handoff_dir(root), ".consumed")).read().split()
+    except Exception:
+        return []
+
+
+def pick(args):
+    """`desk-handoff.py pick [<dir>]`: /desk-resume in a session the hook named no handoff for (one
+    started fresh rather than by /clear). Where exactly one handoff fits the /clear rule (written,
+    under 24 hours old, not consumed, not held), print its path, mark it consumed and exit 0; with
+    none or several, print nothing and exit 1, and the person chooses."""
+    root = git(args[0] if args else os.getcwd(), "rev-parse", "--show-toplevel")
+    if not root:
+        return 1
+    skip = set(held_names(root)) | set(consumed_names(root))
+    fits = [f for f in handoffs(root) if os.path.basename(f) not in skip
+            and time.time() - os.path.getmtime(f) <= FRESH_SECONDS]
+    if len(fits) != 1:
+        return 1
+    with open(os.path.join(handoff_dir(root), ".consumed"), "a") as f:
+        f.write(os.path.basename(fits[0]) + "\n")
+    print(fits[0])
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["pick"]:
+        try:
+            sys.exit(pick(sys.argv[2:]))
+        except Exception:
+            sys.exit(1)
     if sys.argv[1:2] == ["offer-1m"]:
         try:
             sys.exit(offer_1m(sys.argv[2:]))
