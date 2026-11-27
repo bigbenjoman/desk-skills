@@ -4466,8 +4466,8 @@ export function usageViewJson(repos, { now = Date.now() } = {}) {
 // is, where only one set off is); each subscription at its limit with the repos waiting for it. Every
 // time is epoch ms. A window is { pct, resets_at } (pct 0 once it has reset), null with no reading of it.
 // Nothing here names a standby, a rotation or the most room: desk never switches.
-const msOf = (s) => (s == null ? null : s * 1000);
-const limitJson = (l) => (l ? { type: l.type ?? null, at: msOf(l.at) } : null);
+const secMs = (s) => (s == null ? null : s * 1000);
+const limitJson = (l) => (l ? { type: l.type ?? null, at: secMs(l.at) } : null);
 const windowJson = (w, now) => (w ? ((u) => ({ pct: u.pct, resets_at: w.resetsAt * 1000 }))(windowUse(w, now)) : null);
 const readingJson = (r, now) => (r?.at == null ? null : { five_hour: windowJson(r.five_hour, now), seven_day: windowJson(r.seven_day, now), at: r.at, none: r.none ?? [] });
 // An off default is off: no repo runs on it, so it is never labelled the default.
@@ -4486,7 +4486,7 @@ export function subscriptionsJson(repos, { now = Date.now() } = {}) {
     default_email: def ? email(def) ?? loginLabel(def.login) : null,
     repos: u.repos.map((r) => ({ slug: r.slug, name: r.name, email: subLabel(r.sub), source: r.sub?.source ?? null, known: known(r.sub),
       on: r.sub?.login?.name ?? null, off: r.sub?.off ? loginLabel(r.sub.off) : null, workers: r.workers, ready: r.ready })),
-    waiting: waitingFor(u, u.repos).map((w) => ({ email: email(w.x) ?? loginLabel(w.x.login), name: w.x.login.name, type: w.limit.type, at: msOf(w.limit.at),
+    waiting: waitingFor(u, u.repos).map((w) => ({ email: email(w.x) ?? loginLabel(w.x.login), name: w.x.login.name, type: w.limit.type, at: secMs(w.limit.at),
       repos: w.repos.map((r) => ({ name: r.name, ready: r.ready })) })),
     probe_every_ms: PROBE_EVERY_MS,
   };

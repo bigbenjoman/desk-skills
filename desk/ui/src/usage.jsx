@@ -170,7 +170,8 @@ function RunsOn({ r }) {
 
 function ReposTable({ subs, now }) {
   const def = defaultSub(subs);
-  const byName = new Map((subs.claude ?? []).map((s) => [s.name, s]));
+  const defaultOff = (subs.claude ?? []).some((s) => s.is_default && s.state === 'off');
+  const byName =new Map((subs.claude ?? []).map((s) => [s.name, s]));
   const waitOf = new Map((subs.waiting ?? []).flatMap((w) => w.repos.map((r) => [r.name, w])));
   const rows = [];
   for (const r of subs.repos ?? []) {
@@ -210,9 +211,11 @@ function ReposTable({ subs, now }) {
             <div role="alert" className="flex items-start gap-2 rounded-md border border-fail-bd bg-fail-bg px-3 py-2.5 text-[13px]" data-unknown={r.name}>
               <span className="mt-px text-fail"><Icon name="circle-x" size={14} /></span>
               <span>{r.source === 'default'
-                ? `✕ This computer's default Claude subscription is off, so ${r.name} can't start work. Turn it back on, or pick another subscription for it.`
+                ? (defaultOff
+                  ? `✕ This computer's default Claude subscription is off, so ${r.name} can't start work. Turn it back on, or pick another subscription for it.`
+                  : `✕ This computer has no default Claude subscription, so ${r.name} can't start work. Set one, or pick another subscription for it.`)
                 : r.off
-                ? `✕ The only subscription on this computer signed in to ${r.email} is ${r.off}, which is off, so ${r.name} can't start work. Turn ${r.off} back on, or pick another subscription for it.`
+                ? `✕ The subscription on this computer signed in to ${r.email}, ${r.off}, is off, so ${r.name} can't start work. Turn ${r.off} back on, or pick another subscription for it.`
                 : `✕ No subscription on this computer is signed in to ${r.email}, so ${r.name} can't start work. Pick another subscription for it, or add one signed in to that account.`}</span>
             </div>
           </td>

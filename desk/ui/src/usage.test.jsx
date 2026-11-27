@@ -113,7 +113,16 @@ describe('Usage & costs', () => {
     subs.repos[2] = { ...subs.repos[2], email: 'ben@personal.example', off: 'work-3' };
     draw(subs);
     expect(document.querySelector('[data-unknown="studia-reports"]').textContent)
-      .toBe("✕ The only subscription on this computer signed in to ben@personal.example is work-3, which is off, so studia-reports can't start work. Turn work-3 back on, or pick another subscription for it.");
+      .toBe("✕ The subscription on this computer signed in to ben@personal.example, work-3, is off, so studia-reports can't start work. Turn work-3 back on, or pick another subscription for it.");
+  });
+
+  it('a repo on the default with no default at all is told to set one, not to turn it back on', () => {
+    const subs = subscriptions();
+    subs.claude = subs.claude.slice(1);
+    subs.repos = subs.repos.map((r) => (r.source === 'default' ? { ...r, known: false } : r));
+    draw(subs);
+    expect(document.querySelector('[data-unknown="desk-skills"]').textContent)
+      .toBe("✕ This computer has no default Claude subscription, so desk-skills can't start work. Set one, or pick another subscription for it.");
   });
 
   it('AC6 at its limit the hero bar is full and says repos wait until the reset', () => {
@@ -151,7 +160,9 @@ describe('Usage & costs', () => {
     subs.claude[0] = { ...subs.claude[0], state: 'off', is_default: true };
     subs.repos = subs.repos.map((r) => (r.source === 'default' ? { ...r, known: false } : r));
     draw(subs);
-    const card = screen.getByRole('article', { name: 'ben@studia.example' });
+    // The Claude card: the Codex default is signed in to the same account, and its grid comes after.
+    const card = screen.getAllByRole('article', { name: 'ben@studia.example' })[0];
+    expect(card.getAttribute('data-sub')).toBe('default');
     expect(within(card).getByText('Off')).toBeTruthy();
     expect(within(card).queryByText('Default')).toBe(null);
     expect(document.querySelector('[data-hero]').textContent)
