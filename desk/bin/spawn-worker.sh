@@ -571,8 +571,10 @@ fi
 # The desk commit and levers this start runs on, its claude version and lever-code hashes, and the
 # bytes it is handed, one line per start for
 # phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
-# cannot be written never stops a spawn.
+# cannot be written never stops a spawn. AUTOPILOT_MODEL_FALLBACK (from pass.mjs) is the model the
+# worker-model lever drew that the CLI could not start on, so this start runs on the row's model.
 node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \
+  ${AUTOPILOT_MODEL_FALLBACK:+--model-fallback "$AUTOPILOT_MODEL_FALLBACK"} \
   --effort "$EFFORT" --log "$LOG" --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
   >> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true
 

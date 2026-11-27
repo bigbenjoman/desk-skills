@@ -13,7 +13,7 @@ Send every finder, Bea (Phase 5) and the codex cold finder (below) in one messag
 parallel; cap ~12 in flight on a sweep.
 
 **In an autopilot worker, the finders' model is config §3b Worker models' finder model**, or, on a
-ticket whose arms have the `finder-model` lever on, that lever's alias. Run
+ticket the `finder-model` lever drew a model for, that model's alias. Run
 `desk-env model finder` before dispatching. It prints a model: launch every routed Claude finder
 with that model as the Agent tool's model override, and the report header's first line ends
 `· finders on <model>`. It prints `none`: there is none, so pass no override and each finder runs on

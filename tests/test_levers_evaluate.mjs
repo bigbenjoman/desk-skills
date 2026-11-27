@@ -105,8 +105,8 @@ t('AC14 the evidence file holds every row the evaluation read, with the excluded
 t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
 t('AC14 the transition cites the same evaluation and file', [e.eval_id, e.evidence_file, e.evidence_sha256], [a1.eval_id, a1.evidence_file, a1.evidence_sha256]);
 const a1all = evalsOf(A1);
-t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
-t('AC13 a quality-risk lever with no state recorded is on trial and weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample']]);
+t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'memory', 'preflight', 'question-handling', 'review-reuse', 'worker-model', 'wrappers']);
+t('AC13 a quality-risk lever with no state recorded is on trial and weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample']]);
 const pre = a1all.find((x) => x.lever === 'preflight');
 t('AC13 a hold carries its reason code and what would change it next', [pre.decision, pre.reason_code, pre.next.needs], ['hold', 'below_min_sample', '30 more tickets in the smaller arm']);
 t('AC13 the row is in the view\'s schema', ['v', 'eval_id', 'at', 'repo', 'lever', 'layer', 'state', 'arm_share_7d', 'n', 'min_n', 'max_n', 'mechanism', 'cost', 'guardrails', 'decision', 'reason_code', 'next', 'evidence_file', 'evidence_sha256', 'lever_fp', 'claude_versions', 'inputs_age_s'].filter((k) => !(k in a1)), []);
@@ -325,7 +325,7 @@ t('AC15 the first of four passes evaluates; the rest find today done', passes, [
 const pooled = jsonl(join(T, 'home', '.desk-autopilot', 'levers', 'pooled-evals.jsonl'));
 t('AC15 the pooled estimates are written once that day, across the four repos', [pooled.filter((p) => p.lever === 'wrappers').length, pooled.find((p) => p.lever === 'wrappers')?.n, pooled.find((p) => p.lever === null)?.repos.length], [1, { on: 32, off: 32 }, 4]);
 t('AC15 every repo got its rows from that one run', ['one', 'two', 'three', 'four'].map((n) => evalsOf(`acme__${n}`).filter((x) => x.lever === 'wrappers').length), [1, 1, 1, 1]);
-t('AC15 its line names what it did', /^levers evaluate: 40 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
+t('AC15 its line names what it did', /^levers evaluate: 44 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
 t('AC15 the next day it runs again', evaluateDue({ now: NOW + DAY, configRoot, tz: 'UTC', rowsFor }).status, 'ran');
 
 // ---- review findings: each guarded -------------------------------------------------------------------------------------------------------------------
@@ -815,6 +815,25 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   // In a holdback the arms are adopted and holdback: read as the adopted value and the baseline.
   const held = handoffReport([{ lever: HT, cost: 6, handoffs: 2, pin: { arms: { [HT]: 'adopted' } } }, { lever: HT, cost: 8, handoffs: 1, pin: { arms: { [HT]: 'holdback' } } }], '30', 'config');
   t('in a holdback, the report is keyed by the adopted value and the baseline, not on and off', JSON.stringify(held), JSON.stringify({ 30: { tickets: 1, usd_per_ticket: 6, handoffs_per_ticket: 2 }, config: { tickets: 1, usd_per_ticket: 8, handoffs_per_ticket: 1 } }));
+}
+
+// ---- DS-1036: a quality-risk model lever with three values, each weighed against config --------------
+{
+  const { ENTRIES, loadRegistry } = await import('../desk/bin/lever-registry.mjs');
+  const WM = 'worker-model';
+  const QV = loadRegistry({ ...ENTRIES, [WM]: { ...ENTRIES[WM], values: ['config', 'sonnet', 'haiku'] } });
+  const S = 'acme__wm3';
+  const wrow = (v, cost) => row(S, 'off', null, { cost, pin: { set: v === 'config' ? [] : [WM], arms: { [WM]: v }, trial_ids: { [WM]: `${S}/${WM}/initial` }, fp: null } });
+  const rows = [['config', 10], ['sonnet', 6], ['haiku', 4]].flatMap(([v, c]) => Array.from({ length: 12 }, (_, i) => wrow(v, c + (i % 2) * 0.5)));
+  evaluate({ repos: [repo(S, rows)], now: NOW, tz: 'UTC', root: join(T, `pooled-wm-${++seq}`), frozen: false, fingerprints: FP, registry: QV });
+  const line = evalsOf(S).filter((e) => e.lever === WM).at(-1);
+  t('DS-1036 a quality-risk lever with three values: each value but config is weighed against it', Object.keys(line?.values ?? {}).sort(), ['haiku', 'sonnet']);
+  t('DS-1036 each at the probability its two values share', line?.p_required, 0.95);
+  const rep = line?.value_report ?? {};
+  t('DS-1036 AC4 its line carries a report per value: tickets and dollars per ticket', [Object.keys(rep).sort(), rep.config?.tickets, rep.config?.usd_per_ticket, rep.haiku?.usd_per_ticket], [['config', 'haiku', 'sonnet'], 12, 10.25, 4.25]);
+  t('DS-1036 AC4 and each model\'s own decision against config, as its row weighed it', ['sonnet', 'haiku'].map((v) => !!rep[v]?.decision && rep[v].decision === line.values[v].decision && rep[v].reason === line.values[v].reason), [true, true]);
+  t('DS-1036 the baseline carries no decision of its own', 'decision' in (rep.config ?? {}), false);
+  t('DS-1036 only the model levers\' lines carry one', evalsOf(S).filter((e) => e.value_report).map((e) => e.lever).sort(), ['finder-model', WM]);
 }
 
 rmSync(T, { recursive: true, force: true });

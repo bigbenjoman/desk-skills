@@ -41,9 +41,11 @@ function repo(slug) {
   return state;
 }
 // A queue ticket drawn `on` for `lever` under the trial `id` (the initial trial by default).
+// On its arm: `on`, or for a lever with more than two arms its first value but the baseline.
+const onArmOf = (lever) => { const l = REGISTRY[lever]; return l?.values ? l.values.find((v) => v !== l.baseline) : 'on'; };
 const onTicket = (slug, key, lever, o = {}, id = 'initial') => ({
   key, state: 'pr', ...o,
-  levers: { set: [lever], arms: { [lever]: 'on' }, trial_ids: { [lever]: `${slug}/${lever}/${id}` }, fp: {}, block: null, at: at(-100) },
+  levers: { set: [lever], arms: { [lever]: onArmOf(lever) }, trial_ids: { [lever]: `${slug}/${lever}/${id}` }, fp: {}, block: null, at: at(-100) },
 });
 const queueOf = (...tickets) => ({ tickets: Object.fromEntries(tickets.map((x) => [x.key, x])) });
 const run = (slug, queue, states = AUTO) => runTrips({ slug, name: slug.split('__')[1], state: stateOf(slug), queue, states, now: NOW });

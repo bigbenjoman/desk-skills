@@ -213,13 +213,13 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 no chart yet', tr.includes('<svg'), false);
   const lev = section(hToday, 'lev-h');
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
-  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 12);
+  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 13);
   // Each row reads across repos (data-all) and, for the repo filter, in each repo it has a cell in.
   t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger"[^>]*>.*?<div data-all>Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
   t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling"[^>]*>.*?<div data-all>Testing starts (once|when) a repo is set to auto\./.test(lev), true);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight"[^>]*>.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
-  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /<div data-all>Testing starts (once|when) a repo is set to auto\./g), 9);
+  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /<div data-all>Testing starts (once|when) a repo is set to auto\./g), 10);
   t('AC4 the change list, as on any day', section(hToday, 'ch-h').includes('>Every change</h2>'), true);
   t('AC4 with nothing changed', section(hToday, 'ch-h').includes('Nothing has changed how desk works yet.'), true);
   t('AC4 How desk decides, before any test too', hToday.includes('<h2 id="how-h">How desk decides</h2>'), true);
@@ -232,9 +232,9 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 the needs-you tile', tilesOf(hSix)[3], 'Needs you=1');
   t('AC5 four WBR cards', count(hSix, /<article class="card wbr"/g), 4);
   const lev = section(hSix, 'lev-h');
-  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 12);
+  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 13);
   t('AC5 with results and progress', lev.includes('>Result so far</th>') && lev.includes('>Progress to a decision</th>'), true);
-  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,handoff-threshold,ledger,ledger-record');
+  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,worker-model,question-handling,handoff-threshold,ledger,ledger-record');
   const ch = section(hSix, 'ch-h');
   t('AC5 Every change', ch.includes('>Every change</h2>'), true);
   t('AC5 its line', ch.includes('<p class="muted small sub">Newest first. Lever changes come from tests. Other changes can’t be tested, so each shows the tickets before and after it. Numbers match the lines on the charts.</p>'), true);
@@ -448,6 +448,26 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('with no handoff report, the page has no such section', section(hSix, 'handoffs-h'), '');
 }
 
+// DS-1036 AC4: a model lever with sample data for each value: the row for each model shows its result
+// against the baseline, separately.
+{
+  const report = { config: { tickets: 40, usd_per_ticket: 10 }, sonnet: { tickets: 40, usd_per_ticket: 6, decision: 'hold', reason: 'blind audits are due and not yet recorded' },
+    haiku: { tickets: 40, usd_per_ticket: 12, decision: 'revert', reason: 'acceptance dropped past its margin' } };
+  const wm = { ...ev('worker-model', { state: 'trial', on: 40, off: 40 }), value_report: report };
+  const built = V.buildView({ ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl([...evals, wm]) } }), now: NOW2, tz: 'UTC', generatedAt: NOW2 });
+  const panel = built.panels.values?.repos ?? [];
+  t('DS-1036 AC4 the view carries the latest per-model report, with its baseline', j(panel.map((r) => [r.name, r.lever, r.baseline, Object.keys(r.arms).sort()])), j([['desk-skills', 'worker-model', 'config', ['config', 'haiku', 'sonnet']]]));
+  t('DS-1036 and no other lever has one', j((six.panels.values?.repos ?? []).length), '0');
+  const sec = section(P.renderPage(built), 'values-h');
+  const rowOf = (a) => sec.split(`<th scope="row" class="td">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
+  const cells = (...xs) => xs.map((x) => `<td class="td n">${x}</td>`).join('');
+  t('DS-1036 AC4 the baseline first, then each model', [...sec.matchAll(/<th scope="row" class="td">([^<]+)<\/th>/g)].map((m) => m[1]).join(','), 'config (baseline),sonnet,haiku');
+  t('DS-1036 AC4 each model\'s tickets, dollars per ticket and the change against the baseline',
+    [rowOf('config (baseline)').includes(cells('40', '$10.00', '—')), rowOf('sonnet').includes(cells('40', '$6.00', '−40%')), rowOf('haiku').includes(cells('40', '$12.00', '+20%'))].join(' '), 'true true true');
+  t('DS-1036 AC4 and its own decision, the reason beside it', [rowOf('sonnet').includes('title="blind audits are due and not yet recorded">Still testing</span>'), rowOf('haiku').includes('>Turn it off</span>'), rowOf('config (baseline)').includes('</span>')].join(' '), 'true true false');
+  t('DS-1036 with no model report, the page has no such section', section(hSix, 'values-h'), '');
+}
+
 // The merge-time, learned-bar, time-parked and asks sections, in the house style of the lever table:
 // one card table per section, each repo a group header row, numbers right-aligned, and every class the
 // page puts on a section or table part has a CSS rule.
@@ -573,23 +593,25 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('DS-1000 AC4 not the rationale as the reason', h.includes('not tested here, as'), false);
 }
 
-// A lever waiting on you, from the 2026-11-26 finder-model state: on trial in desk-skills and evaluated
-// at 03:00, then reverted at 05:30 when its own step failed on DS-1012, which raised a needs-you item.
+// A lever waiting on you, from the 2026-11-26 finder-model state, on an on/off lever: on trial in
+// desk-skills and evaluated at 03:00, then reverted at 05:30 when its own step failed on DS-1012, which
+// raised a needs-you item.
 const NOW3 = Date.parse('2026-11-26T15:18:00.000Z');
+const TL = 'effort';
 const tripState = ({ evalAt = '2026-11-26T03:00:00.000Z', evalState = 'trial', reverts = [] } = {}) => {
   const m = machine({ repos: [{ slug: DS, gh: 'bigbenjoman/desk-skills', levers: '`auto`' }, { slug: 'acme__ai-agents', gh: 'acme/ai-agents', levers: null }], now: NOW3 });
   const file = join(m.root, DS, 'logs', 'DS-1012.log');
-  const error = 'desk-env model finder exited 3: desk-env tree-status: fatal: not a git repository (or any of the parent directories): .git';
+  const error = 'desk-env effort exited 3: desk-env tree-status: fatal: not a git repository (or any of the parent directories): .git';
   const at = '2026-11-26T05:30:07.208Z';
-  const base = { v: 1, repo: DS, lever: 'finder-model' };
-  w(join(m.root, DS, 'lever-evals.jsonl'), jsonl([{ ...ev('finder-model', { state: evalState, on: 0, off: 0, min: 40 }), at: evalAt }, { ...ev('codex', { state: 'trial', on: 2, off: 2, min: 40 }), at: evalAt }]));
+  const base = { v: 1, repo: DS, lever: TL };
+  w(join(m.root, DS, 'lever-evals.jsonl'), jsonl([{ ...ev(TL, { state: evalState, on: 0, off: 0, min: 40 }), at: evalAt }, { ...ev('codex', { state: 'trial', on: 2, off: 2, min: 40 }), at: evalAt }]));
   w(join(m.root, DS, 'levers.jsonl'), jsonl([
     { ...base, id: 'f1', at: '2026-11-20T08:00:00.000Z', kind: 'transition', from: 'off', to: 'trial', actor: 'controller', reason_code: 'row_change' },
     ...reverts,
     { ...base, id: 'f2', at, kind: 'trip', from: 'trial', to: reverts.length ? 'frozen' : 'reverted', actor: 'trip', reason_code: 'own_step_error', trip: 'own-step-error', ticket: 'DS-1012',
       reason: `own-step-error on DS-1012: ${error} (${file}:94)`, evidence_file: file, evidence_line: 94, error },
     { ...base, id: 'f3', at, kind: 'needs_you', actor: 'trip', reason_code: reverts.length ? 'frozen_second_revert' : 'own_step_error', ticket: 'DS-1012', evidence_file: file, evidence_line: 94,
-      reason: `finder-model was reverted in desk-skills: its own step failed on DS-1012: ${error}` },
+      reason: `${TL} was reverted in desk-skills: its own step failed on DS-1012: ${error}` },
   ]));
   return V.buildView({ ...m, now: NOW3, tz: 'UTC', generatedAt: NOW3 });
 };
@@ -598,32 +620,32 @@ const hTrip = P.renderPage(tripped);
 const panelOf = (h, lever) => { const i = h.indexOf(`<div class="decide" id="decide-${lever}-`); return i < 0 ? '' : h.slice(i, h.indexOf('</td></tr>', i)); };
 const rowOf = (h, lever) => section(h, 'lev-h').split(`<tr data-lever="${lever}"`)[1]?.split('</tr>')[0] ?? '';
 {
-  const p = panelOf(hTrip, 'finder-model');
-  t('DS-1042 AC1 a decision panel under the finder-model row', section(hTrip, 'lev-h').indexOf('<tr data-lever="finder-model"') < section(hTrip, 'lev-h').indexOf('<tr class="decide-row"'), true);
-  t('DS-1042 AC1 headed with the question', p.includes('<h3 class="decide-h" id="decide-finder-model-desk-skills-h">desk turned finder-model off in desk-skills. Keep it off, or test it again?</h3>'), true);
-  t('DS-1042 AC1 names the ticket, the step and the exit code', p.includes('On DS-1012 a worker ran a command that included <span class="key">desk-env model finder</span>, and the command exited 3. desk counts that as the lever’s own step failing, so it turned the lever off. Nothing about review quality was measured.'), true);
+  const p = panelOf(hTrip, TL);
+  t('DS-1042 AC1 a decision panel under the lever\'s row', section(hTrip, 'lev-h').indexOf(`<tr data-lever="${TL}"`) < section(hTrip, 'lev-h').indexOf('<tr class="decide-row"'), true);
+  t('DS-1042 AC1 headed with the question', p.includes(`<h3 class="decide-h" id="decide-${TL}-desk-skills-h">desk turned ${TL} off in desk-skills. Keep it off, or test it again?</h3>`), true);
+  t('DS-1042 AC1 names the ticket, the step and the exit code', p.includes('On DS-1012 a worker ran a command that included <span class="key">desk-env effort</span>, and the command exited 3. desk counts that as the lever’s own step failing, so it turned the lever off. Nothing about review quality was measured.'), true);
   t('DS-1042 AC1 and the evidence file and line, under the repo’s state folder', p.includes('Evidence: <span class="mono">logs/DS-1012.log</span>, line 94'), true);
   const cards = [...p.matchAll(/<div class="choice" data-choice="([^"]+)"><div class="stack4"><span class="choice-h">([^<]+)<\/span>.*?<code class="mono cmd">([^<]+)<\/code><button type="button" class="copy" data-copy="([^"]+)"[^>]*>Copy<\/button>/g)].map((m) => `${m[1]}|${m[2]}|${m[3]}|${m[4]}`);
-  t('DS-1042 AC2 a Keep it off and a Test it again choice, each with its command and a Copy button', j(cards), j(['off|Keep it off|levers decide desk-skills finder-model off|levers decide desk-skills finder-model off', 'trial|Test it again|levers decide desk-skills finder-model trial|levers decide desk-skills finder-model trial']));
-  t('DS-1042 AC2 keeping it off, as the design words it', p.includes('Finders stay on their usual model in desk-skills. You can test it again whenever you like.'), true);
+  t('DS-1042 AC2 a Keep it off and a Test it again choice, each with its command and a Copy button', j(cards), j([`off|Keep it off|levers decide desk-skills ${TL} off|levers decide desk-skills ${TL} off`, `trial|Test it again|levers decide desk-skills ${TL} trial|levers decide desk-skills ${TL} trial`]));
+  t('DS-1042 AC2 keeping it off, as the design words it', p.includes('Every step uses the usual thinking in desk-skills. You can test it again whenever you like.'), true);
   t('DS-1042 AC5 testing again says one more revert keeps it off', p.includes('Starts a new test at 0 of 40 tickets. This is the first time desk turned it off. If desk turns it off again, it stays off until you turn it back on.'), true);
-  t('DS-1042 what holds until you choose', p.includes('Until you choose, finder-model stays off. Run either command in a terminal, and this row updates on the next refresh.'), true);
-  const row = rowOf(hTrip, 'finder-model');
+  t('DS-1042 what holds until you choose', p.includes(`Until you choose, ${TL} stays off. Run either command in a terminal, and this row updates on the next refresh.`), true);
+  const row = rowOf(hTrip, TL);
   t('DS-1042 AC4 the repo cell says desk turned it off, with the trip’s date', row.includes('<span>desk-skills: turned off by desk, 26 Nov</span>'), true);
   t('DS-1042 AC4 not testing', row.includes('desk-skills: testing'), false);
   t('DS-1042 AC6 the progress cell waits on you since the trip', row.includes('<span class="wait tiny">Waiting on you since 26 Nov, 05:30</span>'), true);
-  t('DS-1042 AC6 the summary button decides on the lever, linking its panel', hTrip.includes('<a class="cta" href="#decide-finder-model-desk-skills">Decide on finder-model</a>'), true);
+  t('DS-1042 AC6 the summary button decides on the lever, linking its panel', hTrip.includes(`<a class="cta" href="#decide-${TL}-desk-skills">Decide on ${TL}</a>`), true);
   const bare = structuredClone(tripped);
   for (const i of bare.panels.waiting.items) delete i.choices;
-  t('DS-1042 with no panel to link (a view saved before choices), the summary button links the levers table', P.renderPage(bare).includes('<a class="cta" href="#lev-h">Decide on finder-model</a>'), true);
+  t('DS-1042 with no panel to link (a view saved before choices), the summary button links the levers table', P.renderPage(bare).includes(`<a class="cta" href="#lev-h">Decide on ${TL}</a>`), true);
   t('DS-1042 no fixed paused text', hTrip.includes('Paused until you decide'), false);
-  t('DS-1042 the lever rows are still one per lever', count(section(hTrip, 'lev-h'), /<tr data-lever=/g), 12);
+  t('DS-1042 the lever rows are still one per lever', count(section(hTrip, 'lev-h'), /<tr data-lever=/g), 13);
 }
 {
   const later = P.renderPage(tripState({ evalAt: '2026-11-26T06:00:00.000Z', evalState: 'reverted' }));
-  t('DS-1042 AC4 an evaluation newer than the trip keeps its own state', rowOf(later, 'finder-model').includes('turned off by desk, 26 Nov'), false);
-  const twice = panelOf(P.renderPage(tripState({ reverts: [{ v: 1, repo: DS, lever: 'finder-model', id: 'r0', at: '2026-11-22T08:00:00.000Z', kind: 'trip', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'own_step_error' },
-    { v: 1, repo: DS, lever: 'finder-model', id: 'r1', at: '2026-11-23T08:00:00.000Z', kind: 'override', from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override' }] })), 'finder-model');
+  t('DS-1042 AC4 an evaluation newer than the trip keeps its own state', rowOf(later, TL).includes('turned off by desk, 26 Nov'), false);
+  const twice = panelOf(P.renderPage(tripState({ reverts: [{ v: 1, repo: DS, lever: TL, id: 'r0', at: '2026-11-22T08:00:00.000Z', kind: 'trip', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'own_step_error' },
+    { v: 1, repo: DS, lever: TL, id: 'r1', at: '2026-11-23T08:00:00.000Z', kind: 'override', from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override' }] })), TL);
   t('DS-1042 AC5 frozen after a second revert: it says so, and that one more keeps it off', twice.includes('desk has turned it off 2 times. If desk turns it off again, it stays off until you turn it back on.'), true);
   const never = panelOf(hSix, 'codex');
   t('DS-1042 an item with no revert behind it asks without saying desk turned it off', never.includes('codex in desk-skills needs your decision.') && never.includes('Codex turned off twice.'), true);
@@ -651,7 +673,7 @@ async function pressCopy(html, which, ok) {
 }
 {
   const both = await pressCopy(hTrip, 1, true);
-  t('DS-1042 AC3 the pressed command goes to the clipboard', j(both.wrote), j(['levers decide desk-skills finder-model trial']));
+  t('DS-1042 AC3 the pressed command goes to the clipboard', j(both.wrote), j([`levers decide desk-skills ${TL} trial`]));
   t('DS-1042 AC3 that button reads Copied, the other Copy', j(both.labels), j(['Copy|Copy the keep-it-off command', 'Copied|Copied']));
   const refused = await pressCopy(hTrip, 0, false);
   t('DS-1042 a refused copy selects the command and leaves the button reading Copy', `${refused.selected}|${refused.labels[0]}`, '1|Copy|Copy the keep-it-off command');

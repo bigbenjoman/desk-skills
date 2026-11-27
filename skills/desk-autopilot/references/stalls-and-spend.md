@@ -68,11 +68,18 @@ Stage 7 session on the ticket's tier. Every
 preflight also asks each one set for one word on its own, so a value the CLI rejects fails the
 preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
 is set until the eval harness shows finding quality holds on the cheaper model. The `finder-model`
-lever trials exactly that: on a ticket whose arms have it on, `desk-env model finder` prints the
-lever's alias (`sonnet`, config-schema's `FINDER_MODEL_LEVER`, which its registry entry records as
-`model`) whatever `finder=` says, and the blind audit compares the two arms. Only the routed finders
-move: the simplicity finder reads `desk-env model finder --row`. A repo whose `finder=` already
-names that alias never draws it.
+lever trials exactly that: a ticket drawn on for it carries one of its models (`sonnet` or `haiku`,
+the registry entry's `values`), `desk-env model finder` prints that alias whatever `finder=` says,
+and each model is weighed against `config`, the row's finders, with the blind audit as for any
+quality-risk lever. Only the routed finders move: the simplicity finder reads
+`desk-env model finder --row`. A repo whose `finder=` already names one of its models never draws it.
+
+The `worker-model` lever trials the worker's own model the same way: a ticket drawn on for it runs
+every start on its model (`sonnet`) in place of the standard and high models, its Stage 7 text model
+and finder model left as the row sets them. A model the CLI cannot start on fails the preflight's
+`MODEL` check, and the start runs on the row's model instead: the queue's `model_fallback` and the
+start's `runs.jsonl` line name the model it drew, and the ticket is left out of the lever's evidence.
+A repo whose `standard=` already names its model never draws it, nor does one with cloud workers.
 
 **The effort each worker session runs at is config §3b "Worker effort"** (`desk-env effort <start>`
 prints it), read only with the `effort` lever on (config §3b "Phase 0 levers"). Off, no `--effort` is

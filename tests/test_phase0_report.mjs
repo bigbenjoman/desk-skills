@@ -108,6 +108,9 @@ t('AC8: an empty byte count is null', `${line.system_bytes} ${line.prompt_bytes}
 t('AC8: records are read back', spawnRecords(S).length, 2);
 t('the spawn line records the effort', JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', effort: 'high', installed: null, levers: { on: [], unknown: [] } })).effort, 'high');
 t('the spawn line reads default with no effort passed', line.effort, 'default');
+const fell = JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', model: 'default', modelFallback: 'sonnet', installed: null, levers: { on: ['worker-model'], unknown: [] } }));
+t('DS-1036 AC5 a start that fell back from its drawn model records the model it ran and the one it drew', `${fell.model} ${fell.model_fallback}`, 'default sonnet');
+t('DS-1036 a start that did not fall back carries no model_fallback', 'model_fallback' in line, false);
 
 // ---- the claude version and lever-code fingerprints on the spawn line ------------------------
 const TREE = join(T, 'tree');

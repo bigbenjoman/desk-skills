@@ -656,7 +656,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, change_log: changeLogPanel(repos, changeLogs ?? ((r) => readChangeLog(r, configRoot, now)), tz), overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report') },
+    panels: { status, waiting, cost, guardrails, board, changes, change_log: changeLogPanel(repos, changeLogs ?? ((r) => readChangeLog(r, configRoot, now)), tz), overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: armPanel(repos, latest, 'ask_report'), handoffs: armPanel(repos, latest, 'handoff_report'), values: armPanel(repos, latest, 'value_report') },
     line,
   };
 }
@@ -675,7 +675,8 @@ function mergeStagesPanel(configured, root) {
 
 // Each repo's latest per-arm report under `key` (levers-evaluate.mjs: `ask_report`, the asks' tokens and
 // dollars per ticket by step, pushes, digests, the share defaulted and the median answer latency;
-// `handoff_report`, tickets, dollars and handoffs per ticket), for each lever whose evaluation carries
+// `handoff_report`, tickets, dollars and handoffs per ticket; `value_report`, a model lever's tickets,
+// dollars per ticket and each value's decision against the baseline), for each lever whose evaluation carries
 // one, with that lever's baseline arm: { repos: [{ name, lever, at, state, baseline, arms: { <arm>: report } }] }.
 function armPanel(repos, latest, key) {
   return {
