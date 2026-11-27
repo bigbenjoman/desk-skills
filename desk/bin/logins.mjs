@@ -28,7 +28,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { isRealDay, localDay, splitRow } from './machine.mjs';
 
 export const TOOLS = Object.freeze(['claude', 'codex']);
@@ -54,6 +54,88 @@ export const signInCommand = (login) => { const p = signInParts(login); return p
 // The one cloud start a person runs on a Claude login in a terminal, to answer what a first start there
 // asks (whether the session may use the environment's variables), which no background start can.
 export const cloudStartCommand = (login) => `${signInParts(login).shell} --cloud "<any prompt>"`;
+
+// The first-run prompts a Claude Code start waits on, which nothing answers from a background process:
+// `name` is how a person is told which one, `seen` what of it the start's captured output shows, `key`
+// the field Claude Code records its answer under in the login's .claude.json projects[<checkout>]
+// (none for the cloud environment's variables, which are not recorded there), `answer` what to choose,
+// and `cloud` whether the start that shows it is `claude --cloud` rather than plain `claude`.
+export const FIRST_RUN = Object.freeze({
+  trust: { name: 'the folder-trust dialog ("Is this a project you created or one you trust?")', seen: /project you created or one you trust|Yes, I trust this folder|Do you trust the files in this folder/i,
+    key: 'hasTrustDialogAccepted', answer: 'choose "Yes, I trust this folder"', cloud: false },
+  imports: { name: 'the external imports prompt ("Allow external CLAUDE.md file imports?")', seen: /Allow external CLAUDE\.md file imports/i,
+    key: 'hasClaudeMdExternalIncludesApproved', answer: 'choose "Yes" to allow them', cloud: false },
+  env: { name: 'the environment-variables prompt (whether the cloud session may use the environment\'s variables)', seen: /environment variables/i,
+    key: null, answer: 'answer it', cloud: true },
+});
+const shellWord = (s) => (/^[\w@%+=:,./~-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
+// The first-run prompts `ids` named in order, and what a person runs once in a terminal to answer them
+// for `login` in `checkout`: one start answers them all, as each shows after the one before.
+//   -> { names, fix }
+export function firstRunFix(ids, login, checkout) {
+  const ps = [ids].flat().map((id) => FIRST_RUN[id]);
+  const cloud = ps.some((p) => p.cloud);
+  return { names: ps.map((p) => p.name).join(', then '),
+    fix: `cd ${shellWord(tilde(checkout))} && ${signInParts(login).shell}${cloud ? ' --cloud "<any prompt>"' : ''}, then ${ps.map((p) => p.answer).join(', then ')}, and exit` };
+}
+// A cloud start's park line for first-run prompts `ids`; `gave` is what a start that timed out said.
+export function firstRunPark(ids, { who, login, checkout, gave = null }) {
+  const { names, fix } = firstRunFix(ids, login, checkout);
+  return `claude --cloud on ${who} ${gave ? `gave ${gave}: it is waiting on` : 'would wait on'} ${names}, which nothing answers in the background. Run this once in a terminal, from the checkout: ${fix}`;
+}
+
+// The files `@path` imports in a CLAUDE.md, outside code, that exist, followed up to 5 deep as Claude
+// Code follows them.   -> absolute paths
+const IMPORT = /(?:^|\s)@((?:[^\s\\]|\\ )+)/g;
+function importsOf(file, depth = 0, seen = new Set()) {
+  if (depth > 5 || seen.has(file)) return [];
+  seen.add(file);
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch { return []; }
+  const prose = text.replace(/^(```|~~~)[\s\S]*?^\1/gm, '').replace(/`[^`\n]*`/g, '');
+  const out = [];
+  for (const m of prose.matchAll(IMPORT)) {
+    const raw = m[1].replace(/\\ /g, ' ');
+    const p = raw.startsWith('~/') ? join(home(), raw.slice(2)) : resolve(dirname(file), raw);
+    try { if (!statSync(p).isFile()) continue; } catch { continue; }
+    out.push(p, ...importsOf(p, depth + 1, seen));
+  }
+  return out;
+}
+// The files outside `checkout` that its CLAUDE.md chain under `login` imports: the login's own
+// CLAUDE.md, each folder's above the checkout, and the checkout's.
+export function externalImports(login, checkout) {
+  const root = resolve(checkout);
+  const chain = [join(login.configDir ?? TOOL.claude.dir(), 'CLAUDE.md')];
+  const above = [];
+  for (let d = dirname(root); ; d = dirname(d)) { above.unshift(d); if (dirname(d) === d) break; }
+  for (const d of above) chain.push(join(d, 'CLAUDE.md'), join(d, 'CLAUDE.local.md'));
+  chain.push(join(root, 'CLAUDE.md'), join(root, '.claude', 'CLAUDE.md'), join(root, 'CLAUDE.local.md'));
+  const inside = (p) => p === root || p.startsWith(`${root}/`);
+  return [...new Set(chain.flatMap((f) => importsOf(f)).filter((p) => !inside(p)))];
+}
+
+// The first-run prompts a start of `login` in `checkout` would wait on, from its .claude.json, which is
+// read and never written: `trust` unless projects[<checkout or a folder above it>].hasTrustDialogAccepted
+// is true (Claude Code takes a trusted parent as trusting the folders under it), and `imports` when the
+// CLAUDE.md chain imports a file outside the checkout and projects[<checkout>]
+// .hasClaudeMdExternalIncludesApproved is not true. Only `true` counts as answered. A missing file is
+// a login that answered nothing; one that does not parse is `unread`, and asks nothing of the caller.
+//   -> { gaps: ['trust' | 'imports'], file, unread? }
+export function firstRunGaps(login, checkout) {
+  const file = claudeJsonPath(login);
+  let projects = {};
+  if (existsSync(file)) {
+    try { projects = JSON.parse(readFileSync(file, 'utf8'))?.projects ?? {}; } catch (e) { return { gaps: [], file, unread: e.message }; }
+  }
+  const root = resolve(checkout);
+  const gaps = [];
+  let trusted = false;
+  for (let d = root; ; d = dirname(d)) { if (projects[d]?.hasTrustDialogAccepted === true) { trusted = true; break; } if (dirname(d) === d) break; }
+  if (!trusted) gaps.push('trust');
+  if (projects[root]?.hasClaudeMdExternalIncludesApproved !== true && externalImports(login, root).length) gaps.push('imports');
+  return { gaps, file };
+}
 
 // `in rotation`, `In-Rotation` and `in  rotation` are one rule; anything else is null.
 const ruleWords = (v) => String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');

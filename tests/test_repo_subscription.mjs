@@ -148,6 +148,25 @@ t('AC14 every configured repo is listed', JSON.parse(run(['subscription', 'list'
 t('AC15 DESK_SUBSCRIPTION does not reach the list', entries({ DESK_SUBSCRIPTION: 'ben@studia.io' }), want14);
 const rm3 = run(['logins', 'remove', 'claude', 'login-3']).err;
 t('remove names only the repos on that login', /: bigbenjoman__voicepa runs on claude login-3/.test(rm3) && !rm3.includes('forewatt'), true);
+// ---- issue-1642 AC3: cloud-trust, the first-run prompts a cloud start of this repo would wait on
+const CK = join(T, 'code', 'widgets');
+mkdirSync(CK, { recursive: true });
+const onStudia = config('bigbenjoman__widgets', 'ben@studia.io');
+const trustOf = (dir, projects) => { const f = join(dir, '.claude.json'); const j = JSON.parse(readFileSync(f, 'utf8')); writeFileSync(f, JSON.stringify({ ...j, projects })); };
+const ct = run(['subscription', 'cloud-trust'], { DESK_CONFIG: onStudia, DESK_REPO_ROOT: CK });
+t('issue-1642 AC3 an untrusted checkout prints the command that answers it, from the checkout, under its login',
+  ct.out, `login-4: a cloud start would wait on the folder-trust dialog ("Is this a project you created or one you trust?"). Run this once in a terminal: cd ${CK} && CLAUDE_CONFIG_DIR=~/.claude-logins/login-4 claude, then choose "Yes, I trust this folder", and exit`);
+t('issue-1642 AC3 and exits 1', ct.code, 1);
+trustOf(join(H, '.claude-logins', 'login-4'), { [CK]: { hasTrustDialogAccepted: true } });
+const ct2 = run(['subscription', 'cloud-trust'], { DESK_CONFIG: onStudia, DESK_REPO_ROOT: CK });
+t('issue-1642 AC3 a trusted one has nothing to answer', `${ct2.code} ${ct2.out}`, `0 login-4: ${CK} is trusted, nothing to answer`);
+const SUBS_FB = join(T, 'subscriptions-fallback.md');
+writeFileSync(SUBS_FB, SUBS_TEXT.replace('| `login-3` | `~/.claude-logins/login-3` | `unused` |', '| `login-3` | `~/.claude-logins/login-3` | `fallback` |'));
+trustOf(H, { [CK]: { hasTrustDialogAccepted: true } });
+const ct3 = run(['subscription', 'cloud-trust'], { DESK_CONFIG: here, DESK_REPO_ROOT: CK, DESK_SUBSCRIPTIONS: SUBS_FB });
+t('issue-1642 AC3 a repo on the default is checked under the default and its fallback', ct3.out.split('\n').map((l) => l.split(':')[0]).join(','), 'default,login-3');
+t('issue-1642 AC3 the fallback not yet trusted is named with its command', ct3.out.split('\n')[1].endsWith(`cd ${CK} && CLAUDE_CONFIG_DIR=~/.claude-logins/login-3 claude, then choose "Yes, I trust this folder", and exit`) && ct3.code === 1, true);
+
 // ---- the template
 const TEMPLATE = readFileSync(join(ROOT, 'desk-config.md'), 'utf8');
 const s3b = (TEMPLATE.split(/^## 3b\. /m)[1] ?? '').split(/^## /m)[0];

@@ -1,0 +1,15 @@
+[?25l[2J[H[38;5;174m╭──────────────────────────────────────────────╮[39m
+[38;5;174m│[39m [1mAccessing workspace:[22m
+
+ /home/avr/code/desk-skills
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ [2mSecurity guide[22m
+
+ [38;5;174m❯ 1. Yes, I trust this folder[39m
+   2. No, exit
+
+ [2mEnter to confirm · Esc to cancel[22m
