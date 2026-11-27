@@ -59,15 +59,16 @@ async function runMeasured(lock, ws) {
   const start = usedGiB();
   let peak = start;
   const sample = () => { const u = usedGiB(); if (u != null && (peak == null || u > peak)) peak = u; };
-  const timer = setInterval(sample, every);
+  // Where /proc/meminfo does not read (macOS), the run is left unmeasured and says so.
+  if (start == null) console.error('with-lock.sh: this run\'s memory peak is not measured: /proc/meminfo does not read here');
+  const timer = start == null ? null : setInterval(sample, every);
   const child = spawn(ws[0], ws.slice(1), { stdio });
   for (const sig of Object.keys(SIGNALS).filter((s) => s !== 'SIGKILL')) process.on(sig, () => { try { child.kill(sig); } catch { /* gone */ } });
   const code = await new Promise((res) => {
     child.on('error', (e) => { console.error(`with-lock.sh: ${ws[0]}: ${e.message}`); res(127); });
     child.on('exit', (c, s) => res(c ?? 128 + (SIGNALS[s] ?? 0)));
   });
-  clearInterval(timer);
-  sample();
+  if (timer) { clearInterval(timer); sample(); }
   let step = lock;
   try { if (lock === 'tsc' && (await import('./slot-lease.mjs')).isLint(ws)) step = 'lint'; } catch { /* a typecheck, as far as it reads */ }
   const { logEvent } = await import('./leases.mjs');

@@ -101,9 +101,10 @@ r = wl(['test', '--', 'sh', '-c', 'sleep 0.2; exit 3'], { DESK_RUN_PEAK: 'on', D
 t('#1526 AC5 a measured run exits with its command\'s status', r.status, 3);
 r = wl(['tsc', '--', 'eslint', '.'], { DESK_RUN_PEAK: 'on', DESK_PEAK_SAMPLE_MS: '20' });
 t('#1526 AC5 and passes its output through', r.stdout.trim(), 'eslint .');
+const reads = usedGiB() != null;
+t('#1597 a measured run where memory does not read (macOS) says it is unmeasured, and only there', r.stderr.includes('memory peak is not measured'), !reads);
 const peaks = readLog({ dir: leases }).peaks;
 const seen = peaks.map((e) => [e.ticket, e.step, e.class, e.code, typeof e.peak_rss_gb, e.worktree]);
-const reads = usedGiB() != null;
 t('#1526 AC5 each measured run is one release line with its ticket, step, exit and peak', seen,
   reads ? [['T-1526', 'test', 'test', 3, 'number', realpathSync(app)], [null, 'lint', 'tsc', 0, 'number', realpathSync(app)]] : []);
 r = wl(['test', '--', 'true']);
