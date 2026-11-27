@@ -295,7 +295,11 @@ function summary(v) {
     body = `${cost}${l.kept} kept, ${l.testing} still being tested${needsText ? `, and ${needsText}` : ''}.`;
   }
   const first = leverItems(v)[0];
-  const cta = first ? `<a class="cta" href="#lev-h">Review ${esc(first.lever ?? 'what needs you')}${first.repo ? ` in ${esc(first.repo)}` : ''}</a>` : '';
+  // leverTable draws the decision panel only for an evaluated page's lever row whose ask has choices.
+  const panelled = first?.choices && evaluated(v) && (v.panels.board.levers ?? []).some((b) => b.lever === first.lever);
+  const cta = !first ? '' : first.lever
+    ? `<a class="cta" href="#${panelled ? decideId(first) : 'lev-h'}">Decide on ${esc(first.lever)}</a>`
+    : `<a class="cta" href="#lev-h">Review what needs you${first.repo ? ` in ${esc(first.repo)}` : ''}</a>`;
   return `<section aria-label="Summary" class="card summary"><p><b>${lead}</b> ${body}</p>${cta}</section>${notes(v.panels.status)}`;
 }
 
@@ -517,12 +521,14 @@ function leverRows(v) {
     else if (status === 'off' && l.cells.some((c) => c.state === 'ineligible')) next = `${cap(l.cells.filter((c) => c.state === 'ineligible').map((c) => c.note).join('. '))}.`;
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
-    return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, i, rank: order[status] };
+    const asks = needs.filter((n) => n.lever === l.lever);
+    return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, asks, i, rank: order[status] };
   }).sort((a, b) => a.rank - b.rank || a.i - b.i);
 }
 
-const repoWord = (c) => {
+const repoWord = (c, tz) => {
   if (c.state === 'error') return { t: `${c.repo}: ${DASH}, couldn’t read`, c: C.grey };
+  if (c.turned_off_at) return { t: `${c.repo}: turned off by desk, ${dayMonth(c.turned_off_at, tz)}`, c: C.grey };
   if (KEPT.includes(c.state)) return { t: `${c.repo}: kept`, c: C.green };
   if (c.state === 'trial') return { t: `${c.repo}: testing`, c: C.blue };
   if (c.state === 'pinned') return { t: `${c.repo}: on by hand`, c: C.green };
@@ -564,11 +570,74 @@ function plainWords(c) {
 
 function progress(row, tz) {
   if (row.status === 'kept') return { pct: 100, text: row.decided ? `Decided ${dayMonth(row.decided, tz)}` : 'Decided' };
-  if (row.status === 'needs') return { pct: 0, text: 'Paused until you decide' };
+  if (row.status === 'needs') {
+    const at = row.asks.map((a) => a.at).filter((x) => x && !Number.isNaN(Date.parse(x))).sort()[0];
+    return { pct: 0, text: at ? `Waiting on you since ${when(at, tz)}` : 'Waiting on you', wait: true };
+  }
   const s = row.main?.sample;
   if (!s) return { pct: 0, text: 'Not started' };
   if (s.n == null) return { pct: 0, text: `Sample not recorded · needs ${s.min}` };
   return { pct: Math.min(100, Math.round((s.n / s.min) * 100)), text: `${s.n} of ${s.min} tickets` };
+}
+
+// ---- the decision under a lever waiting on you -----------------------------------------------------------------
+// What keeping a lever off means for a repo's tickets, before " in <repo>".
+const OFF = Object.freeze({
+  preflight: 'Every worker runs the start-up check',
+  wrappers: 'Workers run often-blocked commands directly',
+  memory: 'Workers start with full memory',
+  'failure-class': 'A ticket whose CI failed for a machine reason is not rerun on its own',
+  'review-reuse': 'Every rebase is reviewed again in full',
+  codex: 'Claude reviews pull requests',
+  effort: 'Every step uses the usual thinking',
+  'finder-model': 'Finders stay on their usual model',
+  ledger: 'Queue changes are not logged beside queue.json',
+  'ledger-record': 'queue.json is not restored from the ticket log',
+});
+const idPart = (s) => String(s ?? '').replace(/[^A-Za-z0-9_-]/g, '-');
+const decideId = (a) => `decide-${idPart(a.lever)}-${idPart(a.repo)}`;
+const sentence = (s) => (/[.!?]$/.test(s) ? s : `${s}.`);
+
+// One choice of `a` (a needs-you item), as its title, what it does and its command with a Copy button.
+function choiceCard(row, a, { choice, command }) {
+  let title;
+  let does;
+  if (choice === 'off') {
+    title = 'Keep it off';
+    does = `${OFF[row.lever] ?? `${cap(row.lever)} stays off`} in ${a.repo}. You can test it again whenever you like.`;
+  } else if (choice === 'trial') {
+    title = 'Test it again';
+    const times = a.reverts === 1 ? ' This is the first time desk turned it off.' : a.reverts > 1 ? ` desk has turned it off ${a.reverts} times.` : '';
+    does = `Starts a new test${a.min ? ` at 0 of ${a.min} tickets` : ''}.${times}${a.freezes_next ? ' If desk turns it off again, it stays off until you turn it back on.' : ''}`;
+  } else if (choice === a.baseline) {
+    title = `Keep it on ${choice}`;
+    does = `Every ticket in ${a.repo} runs on ${choice}, as it does with no test. You can test it again whenever you like.`;
+  } else {
+    title = `Set it to ${choice}`;
+    does = `Every ticket in ${a.repo} runs on ${choice}.`;
+  }
+  const label = `Copy the ${title.toLowerCase().replace(/\s+/g, '-')} command`;
+  return `<div class="choice" data-choice="${esc(choice)}"><div class="stack4"><span class="choice-h">${esc(title)}</span><span class="choice-d">${esc(does)}</span></div>`
+    + `<div class="choice-cmd"><code class="mono cmd">${esc(command)}</code><button type="button" class="copy" data-copy="${esc(command)}" data-label="${esc(label)}" aria-label="${esc(label)}">Copy</button></div></div>`;
+}
+
+// The panel under a lever's row for each needs-you item on it: why desk is asking, the evidence, each
+// choice with its command, and what holds until the person chooses.
+function decisionPanel(row, a) {
+  const lever = esc(row.lever);
+  const repo = esc(a.repo);
+  const head = !a.turned_off ? `${lever} in ${repo} needs your decision.`
+    : a.baseline ? `desk set ${lever} back to ${esc(a.baseline)} in ${repo}. Keep it there, or test it again?`
+      : `desk turned ${lever} off in ${repo}. Keep it off, or test it again?`;
+  const why = a.step && a.ticket
+    ? `On ${esc(a.ticket)} a worker ran a command that included <span class="key">${esc(a.step.step)}</span>, and the command exited ${esc(a.step.exit)}. desk counts that as the lever’s own step failing, so it turned the lever off. Nothing about ${row.layer === 'quality-risk' ? 'review quality' : 'what it saves'} was measured.`
+    : a.text ? esc(sentence(cap(a.text))) : '';
+  const ev = a.evidence ? `<p class="muted tiny">Evidence: <span class="mono">${esc(a.evidence.file)}</span>${a.evidence.line != null ? `, line ${esc(a.evidence.line)}` : ''}</p>` : '';
+  const until = a.turned_off ? `Until you choose, ${lever} stays ${a.baseline ? `on ${esc(a.baseline)}` : 'off'}. ` : '';
+  const id = decideId(a);
+  return `<div class="decide" id="${id}" role="region" aria-labelledby="${id}-h"><div class="stack4"><h3 class="decide-h" id="${id}-h">${head}</h3>${why ? `<p class="decide-why">${why}</p>` : ''}${ev}</div>`
+    + `<div class="choices">${a.choices.map((c) => choiceCard(row, a, c)).join('')}</div>`
+    + `<p class="muted tiny">${until}Run ${a.choices.length === 2 ? 'either command' : 'one of these commands'} in a terminal, and this row updates on the next refresh.</p></div>`;
 }
 
 function leverTable(v, today) {
@@ -590,10 +659,12 @@ function leverTable(v, today) {
     body = rows.map((r) => {
       const res = result(r);
       const pr = progress(r, v.tz);
-      return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' style="background:#FFFBEB"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
+      const asks = r.status === 'needs' ? r.asks.filter((a) => a.choices) : [];
+      return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' class="needs"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
         + `<td class="td num"><div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div></td>`
-        + `<td class="td num"><div class="stack6"><div class="bar" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="muted tiny">${esc(pr.text)}</span></div></td>`
-        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c); return `<span class="repo"${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`;
+        + `<td class="td num"><div class="stack6"><div class="bar${pr.wait ? ' bar-wait' : ''}" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="${pr.wait ? 'wait' : 'muted'} tiny">${esc(pr.text)}</span></div></td>`
+        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c, v.tz); return `<span class="repo"${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`
+        + (asks.length ? `<tr class="decide-row"><td colspan="5" class="decide-cell"><div class="stack12">${asks.map((a) => decisionPanel(r, a)).join('')}</div></td></tr>` : '');
     }).join('');
   }
   const legend = today ? '' : `<div class="legend-row muted tiny">${['kept', 'testing', 'needs', 'off'].map((s) => `<span><span class="dot" style="background:${STYLE[s].dot}"></span>${s === 'off' ? 'Off or waiting' : STYLE[s].label}</span>`).join('')}</div>`;
@@ -756,6 +827,19 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .levtable th.sgrp{padding:8px 16px 6px;font-size:12px;font-weight:600;color:#6B7280}
 .levtable tr:last-child>.td{border-bottom:0}
 .bar{height:6px;border-radius:3px;background:#F0F1F3}.bar div{height:6px;border-radius:3px;background:#111827}
+.bar.bar-wait{background:#FDE68A}.wait{color:#92400E;font-weight:500}
+.levtable tr.needs,.levtable tr.decide-row{background:#FFFBEB}.levtable tr.needs>.td{border-bottom:0}
+.levtable .decide-cell{padding:0 16px 18px;border-bottom:1px solid #F0F1F3}.levtable tr:last-child>.decide-cell{border-bottom:0}
+.decide{display:flex;flex-direction:column;gap:14px;padding:16px;background:#FFFFFF;border:1px solid #FCD34D;border-radius:8px}
+.decide-h{font-size:15px;font-weight:600}
+.decide-why{font-size:13px;line-height:1.5;color:#374151;max-width:860px}
+.choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:12px}
+.choice{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #E5E7EB;border-radius:6px}
+.choice-h{font-size:14px;font-weight:600}.choice-d{font-size:13px;line-height:1.45;color:#4B5563}
+.choice-cmd{display:flex;align-items:center;gap:8px;margin-top:auto}
+.cmd{flex:1;min-width:0;font-size:12px;background:#F3F4F6;padding:9px 10px;border-radius:4px;overflow-x:auto;white-space:nowrap}
+.copy{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:0 12px;border:1px solid #D1D5DB;border-radius:6px;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.copy:hover{background:#F3F4F6}
 .repo{display:flex;align-items:center;gap:6px}
 .note{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:6px;font-size:13px;line-height:1.45;color:#92400E;width:100%}
 .note-path{display:block;font-size:12px;margin-top:2px}
@@ -783,6 +867,8 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .levtable:not(.data),.levtable:not(.data) tbody,.levtable:not(.data) tr,.levtable:not(.data) td{display:block;width:auto}
 .levtable:not(.data) tr{border-top:1px solid #F0F1F3;padding:10px 0}
 .levtable:not(.data) td{border:0;padding:4px 16px}
+.levtable:not(.data) td.decide-cell{padding:8px 16px 16px}.levtable:not(.data) tr.needs{padding-bottom:0}.levtable:not(.data) tr.decide-row{border-top:0;padding-top:0}
+.choice-cmd{flex-direction:column;align-items:stretch}.copy{min-height:44px;font-size:14px}
 .levtable.data .td,.levtable.data .th{padding:10px 12px}
 .change summary{grid-template-columns:1fr;gap:3px}
 .change-dl{grid-template-columns:1fr;margin-left:0;gap:2px}
@@ -810,6 +896,28 @@ Array.prototype.forEach.call(buttons, function (b) {
     var want = b.getAttribute('data-show');
     Array.prototype.forEach.call(document.querySelectorAll('[data-view]'), function (el) { el.hidden = el.getAttribute('data-view') !== want; });
     Array.prototype.forEach.call(buttons, function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+  });
+});
+// A Copy button puts its command on the clipboard and reads Copied, the others Copy again; where the
+// clipboard refuses, the command is selected for the reader to copy.
+var copies = document.querySelectorAll('[data-copy]');
+Array.prototype.forEach.call(copies, function (b) {
+  b.addEventListener('click', function () {
+    var copied = function () {
+      Array.prototype.forEach.call(copies, function (x) {
+        x.textContent = x === b ? 'Copied' : 'Copy';
+        x.setAttribute('aria-label', x === b ? 'Copied' : x.getAttribute('data-label'));
+      });
+    };
+    var select = function () {
+      var range = document.createRange();
+      range.selectNodeContents(b.parentNode.querySelector('code'));
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(b.getAttribute('data-copy')).then(copied, select);
+    else select();
   });
 });
 })();`;
