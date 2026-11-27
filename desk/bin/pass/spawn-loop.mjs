@@ -55,9 +55,10 @@
 //   park {key, line}                          park it
 //   park-ask {key, line}                      park it with a question for the person, no slot taken
 //   hand-away {key, placement}                admit it in the repo its code is in
-//   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
+//   start {key, how, pick?, setup?, place?}   start it: `how` is resume, handoff, cloud or local; a local
+//                                             one carries its place ({where, why}), recorded once it runs
 
-import { set, say, runsInCloud, startsInCloud } from './shared.mjs';
+import { set, say, runsInCloud, startsInCloud, placeAtStart } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
@@ -65,15 +66,22 @@ export function* decideSpawn(s) {
   const skip = { type: 'skip', key };
   const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
   if (s.stop) return yield { ...skip, stop: true };
-  // A cloud session takes none of the local slots, only one of its own limit; a resume or handoff runs here.
-  // (pass/shared.mjs startsInCloud, the rule pass.mjs counts the cloud and local candidates by.)
-  const cloud = startsInCloud(t);
-  if (cloud && !((s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0))) {
+  // Where it starts is decided now, not at admission (pass/shared.mjs placeAtStart): a cloud-able ticket
+  // goes to the cloud while §3b "Cloud sessions at once" has room, and takes a local slot only as that
+  // says; a local-only one, and a resume or handoff (which run here), takes a local slot.
+  const place = placeAtStart({
+    able: startsInCloud(t), cloudRoom: (s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0), localRoom: s.attempts < s.slots,
+    localSpare: !!s.localSpare, reserve: s.reserve ?? 0, free: s.slots - s.attempts, personUse: !!s.personUse,
+    ...(s.cloudLimit != null && !s.cloudHeld ? { cloudRunning: s.cloudRunning, cloudLimit: s.cloudLimit } : {}),
+  });
+  if (place.where == null) {
     // Held by a hold on every spawn, the pass says that hold; only the limit itself is said here.
-    if (!s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: waits for a cloud session (${s.cloudRunning} of ${s.cloudLimit} running, §3b "Cloud sessions at once"). The next pass looks again`);
-    return yield { ...skip, full: true, cloud: true };
+    if (place.full === 'cloud' && !s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: ${place.why}. The next pass looks again`);
+    return yield { ...skip, full: true, ...(place.full === 'cloud' ? { cloud: true } : {}) };
   }
-  if (!cloud && !(s.attempts < s.slots)) return yield { ...skip, full: true };
+  const cloud = place.where === 'cloud';
+  // A resume or handoff of a ticket whose cloud session is over runs here, as before.
+  const offHere = cloud || ((s.resume || s.handoff) && runsInCloud(t));
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (yield { type: 'file-budget', key }) return yield skip;
   if (yield { type: 'fix-try-stale', key }) return yield skip;
@@ -101,14 +109,15 @@ export function* decideSpawn(s) {
     return yield skip;
   }
   // Held without taking a slot: a resume at a stage that runs no suite may still start in its place.
-  if (yield { type: 'lock-queue', key }) {
+  // A ticket placed in the cloud runs no suite on this computer, so this computer's test lock never holds it.
+  if (!cloud && (yield { type: 'lock-queue', key })) {
     yield { type: 'lock-queue-held', key };
     return yield skip;
   }
   // Its last round's upload running in the machine's upload queue (another repo's pass may be running
   // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
   // the job is dropped by the claim, in the same locked step, so no pump can start it before the worker runs.
-  if (!s.resume && !s.handoff && !runsInCloud(t)) {
+  if (!s.resume && !s.handoff && !offHere) {
     const claim = yield { type: 'claim-upload', key };
     if (!claim.ok) {
       yield wait(`the machine's upload queue could not be read to drop its last round's upload (${claim.why}), so no worker was spawned. The next pass looks again`);
@@ -120,7 +129,7 @@ export function* decideSpawn(s) {
       return yield skip;
     }
   }
-  if (!runsInCloud(t)) {
+  if (!offHere) {
     const failures = yield { type: 'read-repos' };
     if (failures.length) {
       const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${failures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
@@ -139,6 +148,13 @@ export function* decideSpawn(s) {
   // has its own, so it still goes ahead.
   const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
   if (!s.resume && !pick) return yield skip;
+  // Its place at start, with why: recorded on the ticket for desk-q, and location set to match. A new
+  // local session does not record it here: its `start` verdict carries it, and pass.mjs records it
+  // once spawn-worker.sh has started the worker. A place 'local' ends its cloud eligibility
+  // (shared.mjs cloudAble), so a start that stops before then (the database down, origin hung, the
+  // memory share or the preflight refused) must leave the ticket as cloud-able as it was.
+  const placed = { where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
+  if (cloud || s.resume || s.handoff) yield { type: 'place', key, ...placed };
   yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
@@ -148,11 +164,11 @@ export function* decideSpawn(s) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');
     return yield skip;
   }
-  return yield* afterSetup(s, pick, yield { type: 'setup', key });
+  return yield* afterSetup(s, pick, yield { type: 'setup', key }, placed);
 }
 
 // The verdict on a local ticket once its worktree setup has run.
-function* afterSetup(s, pick, setup) {
+function* afterSetup(s, pick, setup, placed) {
   const { t } = s;
   const key = t.key;
   const skip = { type: 'skip', key };
@@ -185,7 +201,7 @@ function* afterSetup(s, pick, setup) {
     return yield { type: 'park', key, line: `worktree setup failed, not spawned — ${why}${answered}` };
   }
   if (t.db_wait && !s.dry) yield set(key, 'db_wait=null');
-  return yield { type: 'start', key, how: 'local', pick, setup };
+  return yield { type: 'start', key, how: 'local', pick, setup, place: placed };
 }
 
 // The lines of setup-worktree.sh's output that say why it failed, else its tail.

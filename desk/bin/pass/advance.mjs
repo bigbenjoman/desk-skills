@@ -58,7 +58,7 @@
 //   fail {key, why, tail, subtype} mark the ticket failed, with the error its session ended in (or null)
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush, approvalText } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault, errorSubtype } from '../harvest.mjs';
+import { endedNormally, followOnIn, unreadableFollowOn, workerEnd, budgetStop, hostFault, errorSubtype } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
 import { wroteSince, heartbeatOnly } from '../worker-cost.mjs';
@@ -95,7 +95,9 @@ export function logMarkers(h, t) {
   const lastReboot = reboots.length > (t.reboot_stops ?? 0) && !lastDone ? reboots.at(-1) : null;
   const reboot = lastReboot && [lastPark, lastHandoff].every((m) => !m || lastReboot.index > m.index)
     ? (lastReboot[1].trim() || 'no reason given') : undefined;
-  const handoffLast = !reboot && !!lastHandoff && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
+  // A DONE naming its PR has finished: a handoff after it (the context hook firing late) starts nothing.
+  const doneWithPr = !!lastDone && /\bpr=\d+/.test(lastDone[1]);
+  const handoffLast = !reboot && !!lastHandoff && !doneWithPr && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
   const handoff = handoffLast ? lastHandoff[1].trim() : undefined;
   const park = handoff || reboot || parkSupersededByDone ? undefined : lastPark?.[1];
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
@@ -374,13 +376,18 @@ export function* decideAdvance(s) {
     const said = /\bsaid=(.*)$/.exec(done.trim())?.[1]?.trim();
     // Steps that wait on the merge (follow_on=), kept for needs-you once the PR merges.
     const follow = followOnIn(done);
-    if (follow.error) yield say(t.key, 'inputs', `${t.key}: unreadable follow_on on its DONE marker (${follow.error}), nothing kept: ${done.trim()}`);
+    if (follow.repaired) yield say(t.key, 'recovered', `${t.key}: repaired follow_on on its DONE marker (${follow.repaired}): ${follow.raw}`);
+    if (follow.error) yield say(t.key, 'recovered', `${t.key}: ${unreadableFollowOn(follow.raw)} (${follow.error}), nothing kept; on its row and in the digest`);
+    // The ticket keeps an unreadable field until a later DONE reads, so its row and the digest say it.
+    const unreadable = follow.error ? [`follow_on_unreadable=${JSON.stringify({ raw: follow.raw, error: follow.error, at: new Date(s.now).toISOString() })}`]
+      : t.follow_on_unreadable ? ['follow_on_unreadable=null'] : [];
     // The review the line states is the verdict on the PR at its head, whatever the marker says; the
     // worker's own words follow it.
     const review = pr ? yield { type: 'pr-verdict', key: t.key, pr } : null;
     yield { type: 'done', key: t.key, pr, summary: done.trim(), line: `${review ? `${review}; its worker said: ` : ''}${done.trim()}${stopped}`, sets: [
       ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
       ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),
+      ...unreadable,
     ] };
     yield* linksOnDone(t, pr);
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {

@@ -135,6 +135,16 @@ const BENCH_RULES = Object.freeze({
     'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset'),
   [JOB_TOKENS_KEY]: onOffRule(JOB_TOKENS_KEY,
     'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset'),
+  // The person-in-use rows (person-use.mjs): each unset reads as its default, worked out from the
+  // profile's memory-gb and cpu-cores.
+  'person-use': onOffRule('person-use',
+    'on drops the local cap to person-use-floor while the person uses this computer, and sends cloud-able tickets only to the cloud; on when unset'),
+  'person-baseline-gb': { ok: (n) => n >= 0, want: 'a number of GB', why: 'GB that processes other than desk workers hold with nobody using this computer' },
+  'person-baseline-cpu': { ok: (n) => n >= 0, want: 'a number of CPU cores', why: 'CPU cores that processes other than desk workers keep busy with nobody using this computer' },
+  'person-use-gb': { ok: (n) => n > 0, want: 'a number of GB over 0', why: 'GB over person-baseline-gb that reads as the person using this computer' },
+  'person-use-cpu': { ok: (n) => n > 0, want: 'a number of CPU cores over 0', why: 'CPU cores over person-baseline-cpu that read as the person using this computer' },
+  'person-use-floor': { ok: (n) => Number.isInteger(n) && n >= 0, want: 'a whole number of local workers', why: 'the local cap while the person uses this computer, for local-only tickets' },
+  'person-use-calm-min': { ok: (n) => n >= 0, want: 'a number of minutes', why: 'minutes the person\'s use must stay under the threshold before the local cap comes back' },
 });
 // The lever rows profileProblems checks, each with what reads as off when its row is wrong.
 const LEVER_ROWS = Object.freeze([[EXPRESS_LANE_KEY, 'the express lane stays off'], [JOB_TOKENS_KEY, 'job tokens stay off']]);

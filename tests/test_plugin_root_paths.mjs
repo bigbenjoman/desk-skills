@@ -36,12 +36,17 @@ t('every script they call is in desk/bin', JSON.stringify(scripts.filter((s) => 
 const stray = Object.entries(text).flatMap(([f, s]) => s.split('\n')
   .filter((l) => /desk\/bin\/[\w.-]+\.(mjs|sh|py)/.test(l) && /node |bash /.test(l)).map((l) => `${f}: ${l.trim().slice(0, 80)}`));
 t('no desk-script call there names a desk/bin path of its own', JSON.stringify(stray), '[]');
-const expansion = Object.entries(text).flatMap(([f, s]) => s.split('\n').filter((l) => /\$\{CLAUDE_PLUGIN_ROOT/.test(l)).map(() => f));
-t('no file writes a ${CLAUDE_PLUGIN_ROOT…} expansion, which the permission matcher refuses', JSON.stringify(expansion), '[]');
+// issue-1561: CLAUDE_PLUGIN_ROOT is not in the Bash tool's environment; a plugin writes its path in
+// place of `${CLAUDE_PLUGIN_ROOT}` only in a SKILL.md or agent file it loads, never in a reference read
+// later. So the variable is named there alone, and never on a line that runs something.
+const loaded = (f) => /(^|\/)SKILL\.md$/.test(f) || f.startsWith('agents/');
+const expansion = Object.entries(text).flatMap(([f, s]) => s.split('\n')
+  .filter((l) => /\$\{CLAUDE_PLUGIN_ROOT/.test(l) && (!loaded(f) || /\bnode |\bbash |^\s*(\$ )?[\w./-]+\.(mjs|sh)\b/.test(l))).map(() => f));
+t('${CLAUDE_PLUGIN_ROOT} is written only in a file the plugin loads, never in a command', JSON.stringify(expansion), '[]');
 
 // AC1 / AC2: each file that calls through <desk bin> says how to resolve it, or names the file that does.
 const RULE = '`<desk bin>` is the desk scripts folder';
-const BRANCHES = ['`$CLAUDE_PLUGIN_ROOT/desk/bin` when `echo "$CLAUDE_PLUGIN_ROOT"`', 'prints a path, else `desk/bin` under `~/.claude`'];
+const BRANCHES = ['`desk/bin` under the plugin root', 'when it reads as a path', 'else `desk/bin` under `~/.claude`'];
 const flat = (s) => s.replace(/\s+/g, ' ');
 const POINTERS = { 'skills/desk-review/references/gotchas.md': 'skills/desk-review/references/phase-7-post.md' };
 const states = (s) => [RULE, ...BRANCHES].every((b) => flat(s).includes(b));

@@ -1,5 +1,6 @@
-// The queue commands that change one ticket's fields or the batch's (set, set-batch, park, front), as
-// functions on a queue in memory, and the writer a pass records its changes through.
+// The queue commands that change one ticket's fields, the batch's or the spawn order (set, set-batch,
+// park, front, order), as functions on a queue in memory, and the writer a pass records its changes
+// through.
 //
 // queue.mjs runs each command against the file, one process and one write per command. A pass makes
 // dozens, so it applies them here instead, to its own copy, and writes them in one go (flush): one hold
@@ -66,6 +67,18 @@ export function toFront(q, key) {
   q.tickets = Object.setPrototypeOf({ [key]: q.tickets[key], ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) },
     Object.getPrototypeOf(q.tickets));
   return 'moved to the front of the spawn order';
+}
+
+// `order <KEY>…`: the keys named take the places they hold now, in the order named. A ticket running,
+// finished or placed by the user keeps its place, and so does every ticket not named. -> the keys laid.
+export function layOrder(q, named) {
+  const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
+  const keys = [...new Set(named)].filter(free);
+  const slots = new Set(keys);
+  const next = keys[Symbol.iterator]();
+  const order = Object.keys(q.tickets).map((k) => (slots.has(k) ? next.next().value : k));
+  q.tickets = Object.setPrototypeOf(Object.fromEntries(order.map((k) => [k, q.tickets[k]])), Object.getPrototypeOf(q.tickets));
+  return keys;
 }
 
 const pairsOf = (pairs) => pairs.map((p) => {
@@ -158,6 +171,12 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       try { applySetBatch(mine, rest, () => {}); } catch (e) { return { ok: false, why: e.message }; }
       ops.push(args);
       return { ok: true, out: `batch: ${rest.join(' ')}` };
+    }
+    if (cmd === 'order') {
+      rebase();
+      const keys = layOrder(mine, rest);
+      ops.push(args);
+      return { ok: true, out: `spawn order: ${keys.join(' ') || 'nothing to reorder'}` };
     }
     if (!['set', 'park', 'front'].includes(cmd) || (cmd === 'park' && rest.includes('--claimed-by'))) return { direct: true };
     const [key, ...more] = rest;

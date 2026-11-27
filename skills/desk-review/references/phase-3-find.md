@@ -71,8 +71,8 @@ paragraph, the `FINDING` format and its `FILES READ` line, the round rules on ro
 
 After it, the brief carries the *Tracing a server-set value* paragraph (below), word for word.
 
-`<desk bin>` is the desk scripts folder, resolved before you run it: `$CLAUDE_PLUGIN_ROOT/desk/bin`
-when `echo "$CLAUDE_PLUGIN_ROOT"` prints a path, else `desk/bin` under `~/.claude`. Write the path
+`<desk bin>` is the desk scripts folder, resolved before you run it: `desk/bin` under the plugin root
+(SKILL.md's *Plugin root* line) when it reads as a path, else `desk/bin` under `~/.claude`. Write the path
 out: a command holding `${…}` is refused by the permission matcher whatever the allow rules say.
 
 Then one plain command, alongside the Claude finders:

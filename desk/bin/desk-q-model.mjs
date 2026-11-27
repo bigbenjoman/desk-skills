@@ -14,17 +14,19 @@ import { basename, dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, quietStateName, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud, toHandoff } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
+import { modeLine as personModeLine } from './person-use.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, mergedPrs, owesReopen } from './queue-store.mjs';
 import { PRODUCTION_BROKEN } from './promotion.mjs';
 import { blockersOf } from './queue-states.mjs';
+import { resortable } from './spawn-order.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
-import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+import { logStage, saidDone, tailText, STAGE_TAIL } from './harvest.mjs';
 import { spawnStarts } from './worker-cost.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
@@ -124,6 +126,7 @@ function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
   if (t.state === 'running' && ctx.finished?.(t.key)) return 'finishing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
+  if (stalledHandoff(t, ctx)) return 'needs';
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   const ph = parkHold(q, t, ctx, seen);
@@ -142,8 +145,19 @@ function stateOf(q, t, ctx, seen) {
 // files, waits for it to free, and is not stalled.
 const slotWait = (t) => handoffWaitText(t) != null;
 const slotWaitText = handoffWaitText;
+// Why no pass respawns a pending handoff, as { text, requeue }, or null when one will. Its worker
+// printed AUTOPILOT_DONE (pass.mjs alreadyFinished), which a requeue clears; or it is linked in Jira as
+// blocked by a ticket held behind it (pass/eligibility.mjs inCycle), which needs-you asks about.
+function stalledHandoff(t, ctx) {
+  if (t?.state !== 'triaged' || !toHandoff(t)) return null;
+  const to = `handed off to Stage ${t.handoff_stage ?? '?'}`;
+  if (ctx?.printedDone?.(t.key) === true) return { text: `stalled: its worker printed AUTOPILOT_DONE, then ${to}, and no pass respawns a ticket whose worker printed DONE`, requeue: true };
+  const cycle = keysOf(t.cycle_link);
+  if (cycle.length) return { text: `stalled: ${to}, but linked in Jira as blocked by ${listed(cycle)}, which ${cycle.length === 1 ? 'is' : 'are'} held behind it, so no pass respawns it: which comes first is asked in needs-you`, requeue: false };
+  return null;
+}
 
-const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
+const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, printedDone: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -208,6 +222,9 @@ function holdContext(r) {
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
   // Whether running ticket `key`'s worker said it finished, so only the next pass's record is left.
   const finished = (key) => rowStage(r.stateDir, r.q.tickets[key], r.last).done === true;
+  // Whether ticket `key`'s log holds a worker's AUTOPILOT_DONE, read as pass.mjs alreadyFinished reads
+  // it before a respawn: the whole log, and no "9/9 done" stage standing in for the marker.
+  const printedDone = (key) => { try { return saidDone(readFileSync(join(r.stateDir, 'logs', `${key}.log`), 'utf8')); } catch { return false; } };
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
   const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
@@ -230,7 +247,7 @@ function holdContext(r) {
   // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
   // relaying its merge lines), not on the person. `mergeHolds`: §4 Merge holds names a path, and only the
   // driver records a PR's hold (merge_blocked), so with none running the words say a hold makes it theirs.
-  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, printedDone, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -1238,6 +1255,8 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
+  const sh = x.k === 'needs' && stalledHandoff(x.t, r.ctx);
+  if (sh) return sh.text;
   if (x.k === 'needs') return isHeld(x.t) && !heldAsks(x.t) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return outsideText(x.t);
   if (x.k === 'failed') return stoppedText(x.t);
@@ -3593,11 +3612,15 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
   if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
+  const sh = k === 'needs' && stalledHandoff(t, r.ctx);
+  if (sh) return [[sh.requeue ? `${sh.text}: requeue it` : sh.text, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
   if (k === 'failed') return [[stoppedText(t), null]];
   if (k === 'queued') return [['triaging', null]];
   return [['', null]];
 }
+// Why the pass's re-sort moved an unstarted row ahead (pass.mjs resort_why), or null.
+const resortedWhy = (x) => (!x.pr && resortable(x.t) && x.t.resort_why) || null;
 const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
 // Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
@@ -3801,6 +3824,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []),
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r, now),
+    ...personHead(r),
     ...passHead(r, now),
     ...stagesHead(r),
     ...stuckHead(r, now),
@@ -3842,11 +3866,12 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
   const row = (x) => segRow(x.t.key, cutRuns([
-    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
+    [[`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : resortedWhy(x) ? '^' : ''}${x.pos}`, 4)}  ${cutPad(x.t.key, kw)}`, null]], [[pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]]],
     ...(ww ? [[[pad(wait(x), ww), waitSgr(x)]]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
-    fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
+    fitSegs((gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now))
+      .concat(resortedWhy(x) ? [[` · moved up: ${resortedWhy(x)}`, GREY]] : []), nw - (x.pr ? 1 : 2), nw),
     ...tailCells(w, starts(x), ships(x), tt(summary(x))),
   ], width), { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
   const itemRow = (k) => itemRowOf(r, k, { now, ...w, width });
@@ -3860,6 +3885,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const shownKs = [...list.map(gk), ...items.map(() => 'needs'), ...offItems.map(() => PUT_OFF)];
   const foot = !shownKs.length ? ['  No unfinished tickets.'] : ['', ...stateKey(shownKs, width)];
   if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: letting it start or a requeue leaves it where it is');
+  if (list.some(resortedWhy)) foot.push('', '^ moved up by the pass\'s re-sort, so the whole queue finishes soonest');
   return { head: fit, rows, foot };
 }
 
@@ -3872,6 +3898,13 @@ const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', m
 export function stateKey(ks, width) {
   return keyLine(keyLabels(ks).map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
 }
+
+// The person is using this computer (person-use.mjs), as the last pass of any of the repo's batches
+// recorded it: the local cap it dropped to, and cloud first.
+const personHead = (r) => {
+  const p = (r.batches ?? [r]).map((b) => b.q?.person_use).find((x) => x?.on);
+  return p ? [`${personModeLine(p.floor ?? 1)}${p.since ? ` · since ${p.since.slice(11, 16)}` : ''}`] : [];
+};
 
 export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
@@ -3918,6 +3951,9 @@ function moveOf(r, row, k, t, h, now) {
   }
   const wb = worktreeBusy(t);
   if (wb) return { text: `Needs you. ${busyPark(t) ? `Its last worker parked: ${busyPark(t).question}. ` : ''}No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
+  const sh = k === 'needs' && stalledHandoff(t, r.ctx);
+  if (sh && !sh.requeue) return { text: `Needs you. ${capital(sh.text)}.` };
+  if (sh) return { text: `Needs you. ${capital(sh.text)}.`, lead: `Requeue it, in ${r.name}, and it starts again at Stage ${t.handoff_stage ?? '?'}:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
   if (f && groupOf(k) !== 'needs') {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
@@ -4186,6 +4222,10 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     try { merge = recordedMerge(t) ?? mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
     if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
   }
+  // Where it started and why (the pass's placeAtStart), or, for a cloud-able ticket not yet started,
+  // that it is placed when it starts.
+  if (t.start_place?.where) field('Place', [[t.start_place.where === 'cloud' ? 'cloud' : 'this computer', null], [` · ${t.start_place.why}`, DIM]]);
+  else if (cloudAble(t) && t.state !== 'running') field('Place', [['cloud-able', null], [' · placed when it starts: the cloud while it has room', DIM]]);
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]

@@ -588,6 +588,22 @@ check "DS-1037 a task worker past the threshold gets nothing"   '[ -z "$out" ]'
 DESK_AUTOPILOT_WORKER=1 DESK_HANDOFF_FILE="" hook PostToolUse wk11 "$T/w46.jsonl"
 check "DS-1037 nor does a worker with no briefing file, and no .handoffs/ file is named" '[ -z "$out" ] && [ "$(ls "$R/.handoffs" 2>/dev/null | wc -l | tr -d " ")" = "$before" ]'
 
+# ---- #1571: a worker that printed AUTOPILOT_DONE is never handed off ----
+WKEEP="$WFILE"; WFILE="$T/state/handoffs/W-2.json"
+wtranscript "$T/d46.jsonl" 92000 "7/9 pr"
+whook PostToolUse wd1 "$T/d46.jsonl"
+check "#1571 past the threshold at Stage 7 it is told to hand off" '[[ "$(ctx)" == *"partway through Stage 7"* ]]'
+printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"PR open.\\nAUTOPILOT_DONE: pr=1568 jira=none\\n"}]}}\n' >> "$T/d46.jsonl"
+whook Stop wd1 "$T/d46.jsonl"
+check "#1571 AC2 once it has printed AUTOPILOT_DONE, Stop does not block for a handoff" '[ -z "$out" ] && [ ! -e "$WFILE" ]'
+whook PostToolUse wd2 "$T/d46.jsonl"
+check "#1571 AC2 and a session past the threshold after its DONE line is not told to hand off" '[ -z "$out" ]'
+printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep AUTOPILOT_DONE: log"}}]}}\n' > "$T/dq.jsonl"
+wtranscript "$T/dg.jsonl" 92000 "7/9 pr"; cat "$T/dq.jsonl" >> "$T/dg.jsonl"
+whook PostToolUse wd3 "$T/dg.jsonl"
+check "#1571 a tool call that only quotes the marker is not a DONE"  '[[ "$(ctx)" == *"partway through Stage 7"* ]]'
+WFILE="$WKEEP"
+
 # ---- #1539: a worker hands off only once its context has grown since it started ----
 config '`20`'
 MG=''; LV=''

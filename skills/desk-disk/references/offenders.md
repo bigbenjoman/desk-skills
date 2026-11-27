@@ -17,7 +17,11 @@ out"). Every fix is one command, run alone, measured before and after.
 - **Fix:** `docker volume prune -f`. It removes unused anonymous volumes only; never add `-a`, which
   takes named volumes too.
 - **Restore:** none. A pruned volume is gone; the container that made it recreates an empty one.
-- **Stops it coming back:** run throwaway containers with `--rm`.
+- **Stops it coming back:** run throwaway containers with `--rm`, or remove them with
+  `docker rm -v`. A script that removes its container on purpose with plain `docker rm -f`
+  still leaks one volume per run, because images such as `postgres` declare a data volume. The
+  volume does not name its container, so find the script by searching the repos for `docker rm`
+  without `-v`.
 
 ## docker-build-cache
 

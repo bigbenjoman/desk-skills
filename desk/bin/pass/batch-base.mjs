@@ -61,7 +61,7 @@
 import { workerMarkers, endedNormally } from '../harvest.mjs';
 import { usageLimit, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
-import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, FIX_TRIES_MAX } from '../base-fix.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, countedTry, FIX_TRIES_MAX } from '../base-fix.mjs';
 import { tries } from '../fix-tries.mjs';
 import { behindPrs } from '../desk-q-model.mjs';
 import { summary } from '../baseline.mjs';
@@ -70,6 +70,8 @@ import { QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, 
 // What endTry kept of the last try, for its report line.
 const keptNote = (x) => (!x?.kept ? '' : x.kept.ref ? `; its unpushed ${String(x.kept.sha).slice(0, 12)} is kept on ${x.kept.ref}`
   : `; its unpushed ${String(x.kept.sha).slice(0, 12)} could not be kept on a ref (${x.kept.error})`);
+
+const loginText = (l) => `login ${l?.name ?? l?.dir ?? '?'}`;
 
 // ---- batch base ------------------------------------------------------------
 export function* decideBaseSync(s) {
@@ -82,6 +84,9 @@ export function* decideBaseSync(s) {
   let baseFixLive = false;
   let baseFixResume = null;
   let gateConflict = null;
+  // A try whose worker exited at a usage limit that has not lifted, waiting to resume on its own login:
+  // what the base's lines say in place of a try still merging. { limit, login }, or null.
+  let fixAtLimit = null;
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
   const featureMode = q.feature === true;
@@ -162,7 +167,16 @@ export function* decideBaseSync(s) {
     // as no marker. Once per limit: a resume that ends before the model answers, with no new rejection,
     // leaves the same count of limits in the log, and then ends the try as any other exit.
     const awaitsLift = exited && !!atLimit && bf.resume_limits !== usage.limits.length;
-    const outcome = awaitsLift ? null
+    // A merge try's session gone at a limit that has not lifted, on a login new work no longer starts on (the
+    // fallback took over): waiting there holds the base worktree, and with it the sync and every spawn
+    // it holds, until that login's reset, days off for a weekly limit. The try ends instead, spending
+    // none, and the next conflict this pass meets starts a new try on the login new work starts on.
+    const from = awaitsLift || paused ? yield { type: 'fix-login', login: bf.login } : null;
+    const up = awaitsLift && (yield { type: 'lifted', limit: atLimit, login: from });
+    // Only a merge try: a review or check try counts one per head, so ending it would leave its PR stuck.
+    const movedOff = awaitsLift && !up && mergeTry(bf.tries?.[bf.tries.length - 1]) && !!s.repoLogin && !!from && !sameLogin(s.repoLogin, from);
+    const outcome = movedOff ? `exited at ${limitName(atLimit.type)}${untilText(atLimit)} on ${loginText(from)}, which new work has moved off, so it ends`
+      : awaitsLift ? null
       : idle >= WEDGE_PASSES && !said ? `was stopped as wedged, with no output for ${idle} passes`
         : reg.read && (said || exited) ? baseFixOutcome(markers)
           : null;
@@ -170,9 +184,9 @@ export function* decideBaseSync(s) {
       const pid = (reg.read ? reg.sessions : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !s.dry) yield { type: 'kill', pid };
       const lockWait = said && lockWaitPark(markers);
-      bf = yield { type: 'end-try', outcome, path: wt.ok ? wt.path : null, extra: lockWait ? { lock_wait: true } : {} };
+      bf = yield { type: 'end-try', outcome, path: wt.ok ? wt.path : null, extra: lockWait ? { lock_wait: true } : movedOff ? { usage_moved: true } : {} };
       const ended = bf.tries[bf.tries.length - 1];
-      yield baseLine(`base ${tryWhat(ended)}: try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : ''}`);
+      yield baseLine(`base ${tryWhat(ended)}: try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : movedOff ? '; it spends no try' : ''}`);
     } else {
       baseFixLive = true;
       if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
@@ -181,13 +195,14 @@ export function* decideBaseSync(s) {
       }
       // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
       // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
-      const from = yield { type: 'fix-login', login: bf.login };
-      const up = awaitsLift && (yield { type: 'lifted', limit: atLimit, login: from });
       const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit, s.now)})` : null;
       // Until then it waits on its own login, whose folder holds its transcript.
       if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
       else if (up) yield say('paused', `${KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
       else if (paused || awaitsLift) {
+        // Alone on the repo's login only while no fallback takes new work: a merge try on another login
+        // has ended above, and a review or check try waits on its own login whatever new work does.
+        if (awaitsLift) fixAtLimit = { limit: atLimit, login: from, alone: mergeTry(bf.tries?.[bf.tries.length - 1]) && sameLogin(s.repoLogin, from) };
         yield say('paused', `${KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
         // On the repo's login its limit holds the batch, as a paused ticket's worker does, unless new
         // work moves to the fallback login, where this worker alone waits for its own login.
@@ -198,6 +213,7 @@ export function* decideBaseSync(s) {
             moved = (yield { type: 'usage-hold', hold }) === true;
             if (!moved) yield say('stalled', `${KEY}: ${usageHeldText(hold)}`);
           }
+          if (moved && fixAtLimit) fixAtLimit.alone = false;
           if (!moved) yield { type: 'usage-stop' };
         }
       }
@@ -245,7 +261,8 @@ export function* decideBaseSync(s) {
     // The worktree is the fix worker's until it ends.
     metConflict = true;
     const last = bf.tries[bf.tries.length - 1];
-    const line = !mergeTry(last) ? `${tryWhat(last)} try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
+    const line = fixAtLimit ? `${tryWhat(last)} try ${tryNo(bf)} of ${FIX_TRIES_MAX} in ${wt.path} exited at ${limitName(fixAtLimit.limit.type)}${untilText(fixAtLimit.limit)} on ${loginText(fixAtLimit.login)} (session ${bf.running})${fixAtLimit.alone ? ', and no other login takes new work' : ''}: it resumes its own session there once the limit lifts`
+      : !mergeTry(last) ? `${tryWhat(last)} try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
       : `${tryWhat(last)} try ${tryNo(bf)} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
     yield* heldForFix(line);
     gateConflict = { worker: true, line };
@@ -256,7 +273,7 @@ export function* decideBaseSync(s) {
     // PR's review tries and the promotion PR's check tries are kept: they count per head.
     const conflictTries = (bf?.tries ?? []).filter(mergeTry);
     if (sync.ok && !sync.dry && conflictTries.length && !s.dry) {
-      yield baseLine(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter((x) => !x.lock_wait).length)}`);
+      yield baseLine(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter(countedTry).length)}`);
       for (const x of conflictTries) if (x.kept?.ref) yield { type: 'drop-ref', ref: x.kept.ref };
       const kept = bf.tries.filter((x) => !mergeTry(x));
       bf = kept.length ? { tries: kept, running: null, port: null } : null;
