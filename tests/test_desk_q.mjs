@@ -2654,8 +2654,8 @@ t('DS-386 a stuck recorded with no head holds as written', Q.stuckOf(t386(null, 
 // ---- A repo's batches held for the same reason show one "nothing started or merged" note.
 // Each live batch's last pass held for `held` with no progress for `quiet` minutes; `batch` null is the
 // standing batch.
-const put454 = (name, port, batch, held, quiet) => {
-  const pass = { at: minsAgo(1), by: 'session', held, errors: 0, progress_at: minsAgo(quiet) };
+const put454 = (name, port, batch, held, quiet, hold) => {
+  const pass = { at: minsAgo(1), by: 'session', held, ...(hold ? { hold } : {}), errors: 0, progress_at: minsAgo(quiet) };
   const tickets = { [`${name.toUpperCase()}-${batch ?? 'S'}`]: { state: 'triaged', open_questions: 0 } };
   if (!batch) return put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: 2, pass, tickets } });
   const q = join(I.env.DESK_HOME, 'repos', `acme__${name}`, 'batches', batch, 'queue.json');
@@ -2688,6 +2688,69 @@ t('DS-454 AC3 a single held batch reads as before', notes454('solo').join(' / ')
 t('DS-454 AC4 two repos held for the same reason each keep their note',
   `${notes454('one').join(' / ')} | ${notes454('two').join(' / ')}`,
   `nothing started or merged for 3h 5m. Last pass: ${mem454}. | nothing started or merged for 3h 5m. Last pass: ${mem454}.`);
+
+// ---- DS-1048: a hold on the machine's test lock is one note for every repo it holds.
+// Each repo's standing batch last passed a minute ago, held by `hold` (pass/report.mjs holdOf's shape)
+// with no progress for 185 minutes.
+const lock1048 = (waiting, slots, tickets, holders) => ({ cause: 'test-lock', scope: 'machine', tickets, action: null, holders,
+  numbers: { waiting, slots, factor: 2, room: 0, stall: true, running: 2, concurrency: 3, queues: [] } });
+const put1048 = (name, port, hold) => put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: 2,
+  pass: { at: minsAgo(1), by: 'session', held: `held: ${hold.cause}`, hold, errors: 0, progress_at: minsAgo(185) },
+  tickets: { [`${name.toUpperCase()}-1`]: { state: 'triaged', open_questions: 0 } } } });
+put1048('tla', 5850, lock1048(8, 3, ['TLA-1'], [{ repo: 'tla', where: '~/tla', cmd: 'bash tests/run.sh', heldS: 300, expectedS: 200 }]));
+put1048('tlb', 5860, lock1048(8, 3, ['TLB-1'], []));
+put1048('tlc', 5870, { cause: 'memory', scope: 'machine', numbers: { availGB: 3.1, minAvailGB: 4 }, holders: [], tickets: [], action: null });
+const repos1048 = () => Q.loadRepos(NOW).filter((r) => ['tla', 'tlb', 'tlc'].includes(r.repo));
+const ov1048 = Q.overview(repos1048(), { now: NOW, avail: 30 });
+const throttle1048 = lines(ov1048).filter((l) => /^(note| {4}) {2}⧗ tests queued +/.test(l)).map((l) => l.replace(/^(note| {4}) {2}⧗ tests queued +/, ''));
+t('DS-1048 AC1 two repos held by the test lock show one note naming both repos and their tickets, and no note of their own',
+  `${throttle1048.join(' / ')} | ${notesIn(lines(ov1048), 'tla').length} ${notesIn(lines(ov1048), 'tlb').length}`,
+  '8 runs waiting for 3 test slots, shared by all repos. Waiting for a slot: TLA-1 in tla and TLB-1 in tlb. Nothing started or merged for 3h 5m. | 0 0');
+const wait1048 = (name, ov = ov1048) => { const head = lines(ov).find((l) => /^ {2}REPO /.test(l)); const at = head.indexOf('WAIT') + 4; return (rowOf(ov, name) ?? '').slice(at - 4, at); };
+t('DS-1048 AC2 each WAIT cell the note explains ends in its mark, and one it does not keeps its count in line',
+  ['tla', 'tlb', 'tlc'].map((r) => wait1048(r)).join('|'), '  0⧗|  0⧗|  0 ');
+const cell1048 = (name) => (rowOf(ov1048, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
+t('DS-1048 AC4 a row only the test lock holds reads live, as its grey note does; a row memory holds still reads no progress',
+  `${cell1048('tla')} | ${cell1048('tlb')} | ${cell1048('tlc')} | ${notesIn(lines(ov1048), 'tlc').length}`, '● session · 1m ago | ● session · 1m ago | ▲ no progress 3h 5m | 1');
+// The same holds a pass later: other holders, another queue depth, the same cause and scope.
+put1048('tla', 5850, lock1048(11, 3, ['TLA-1', 'TLA-2'], [{ repo: 'tlb', where: '~/tlb', cmd: 'bash tests/run.sh x', heldS: 900, expectedS: 200 }]));
+put1048('tlc', 5870, { cause: 'memory', scope: 'machine', numbers: { availGB: 2.2, minAvailGB: 4 }, holders: [], tickets: [], action: null });
+const hidden1048 = new Map([['⧗ tests queued hold test-lock machine', NOW], ['▲ tlc hold memory machine', NOW]]);
+const later1048 = Q.overview(repos1048(), { now: NOW, avail: 30, hidden: hidden1048 });
+t('DS-1048 AC3 hidden notes whose holders and counts moved on, but not their cause and scope, stay hidden',
+  `${/⧗ tests queued/.test(later1048)} ${notesIn(lines(later1048), 'tlc').length} ${lines(later1048).filter((l) => l.endsWith('2 warnings hidden · H shows them')).length}`, 'false 0 1');
+t('DS-1048 AC2 with the test-lock note hidden, no WAIT cell carries its mark',
+  ['tla', 'tlb', 'tlc'].map((r) => wait1048(r, later1048)).join('|'), '   0|   0|   0');
+// A pass the test and light locks both held names each queue by its own lock.
+put1048('tla', 5850, { ...lock1048(6, 3, ['TLA-1'], []), numbers: { waiting: 6, slots: 3, factor: 2, room: 0, stall: true, running: 2, concurrency: 3,
+  queues: [{ lock: 'test', waiting: 6, slots: 3 }, { lock: 'light', waiting: 5, slots: 1 }] } });
+put1048('tlb', 5860, { ...lock1048(6, 3, ['TLB-1'], []), numbers: { waiting: 6, slots: 3, factor: 2, room: 0, stall: true, running: 2, concurrency: 3,
+  queues: [{ lock: 'test', waiting: 6, slots: 3 }, { lock: 'light', waiting: 5, slots: 1 }] } });
+const both1048 = lines(Q.overview(repos1048(), { now: NOW, avail: 30 })).find((l) => /⧗ tests queued/.test(l)) ?? '';
+t('DS-1048 AC1 a hold on both locks names each queue by its own lock',
+  /6 runs waiting for 3 test slots and 5 runs waiting for 1 light slot, shared by all repos\./.test(both1048), true);
+// A light repo held on the light lock beside a heavy one held on the test lock: each lock's queue shows.
+put1048('tla', 5850, { ...lock1048(4, 1, ['TLA-1'], []), numbers: { waiting: 4, slots: 1, factor: 2, room: 0, stall: true, running: 2, concurrency: 3, queues: [{ lock: 'light', waiting: 4, slots: 1 }] } });
+put1048('tlb', 5860, { ...lock1048(6, 3, ['TLB-1'], []), numbers: { waiting: 6, slots: 3, factor: 2, room: 0, stall: true, running: 2, concurrency: 3, queues: [{ lock: 'test', waiting: 6, slots: 3 }] } });
+const split1048 = lines(Q.overview(repos1048(), { now: NOW, avail: 30 })).find((l) => /⧗ tests queued/.test(l)) ?? '';
+t('DS-1048 AC1 repos held on different locks each keep their lock\'s queue in the one note',
+  /4 runs waiting for 1 light slot and 6 runs waiting for 3 test slots, shared by all repos\./.test(split1048), true);
+// A hidden hold note stays hidden when a sibling batch of its repo stalls for another reason, which
+// names the batches in its text.
+const memHold1048 = { cause: 'memory', scope: 'machine', numbers: { availGB: 3.1, minAvailGB: 4 }, holders: [], tickets: [], action: null };
+put454('tld', 5880, null, mem454, 185, memHold1048);
+put454('tld', 5880, 'B2', 'the batch base sync holds every spawn', 185, { cause: 'base', scope: 'batch', numbers: null, holders: [], tickets: [], action: null });
+const tld1048 = Q.overview(Q.loadRepos(NOW).filter((r) => r.repo === 'tld'), { now: NOW, avail: 30, hidden: new Map([['▲ tld hold memory machine', NOW]]) });
+t('DS-1048 AC3 a hidden hold note stays hidden when a sibling batch stalls for another reason',
+  notesIn(lines(tld1048), 'tld').join(' / '), 'batch B2: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn.');
+// Two batches of one repo each held on its own base keep a note each, each naming its batch and lag.
+const baseHold1048 = { cause: 'base', scope: 'batch', numbers: null, holders: [], tickets: [], action: null };
+put454('tle', 5890, null, 'the batch base sync holds every spawn: main is 3 behind', 185, baseHold1048);
+put454('tle', 5890, 'B2', 'the batch base sync holds every spawn: feat-x is 5 behind', 185, baseHold1048);
+t('DS-1048 two batches held on different bases keep a note each',
+  notesIn(lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.repo === 'tle'), { now: NOW, avail: 30 })), 'tle').join(' / '),
+  'the standing batch: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn: main is 3 behind. / batch B2: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn: feat-x is 5 behind.');
+t('DS-1048 AC3 a note from a pass that wrote no structured hold keeps the key its wording gives', Q.noteKey({ tag: '▲ x', text: [['nothing started for 2h.', null]] }), '▲ x nothing started for #.');
 
 // ---- DS-490: a draft waiting on a check pending past the limit says how long, not "checks running".
 const pending490 = (h) => ({ name: 'Cookie Notice (local build)', status: 'in_progress', conclusion: null, started: new Date(NOW - h * 36e5).toISOString(), runner: true });
@@ -2971,7 +3034,8 @@ function disagrees701({ json, plain }) {
   const L = lines(plain), bad = [];
   for (const r of json.repos.filter((x) => !x.error)) {
     const row = L.find((l) => l.startsWith(`  ${r.name} `)) ?? '';
-    const rest = row.slice(row.indexOf(r.last_pass) + r.last_pass.length).trim().replace(/\s+/g, ' ');
+    // WAIT's test-lock mark (DS-1048) is the screen's, not a count.
+    const rest = row.slice(row.indexOf(r.last_pass) + r.last_pass.length).replace(/⧗/g, ' ').trim().replace(/\s+/g, ' ');
     const want = [r.running, r.ready, r.merging, r.waiting, `${r.needs_you}${r.put_off ? ` (+${r.put_off} put off)` : ''}`, r.done].join(' ');
     if (!row.includes(r.last_pass) || !rest.startsWith(`${want} `)) bad.push(`${r.name} row "${rest}" vs ${want}`);
     if (!row.includes(`${r.workers.running} of ${r.workers.allowed} · cap ${r.workers.cap}`)) bad.push(`${r.name} workers`);
