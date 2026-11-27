@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
@@ -248,15 +248,39 @@ t('issue-1553 AC2 with no estimate it is the typical slot time for its size', JS
 t('issue-1553 AC2 an estimate with no span falls back to it too', cloudEta({ estimate: { starts: iso(st0), ships: iso(st0) }, typicalH: 9 })?.from, 'typical');
 t('issue-1553 AC2 with neither there is no ETA', cloudEta({ estimate: null, typicalH: null }), null);
 t('issue-1553 AC2 a session that started after its estimate\'s ship time is not due at once', cloudStall({ started: iso(st0), eta, now: st0 + H }), null);
-t('issue-1553 AC2 before its start plus ETA plus half that it is not stuck', cloudStall({ started: iso(st0), eta, now: st0 + 6 * H }), null);
-const s1 = cloudStall({ started: iso(st0), eta, now: st0 + 6 * H + 1 });
-t('issue-1553 AC2 no push past its start plus ETA plus half that: possibly stuck, with that margin', `${s1?.due === st0 + 6 * H} ${s1?.margin === 2 * H} ${s1?.last === st0}`, 'true true true');
+t('issue-1553 AC2 before its start plus ETA it is sent nothing', cloudStall({ started: iso(st0), eta, now: st0 + 4 * H }), null);
+// issue-1553 comment 1: an errored session looks the same as a quiet one, so past its ETA with no push it
+// is sent one retry follow-up first, and flagged only once that retry brought no push either.
+const r1 = cloudStall({ started: iso(st0), eta, now: st0 + 4 * H + 1 });
+t('issue-1553 errored or quiet: no push past its start plus ETA: one retry follow-up first, not flagged', `${r1?.retry} ${r1?.margin === 2 * H} ${r1?.last === st0}`, 'true true true');
+t('issue-1553 with no retry sent it is never flagged, however late', cloudStall({ started: iso(st0), eta, now: st0 + 100 * H })?.retry, true);
+t('issue-1553 a retry sent before its last push is not one for this quiet stretch', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 2 * H), retried: iso(st0 + H), now: st0 + 7 * H })?.retry, true);
+const retriedAt = iso(st0 + 4.5 * H);
+t('issue-1553 AC2 after the retry, before its start plus ETA plus half that it is not stuck', cloudStall({ started: iso(st0), eta, retried: retriedAt, now: st0 + 6 * H }), null);
+t('issue-1553 AC2 after the retry, within the margin of it it is not stuck', cloudStall({ started: iso(st0), eta, retried: retriedAt, now: st0 + 6.5 * H }), null);
+const s1 = cloudStall({ started: iso(st0), eta, retried: retriedAt, now: st0 + 6.5 * H + 1 });
+t('issue-1553 AC2 no push past ETA plus half that, nor in the margin since the retry: possibly stuck', `${s1?.retry} ${s1?.due === st0 + 6 * H} ${s1?.margin === 2 * H} ${s1?.last === st0 + 4.5 * H}`, 'false true true true');
+t('issue-1553 a push after the retry starts it over', cloudStall({ started: iso(st0), eta, retried: retriedAt, lastPush: iso(st0 + 5 * H), now: st0 + 6.5 * H + 1 }), null);
 t('issue-1553 AC2 a push inside the margin keeps it from stuck', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 5 * H), now: st0 + 7 * H }), null);
 t('issue-1553 AC2 a push older than the margin does not', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 3 * H), now: st0 + 7 * H })?.last, st0 + 3 * H);
 t('issue-1553 AC2 a commit from before the session started is not its push', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 - H), now: st0 + 7 * H })?.last, st0);
 t('issue-1553 AC2 the margin is half the typical slot time when that is the ETA', cloudStall({ started: iso(st0), eta: cloudEta({ typicalH: 10 }), now: st0 + 16 * H })?.margin, 5 * H);
 t('issue-1553 AC2 with no ETA a session is never called stuck', cloudStall({ started: iso(st0), eta: null, now: st0 + 1000 * H }), null);
 t('issue-1553 AC2 a session with no start recorded is never called stuck', cloudStall({ started: null, eta, now: st0 }), null);
+// The follow-up as `claude -p <msg> --cloud <session> --output-format json` answers it (tests/fixtures/cloud/).
+t('issue-1553 a follow-up the CLI queued to the session is sent', JSON.stringify(parseCloudSend(fixture('send-json.json'), 'session_01Vy49H7Z4T3CSgAhSxsuhqj')), '{"ok":true}');
+t('issue-1553 one queued to another session is not', !!parseCloudSend(fixture('send-json.json'), 'session_other').error, true);
+t('issue-1553 a refusal is an error, word for word', parseCloudSend(fixture('stream-json-refused.txt'), 'session_01Vy49H7Z4T3CSgAhSxsuhqj').error, 'Error: --cloud <session_id> does not support --output-format stream-json');
+t('issue-1553 no follow-up is sent with no session id recorded', sendCloud(null, 'x').error, 'its session id was not recorded');
+{
+  const d = scratch('cloud-send');
+  const fake = join(d, 'claude');
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > "${d}/args"\ncat "${join(FIX, 'send-json.json')}"\n`);
+  chmodSync(fake, 0o755);
+  const got = sendCloud('session_01Vy49H7Z4T3CSgAhSxsuhqj', CLOUD_RETRY_MSG, { claude: fake });
+  t('issue-1553 the retry follow-up goes as claude -p <msg> --cloud <session> --output-format json', `${JSON.stringify(got)} ${readFileSync(join(d, 'args'), 'utf8').split('\n').slice(2).join(' ').trim()}`, '{"ok":true} --cloud session_01Vy49H7Z4T3CSgAhSxsuhqj --output-format json');
+  rmSync(d, { recursive: true, force: true });
+}
 
 // ---- finished sessions to archive -------------------------------------------
 const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });

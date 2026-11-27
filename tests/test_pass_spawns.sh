@@ -141,6 +141,12 @@ if [ "\$1" = --cloud ]; then
   if [ -e "$T/lock-after-cloud" ]; then mkdir "\$DESK_QUEUE.lock"; echo $$ > "\$DESK_QUEUE.lock/pid"; fi
   cat "$S/fixtures/cloud/created.txt"; exit 0
 fi
+# A follow-up to a session: recorded, and answered as the CLI queues one.
+if [ "\$1" = -p ] && [ "\$3" = --cloud ]; then
+  printf '%s|%s|%s\n' "\$4" "\$5" "\$6" >> "$T/cloud-sent"
+  [ -e "$T/cloud-send-fail" ] && { cat "$S/fixtures/cloud/stream-json-refused.txt" >&2; exit 1; }
+  cat "$S/fixtures/cloud/send-json.json"; exit 0
+fi
 echo '[{"sessionId": "live-1"}]'
 EOF
 cat > "$T/stub/gh" <<EOF
@@ -172,11 +178,21 @@ cl_was=$(field CW-1 cloud)
 q set CW-1 "cloud=$(node -e 'const c = JSON.parse(process.argv[1]); c.started = new Date(Date.now() - 6 * 3600e3).toISOString(); console.log(JSON.stringify(c))' "$cl_was")"
 node -e 'const h = 3600e3, n = Date.now(), i = (t) => new Date(t).toISOString(); console.log(JSON.stringify({ key: "CW-1", at: i(n - 6 * h), starts: i(n - 6 * h), ships: i(n - 3 * h), could_run_to: i(n - 2 * h), model: 2 }))' > "$T/state-cl/eta.jsonl"
 out=$(node "$B/pass.mjs" 2>&1)
-check "issue-1553 AC2 no push past its ETA plus margin: reported possibly stuck, with its session URL" 'echo "$out" | grep -F "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" | grep -F "possibly stuck" | grep -F "nothing pushed to feat/CW-1, past its ETA of " | grep -qF " from its start (its saved estimate) plus " &&[ "$(field CW-1 state)" = "\"running\"" ]'
+# issue-1553 comment 1: an errored session looks as quiet as a stuck one, so it is sent one retry follow-up before it is flagged.
+check "issue-1553 a quiet or errored session past its ETA is sent one retry follow-up, not flagged yet" 'echo "$out" | grep -F "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" | grep -qF "sent it one retry follow-up, in case it stopped on an error" && ! echo "$out" | grep -q "CW-1: .*possibly stuck" && [ "$(cat "$T/cloud-sent")" = "session_01Vy49H7Z4T3CSgAhSxsuhqj|--output-format|json" ] && [ "$(field CW-1 cloud.retried_at)" != null ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1553 within the margin of its retry it is sent no second one, nor flagged" '[ "$(wc -l < "$T/cloud-sent")" -eq 1 ] && ! echo "$out" | grep -q "CW-1: .*possibly stuck"'
+q set CW-1 "cloud=$(node -e 'const c = JSON.parse(process.argv[1]); c.retried_at = new Date(Date.now() - 2 * 3600e3).toISOString(); console.log(JSON.stringify(c))' "$(field CW-1 cloud)")"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1553 AC2 no push past its ETA plus margin, nor since its retry: reported possibly stuck, with its session URL" 'echo "$out" | grep -F "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" | grep -F "possibly stuck (quiet, or stopped on an error)" | grep -F "nothing pushed to feat/CW-1, past its ETA of " | grep -F " from its start (its saved estimate) plus " | grep -qF "nothing since the one retry follow-up sent at " && [ "$(wc -l < "$T/cloud-sent")" -eq 1 ] && [ "$(field CW-1 state)" = "\"running\"" ]'
+check "issue-1553 the stuck line says to stop it before the requeue" 'echo "$out" | grep "CW-1: .*possibly stuck" | grep -qF "queue.mjs stop CW-1 (records the session abandoned), then queue.mjs requeue CW-1"'
 node -e 'console.log(new Date(Date.now() - 30 * 60e3).toISOString())' > "$T/cloud-push"
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1553 AC2 a push to its branch inside the margin keeps it from possibly stuck" '! echo "$out" | grep -q "CW-1: .*possibly stuck" && echo "$out" | grep -q "CW-1: cloud session .*, no PR yet"'
-rm -f "$T/cloud-push" "$T/state-cl/eta.jsonl"; q set CW-1 "cloud=$cl_was"
+rm -f "$T/cloud-push"; : > "$T/cloud-send-fail"; q set CW-1 "cloud=$(node -e 'const c = JSON.parse(process.argv[1]); delete c.retried_at; console.log(JSON.stringify(c))' "$(field CW-1 cloud)")"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1553 a retry follow-up that cannot be sent flags it at once, with why" 'echo "$out" | grep "CW-1: .*possibly stuck" | grep -qF "its retry follow-up could not be sent (Error: --cloud <session_id> does not support" && [ "$(field CW-1 cloud.retried_at)" = null ]'
+rm -f "$T/cloud-send-fail" "$T/cloud-sent" "$T/state-cl/eta.jsonl"; q set CW-1 "cloud=$cl_was"
 # The session opens its PR 40 minutes after it started, on a branch of its own.
 node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 31, title: "feat(w): CW-1 save", url: "u", headRefName: "claude/cw-1-abc", createdAt: new Date(s + 2400e3).toISOString() }]))' "$(field CW-1 cloud.started)" > "$T/cloud-prs.json"
 out=$(node "$B/pass.mjs" 2>&1)

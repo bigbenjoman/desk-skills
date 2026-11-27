@@ -35,7 +35,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, CLOUD_NO_EFFORT, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -1025,8 +1025,20 @@ function advanceCloud(t) {
   if (!pr) {
     const since = `${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started`;
     const stuck = cloudStuck(t, c);
-    if (stuck) report.stalled.push(`${t.key}: cloud session ${where} possibly stuck — no PR, and ${stuck}. Open the session to see; to start it again: queue.mjs requeue ${t.key}`);
-    else report.quiet.push(`${t.key}: cloud session ${where}, no PR yet (${since})`);
+    const flag = (why) => report.stalled.push(`${t.key}: cloud session ${where} possibly stuck (quiet, or stopped on an error) — no PR, and ${why}. ` +
+      `Open the session to see; to start it again: queue.mjs stop ${t.key} (records the session abandoned), then queue.mjs requeue ${t.key}`);
+    if (!stuck) report.quiet.push(`${t.key}: cloud session ${where}, no PR yet (${since})`);
+    else if (!stuck.retry) flag(`${stuck.why}, and nothing since the one retry follow-up sent at ${c.retried_at}`);
+    else if (DRY) report.quiet.push(`${t.key}: cloud session ${where}, no PR and ${stuck.why} (dry run: no retry follow-up sent)`);
+    else {
+      // One follow-up first, which restarts a session that stopped on an error (cloud-worker.mjs cloudStall).
+      const sent = sendCloud(c.session, CLOUD_RETRY_MSG);
+      if (sent.error) flag(`${stuck.why}; its retry follow-up could not be sent (${sent.error})`);
+      else {
+        q('set', t.key, `cloud=${JSON.stringify({ ...c, retried_at: new Date().toISOString() })}`);
+        report.advanced.push(`${t.key}: cloud session ${where} — no PR, and ${stuck.why}: sent it one retry follow-up, in case it stopped on an error. It is flagged if nothing is pushed within ${wallTime(stuck.margin)}`);
+      }
+    }
     return;
   }
   const cloud = { ...c, pr_at: pr.createdAt };
@@ -1093,18 +1105,20 @@ function cloudEtaOf(t) {
   return cloudEta({ typicalH });
 }
 
-// Whether a cloud session with no PR may be stuck (cloud-worker.mjs cloudStall): past its start plus
-// its ETA plus half that again, with no push to its branch in that margin. The branch is read from
-// GitHub only once that time has passed. -> why, or null
+// Whether a cloud session with no PR may be stuck (cloud-worker.mjs cloudStall): past its ETA with no
+// push for half that ETA, so it is sent one retry follow-up (`retry`), or, once one was sent, past its
+// start plus its ETA plus half that again with no push since. The branch is read from GitHub only once
+// that time has passed. -> { retry, why, margin }, or null
 function cloudStuck(t, c) {
   const eta = cloudEtaOf(t);
-  if (!cloudStall({ started: c.started, eta })) return null;
+  if (!cloudStall({ started: c.started, eta, retried: c.retried_at })) return null;
   const head = t.branch ? sh('gh', ['api', `repos/${GH_REPO}/branches/${encodeURIComponent(t.branch)}`, '--jq', '.commit.commit.committer.date'], { tolerant: true }) : '';
   const lastPush = /^\d{4}-\d\d-\d\dT/.test(head) ? head : null;
-  const s = cloudStall({ started: c.started, eta, lastPush });
+  const s = cloudStall({ started: c.started, eta, lastPush, retried: c.retried_at });
   if (!s) return null;
   const was = eta.from === 'estimate' ? 'its saved estimate' : `the typical slot time for its size (${sizeOf(STATE, t.key)})`;
-  return `${lastPush ? `no push to ${t.branch} since ${lastPush}` : `nothing pushed to ${t.branch ?? 'its branch'}`}, past its ETA of ${wallTime(eta.ms)} from its start (${was}) plus ${wallTime(s.margin)}`;
+  const pushed = lastPush ? `no push to ${t.branch} since ${lastPush}` : `nothing pushed to ${t.branch ?? 'its branch'}`;
+  return { retry: s.retry, margin: s.margin, why: `${pushed}, past its ETA of ${wallTime(eta.ms)} from its start (${was})${s.retry ? '' : ` plus ${wallTime(s.margin)}`}` };
 }
 
 // Removes from cloud PR `pr` (its `view`, gh pr view --json body,commits,comments,baseRefName,headRefName,author)

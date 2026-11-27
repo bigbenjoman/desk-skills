@@ -124,10 +124,19 @@ PR, and its tokens as "unknown (cloud)" and its cost as "cost unknown (cloud)". 
 no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one. desk-q's
 Costs view (and `--json costs`) lists each queued cloud ticket the same way, with its session URL.
 Its Timeline and By-day views date a cloud ticket with the local ones and put `cloud ·` before its
-title. A cloud session with no PR, past its start plus the ticket's ETA plus half that again, with no
-push to its branch in that margin, is reported **possibly stuck** with its session URL. Its ETA is
+title. Nothing reads a cloud session's state back, so a session that stopped on "Claude Code hit an
+error" looks the same as a quiet one: no PR and no push. Past its start plus the ticket's ETA, with
+no push to its branch for half that ETA, the pass sends it one retry follow-up (`claude -p <msg>
+--cloud <session>`, recorded as `cloud.retried_at`), which restarts an errored session. Past its start
+plus the ETA plus half that again, with no push since that retry, it is reported **possibly stuck**
+with its session URL; a retry that cannot be sent reports it at once. A push after the retry starts
+it over. Its ETA is
 its saved first estimate's span from start to ship (`eta.jsonl`), or with none the forecast's
-typical slot time for its size; with no history either, it is not called stuck. A cloud spawn is held by weekly
+typical slot time for its size; with no history either, it is not called stuck. To start a stuck one
+again, `queue.mjs stop <KEY>` records its session abandoned (`cloud.abandoned_at`), puts it on the
+finished-session list below and holds the ticket as a stopped worker; `queue.mjs requeue <KEY>` (or
+needs-you's start) then gives it a new session. A requeue refuses a running cloud ticket until it is
+stopped. A cloud spawn is held by weekly
 usage pacing like a local one. Since a cloud session writes no usage reading here, a held pass
 still makes its probe call while only cloud workers run.
 The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR

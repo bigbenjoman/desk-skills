@@ -242,23 +242,62 @@ export function cloudEta({ estimate = null, typicalH = null }) {
   return typicalH > 0 ? { ms: typicalH * 3_600_000, from: 'typical' } : null;
 }
 
-// A cloud session that may be stuck: no PR yet, past its start plus its ETA (cloudEta) plus a margin of
-// CLOUD_STALL_SHARE of that ETA, and no push to its branch within that margin. `lastPush` is when its
-// branch's head commit was made, or null with no branch on origin (or none read yet: a caller reads it
-// only once this says stuck without it, as a push can only make it less so). With no ETA it is never
-// called stuck.
-//   -> null, or { due, last, margin } with `due` the start plus ETA plus margin (ms), `last` the later
-//      of the start and the push (ms), `margin` in ms
+// A cloud session that may be stuck, quiet or stopped on an error. Nothing reads a cloud session's state
+// back (a session that stopped on "Claude Code hit an error" shows only as a claude.ai notification), so
+// both look the same from here: no PR and no push. In two steps, so it is sent one retry follow-up
+// (CLOUD_RETRY_MSG) before it is flagged:
+// - `retry`: past its start plus its ETA (cloudEta), no PR, and no push for a margin of CLOUD_STALL_SHARE
+//   of that ETA, with no retry sent since its last push;
+// - flagged (`retry: false`): a retry was sent, and it is past its start plus its ETA plus the margin,
+//   with no push within the margin since the retry.
+// A push after the retry starts it over. `lastPush` is when its branch's head commit was made, or null
+// with no branch on origin (or none read yet: a caller reads it only once this says something without
+// it, as a push can only make it less so). `retried` is when its retry was sent, or null. With no ETA it
+// is never called stuck.
+//   -> null, or { retry, due, last, margin } with `due` the start plus ETA plus margin (ms), `last` the
+//      latest of the start, the push and the retry (ms), `margin` in ms
 export const CLOUD_STALL_SHARE = 0.5;
-export function cloudStall({ started, eta, lastPush = null, now = Date.now() }) {
+export function cloudStall({ started, eta, lastPush = null, retried = null, now = Date.now() }) {
   const from = Date.parse(started ?? '');
   if (!Number.isFinite(from) || !(eta?.ms > 0)) return null;
   const margin = eta.ms * CLOUD_STALL_SHARE;
   const due = from + eta.ms + margin;
   const pushed = Date.parse(lastPush ?? '');
   const last = Number.isFinite(pushed) && pushed > from ? pushed : from;
-  if (now <= due || now - last <= margin) return null;
-  return { due, last, margin };
+  const sent = Date.parse(retried ?? '');
+  if (!Number.isFinite(sent) || sent < last) {
+    if (now <= from + eta.ms || now - last <= margin) return null;
+    return { retry: true, due, last, margin };
+  }
+  if (now <= due || now - sent <= margin) return null;
+  return { retry: false, due, last: sent, margin };
+}
+
+// The one follow-up a quiet cloud session is sent before it is flagged: it restarts a session that
+// stopped on an error, and a session still working reads it after its turn.
+export const CLOUD_RETRY_MSG = 'desk has seen no push or PR from this session past its expected time. If you stopped on an error, retry the step that failed and carry on with the ticket from where you were; if you are still working, carry on. Either way, push and open the draft PR as your brief says.';
+
+// What `claude -p "<msg>" --cloud <session> --output-format json` printed (tests/fixtures/cloud/
+// send-json.json): it queues the message and returns without waiting for a reply.
+//   -> { ok: true } once the CLI says it queued it to that session, else { error }
+export function parseCloudSend(out, session) {
+  const s = clean(out).trim();
+  let j = null;
+  try { j = JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)); } catch { j = null; }
+  if (j?.ok === true && (!session || j.session_id === session)) return { ok: true };
+  const lines = s.split('\n').map((l) => l.trim()).filter(Boolean);
+  const err = lines.find((l) => /\bError\b/.test(l));
+  return { error: err ? err.slice(err.search(/\bError\b/)) : j ? `it answered ${JSON.stringify(j).slice(0, 200)}` : (lines.slice(-3).join(' ') || 'it printed nothing') };
+}
+
+// Sends `msg` to cloud session `session` as a follow-up. Print mode takes a follow-up to an existing
+// session, so no terminal is needed. -> parseCloudSend's result
+export function sendCloud(session, msg, { claude = 'claude', timeout = 60_000, env = process.env } = {}) {
+  if (!/^session_\w+$/.test(String(session ?? ''))) return { error: 'its session id was not recorded' };
+  const r = spawnSync(claude, ['-p', msg, '--cloud', session, '--output-format', 'json'], { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'], env });
+  if (r.error) return { error: r.error.code === 'ETIMEDOUT' ? `no answer in ${timeout / 1000}s` : r.error.message };
+  const got = parseCloudSend(`${r.stdout ?? ''}\n${r.stderr ?? ''}`, session);
+  return got.error && r.status ? { error: `${got.error} (exit ${r.status})` } : got;
 }
 
 // Session start to PR, in ms, or null while there is no PR.
