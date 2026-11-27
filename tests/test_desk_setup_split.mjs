@@ -17,8 +17,9 @@ const skill = join(root, 'skills/desk-setup');
 const refs = join(skill, 'references');
 const core = readFileSync(join(skill, 'SKILL.md'), 'utf8');
 // permission-rows.md is the interview's row reference, not moved text; it is checked by its own suites.
-// mode-costs.md is a mode written after the split, so it holds no moved text either.
-const NOT_MOVED = ['permission-rows.md', 'mode-costs.md'];
+// mode-costs.md is a mode written after the split, so it holds no moved text either, nor does
+// step-1-cloud-env.md (issue-1586).
+const NOT_MOVED = ['permission-rows.md', 'mode-costs.md', 'step-1-cloud-env.md'];
 const refFiles = readdirSync(refs).filter((f) => f.endsWith('.md') && !NOT_MOVED.includes(f)).sort();
 const files = ['SKILL.md', ...refFiles];
 const read = (f) => (f === 'SKILL.md' ? core : readFileSync(join(refs, f), 'utf8'));

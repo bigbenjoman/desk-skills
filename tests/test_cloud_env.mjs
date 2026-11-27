@@ -11,7 +11,7 @@ import { detect, stepsOf, setupScript, repoBlock, guardOpen, guardClose, envHost
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
-const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
+const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(ok ? `ok   ${name}` : `FAIL ${name}: ${JSON.stringify(got)} (want ${JSON.stringify(want)})`); };
 const S = scratch('desk-cloud-env-');
 let n = 0;
 const repo = (files) => {
