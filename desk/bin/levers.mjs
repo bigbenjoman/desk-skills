@@ -31,7 +31,6 @@ import { appendDecisions } from './decisions.mjs';
 import { readDecisions } from './digest.mjs';
 import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q.mjs';
 
-export const CHOICES = Object.freeze(['off', 'trial']);
 const BY_HAND = 'ben';
 
 export class LeversRefusal extends Error {}
@@ -118,7 +117,7 @@ export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now
   const r = resolveRepo(repo, configRoot);
   checkLever(lever, registry);
   const choices = decideChoices(lever, registry);
-  if (!choices.includes(choice)) refuse(`levers decide: the choice ${isValued(registry[lever]) ? `for ${lever}, which has more than two arms, is one of its values or trial (${choices.join(', ')})` : `is ${CHOICES.join(' or ')}`}, not "${choice}"`);
+  if (!choices.includes(choice)) refuse(`levers decide: the choice ${isValued(registry[lever]) ? `for ${lever}, which has more than two arms, is one of its values or trial (${choices.join(', ')})` : `is ${choices.join(' or ')}`}, not "${choice}"`);
   if (choice === 'trial' && !registry[lever].trialled) refuse(`levers decide: ${lever} is not trialled; name it in the repo's Phase 0 levers row to turn it on`);
   checkRow(r, lever, configRoot);
   const state = batchPaths(r.slug).state;
