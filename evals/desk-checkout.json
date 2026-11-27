@@ -10,19 +10,19 @@
         },
         {
           "name": "names the umbrella ticket",
-          "contains": "SV-3625"
+          "matches": "```text(?:(?!```)[\\s\\S])*SV-3625"
         },
         {
           "name": "the queue PRs are one item",
-          "matches": "#1596[^\\n]*#1577|#1577[^\\n]*#1596"
+          "matches": "```text(?:(?!```)[\\s\\S])*\\n[^\\n]*(#1596[^\\n]*#1577|#1577[^\\n]*#1596)"
         },
         {
           "name": "the cloud work is an item",
-          "contains": "#1601"
+          "matches": "```text(?:(?!```)[\\s\\S])*#1601"
         },
         {
           "name": "the review fix is an item",
-          "contains": "#1610"
+          "matches": "```text(?:(?!```)[\\s\\S])*#1610"
         },
         {
           "name": "the three themes are separate items",
@@ -30,7 +30,7 @@
         },
         {
           "name": "the config change is its own item",
-          "matches": "(^|\\n)(?![^\\n]*#\\d)[^\\n]*(review-model|review model)[^\\n]*"
+          "matches": "```text(?:(?!```)[\\s\\S])*\\n(?![^\\n]*#\\d)[^\\n]*(review-model|review model)"
         },
         {
           "name": "the config change is in effect, not from tomorrow",

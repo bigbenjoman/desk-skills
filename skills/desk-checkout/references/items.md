@@ -45,8 +45,10 @@ by which ticket it belongs to or how many PRs it took:
 5. Fixed a recurring failure.
 6. A milestone in a plan.
 
-An item with more signals goes higher; ties keep the order of the list. Read each signal from its
-source, never from a session's narration:
+An item ranks by the highest signal it has, so anything security, production or launch-blocking
+leads whatever else is merged that day; items with the same highest signal rank by how many signals
+they have, then keep the order the sources gave them. Read each signal from its source, never from a
+session's narration:
 
 - **Shipped or merged** is a PR whose state is `MERGED` (its re-read in step 3, or the collector's
   `merged`), or a ticket whose status its workflow treats as done (`Done`, `Closed`, `Released`:
@@ -57,9 +59,10 @@ source, never from a session's narration:
   (`security`, `P0`, `P1`, `blocker`), a production deploy or incident, or a launch ticket it blocks.
 - **Unblocked others** needs a named person, team or pipeline that was waiting on it.
 
-Every item above the line gets the same treatment, whatever its source or ticket: its own lines, its
-problem, change and state. Ticket housekeeping still rolls up into one line, and a batch's own
-sessions are still never items (step 3).
+The line is between items, which changed something, and everything else: ticket housekeeping rolls
+up into one line below it, and a batch's own sessions are never items (step 3). Every item above the
+line gets the same treatment, whatever its source or ticket: its own lines, its problem, change and
+state.
 
 **Length follows the day.** A busy day has as many items as changed something; a quiet day is five
 lines, and that's fine. Never pad a quiet day, and never cut a busy one to "the few things that

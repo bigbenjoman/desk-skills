@@ -175,7 +175,11 @@ for (const task of coTasks) {
 const coFailing = (reply) => coTasks.find((task) => task.id === 'umbrella-day').checks.filter((c) => !checkPasses(c, reply)).map((c) => c.name).join(', ') || 'none';
 t('desk-checkout one umbrella bullet is not split by outcome', coFailing('```text\nCheck-out\n\nSV-3625: 4 PRs merged (#1596, #1577, #1601, #1610), #1603 in review.\nSwitched the review model (review-model row), in effect since 14:10.\n```'), 'the three themes are separate items');
 t('desk-checkout dropping the ticketless config change fails', coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 and #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged).\n```'), 'the config change is its own item');
-t('desk-checkout the config folded into a PR line fails', coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 and #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged), and the review-model row now opus.\n```'), 'the config change is its own item');
+// The item checks read the post alone: a line below the fence (Left out, Check before posting) never
+// stands in for an item the post is missing.
+t('desk-checkout the config change only under Left out fails', coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 and #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged).\n```\n\n- **Left out**: the review-model config change, no ticket.'), 'the config change is its own item');
+t('desk-checkout the queue PRs together only below the post fails', coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 (merged).\nQueue retries: SV-3625, #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged).\nSwitched the review model (review-model row), in effect since 14:10.\n```\n\n- **Check before posting**: #1596 and #1577 are both queue fixes.'), 'the queue PRs are one item');
+t('desk-checkout the config folded into a PR line fails',coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 and #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged), and the review-model row now opus.\n```'), 'the config change is its own item');
 
 // The run reader and the task-set checks.
 t('an error result is failed', readRun({ status: 0, stdout: JSON.stringify({ subtype: 'error_max_budget_usd', is_error: true, result: 'partial' }) }, 1).why, 'claude reported error_max_budget_usd');

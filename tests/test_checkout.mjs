@@ -448,7 +448,10 @@ has('#1647 ranked by the change, not the ticket', items, '## Rank by the change,
 for (const signal of ['1. Security, production or launch-blocking.', '2. Unblocked others or a pipeline.', '3. Shipped or merged.', '4. User- or team-facing.', '5. Fixed a recurring failure.', '6. A milestone in a plan.']) has(`#1647 impact signal: ${signal}`, items, signal);
 has('#1647 only MERGED is shipped', items, 'is a PR whose state is `MERGED`');
 has('#1647 a PR closed unmerged is not shipped', items, 'A PR `CLOSED` without merging (the collector\'s\n  `closed unmerged`) is not shipped');
-has('#1647 equal treatment above the line', items, 'Every item above the line gets the same treatment, whatever its source or ticket');
+has('#1647 equal treatment above the line', items, 'Every item above the\nline gets the same treatment, whatever its source or ticket');
+has('#1647 the line is defined', items, 'The line is between items, which changed something, and everything else');
+has('#1647 the highest signal ranks first, so security leads', items, 'An item ranks by the highest signal it has, so anything security, production or launch-blocking\nleads whatever else is merged that day');
+lacks('#1647 a count of signals never outranks a higher signal', items, 'An item with more signals goes higher');
 has('#1647 never every PR in a large group', items, 'Never list every PR in a large group');
 has('#1647 the quiet-day rule moved here', items, 'a quiet day is five\nlines, and that\'s fine');
 has('#1647 style: the worked example splits an umbrella ticket', style, 'Three separate things moved under the launch-readiness ticket ABC-1700:');
