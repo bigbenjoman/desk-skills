@@ -145,11 +145,12 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
 // (default `at`, so it is live then); null means no pass yet. With `batch`, it is that named batch.
-function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null, batch = null }) {
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null, batch = null, cloud = null }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`
+    + (cloud == null ? '' : `| Cloud sessions at once | \`4\` | \`${cloud}\` |\n`)
     + (tracker ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n` : ''));
   const tail = batch ? ['batches', batch] : [];
   const qp = join(zenv.DESK_HOME, 'repos', slug, ...tail, 'queue.json');
@@ -398,6 +399,18 @@ t('DS-185 AC4: a running row\'s stage is as of the last pass', /\sB-2\s+● runn
 t('DS-185 AC5: a ready row with every worker busy says it waits for one', /\sB-3\s+○ ready\s+waits for a worker \(2 of 2 busy\)\s/.test(bRow(waiting, 'B-3')), true);
 repo('roomy', 4630, { ...between, workers: 3, pass: FIXED - 2 * MIN });
 t('DS-185 AC5: with a free slot, a ready row starts at the next pass', /\sB-3\s+○ ready\s+starts at the next pass\s/.test(bRow(Q.repoScreen(repoAt('roomy'), { now: FIXED, width: 200 }), 'B-3')), true);
+// ---- #1564: a cloud session takes no worker slot, only one of §3b "Cloud sessions at once"
+const clouded = { tickets: { 'C-1': { state: 'running', stage: '3/9' }, 'C-2': { state: 'running', stage: '3/9', location: 'cloud' }, 'C-3': { state: 'running', stage: '2/9', location: 'cloud' },
+  'C-4': { state: 'triaged', location: 'cloud' }, 'C-5': { state: 'triaged' } }, sizes: { 'C-1': 'M', 'C-2': 'M', 'C-3': 'M', 'C-4': 'M', 'C-5': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN };
+repo('cloudfull', 4640, { ...clouded, workers: 1, cloud: 2 });
+repo('cloudroom', 4650, { ...clouded, workers: 1, cloud: 3 });
+const cloudFull = Q.repoScreen(repoAt('cloudfull'), { now: FIXED, width: 200 });
+const cloudRoom = Q.repoScreen(repoAt('cloudroom'), { now: FIXED, width: 200 });
+t('#1564 AC4: the counts line shows local and cloud running apart', /● 1 local · ☁ 2 cloud(\s|$)/m.test(cloudFull), true);
+t('#1564 AC4: at the cloud limit, a ready cloud ticket waits for a cloud session, and a local one for a worker',
+  [/\sC-4\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(cloudFull, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudFull, 'C-5'))], [true, true]);
+t('#1564 AC1: with every worker busy but a cloud session free, a ready cloud ticket starts at the next pass',
+  [/\sC-4\s+○ ready\s+starts at the next pass\s/.test(bRow(cloudRoom, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudRoom, 'C-5'))], [true, true]);
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);
