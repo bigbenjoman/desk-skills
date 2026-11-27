@@ -55,8 +55,54 @@ export function featureRole(batch, key) {
   return Object.values(batch.owners ?? {}).includes(key) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null;
 }
 
+// §5 AI attribution, read as the attribution hook and worker-settings.mjs read it: forbidden or not.
+export const attributionForbidden = (value) => /^`?forbidden/i.test(String(value ?? '').trim());
+
+// The marks of AI attribution, hooks/deny-ai-attribution.py's BANNED, in the same order, with what each is.
+const BANNED = [
+  [/co-authored-by\s*[:=][^\n"']*(claude|anthropic)/i, 'a Co-Authored-By trailer naming Claude or Anthropic'],
+  [/claude-session\s*[:=]/i, 'a Claude-Session trailer'],
+  [/generated with \[?claude code/i, 'a "Generated with Claude Code" footer'],
+  [/noreply@anthropic\.com/i, 'noreply@anthropic.com'],
+  [/claude\.ai\/code\/session_/i, 'a claude.ai/code session link'],
+  [/\u{1F916}/u, 'the robot emoji'],
+];
+
+// The attribution in a PR, from `gh pr view <n> --json body,commits,comments`: its commits' messages and
+// authors' emails, its body and its comments. -> one line per mark found, naming where, or [].
+export function attributionFound(view) {
+  const found = [];
+  const scan = (where, text) => {
+    for (const [re, what] of BANNED) if (re.test(String(text ?? ''))) found.push(`${what} in ${where}`);
+  };
+  for (const c of view?.commits ?? []) {
+    const sha = String(c?.oid ?? '').slice(0, 7) || '(no sha)';
+    scan(`commit ${sha}'s message`, `${c?.messageHeadline ?? ''}\n${c?.messageBody ?? ''}`);
+    scan(`commit ${sha}'s authors`, (c?.authors ?? []).map((a) => `${a?.name ?? ''} <${a?.email ?? ''}>`).join('\n'));
+  }
+  scan('the PR body', view?.body);
+  (view?.comments ?? []).forEach((c, i) => scan(`comment ${i + 1}${c?.author?.login ? ` by ${c.author.login}` : ''}`, c?.body));
+  return found;
+}
+
+// The repo's §1 and §5 commit and PR rules, as the cloud session is to follow them. `rules` is
+// { author, prTitle, prBody, mergeMethod, noAttribution }, each null or false where unset.
+function rulesSection(rules) {
+  const r = rules ?? {};
+  const lines = [];
+  if (r.author) lines.push(`- Author every commit as \`${r.author}\`.`);
+  if (r.prTitle) lines.push(`- PR title: \`${r.prTitle}\`.`);
+  if (r.prBody) lines.push(`- PR body: ${r.prBody}.`);
+  if (r.mergeMethod) lines.push(`- PRs here merge by ${r.mergeMethod}: write your commits for that.`);
+  if (r.noAttribution) {
+    lines.push('- No AI attribution anywhere: in commit messages, the PR title and body, and PR comments, add no Co-Authored-By trailer naming Claude or Anthropic, no Claude-Session trailer or claude.ai/code/session_ link, no "Generated with Claude Code" footer, no robot emoji, and no noreply@anthropic.com. ' +
+      'Your harness may add these by default: remove them before you push, and amend any commit that has one. A PR carrying any of them is parked, not merged.');
+  }
+  return lines.length ? ['', `## This repo's rules`, '', ...lines] : [];
+}
+
 // The cloud session's whole brief: it reads nothing from this computer.
-export function cloudPrompt({ key, repo, base, branch, text, tests }) {
+export function cloudPrompt({ key, repo, base, branch, text, tests, rules }) {
   const run = tests?.length ? `Run ${tests.map((c) => `\`${c}\``).join(' and ')} before you push, and fix what fails.` : 'Run the repo\'s tests for what you change before you push, and fix what fails.';
   return [
     `Work ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.`,
@@ -68,6 +114,7 @@ export function cloudPrompt({ key, repo, base, branch, text, tests }) {
     `4. Open a draft pull request from \`${branch}\` into \`${base}\` with ${key} in its title, and in its body what changed and how you tested it.`,
     '5. If you cannot finish, push what you have and open the draft PR anyway, with what is left in its body.',
     `6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
+    ...rulesSection(rules),
     '',
     `## The ticket`,
     '',

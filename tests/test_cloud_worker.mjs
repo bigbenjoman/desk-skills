@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT, attributionForbidden, attributionFound } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { scratch } from './scratch.mjs';
@@ -51,6 +51,39 @@ t('AC2 and the branch to push and the PR to open', prompt.includes('branch named
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
 t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
   ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
+
+// ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
+const rules = { author: 'Ada Lovelace <ada@example.com>', prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
+const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'b', text: 'T', tests: [], rules });
+t('issue-1569 AC1 the prompt has a section of the repo\'s rules', ruled.includes("## This repo's rules"), true);
+t('issue-1569 AC1 it names the git author, PR title and body shapes and merge method',
+  ['Author every commit as `Ada Lovelace <ada@example.com>`', 'PR title: `type(scope): <TICKET> description`', 'PR body: intro · ### Changes · ### Testing', 'merge by squash'].every((x) => ruled.includes(x)), true);
+t('issue-1569 AC1 where §5 forbids attribution, it rules out the trailer, session link and footer in commits, PR body and comments',
+  ['No AI attribution', 'Co-Authored-By', 'Claude-Session', 'claude.ai/code/session_', 'Generated with Claude Code', 'noreply@anthropic.com', 'commit messages', 'PR title and body', 'PR comments'].every((x) => ruled.includes(x)), true);
+t('issue-1569 AC1 the rules come before the ticket text', ruled.indexOf("## This repo's rules") < ruled.indexOf('## The ticket'), true);
+const allowed = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], rules: { ...rules, noAttribution: false } });
+t('issue-1569 AC1 where attribution is allowed, nothing rules it out', allowed.includes('No AI attribution') || allowed.includes('Co-Authored-By'), false);
+t('issue-1569 AC1 and the other rules stay', allowed.includes('Author every commit as'), true);
+t('issue-1569 AC1 with no rules set, there is no rules section', prompt.includes("This repo's rules"), false);
+t('issue-1569 §5 read as the hook reads it: forbidden', [attributionForbidden('forbidden'), attributionForbidden('`forbidden` (hook)'), attributionForbidden('allowed'), attributionForbidden(null)].join(), 'true,true,false,false');
+
+const clean = { body: 'What changed.', commits: [{ oid: 'abcdef1234', messageHeadline: 'fix: K-1 x', messageBody: '', authors: [{ name: 'Ada', email: 'ada@example.com' }] }], comments: [{ author: { login: 'ada' }, body: 'LGTM' }] };
+t('issue-1569 AC2 a PR with no attribution has none found', attributionFound(clean).length, 0);
+const marked = {
+  body: 'Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)',
+  commits: [
+    { oid: 'abcdef1234', messageHeadline: 'fix: K-1 x', messageBody: 'Co-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01X', authors: [{ name: 'Ada', email: 'ada@example.com' }] },
+    { oid: '9876543210', messageHeadline: 'chore', messageBody: '', authors: [{ name: 'Claude', email: 'noreply@anthropic.com' }] },
+  ],
+  comments: [{ author: { login: 'ada' }, body: 'see https://claude.ai/code/session_02Y' }],
+};
+const found = attributionFound(marked);
+t('issue-1569 AC2 a co-author trailer in a commit is found, naming the commit', found.includes("a Co-Authored-By trailer naming Claude or Anthropic in commit abcdef1's message"), true);
+t('issue-1569 AC2 so is a session trailer and its link', found.includes("a Claude-Session trailer in commit abcdef1's message") && found.includes("a claude.ai/code session link in commit abcdef1's message"), true);
+t('issue-1569 AC2 an Anthropic author email is found', found.includes("noreply@anthropic.com in commit 9876543's authors"), true);
+t('issue-1569 AC2 the footer and robot emoji in the PR body are found', found.includes('a "Generated with Claude Code" footer in the PR body') && found.includes('the robot emoji in the PR body'), true);
+t('issue-1569 AC2 a session link in a comment is found, naming it', found.includes('a claude.ai/code session link in comment 1 by ada'), true);
+t('issue-1569 AC2 an empty view finds nothing', attributionFound({}).length, 0);
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));

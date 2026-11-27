@@ -35,7 +35,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT, attributionForbidden, attributionFound } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -1027,6 +1027,26 @@ function advanceCloud(t) {
     return;
   }
   const cloud = { ...c, pr_at: pr.createdAt };
+  // Where §5 forbids AI attribution, the PR is read for it before the ticket is done: a cloud session's
+  // harness adds a co-author trailer and a session link by default, and no hook here sees its commits.
+  // Found, the ticket parks on its PR's branch, where a requeue is a local worker (cloudPrHere).
+  if (attributionForbidden(E.configValue('ai-attribution'))) {
+    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments'], { fresh: true });
+    let view = null;
+    try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
+    if (!view) {
+      report.quiet.push(`${t.key}: cloud session ${where} opened PR #${pr.number}, whose attribution could not be read (${got.ok ? 'not JSON' : got.out.split('\n').pop()}); read again next pass`);
+      return;
+    }
+    const found = attributionFound(view);
+    if (found.length) {
+      const line = `cloud PR #${pr.number} carries AI attribution, which config §5 forbids: ${found.join('; ')}. Remove it from the commits, body and comments, then requeue ${t.key}`;
+      q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`);
+      q('park', t.key, line);
+      report.parked.push(`${t.key}: ${line}`);
+      return;
+    }
+  }
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
@@ -3665,6 +3685,22 @@ function cloudTicketText(key) {
   const comments = shOut('desk-jira', ['comments', key]);
   return `${got.out}\n\n## Comments\n\n${comments.ok ? comments.out : `(not read: ${comments.out.split('\n').pop()})`}`;
 }
+// The repo's §1 and §5 commit and PR rules a cloud session is told (cloud-worker.mjs cloudPrompt): it reads
+// no config. A row unset, `none` or unreadable is left out.
+function cloudRules() {
+  const set = (v) => (v == null || E.isNone(v) ? null : String(v).trim() || null);
+  let author = null;
+  try { const a = E.gitAuthor(); author = a ? `${a.name} <${a.email}>` : null; } catch { /* malformed: left out, as a local worker refuses it */ }
+  let prBody = null;
+  try { prBody = set(E.declaredValue('pr-body')); } catch { /* unread */ }
+  return {
+    author,
+    prTitle: set(E.configValue('pr-title')),
+    prBody,
+    mergeMethod: set(E.configValue('merge-method')),
+    noAttribution: attributionForbidden(E.configValue('ai-attribution')),
+  };
+}
 function spawnCloud(t) {
   const park = (why) => {
     const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
@@ -3689,7 +3725,7 @@ function spawnCloud(t) {
   if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null'],
     'no cloud session was started')) return;
   const name = cloudName(GH_REPO, t.key);
-  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }), { name });
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules() }), { name });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
     park(s.error);
