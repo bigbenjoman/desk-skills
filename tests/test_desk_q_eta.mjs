@@ -430,6 +430,12 @@ t('#1564 AC4: at the cloud limit, a ready cloud ticket waits for a cloud session
   [/\sC-4\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(cloudFull, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudFull, 'C-5'))], [true, true]);
 t('#1564 AC1: with every worker busy but a cloud session free, a ready cloud ticket starts at the next pass',
   [/\sC-4\s+○ ready\s+starts at the next pass\s/.test(bRow(cloudRoom, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudRoom, 'C-5'))], [true, true]);
+// issue-1543 AC5: the pass holds a cloud start behind shared files too (spawn-loop's file-budget step),
+// so a ready cloud ticket it held names its holders even with a cloud session free.
+repo('cloudheld', 4655, { ...clouded, workers: 1, cloud: 3 });
+writeFileSync(join(stateOf('cloudheld'), 'passes.jsonl'), `${JSON.stringify({ at: new Date(FIXED - 2 * MIN).toISOString(), collisions: [{ key: 'C-4', with: ['C-2'], files: ['a.mjs'] }] })}\n`);
+t('issue-1543 AC5: a ready cloud ticket the last pass held on shared files names its holders, not a free cloud session',
+  /\sC-4\s+○ ready\s+waits for C-2 \(shared files\)\s/.test(bRow(Q.repoScreen(repoAt('cloudheld'), { now: FIXED, width: 200 }), 'C-4')) || bRow(Q.repoScreen(repoAt('cloudheld'), { now: FIXED, width: 200 }), 'C-4'), true);
 // #1564 AC2: the limit counts every batch of the repo, as the pass does, so a named batch's own screen
 // names it when the standing batch's cloud sessions fill it.
 repo('cloudsib', 4660, { tickets: { 'D-1': { state: 'running', stage: '3/9', location: 'cloud' }, 'D-2': { state: 'running', stage: '3/9', location: 'cloud' } },

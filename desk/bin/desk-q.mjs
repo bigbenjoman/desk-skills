@@ -47,7 +47,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff } from './pass/shared.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -3409,12 +3409,16 @@ function countsLine(r, now = Date.now()) {
 // session, whose hold outlasts a free worker, its batch's worker slots, or the machine cap, which every
 // repo's workers share. A holder this batch has since moved on from holds nothing; one from another
 // batch stays named until the next pass.
-const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && o.handoff === 'pending');
+const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
 function startWait(r, t) {
-  // A ticket that starts in a cloud session waits only on §3b "Cloud sessions at once", never on a
+  const clash = (r.passHolds?.[t.key] ?? []).filter((k) => stillHolds(r.q?.tickets?.[k]));
+  const held = clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
+  // A ticket that starts in a cloud session waits on shared files, which the pass holds a cloud start
+  // behind too (spawn-loop's file-budget step), then only on §3b "Cloud sessions at once", never on a
   // worker or machine slot, counted over every batch of its repo (loadRepos repoCloud). A resume or
   // handoff of one runs here, so it waits as a local ticket does.
   if (startsInCloud(t)) {
+    if (held) return held;
     let limit;
     try { limit = cloudSessions(repoConfigValue(r.slug, 'cloud-sessions')); } catch { limit = cloudSessions(null); }
     if (limit.bad) return `waits for config §3b "Cloud sessions at once" to read as a whole number`;
@@ -3422,8 +3426,7 @@ function startWait(r, t) {
     return busy >= limit.n ? `waits for a cloud session (${busy} of ${limit.n} busy)` : null;
   }
   if (r.workers === 0) return 'workers set to 0';
-  const clash = (r.passHolds?.[t.key] ?? []).filter((k) => stillHolds(r.q?.tickets?.[k]));
-  if (clash.length) return `waits for ${clash.join(', ')} (shared files)`;
+  if (held) return held;
   const busy = workersRunning(r);
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
   // Every repo's workers count against the machine cap, so a batch with free slots can still wait. A
