@@ -1863,6 +1863,32 @@ check "#1515 AC4 its handoff wait records the collision and no deadline, for des
 check "#1515 two handoffs naming one file do not hold each other: the first in queue order starts and the other waits behind it" \
   'spawned HO-7 && ! spawned HO-8 && echo "$out" | grep -qF "HO-8: held by collision on src/hot.ts with HO-7"'
 
+# ---- #1667: a ticket a person placed at the front (--front, or a move) above a pending handoff takes a
+# serial file they both need ahead of it; the handoff waits with its briefing kept. Unplaced, a ticket
+# moved to the front by the pass (a released chain head) does not beat the handoff.
+fbq hof '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-11 src/hot.ts; fbt HO-12 triaged src/hot.ts; q front HO-12 --placed >/dev/null
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC1 a front ticket above a handoff resume takes the serial file: it starts and the handoff waits, still pending" \
+  'spawned HO-12 && ! spawned HO-11 && [ "$(field HO-11 state)" = "\"triaged\"" ] && [ "$(field HO-11 handoff)" = "\"pending\"" ] && [ "$(field HO-11 handoff_stage)" = "\"4b\"" ]'
+check "#1667 AC1 the handed-off ticket keeps its briefing" '[ -s "$DESK_AUTOPILOT_STATE/handoffs/HO-11.json" ]'
+check "#1667 AC3 the pass says which ticket won the file and why" \
+  'echo "$out" | grep -qF "src/hot.ts: HO-12 takes it ahead of HO-11'"'"'s handoff to Stage 4b: placed at the front of the spawn order (--front, or a person'"'"'s move) above it, so HO-11 waits for the file with its handoff briefing kept"'
+q set HO-12 state=done; : > "$T/fb-spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC1 once the front ticket stops running, the handoff starts from its briefing" 'spawned HO-11'
+
+fbq hog '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-13 src/hot.ts; fbt HO-14 triaged src/hot.ts; q front HO-14 >/dev/null
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC2 AC4 an unplaced ticket ahead of a handoff resume does not beat it: the handoff takes the serial file" \
+  'spawned HO-13 && ! spawned HO-14 && ! echo "$out" | grep -qF "takes it ahead of" && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-14 (src/hot.ts has 1 running of its 1: HO-13)"'
+
+fbq hoh '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-16 src/hot.ts; fbt HO-15 triaged src/hot.ts; q move HO-15 last >/dev/null
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC1 a placed ticket below the handoff does not beat it" 'spawned HO-16 && ! spawned HO-15'
+
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
 # the first line of big.ts (1,200 lines, so 3 places unlowered). The fake gh answers PRs from $T/fx.

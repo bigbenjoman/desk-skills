@@ -3021,21 +3021,34 @@ const reviewKeys = new Set(runningAll.filter(reviewOnlyTry).map((r) => r.key));
 // handoffs among themselves count the running alone, and start in queue order, so none holds another
 // forever. Read from the queue as the pass found it; a handoff the loop starts is running from then.
 const handedOffKeys = new Set(all.filter((t) => t.state === 'triaged' && toHandoff(t) && !reviewOnlyTry(t)).map((t) => t.key));
+// A ticket at the front: one a person placed (`--front`, or queue.mjs move or order --placed), not yet
+// started, and ready but for its files. Above a pending handoff in the spawn order, it takes a file they
+// both need at its budget ahead of the handoff, which waits with its briefing kept (#1667); below it, or
+// unplaced, it does not, and the handoff keeps its place as above.
+const spawnPos = new Map(Object.keys(fresh.tickets).map((k, i) => [k, i]));
+const above = (a, b) => (spawnPos.get(a) ?? Infinity) < (spawnPos.get(b) ?? Infinity);
+const atFront = (t) => !!t?.placed && t.state === 'triaged' && !toHandoff(t) && !toResume(t) && !reviewOnlyTry(t)
+  && !runningKeys.has(t.key) && (t.open_questions ?? 0) === 0 && keysOf(t.cycle_link).length === 0;
 // Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
 // them (`by`), its handoffs waiting for their next session (`handoff`; for a ticket not itself handed
-// off) and the repo's other batches' (`elsewhere`, { key, batch, handoff? }).
+// off, leaving out those below it where it is at the front), the tickets at the front above it that
+// take the file first (`front`; for a handoff, each not itself held) and the repo's other batches'
+// (`elsewhere`, { key, batch, handoff? }). A front ticket counts handoffs above it alone, and a handoff
+// front tickets above it alone, so the two never hold each other.
 const budgetHolds = (r) => {
   const holds = [];
   if (reviewOnlyTry(r)) return holds;
   const newTicket = !toHandoff(r);
+  const placedNew = newTicket && atFront(r);
   for (const f of budgetFiles(r.key)) {
     const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    const handoff = newTicket ? [...handedOffKeys].filter((k) => k !== r.key && !runningKeys.has(k) && budgetFiles(k).includes(f)) : [];
+    const handoff = newTicket ? [...handedOffKeys].filter((k) => k !== r.key && !runningKeys.has(k) && budgetFiles(k).includes(f) && !(placedNew && above(r.key, k))) : [];
+    const front = newTicket ? [] : all.filter((t) => t.key !== r.key && atFront(t) && above(t.key, r.key) && budgetFiles(t.key).includes(f) && budgetHolds(t).length === 0).map((t) => t.key);
     const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && (newTicket || !o.handoff) && o.files.includes(f))
       .map(({ key, batch, handoff: h }) => ({ key, batch, ...(h ? { handoff: true } : {}) }));
-    if (!by.length && !handoff.length && !elsewhere.length) continue;
+    if (!by.length && !handoff.length && !front.length && !elsewhere.length) continue;
     const k = placesFor(f);
-    if (by.length + handoff.length + elsewhere.length >= k) holds.push({ file: f, k, by, handoff, elsewhere });
+    if (by.length + handoff.length + front.length + elsewhere.length >= k) holds.push({ file: f, k, by, handoff, front, elsewhere });
   }
   return holds;
 };
@@ -3043,8 +3056,13 @@ const budgetHolds = (r) => {
 // (pass/deadlines.mjs): [{ file, with: [key, or "key in batch <label>"] }], or null where none does.
 const collisionHolds = (r) => {
   const holds = budgetHolds(r);
-  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
+  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.front, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
 };
+// Which ticket won a file a pending handoff and a front ticket above it both need, and why (#1667):
+// one line each, said once the candidates are read.
+const frontWins = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key)).flatMap((t) =>
+  budgetHolds(t).filter((h) => h.front.length).map((h) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'takes' : 'take'} it ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
+    `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept`));
 const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
@@ -3089,6 +3107,8 @@ runSteps({
 });
 // ELIG_CLOUD_HELD: what holds every cloud start, or null; memory harm, this computer's, is not among them.
 const { eligible, spawnable, held, spawnHeld, cloudHeld: ELIG_CLOUD_HELD } = ELIGIBILITY;
+// A front ticket that takes a file ahead of a pending handoff is said by name, with why (#1667).
+for (const line of frontWins()) report.waits.push(line);
 
 // ---- slots, and borrowing ----------------------------------------------------
 // The batch's own number, borrowing, and the machine and repo budgets (pass/eligibility.mjs
@@ -7054,7 +7074,7 @@ if (!DRY) {
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held && held !== harmWhy ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.handoff, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.handoff, ...h.front, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
