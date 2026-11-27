@@ -205,6 +205,15 @@ fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(
 cmp "$T/stamp1" "$T/stamp3"
 check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
+# #1567 the memory a held pass read (its hold's numbers.availGB) is the machine's, which no two runs share.
+fieldtree mem1 'hold: { cause: "memory", numbers: { availGB: 2.9478759765625, minAvailGB: 4 } }' 'A-1 running'
+fieldtree mem2 'hold: { cause: "memory", numbers: { availGB: 2.910675048828125, minAvailGB: 4 } }' 'A-1 running'
+cmp "$T/mem1" "$T/mem2"
+check "#1567 a held pass's availGB that differs between runs is not reported" "$same0"
+fieldtree mem3 'hold: { cause: "memory", numbers: { availGB: 2.9478759765625, minAvailGB: 6 } }' 'A-1 running'
+cmp "$T/mem1" "$T/mem3"
+check "#1567 its spawn gate (minAvailGB) is still compared" '[ $rc = 1 ] && echo "$out" | grep -qF "minAvailGB: base 4, head 6"'
+
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'
 mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
