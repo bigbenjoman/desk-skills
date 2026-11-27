@@ -527,23 +527,28 @@ function asksByArm(v) {
 // Each repo's tickets by arm of a lever that reports handoffs (handoff threshold, levers-evaluate.mjs):
 // per ticket, the dollars and the handoffs to a fresh session, the baseline arm first and each other
 // value against it. Nothing until an evaluation has tickets.
+// One repo's group of a lever's tickets by value (an armPanel repo entry): the baseline's row first and
+// each other value after it, each row its label, tickets, dollars per ticket and dollars against the
+// baseline, then `last(arm, x)`, the table's own last cell.
+function valueGroup(r, by, label, last) {
+  const base = r.arms[r.baseline];
+  const vs = (x, b) => (x == null || b == null || !b ? DASH : `${x >= b ? '+' : MINUS}${Math.abs(Math.round((x / b - 1) * 100))}%`);
+  const order = [...(base ? [r.baseline] : []), ...Object.keys(r.arms).filter((a) => a !== r.baseline)];
+  return {
+    repo: r.name, head: `${r.name} · ${r.lever} · tickets by ${by}, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
+    rows: order.map((a) => { const x = r.arms[a]; return [esc(a === r.baseline ? `${a} (baseline)` : label(a)), String(x.tickets), usd(x.usd_per_ticket),
+      a === r.baseline ? DASH : vs(x.usd_per_ticket, base?.usd_per_ticket), last(a, x)]; }),
+  };
+}
+
 function handoffsByArm(v) {
   const repos = v.panels.handoffs?.repos ?? [];
   if (!repos.length) return '';
-  const vs = (x, b) => (x == null || b == null || !b ? DASH : `${x >= b ? '+' : MINUS}${Math.abs(Math.round((x / b - 1) * 100))}%`);
   return dataSection({
     id: 'handoffs-h', title: 'Handoffs, by threshold',
     intro: 'Per ticket: what it cost and how many times its worker handed off to a fresh session, each threshold against the baseline.',
     cols: [{ label: 'Threshold' }, { label: 'Tickets', num: true }, { label: '$ per ticket', num: true }, { label: 'vs baseline', num: true }, { label: 'Handoffs per ticket', num: true }],
-    groups: repos.map((r) => {
-      const base = r.arms[r.baseline];
-      const order = [...(base ? [r.baseline] : []), ...Object.keys(r.arms).filter((a) => a !== r.baseline)];
-      return {
-        repo: r.name, head: `${r.name} · ${r.lever} · tickets by threshold, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
-        rows: order.map((a) => { const x = r.arms[a]; return [esc(a === r.baseline ? `${a} (baseline)` : `${a}%`), String(x.tickets), usd(x.usd_per_ticket),
-          a === r.baseline ? DASH : vs(x.usd_per_ticket, base?.usd_per_ticket), esc(String(x.handoffs_per_ticket ?? DASH))]; }),
-      };
-    }),
+    groups: repos.map((r) => valueGroup(r, 'threshold', (a) => `${a}%`, (a, x) => esc(String(x.handoffs_per_ticket ?? DASH)))),
   });
 }
 
@@ -554,21 +559,12 @@ const DECISION = Object.freeze({ adopt: 'Keep it', revert: 'Turn it off', hold: 
 function valuesByArm(v) {
   const repos = v.panels.values?.repos ?? [];
   if (!repos.length) return '';
-  const vs = (x, b) => (x == null || b == null || !b ? DASH : `${x >= b ? '+' : MINUS}${Math.abs(Math.round((x / b - 1) * 100))}%`);
   return dataSection({
     id: 'values-h', title: 'Models, each against the baseline',
     intro: 'Per ticket: what it cost on each model, and desk’s decision on that model against the model the repo’s config names.',
     cols: [{ label: 'Model' }, { label: 'Tickets', num: true }, { label: '$ per ticket', num: true }, { label: 'vs baseline', num: true }, { label: 'Decision' }],
-    groups: repos.map((r) => {
-      const base = r.arms[r.baseline];
-      const order = [...(base ? [r.baseline] : []), ...Object.keys(r.arms).filter((a) => a !== r.baseline)];
-      return {
-        head: `${r.name} · ${r.lever} · tickets by model, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
-        rows: order.map((a) => { const x = r.arms[a]; return [esc(a === r.baseline ? `${a} (baseline)` : a), String(x.tickets), usd(x.usd_per_ticket),
-          a === r.baseline ? DASH : vs(x.usd_per_ticket, base?.usd_per_ticket),
-          a === r.baseline || !x.decision ? DASH : `<span title="${esc(x.reason ?? '')}">${esc(DECISION[x.decision] ?? x.decision)}</span>`]; }),
-      };
-    }),
+    groups: repos.map((r) => valueGroup(r, 'model', (a) => a, (a, x) => (a === r.baseline || !x.decision ? DASH
+      : `<span title="${esc(x.reason ?? '')}">${esc(DECISION[x.decision] ?? x.decision)}</span>`))),
   });
 }
 

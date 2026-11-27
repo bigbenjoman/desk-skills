@@ -91,6 +91,7 @@ t('DS-1036 AC3 drew sonnet beside other levers, finder=opus: sonnet wins', cli('
 t('DS-1036 on its baseline, finder=haiku: the row\'s haiku', cli('default finder=haiku', 'finder', drew('config', 'none')), '0 haiku');
 t('DS-1036 on its baseline, finder unset: none', cli('default', 'finder', drew('config', 'none')), '0 none');
 t('DS-1036 a drawn value that is no Agent tool alias is not passed on', cli('default finder=haiku', 'finder', drew('claude-haiku-5-5')), '0 haiku');
+t('DS-1036 a pin from when finder-model had two arms, on with no value: sonnet, as it meant then', cli('default finder=opus', 'finder', { DESK_LEVERS: 'memory finder-model' }), '0 sonnet');
 t('DS-1000 AC3 lever off, finder unset: none', cli('default', 'finder', { DESK_LEVERS: 'memory' }), '0 none');
 t('DS-1000 AC3 lever off, finder=haiku: haiku', cli('default finder=haiku', 'finder', { DESK_LEVERS: 'none' }), '0 haiku');
 t('DS-1000 the lever does not move the text model', cli('default text=haiku', 'text', drew('sonnet')), '0 haiku');

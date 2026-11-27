@@ -227,6 +227,10 @@ export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder
 // A model lever's baseline arm (lever-registry.mjs `model`): the model §3b Worker models names for the
 // start, so a ticket on it runs as it would with no trial. Every other value is a model name.
 export const MODEL_BASELINE = 'config';
+// The model a model lever's on arm meant while it had two arms, by lever: a log event or a ticket's pin
+// written then names `on` (or `off`, the baseline), never a value, and reads as this model.
+export const MODEL_LEGACY_ON = Object.freeze({ 'finder-model': 'sonnet' });
+export const legacyModelValue = (lever, v) => (Object.hasOwn(MODEL_LEGACY_ON, lever) ? (v === 'on' ? MODEL_LEGACY_ON[lever] : v === 'off' ? MODEL_BASELINE : v) : v);
 export const LEVERS_AUTO = 'auto';
 export const leverWords = (items) => [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean))];
 export function leverRow(items) {

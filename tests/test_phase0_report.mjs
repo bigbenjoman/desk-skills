@@ -111,6 +111,8 @@ t('the spawn line reads default with no effort passed', line.effort, 'default');
 const fell = JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', model: 'default', modelFallback: 'sonnet', installed: null, levers: { on: ['worker-model'], unknown: [] } }));
 t('DS-1036 AC5 a start that fell back from its drawn model records the model it ran and the one it drew', `${fell.model} ${fell.model_fallback}`, 'default sonnet');
 t('DS-1036 a start that did not fall back carries no model_fallback', 'model_fallback' in line, false);
+const fellF = JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', model: 'default', finderFallback: 'haiku', installed: null, levers: { on: ['finder-model'], unknown: [] } }));
+t('DS-1036 AC5 a start whose drawn finder model fell back records the finder model it drew', `${fellF.finder_fallback} ${'model_fallback' in fellF} ${'finder_fallback' in line}`, 'haiku false false');
 
 // ---- the claude version and lever-code fingerprints on the spawn line ------------------------
 const TREE = join(T, 'tree');

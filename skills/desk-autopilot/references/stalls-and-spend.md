@@ -73,6 +73,10 @@ the registry entry's `values`), `desk-env model finder` prints that alias whatev
 and each model is weighed against `config`, the row's finders, with the blind audit as for any
 quality-risk lever. Only the routed finders move: the simplicity finder reads
 `desk-env model finder --row`. A repo whose `finder=` already names one of its models never draws it.
+The preflight proves the drawn alias as its `FINDER` check; one the CLI cannot start on runs the
+ticket's finders on the row's `finder=` instead, named by the queue's `finder_fallback` and the start's
+`runs.jsonl` line, and the ticket is left out of the lever's evidence. A ticket pinned while the lever
+had two arms (on, with no model) reads as `sonnet`, which its on arm meant then.
 
 The `worker-model` lever trials the worker's own model the same way: a ticket drawn on for it runs
 every start on its model (`sonnet`) in place of the standard and high models, its Stage 7 text model

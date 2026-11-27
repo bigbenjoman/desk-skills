@@ -81,6 +81,16 @@ if [ -n "${DESK_LEVERS+x}" ]; then
   fi
   if [ -n "$VALUES" ]; then export DESK_LEVER_VALUES="$VALUES"; fi
 fi
+# A finder model the finder-model lever drew that the CLI cannot start on (AUTOPILOT_FINDER_FALLBACK,
+# from pass.mjs): its finders run on the baseline, §3b Worker models' finder.
+if [ -n "${AUTOPILOT_FINDER_FALLBACK:-}" ] && [ -n "${DESK_LEVER_VALUES:-}" ]; then
+  NV=""
+  for w in $DESK_LEVER_VALUES; do
+    case "$w" in finder-model=*) w="finder-model=config" ;; esac
+    NV="${NV:+$NV }$w"
+  done
+  export DESK_LEVER_VALUES="$NV"
+fi
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
@@ -353,11 +363,11 @@ $CHECKS"
     fi
   }
   run_checks() {
-    LINES=""; SOFT=""; fail=0; hard=0; breach=0
+    LINES=""; SOFT=""; fail=0; hard=0; breach=0; MODEL_REJECTED=0
     # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
     if [ -n "$MODEL" ]; then
       if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then LINES="$LINES$(printf '  %-6s %-8s ok' MODEL "$MODEL")"$'\n'
-      else LINES="$LINES  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200 || true))"$'\n'; fail=1
+      else LINES="$LINES  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200 || true))"$'\n'; fail=1; MODEL_REJECTED=1
         [ -n "$WHY" ] || breach=1  # a session that ran no check is retried, not read as a rejected model
       fi
     fi
@@ -469,7 +479,9 @@ $CHECKS"
     exit 0
   fi
   # With the preflight lever on, its own step failing is the lever's own-step trip (levers-trips.mjs).
-  [ "${#PRE_EFFORT_ARGS[@]}" -gt 0 ] && node "$BIN/levers-trips.mjs" record-step --state "$STATE" --ticket "$TICKET" --lever preflight --step "the preflight" --exit 1 \
+  # A model the worker-model lever drew (AUTOPILOT_MODEL_DRAWN, from pass.mjs) that the CLI rejects is
+  # that lever's, and pass.mjs starts the ticket on its baseline instead: not the preflight's step.
+  [ "${#PRE_EFFORT_ARGS[@]}" -gt 0 ] && ! { [ -n "${AUTOPILOT_MODEL_DRAWN:-}" ] && [ "${MODEL_REJECTED:-0}" = 1 ]; } && node "$BIN/levers-trips.mjs" record-step --state "$STATE" --ticket "$TICKET" --lever preflight --step "the preflight" --exit 1 \
     --error "the preflight failed" </dev/null >/dev/null 2>&1 || true
   echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
   exit 1
@@ -572,9 +584,11 @@ fi
 # bytes it is handed, one line per start for
 # phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
 # cannot be written never stops a spawn. AUTOPILOT_MODEL_FALLBACK (from pass.mjs) is the model the
-# worker-model lever drew that the CLI could not start on, so this start runs on the row's model.
+# worker-model lever drew that the CLI could not start on, so this start runs on the row's model, and
+# AUTOPILOT_FINDER_FALLBACK the same for the finder-model lever's finders.
 node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \
   ${AUTOPILOT_MODEL_FALLBACK:+--model-fallback "$AUTOPILOT_MODEL_FALLBACK"} \
+  ${AUTOPILOT_FINDER_FALLBACK:+--finder-fallback "$AUTOPILOT_FINDER_FALLBACK"} \
   --effort "$EFFORT" --log "$LOG" --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
   >> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true
 

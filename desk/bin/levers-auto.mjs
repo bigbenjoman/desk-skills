@@ -55,6 +55,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { leverStates, leversFrozen, queueFile, repoSlug, stateDir, SAFE_ID } from './desk-env.mjs';
+import { MODEL_LEGACY_ON, legacyModelValue } from './config-schema.mjs';
 import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText, isValued, armOn } from './lever-registry.mjs';
 import { appendWith, isStateChange, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
@@ -102,10 +103,14 @@ export function leverStatesIn(events, registry = REGISTRY) {
     const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off') && e.value === e.to;
     // A lever the registry does not trial (the ledger) is never on trial, whatever the log says.
     const state = pinned ? 'overridden' : STATES.includes(e.to) && !(e.to === 'trial' && !registry[e.lever].trialled) ? e.to : 'off';
-    const value = pinned ? e.to : e.value;
+    // A model lever's event from when it had two arms names `on` or `off`, or (an adopt) no value: the
+    // model its on arm meant, or its baseline.
+    const legacy = Object.hasOwn(MODEL_LEGACY_ON, e.lever);
+    const value = legacyModelValue(e.lever, pinned ? e.to : e.value);
     const from = e.kind === 'override' && e.restores && typeof e.restores === 'object' ? e.restores : { at: e.at, id: e.id };
     // A value carries from adopted to settled with no event naming it again.
-    const keptValue = typeof e.value === 'string' ? e.value : KEPT_STATES.includes(out[e.lever].state) ? out[e.lever].value : undefined;
+    const keptValue = typeof value === 'string' ? value : KEPT_STATES.includes(out[e.lever].state) ? out[e.lever].value
+      : legacy && KEPT_STATES.includes(state) ? MODEL_LEGACY_ON[e.lever] : undefined;
     const kept = KEPT_STATES.includes(state) && isValued(registry[e.lever]) && keptValue ? { value: keptValue } : {};
     // An overridden lever with more than two arms carries the value it was set to, or none where the
     // override named no value of its own (the draw refuses it then).
@@ -389,7 +394,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
     if (isValued(l) && s.state !== 'off') leverValues[name] = ['overridden', ...KEPT_STATES].includes(s.state) ? s.value : l.baseline;
     // Set by hand: pinned to its value, with no arm, whatever the freeze or the layer.
     if (s.state === 'overridden') {
-      if (isValued(l) ? s.value !== l.baseline : s.value === 'on') set.push(name);
+      if (armOn(l, s.value)) set.push(name);
       continue;
     }
     // The quality-risk layer is drawn as one, below.
@@ -403,7 +408,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
       arms[name] = blockedArm(name, b.members, random, isValued(l) ? l.values : ON_OFF, perBlock);
       trialIds[name] = trialId(slug, name, s);
       if (isValued(l)) leverValues[name] = arms[name];
-      if (isValued(l) ? arms[name] !== l.baseline : arms[name] === 'on') set.push(name);
+      if (armOn(l, arms[name])) set.push(name);
     } else if (inHoldback(s, l, now.getTime())) {
       arms[name] = random() < l.ramp.holdback ? 'holdback' : 'adopted';
       trialIds[name] = trialId(slug, name, s);

@@ -210,7 +210,7 @@ import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import { quantile } from './quantile.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
-  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, parseCloudEnv, LEVERS, LEVERS_AUTO, MODEL_BASELINE, ALIAS, leverRow, leverWords, parseLevers,
+  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, parseCloudEnv, LEVERS, LEVERS_AUTO, MODEL_BASELINE, legacyModelValue, ALIAS, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
   signinPermissionsOf,
@@ -1137,10 +1137,12 @@ export function leverModel(name, env = process.env) {
 // The model desk-review's Claude finder seats run on (`desk-env model finder`): the alias the
 // finder-model lever drew for this ticket, else §3b Worker models' `finder=`, null when unset. The row
 // is parsed either way, so a malformed one is refused on every arm. A drawn value that is no Agent
-// tool alias is not passed on.
+// tool alias is not passed on. A pin from when the lever had two arms has it on with no value: the
+// model its on arm meant.
 export function finderModel(env = process.env) {
   const { finder = null } = workerModels();
-  const drew = leverModel('finder-model', env);
+  const drew = leverModel('finder-model', env)
+    ?? (leverValue('finder-model', env) == null && leverOn('finder-model', levers(env)) ? legacyModelValue('finder-model', 'on') : null);
   return drew && ALIAS.test(drew) ? drew : finder;
 }
 

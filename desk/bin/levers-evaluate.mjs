@@ -261,13 +261,16 @@ const namedArms = (rows, value, baseline) => rows.map((r) => {
   return a === 'adopted' && value ? { ...r, arm: value } : a === 'holdback' ? { ...r, arm: baseline } : r;
 });
 
+const costByArm = (rows, value, baseline, more = () => ({})) =>
+  byArm(namedArms(rows, value, baseline), (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), ...more(rs) }));
+
 export function handoffReport(rows, value, baseline) {
-  return byArm(namedArms(rows, value, baseline), (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)) }));
+  return costByArm(rows, value, baseline, (rs) => ({ handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)) }));
 }
 // The same per value of a model lever (lever-registry.mjs `model`): the tickets and dollars per ticket,
 // and for each value but the baseline its own decision against the baseline (`decided`, by value).
 export function valueReport(rows, value, baseline, decided = {}) {
-  const out = byArm(namedArms(rows, value, baseline), (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)) }));
+  const out = costByArm(rows, value, baseline);
   for (const [v, d] of Object.entries(decided)) if (out[v]) out[v] = { ...out[v], decision: d.decision, reason: d.reason };
   return out;
 }

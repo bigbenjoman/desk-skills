@@ -480,6 +480,12 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   only('ds1000-opus', 'finder-model');
   const opus = admitQ('ds1000-opus', 150, { values: { ...LOCAL, 'worker-finder-model': 'opus' }, prefix: 'FH' });
   t('DS-1036 finder=opus: finder-model is drawn, each arm one of its values', opus.some((p) => p.set.includes('finder-model')) && opus.every((p) => REGISTRY['finder-model'].values.includes(p.arms['finder-model'])), true);
+  // finder-model's events from when it had two arms (on meant sonnet) replay with a value, so the
+  // draw has one to run on rather than refusing.
+  const legacy = (e) => leverStatesIn([{ id: 'l1', at: '2026-11-01T00:00:00Z', lever: 'finder-model', actor: 'ben', reason_code: 'ben_override', reason: 'x', ...e }])['finder-model'];
+  t('DS-1036 an old finder-model override to on reads as overridden to sonnet', legacy({ kind: 'override', to: 'on', value: 'on' }), { state: 'overridden', at: '2026-11-01T00:00:00Z', id: 'l1', value: 'sonnet' });
+  t('DS-1036 one to off reads as overridden to its baseline', legacy({ kind: 'override', to: 'off', value: 'off' }).value, 'config');
+  t('DS-1036 an old adopt with no value reads as kept on sonnet', [legacy({ kind: 'transition', to: 'adopted' }).state, legacy({ kind: 'transition', to: 'adopted' }).value].join(), 'adopted,sonnet');
 
   // AC9: two kept alone: the next tickets are drawn into a trial of the pair.
   only('q9', 'codex', 'review-reuse');

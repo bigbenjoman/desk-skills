@@ -465,6 +465,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('DS-1036 AC4 each model\'s tickets, dollars per ticket and the change against the baseline',
     [rowOf('config (baseline)').includes(cells('40', '$10.00', '—')), rowOf('sonnet').includes(cells('40', '$6.00', '−40%')), rowOf('haiku').includes(cells('40', '$12.00', '+20%'))].join(' '), 'true true true');
   t('DS-1036 AC4 and its own decision, the reason beside it', [rowOf('sonnet').includes('title="blind audits are due and not yet recorded">Still testing</span>'), rowOf('haiku').includes('>Turn it off</span>'), rowOf('config (baseline)').includes('</span>')].join(' '), 'true true false');
+  t('DS-1036 AC4 the model table follows the repo picker', sec.includes('<tbody data-repo="desk-skills">'), true);
   t('DS-1036 with no model report, the page has no such section', section(hSix, 'values-h'), '');
 }
 
