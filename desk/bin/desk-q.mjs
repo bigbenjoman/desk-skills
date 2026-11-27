@@ -76,6 +76,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
+import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY } from './cloud-worker.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
@@ -1112,7 +1113,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   // Each merged PR's undraft and merge (merge-stages.mjs), the outside reviewer's open outage, and the
   // saved estimates the forecast calibrates from and marks a passed first estimate by.
   let stages = [];
-  try { stages = MS.readStages(repoStateOf(r.stateDir)).flatMap((e) => { const ready = MS.readyAt(e); return ready == null ? [] : [{ key: e.key, ready, merged: Date.parse(e.merged), outage: !!e.external?.outage }]; }); } catch { /* none read */ }
+  try { stages = MS.forecastStages(repoStateOf(r.stateDir)); } catch { /* none read */ }
   const reviewers = new Set((r.ctx?.stateChecks ?? []).map((c) => c.login).filter(Boolean));
   const outageFrom = Math.min(...(r.ctx?.outages ?? []).filter((o) => o?.to == null && reviewers.has(o.login)).map((o) => Date.parse(o.from)).filter(Number.isFinite));
   let est = new Map();
@@ -1482,6 +1483,8 @@ const whyCell = (s, cell, tw) => {
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.id, key: i.x.t.key, ...(epic ? { epic } : {}) });
 const summaryOf = (i) => triageOf(i.r, i.x.t.key)?.summary ?? '';
+// A ticket a cloud session works is marked so before its title on the dated views.
+const cloudMark = (i) => (i.x.t.location === 'cloud' ? 'cloud · ' : '');
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
 // The label columns before a Timeline bar, with TICKET at its narrowest, the STARTS and SHIPS after it
@@ -1509,7 +1512,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   const cw = width == null ? TL_BAR : Math.max(12, Math.min(TL_BAR, byEpic ? spare : Math.ceil(spare / 2)));
   const tw = width == null ? 60 : Math.max(1, spare - cw);
   const tt = titler(items.map(summaryOf));
-  const title = (i) => [`${' '.repeat(TL_GAP)}${cut(tt(summaryOf(i)), tw)}`, null];
+  const title = (i) => [`${' '.repeat(TL_GAP)}${cut(`${cloudMark(i)}${tt(summaryOf(i))}`, tw)}`, null];
   const dated = items.filter((i) => i.e).sort((a, b) => a.e.likely - b.e.likely);
   const undated = items.filter((i) => !i.e);
   const ends = [...dated.map((i) => i.e.late), ...epics.filter((x) => x.d).map((x) => x.d.late)];
@@ -1578,7 +1581,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
     for (const i of mine(undated)) {
       const room = width == null ? Infinity : Math.max(12, width - lead - 2);
       const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), Math.min(cw + TL_TAIL + TL_GAP, room), tw);
-      const title = byEpic ? [] : [[cut(tt(summaryOf(i)), left), null]];
+      const title = byEpic ? [] : [[cut(`${cloudMark(i)}${tt(summaryOf(i))}`, left), null]];
       rows.push(segRow(`${i.r.id}${i.x.t.key}`, cutRuns([...tlead(i).map((c) => [c]), [[' ', null], [cell, STATE_SGR[i.x.k]]], ...title.map((c) => [c])], width), openTicket(i, epic)));
     }
   }
@@ -1641,7 +1644,7 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
     for (const i of list) {
       const [cell, left] = i.e ? [null, tw] : whyCell(why(i), Math.min(27, room), tw);
       const dates = i.e ? [[[pad(startsCell(i.F, i.x, now), 13), null]], [[`${pad(shipsCell(i.F, i.x, now), 12)}  `, null]]] : [[[cell, STATE_SGR[i.x.k]]]];
-      const title = cut(tt(summaryOf(i)), left);
+      const title = cut(`${cloudMark(i)}${tt(summaryOf(i))}`, left);
       rows.push(segRow(`${i.r.id}${i.x.t.key}`, cutRuns([...ticketLead(i, `    ${all ? repoCell(i.r.repo ?? i.r.name) : ''}`, kw).map((c) => [c]), ...dates, [[title, null]]], width), openTicket(i, epic)));
     }
   }
@@ -1851,7 +1854,7 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, use: useRead = readUseFile(), subs = readSubscriptions(subscriptionsPath()) } = {}) {
   const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const use = useThisMonth(useRead, now);
-  const subsBlock = subscriptionLines(repos, { use, subs, width });
+  const subsBlock = [...subscriptionLines(repos, { use, subs, width }), ...cloudCostLines(repos, width)];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot: [...useOnlyLines(repos, use, width), ...subsBlock, ...foot] };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
@@ -1917,6 +1920,22 @@ function useOnlyLines(repos, use, width) {
   const notes = useNotes(use);
   return ['', bold(`  ${pad('REPO', nw)}${rpad(LIST_HEAD, uw)}`),
     ...slugs.map((s, i) => segLine(fitRuns([[`  ${pad(names[i], nw)}`, null], [rpad(usd(use.repos[s].claude + use.repos[s].codex), uw), GREY]], width))),
+    '', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)];
+}
+// Each queued ticket a cloud session works, or worked, in every batch shown: its cost is unknown
+// (cloud-worker.mjs CLOUD_COST_WHY), so it is listed as such with its session URL rather than left out
+// of what the list-price use counts. A ticket the queue has archived is no longer listed.
+const cloudCosts = (repos) => (repos ?? []).flatMap((r) => Object.values(r.q?.tickets ?? {})
+  .filter((t) => t?.location === 'cloud' && t.cloud?.started)
+  .map((t) => ({ repo: r.repo ?? r.name, key: t.key, cost: null, why: CLOUD_COST_UNKNOWN, url: t.cloud.url ?? null })));
+function cloudCostLines(repos, width) {
+  const rows = cloudCosts(repos).map((x) => ({ name: `${x.repo} ${x.key}`, url: x.url ?? 'its session URL was not recorded' }));
+  if (!rows.length) return [];
+  const nw = Math.max(14, ...rows.map((x) => x.name.length + 1));
+  const cw = CLOUD_COST_UNKNOWN.length + 2;
+  const notes = [{ tag: '◌ cloud', sgr: GREY, text: [[CLOUD_COST_WHY, null]] }];
+  return ['', bold(`  ${pad('CLOUD WORKER', nw)}${pad('COST', cw)}SESSION`),
+    ...rows.map((x) => segLine(fitRuns([[`  ${pad(x.name, nw)}`, null], [pad(CLOUD_COST_UNKNOWN, cw), GREY], [x.url, null]], width))),
     '', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)];
 }
 // One monthly line per Claude and Codex login: its fee and plan as subscriptions.md records them, or
@@ -4434,7 +4453,7 @@ export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsP
     : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
   const use = v.name !== undefined ? null : useThisMonth(readUseFile(), now);
   const fees = v.name !== undefined ? null : readSubscriptions(subscriptionsPath()).logins.map((l) => ({ tool: l.tool, name: l.name, plan: l.fee?.plan ?? null, usd: l.fee?.usd ?? null }));
-  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees }) }, parts);
+  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees, cloud: cloudCosts(repos) }) }, parts);
 }
 
 const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';

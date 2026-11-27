@@ -124,7 +124,25 @@ in a terminal, since a first start on a login asks a question nothing answers in
 Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
 kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
-PR, and its tokens and cost as "not reported for cloud".
+PR, and its tokens as "unknown (cloud)" and its cost as "cost unknown (cloud)". Claude Code reports
+no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one. desk-q's
+Costs view (and `--json costs`) lists each queued cloud ticket the same way, with its session URL.
+Its Timeline and By-day views date a cloud ticket with the local ones and put `cloud ·` before its
+title. Nothing reads a cloud session's state back, so a session that stopped on "Claude Code hit an
+error" looks the same as a quiet one: no PR and no push. Past its start plus the ticket's ETA, with
+no push to its branch for half that ETA, the pass sends it one retry follow-up (`claude -p <msg>
+--cloud <session>`, recorded as `cloud.retried_at`), which restarts an errored session. Past its start
+plus the ETA plus half that again, with no push since that retry, it is reported **possibly stuck**
+with its session URL; a retry that cannot be sent reports it at once. A push after the retry starts
+it over. Its ETA is
+its saved first estimate's span from start to ship (`eta.jsonl`), or with none the forecast's
+typical slot time for its size; with no history either, it is not called stuck. To start a stuck one
+again, `queue.mjs stop <KEY>` records its session abandoned (`cloud.abandoned_at`), puts it on the
+finished-session list below and holds the ticket as a stopped worker; `queue.mjs requeue <KEY>` (or
+needs-you's start) then gives it a new session. A requeue refuses a running cloud ticket until it is
+stopped. A cloud spawn is held by weekly
+usage pacing like a local one. Since a cloud session writes no usage reading here, a held pass
+still makes its probe call while only cloud workers run.
 The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR
 merges: nothing here can archive it. So the batch's finished cloud sessions are one desk-needs-you
 item, naming each with its URL, which the person archives by hand; its done records them so none is

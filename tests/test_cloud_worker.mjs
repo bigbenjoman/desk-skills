@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
@@ -223,10 +223,11 @@ const row = ticketCost(S, cloudTicket);
 t('AC2 a cloud ticket has a report row with no log', row?.cloud?.url, started.url);
 const table = costTable([row, ticketCost(S, { key: 'K-2', location: 'cloud', cloud: { started: since, url: 'u2' } })]).split('\n');
 const k1 = table.find((l) => l.startsWith('  K-1 ')) ?? '';
-t('AC2 its tokens and cost read "not reported for cloud", never $0', (k1.match(/not reported for cloud/g) ?? []).length >= 3 && !/\$0\.00/.test(k1), true);
+t('AC2 its tokens read "unknown (cloud)", never $0', (k1.match(/unknown \(cloud\)/g) ?? []).length >= 3 && !/\$0\.00/.test(k1), true);
+t('issue-1553 AC1 its cost reads "cost unknown (cloud)", its session URL under it', k1.includes('cost unknown (cloud)'), true);
 t('AC2 its wall time is session start to PR', k1.includes('40m 00s'), true);
 t('AC2 its session URL is under its row', table.some((l) => l.trim() === `cloud session: ${started.url}`), true);
-t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
+t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost unknown (cloud)'), true);
 t('AC2 one with no PR yet has no wall time', (table.find((l) => l.startsWith('  K-2 ')) ?? '').includes('no PR yet'), true);
 t('AC2 the total leaves cloud workers out and says so', table.at(-2).includes('2 cloud worker(s) not counted') || table.at(-1).includes('2 cloud worker(s) not counted'), true);
 
@@ -238,17 +239,61 @@ const both = ticketCost(S, { key: 'K-3', location: 'cloud', cloud: { started: si
 t('a cloud ticket with a local review run counts both runs, its usage the local one\'s', `${both?.runs} ${both?.usage?.cost} ${both?.cloud?.url}`, '2 2.5 u3');
 const bothTable = costTable([both]).split('\n');
 t('its row shows the local cost and its cloud session stays under it, with no cost', (bothTable.find((l) => l.startsWith('  K-3 ')) ?? '').includes('$2.50')
-  && bothTable.some((l) => l.trim() === 'cloud session: u3') && bothTable.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
+  && bothTable.some((l) => l.trim() === 'cloud session: u3') && bothTable.some((l) => l.trim() === 'session: start 0, model default, effort default: cost unknown (cloud)'), true);
 t('the total counts its local run and says the cloud session is left out', bothTable.at(-1).includes('1 cloud worker(s) counted for their local review runs only'), true);
 writeFileSync(join(S, 'logs', 'K-4.log'), `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'killed' }] } })}\n`);
 const cut = costTable([ticketCost(S, { key: 'K-4', location: 'cloud', cloud: { started: since, url: 'u4' } })]).split('\n');
 const k4 = cut.find((l) => l.startsWith('  K-4 ')) ?? '';
-t('a cloud row whose local review run has no result event reads unknown, counted as unknown', `${k4.includes('unknown')} ${k4.includes('not reported for cloud')} ${cut.at(-1).includes('1 unknown worker(s) not counted')}`, 'true false true');
+t('a cloud row whose local review run has no result event reads unknown, counted as unknown', `${k4.includes('unknown')} ${k4.includes('(cloud)')} ${cut.at(-1).includes('1 unknown worker(s) not counted')}`, 'true false true');
 writeFileSync(join(S, 'logs', 'K-5.log'), preflightLine({ usd: 0.4, turns: 2 }));
 const pre = costTable([ticketCost(S, { key: 'K-5', location: 'cloud', cloud: { started: since, url: 'u5' } })]).split('\n');
 t('a cloud row with only a local preflight shows that cost, and the notes count it once', `${(pre.find((l) => l.startsWith('  K-5 ')) ?? '').includes('$0.40')} ${/-\d/.test(pre.at(-1))} ${pre.at(-1).includes('1 cloud worker(s) counted for their local review runs only')}`, 'true false true');
 
 rmSync(S, { recursive: true, force: true });
+
+// ---- a stalled cloud session (issue-1553 AC2) --------------------------------
+const H = 3_600_000, st0 = Date.parse('2026-11-01T00:00:00Z'), iso = (ms) => new Date(ms).toISOString();
+// The estimate was made a day before the session started: its 4h span counts from the session's start.
+const estimate = { starts: iso(st0 - 24 * H), ships: iso(st0 - 20 * H) };
+const eta = cloudEta({ estimate, typicalH: 9 });
+t('issue-1553 AC2 the ETA is the saved estimate\'s span, ahead of the typical slot time', JSON.stringify(eta), JSON.stringify({ ms: 4 * H, from: 'estimate' }));
+t('issue-1553 AC2 with no estimate it is the typical slot time for its size', JSON.stringify(cloudEta({ estimate: null, typicalH: 9 })), JSON.stringify({ ms: 9 * H, from: 'typical' }));
+t('issue-1553 AC2 an estimate with no span falls back to it too', cloudEta({ estimate: { starts: iso(st0), ships: iso(st0) }, typicalH: 9 })?.from, 'typical');
+t('issue-1553 AC2 with neither there is no ETA', cloudEta({ estimate: null, typicalH: null }), null);
+t('issue-1553 AC2 a session that started after its estimate\'s ship time is not due at once', cloudStall({ started: iso(st0), eta, now: st0 + H }), null);
+t('issue-1553 AC2 before its start plus ETA it is sent nothing', cloudStall({ started: iso(st0), eta, now: st0 + 4 * H }), null);
+// issue-1553 comment 1: an errored session looks the same as a quiet one, so past its ETA with no push it
+// is sent one retry follow-up first, and flagged only once that retry brought no push either.
+const r1 = cloudStall({ started: iso(st0), eta, now: st0 + 4 * H + 1 });
+t('issue-1553 errored or quiet: no push past its start plus ETA: one retry follow-up first, not flagged', `${r1?.retry} ${r1?.margin === 2 * H} ${r1?.last === st0}`, 'true true true');
+t('issue-1553 with no retry sent it is never flagged, however late', cloudStall({ started: iso(st0), eta, now: st0 + 100 * H })?.retry, true);
+t('issue-1553 a retry sent before its last push is not one for this quiet stretch', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 2 * H), retried: iso(st0 + H), now: st0 + 7 * H })?.retry, true);
+const retriedAt = iso(st0 + 4.5 * H);
+t('issue-1553 AC2 after the retry, before its start plus ETA plus half that it is not stuck', cloudStall({ started: iso(st0), eta, retried: retriedAt, now: st0 + 6 * H }), null);
+t('issue-1553 AC2 after the retry, within the margin of it it is not stuck', cloudStall({ started: iso(st0), eta, retried: retriedAt, now: st0 + 6.5 * H }), null);
+const s1 = cloudStall({ started: iso(st0), eta, retried: retriedAt, now: st0 + 6.5 * H + 1 });
+t('issue-1553 AC2 no push past ETA plus half that, nor in the margin since the retry: possibly stuck', `${s1?.retry} ${s1?.due === st0 + 6 * H} ${s1?.margin === 2 * H} ${s1?.last === st0 + 4.5 * H}`, 'false true true true');
+t('issue-1553 a push after the retry starts it over', cloudStall({ started: iso(st0), eta, retried: retriedAt, lastPush: iso(st0 + 5 * H), now: st0 + 6.5 * H + 1 }), null);
+t('issue-1553 AC2 a push inside the margin keeps it from stuck', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 5 * H), now: st0 + 7 * H }), null);
+t('issue-1553 AC2 a push older than the margin does not', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 3 * H), now: st0 + 7 * H })?.last, st0 + 3 * H);
+t('issue-1553 AC2 a commit from before the session started is not its push', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 - H), now: st0 + 7 * H })?.last, st0);
+t('issue-1553 AC2 the margin is half the typical slot time when that is the ETA', cloudStall({ started: iso(st0), eta: cloudEta({ typicalH: 10 }), now: st0 + 16 * H })?.margin, 5 * H);
+t('issue-1553 AC2 with no ETA a session is never called stuck', cloudStall({ started: iso(st0), eta: null, now: st0 + 1000 * H }), null);
+t('issue-1553 AC2 a session with no start recorded is never called stuck', cloudStall({ started: null, eta, now: st0 }), null);
+// The follow-up as `claude -p <msg> --cloud <session> --output-format json` answers it (tests/fixtures/cloud/).
+t('issue-1553 a follow-up the CLI queued to the session is sent', JSON.stringify(parseCloudSend(fixture('send-json.json'), 'session_01Vy49H7Z4T3CSgAhSxsuhqj')), '{"ok":true}');
+t('issue-1553 one queued to another session is not', !!parseCloudSend(fixture('send-json.json'), 'session_other').error, true);
+t('issue-1553 a refusal is an error, word for word', parseCloudSend(fixture('stream-json-refused.txt'), 'session_01Vy49H7Z4T3CSgAhSxsuhqj').error, 'Error: --cloud <session_id> does not support --output-format stream-json');
+t('issue-1553 no follow-up is sent with no session id recorded', sendCloud(null, 'x').error, 'its session id was not recorded');
+{
+  const d = scratch('cloud-send');
+  const fake = join(d, 'claude');
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > "${d}/args"\ncat "${join(FIX, 'send-json.json')}"\n`);
+  chmodSync(fake, 0o755);
+  const got = sendCloud('session_01Vy49H7Z4T3CSgAhSxsuhqj', CLOUD_RETRY_MSG, { claude: fake });
+  t('issue-1553 the retry follow-up goes as claude -p <msg> --cloud <session> --output-format json', `${JSON.stringify(got)} ${readFileSync(join(d, 'args'), 'utf8').split('\n').slice(2).join(' ').trim()}`, '{"ok":true} --cloud session_01Vy49H7Z4T3CSgAhSxsuhqj --output-format json');
+  rmSync(d, { recursive: true, force: true });
+}
 
 // ---- finished sessions to archive -------------------------------------------
 const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });
