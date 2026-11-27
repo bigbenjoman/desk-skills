@@ -70,7 +70,8 @@ each on both windows, else the §2 rows as above. The state stamps the context a
 check (`start`: used, window, time and root), which `desk-env drift` reads as start-up use. Past the
 threshold, once the context has also grown by MIN_GROWTH tokens since that first check (or the last
 compaction; DESK_HANDOFF_MIN_GROWTH overrides it), and partway through a stage a session can start at
-(the last `AUTOPILOT_STAGE:` line the worker printed names Stage 3 or later), inject once: commit, write the handoff briefing with `handoff.mjs write
+(the last `AUTOPILOT_STAGE:` line the worker printed names Stage 3 or later, else, before it prints
+one, the stage a fresh session was started at, DESK_START_STAGE), inject once: commit, write the handoff briefing with `handoff.mjs write
 --stage <stage> --left …`, print `AUTOPILOT_HANDOFF: <stage>` and end the turn; pass.mjs then starts
 a fresh worker at that stage from the briefing. Stop blocks once while DESK_HANDOFF_FILE is unwritten
 since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
@@ -645,6 +646,18 @@ def current_stage(transcript):
     return None
 
 
+def worker_stage(transcript):
+    """The stage the worker is in: its last stage line, else the stage spawn-worker.sh started this
+    session at (DESK_START_STAGE, from AUTOPILOT_START_STAGE). A fresh session after a handoff or a
+    park starts partway through a stage and may print no stage line until the next one, and without
+    this it never hands off (DS-1046's Stage 4b session ran to 254,830 tokens past a drawn 20%)."""
+    stage = current_stage(transcript)
+    if stage:
+        return stage
+    start = (os.environ.get("DESK_START_STAGE") or "").strip().lower()
+    return start if start in RESUME_STAGES else None
+
+
 def on_worker_context(event, data, session, root, path):
     state = load_state(session)
     if state.get("fired_at"):
@@ -666,7 +679,7 @@ def on_worker_context(event, data, session, root, path):
         state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
     grown = used - state["base_used"] >= min_growth()
-    stage = current_stage(transcript) if pct and now >= pct and grown else None
+    stage = worker_stage(transcript) if pct and now >= pct and grown else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
     if stage not in RESUME_STAGES:
         save_state(session, state)
