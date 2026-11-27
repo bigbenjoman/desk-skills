@@ -459,6 +459,16 @@ t('jira: the search is limited to the project', calls.some((l) => decodeURICompo
 // At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
 // went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
+// issue-1533: the config step reads only the rows the skill uses, by id, and the read stays small
+// against the shipped template, whose rows carry the help text a section read printed.
+{
+  const read = /^desk-env show --rows ([a-z0-9 -]+)$/m.exec(skill);
+  t('issue-1533 AC1 the config step reads named rows, not sections', !!read && !/desk-env show rules/.test(skill), true);
+  const run = spawnSync('node', [join(REPO, 'desk', 'bin', 'desk-env.mjs'), 'show', '--rows', ...(read?.[1].split(' ') ?? [])],
+    { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(REPO, 'desk-config.md'), DESK_MACHINE: join(R, 'no-machine.md'), HOME } });
+  t('issue-1533 AC1 every id it names reads', run.status, 0);
+  t('issue-1533 AC1 the read prints under 5 KB', Buffer.byteLength(run.stdout) < 5000, true);  t('issue-1533 AC2 an unset row is named as unset', /^§4 Check-out destination \(checkout-destination\) = UNSET$/m.test(run.stdout), true);
+}
 has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
