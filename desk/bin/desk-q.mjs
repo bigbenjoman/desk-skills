@@ -58,6 +58,7 @@ import { readCosts } from './costs.mjs';
 import { pageState } from './levers-refresh.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
 import { serverModel } from './desk-q-server.mjs';
+import { schedulerFresh } from './desk-ui-probes.mjs';
 import { LABEL, cut, wrap, stateStamp, attention, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
   timelineParts, daysParts, epicsParts, SUPPLIER_LABEL, SUPPLIER_BILL, costsParts, costNameOf, supplierParts, supplierPageParts, parkedBadge,
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
@@ -233,7 +234,7 @@ export function interactive({
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
   addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, leversWith = rebuildLevers, word = null,
-  served = null, serverWith = serverModel,
+  served = null, serverWith = serverModel, serverProbes = schedulerFresh,
 } = {}) {
   // Started on a repo (`desk-q <repo>`, scopeWord), the screen loads only that repo, as run() does,
   // while it shows that repo's own queue, timeline, days, epics or tickets. Anywhere else, and a workers
@@ -1045,11 +1046,14 @@ export function interactive({
     else oneBuild(() => { fileTick(); draw(); });
   }, refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
-  // and the cost cache's reading, workers or not.
+  // and the cost cache's reading, workers or not. While desk-ui's server runs its probe loop (its
+  // heartbeat fresh, serverProbes) the server makes them and this screen shows the readings it writes,
+  // but for a login only this screen's CLAUDE_CONFIG_DIR names (source `env`): the server, started
+  // without it, never sees that one. With the heartbeat stale or gone, this screen probes by itself.
   probeTimer = setInterval(() => {
     const now = clock();
     // One at a time: the probe's start lock refuses a second caller in the same moment.
-    const due = probesDue(repos, { now });
+    const due = probesDue(repos, { now }).filter((p) => !serverProbes(now) || p.login?.source === 'env');
     (async () => { for (const p of due) await probeWith({ now, ...p, done: () => { if (!done) draw(); } }).catch(() => {}); })();
     costCheck(costWith, now);
   }, probeMs);

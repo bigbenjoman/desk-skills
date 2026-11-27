@@ -3,7 +3,10 @@
 // once per DEBOUNCE_MS, diffs it by repo slug and ticket key against the last one, and sends each
 // difference to every open window as its own event, numbered by the revision it makes:
 //   snapshot  { at, rev, ...desk-q's home view but its inputs, tickets: { <slug>: [row] } }  first, and after a gap
-//   home      { needs_you, machine, no_batch, usage, levers }                   the machine-wide figures
+//   home      { needs_you, machine, no_batch, usage, levers, subscriptions }    the machine-wide figures
+// `subscriptions` is desk-q-model's subscriptionsJson, the Usage & costs screen's figures. A usage
+// probe writes only a quiet .log, which the watcher leaves out, so the server's probe loop
+// (desk-ui-probes.mjs) calls the feed's changed() after each round.
 //   repo      { slug, summary }      one repo's home-view row; summary null once the repo has gone
 //   tickets   { slug, upsert: [row], remove: [key] }                            the rows that moved
 //   ping      { at }                 after PING_MS with nothing else sent; carries no revision
@@ -44,11 +47,13 @@ export function counts(file) {
 // The read model: desk-q's home view for every repo with a batch, each repo's ticket rows as its
 // repo view lists them (their figures and stage, not the screen's line, which carries ages that move
 // with the clock), and each batch's heartbeat liveness, which the clock tick checks.
-async function readModel(now) {
+export async function readModel(now) {
   const Q = await import('./desk-q-model.mjs');
   E.forgetReads(); // the server outlives edits to the machine profile and configs
   const repos = Q.loadRepos(now);
   const { lines, generated_at, ...body } = Q.homeJson(repos, { all: true, now });
+  // An unreadable subscriptions file blanks only the Usage & costs figures, never every screen.
+  try { body.subscriptions = Q.subscriptionsJson(repos, { now }); } catch (e) { body.subscriptions = { error: e.message }; }
   const tickets = {};
   for (const s of body.repos ?? []) {
     const r = s.error ? null : Q.repoPlace(repos, s.id);
@@ -66,9 +71,9 @@ const livenessMoved = (model, now) => model.batches.some((b) => liveBeat(lastBea
 // What a change compares: each figure, without the ones that move with the clock alone (a repo's ages,
 // the Levers page's text and age) or with free memory (the machine's room).
 const summaryKey = (s) => { if (!s) return 'null'; const { last_pass, all_done_by, ...rest } = s; return JSON.stringify(rest); };
-const homeOf = (body) => ({ needs_you: body.needs_you, machine: body.machine, no_batch: body.no_batch, usage: body.usage, levers: body.levers });
+const homeOf = (body) => ({ needs_you: body.needs_you, machine: body.machine, no_batch: body.no_batch, usage: body.usage, levers: body.levers, subscriptions: body.subscriptions });
 const homeKey = (body) => JSON.stringify({ needs: body.needs_you, running: body.machine?.running, cap: body.machine?.cap, none: body.no_batch,
-  usage: body.usage, levers: body.levers && { state: body.levers.state, fault: body.levers.fault, page: body.levers.page, figures: body.levers.figures } });
+  usage: body.usage, subscriptions: body.subscriptions, levers: body.levers && { state: body.levers.state, fault: body.levers.fault, page: body.levers.page, figures: body.levers.figures } });
 
 // The events that take a window from `prev` to `next`.
 function diff(prev, next) {
@@ -239,5 +244,8 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     started = false;
   }
 
-  return { current, snapshot, subscribe, stop, tick, get rev() { return rev; }, get clients() { return clients.size; } };
+  // A change the watcher cannot see (a usage probe's .log): a rebuild, debounced as a write's is.
+  const changed = () => schedule();
+
+  return { current, snapshot, subscribe, stop, tick, changed, get rev() { return rev; }, get clients() { return clients.size; } };
 }

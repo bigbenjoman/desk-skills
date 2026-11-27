@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { blockedIn, useConnection, Writes } from './connection.jsx';
 import { WriteButton } from './system.jsx';
+import { json } from './test-server.js';
 
 // A fixture token, which the stub server puts in the text and fields of its sign-in refusal: none of it
 // may reach the page.
 const TOKEN = ['tok', 'c3'.repeat(30)].join('');
 const AT = new Date(2026, 10, 22, 10, 6).toISOString();
-const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 // A desk-ui server the window talks to, which can stop, refuse the window's sign-in, or report desk missing.
 function stubServer() {

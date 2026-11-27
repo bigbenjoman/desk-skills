@@ -2,8 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Inbox, recordCommand, Tabs } from './inbox.jsx';
+import { json } from './test-server.js';
 
-const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 // Half a minute more, so a waited time read a moment later still rounds down to the same minute.
 const hoursAgo = (h) => new Date(Date.now() - h * 3_600_000 - 30_000).toISOString();
 const JIRA = 'https://jira.example.net/browse/';
