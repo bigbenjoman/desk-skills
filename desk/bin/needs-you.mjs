@@ -2961,7 +2961,7 @@ export function run(argv, { reads } = {}) {
 }
 
 // The machine's log of answers recorded from the command line, whichever session or window ran them.
-const recordsLogPath =(home = HOME) => join(home, '.desk-autopilot', 'needs-you-records.jsonl');
+const recordsLogPath = (home = HOME) => join(home, '.desk-autopilot', 'needs-you-records.jsonl');
 const RECORDS_ROLL_BYTES = 512 * 1024;
 function logRecord(entry, path = recordsLogPath()) {
   try {

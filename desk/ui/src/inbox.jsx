@@ -49,11 +49,11 @@ export function recordCommand(item, action, text = '') {
 }
 
 // A time as a weekday and a clock, Tue 08:00.
-const dayTime =(at) => `${new Date(at).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(at)}`;
+const dayTime = (at) => `${new Date(at).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(at)}`;
 
 // Actions the record route does not take here: override and move name an argument of their own, and a
 // drop or a base push's approve each get a confirm of their own first. They stay copy-only.
-const recordsHere =(item, action) => {
+const recordsHere = (item, action) => {
   const verb = action.split(' ')[0];
   return !['override', 'move', 'drop'].includes(verb) && !(item.kind === 'base-push' && verb === 'approve');
 };

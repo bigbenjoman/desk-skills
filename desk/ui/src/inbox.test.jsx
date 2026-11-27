@@ -287,7 +287,7 @@ describe('answering from the Inbox', () => {
     let exit;
     s.write = new Promise((r) => { exit = r; });
     await sendResume(s);
-    expect(s.posts).toEqual([{ url: '/api/repos/acme__studia-web/tickets/SV-3844/record', body: { action: 'resume', text: 'I added the token. Run the Testing checks.' } }]);
+    expect(s.posts).toEqual([{ url: '/api/repos/acme__studia-web/tickets/SV-3844/record', body: { action: 'resume', text: 'I added the token. Run the Testing checks.', batch: 'studia-web' } }]);
     expect(within(detail()).getByRole('button', { name: /Sending answer…/ }).disabled).toBe(true);
     expect(within(detail()).getAllByRole('radio').every((r) => r.matches(':disabled'))).toBe(true);
     key('Escape');
@@ -327,6 +327,15 @@ describe('answering from the Inbox', () => {
     expect([note.getAttribute('role'), note.textContent]).toEqual(['status', 'Nothing changed:nothing to do: SV-3844 PR #2699 is MERGED (10:02 by bigbenjoman)']);
   });
 
+  it('an exit 0 reply whose first line says ": nothing recorded." shows Nothing changed and keeps the row', async () => {
+    const s = await open();
+    s.answer = { exit: 0, stdout: 'studia-web SV-3844: run /desk-autopilot admit SV-3844 instead: nothing recorded.\n', stderr: '' };
+    await sendResume(s);
+    const note = await waitFor(() => { const n = detail().querySelector('[data-outcome="nothing"]'); expect(n).toBeTruthy(); return n; });
+    expect(note.textContent).toBe('Nothing changed:studia-web SV-3844: run /desk-autopilot admit SV-3844 instead: nothing recorded.');
+    expect(row('SV-3844')).toBeTruthy();
+  });
+
   it('AC5 exit 11 shows "Desk didn\'t record that" with stdout under the action bar, keeps the text, and Choose another answer focuses the options', async () => {
     const s = await open();
     const refusal = "SV-3844's worktree holds work origin does not have (3 unpushed commits): push or discard it first.";
@@ -363,7 +372,7 @@ describe('answering from the Inbox', () => {
     expect(within(detail()).getByText('Read the question first, then press ⏎.')).toBeTruthy();
     later();
     key('Enter');
-    await waitFor(() => expect(s.posts).toEqual([{ url: '/api/repos/acme__studia-web/tickets/SV-4000/record', body: { action: 'not-now' } }]));
+    await waitFor(() => expect(s.posts).toEqual([{ url: '/api/repos/acme__studia-web/tickets/SV-4000/record', body: { action: 'not-now', batch: 'studia-web' } }]));
   });
 
   it('AC6 ⏎ on a list row opens it and records nothing', async () => {
@@ -415,7 +424,7 @@ describe('answering from the Inbox', () => {
     fireEvent.keyDown(field, { key: 'Enter' });
     expect(s.posts).toEqual([]);
     fireEvent.keyDown(field, { key: 'Enter', metaKey: true });
-    await waitFor(() => expect(s.posts.map((p) => p.body)).toEqual([{ action: 'resume', text: 'go on' }]));
+    await waitFor(() => expect(s.posts.map((p) => p.body)).toEqual([{ action: 'resume', text: 'go on', batch: 'studia-web' }]));
   });
 
   it('drop is not recorded here: its button is off and points at the needs-you command', async () => {
@@ -439,7 +448,7 @@ describe('put off and taken back', () => {
     fireEvent.click(row('SV-3957'));
     key('e');
     await waitFor(() => expect(document.querySelector('[data-toast]')).toBeTruthy());
-    expect(s.posts).toEqual([{ url: '/api/repos/acme__studia-web/tickets/SV-3957/record', body: { action: 'not-now' } }]);
+    expect(s.posts).toEqual([{ url: '/api/repos/acme__studia-web/tickets/SV-3957/record', body: { action: 'not-now', batch: 'studia-web' } }]);
     const toast = document.querySelector('[data-toast]');
     expect(toast.textContent).toContain('SV-3957 put off until the next check-in.');
     expect(within(toast).getByRole('button', { name: 'Undo (⌘Z)' })).toBeTruthy();
@@ -533,7 +542,7 @@ describe('items that answer differently', () => {
     key('1');
     expect(detail().querySelector('[data-runs]').textContent).toBe('Runs: node ~/.claude/desk/bin/needs-you.mjs record desk-skills usage-limit not-now');
     fireEvent.click(button(/^Wait until Tue 08:00/));
-    await waitFor(() => expect(s.posts).toEqual([{ url: '/api/repos/acme__desk-skills/tickets/usage-limit/record', body: { action: 'not-now' } }]));
+    await waitFor(() => expect(s.posts).toEqual([{ url: '/api/repos/acme__desk-skills/tickets/usage-limit/record', body: { action: 'not-now', batch: 'desk-skills' } }]));
   });
 
   it('AC15 an open item answered in Terminal reads as answered elsewhere at the next refresh, with its record line and Next item · j', async () => {

@@ -268,6 +268,29 @@ t('DS-737 undo-not-now runs not-now.mjs clear with the newest entry\'s question 
 t('DS-737 it runs in the state of the batch holding that entry', realpathSync(last()?.state ?? T), realpathSync(E1_STATE));
 t('DS-737 undo-not-now with a body is refused', (await undo('DS-1', { text: 'x' })).status, 400);
 t('DS-737 undo-not-now for a key with nothing put off is refused', (await undo('DS-2')).status, 400);
+// A machine-level item (the screenshot uploader's page) is put off in desk's own register, not a batch's.
+putOff(env.DESK_HOME, [{ key: 'd1', question: 'PAGE-1: the uploader is down', ticket: 'PAGE-1', at: ago(3_000), inputs: {}, hash: 'w' }]);
+const deskLevel = await undo('PAGE-1');
+t('DS-737 undo-not-now finds an entry put off in desk\'s own register', [deskLevel.status, last()?.argv], [200, ['clear', 'PAGE-1: the uploader is down']]);
+t('DS-737 and clears it in that register', realpathSync(last()?.state ?? T), realpathSync(env.DESK_HOME));
+
+// ---- DS-737: a record's batch picks the item of that batch; a batch that lists nothing for it is refused
+const rBatch = await record('desk-skills', 'DS-7', { action: 'resume', text: 'go on', batch: 'desk-skills:E-1' });
+t('DS-737 a record naming the item\'s batch records it there', [rBatch.status, last()?.argv.slice(0, 4)], [200, ['record', 'desk-skills:E-1', 'DS-7', 'resume']]);
+const before737b = calls().length;
+const rOther = await record('desk-skills', 'DS-7', { action: 'resume', text: 'go on', batch: 'desk-skills' });
+t('DS-737 a record naming a batch that does not list the key is 400, offering nothing',
+  [rOther.status, rOther.json?.error?.code, /nothing there needs you/.test(rOther.json?.error?.message ?? '')], [400, 'action', true]);
+const rUnknown = await record('desk-skills', 'DS-7', { action: 'resume', text: 'go on', batch: 'nope' });
+t('DS-737 an unknown batch is 400 too', [rUnknown.status, rUnknown.json?.error?.code], [400, 'action']);
+t('DS-737 a batch that is not a string is 400', (await record('desk-skills', 'DS-7', { action: 'resume', text: 'a', batch: ['x'] })).json?.error?.code, 'batch');
+t('DS-737 no command ran for the refused batches', calls().length - before737b, 0);
+
+// ---- DS-737: a session ask's own choices (Plan2) pass the action check; the item must still offer them
+const rPlan = await record('desk-skills', 'DS-1', { action: 'Plan2' });
+t('DS-737 a mixed-case choice like Plan2 reaches the offered check, not the verb check',
+  [rPlan.status, rPlan.json?.error?.message?.startsWith('desk-skills DS-1 does not offer Plan2')], [400, true]);
+t('DS-737 an action with a space is still refused by the verb check', (await record('desk-skills', 'DS-1', { action: 'Plan 2' })).json?.error?.message, 'That action is not one this route records.');
 
 // ---- DS-737: the Inbox's list carries a usage item's reset, and the recent records log
 const RECORDS = join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl');
