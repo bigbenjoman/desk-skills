@@ -15,9 +15,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { bound } from './run-bounds.mjs';
 import { limits } from './locked-run.mjs';
-
-export const STOPPED = 124;
-export const stoppedLine = (ms) => `run-for.mjs: stopped after ${ms} ms`;
+import { RUN_FOR_STOPPED, stoppedLine } from './baseline.mjs';
 
 async function cli(argv) {
   const [ms, sep, ...given] = argv;
@@ -47,7 +45,7 @@ async function cli(argv) {
       if (!late) return resolve(code ?? 128 + (constants.signals[sig] ?? 0));
       stop('SIGKILL');
       console.error(stoppedLine(ms));
-      resolve(STOPPED);
+      resolve(RUN_FOR_STOPPED);
     });
   });
 }

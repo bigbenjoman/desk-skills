@@ -11,7 +11,10 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { STOPPED as RUN_FOR_STOPPED, stoppedLine } from './run-for.mjs';
+
+// How run-for.mjs ends a command that ran out of time: this exit code, and this line on stderr.
+export const RUN_FOR_STOPPED = 124;
+export const stoppedLine = (ms) => `run-for.mjs: stopped after ${ms} ms`;
 
 // Each check and the §4 row it runs; the lock each takes is desk-env's lockFor(row).
 export const CHECKS = { typecheck: 'typecheck-cmd', lint: 'lint-cmd' };
