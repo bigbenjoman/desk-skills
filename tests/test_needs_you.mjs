@@ -300,6 +300,19 @@ t('AC10 nothing anywhere', N.listText(N.collect({ repos: quiet })), 'Nothing nee
 const b1 = cli('record', 'beta', 'B-1', 'resume', 'the v2 one');
 t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 --all the v2 one');
 t('AC15 the session to message is named, with the requeue', /^MESSAGE beta-batch: B-1 was answered .*queue\.mjs requeue B-1/m.test(b1.out), true);
+// DS-737: a record that succeeds from the command line goes to the machine's records log, readable
+// only by this user; one refused is not logged.
+const recordsLog = join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl');
+const logged737 = () => (existsSync(recordsLog) ? readFileSync(recordsLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+const b1Log = logged737().at(-1);
+t('DS-737 the record is logged with its batch, key, action and first line', JSON.stringify([b1Log?.batch, b1Log?.key, b1Log?.action, b1Log?.line, !Number.isNaN(Date.parse(b1Log?.at))]),
+  JSON.stringify(['beta', 'B-1', 'resume', b1.out.split('\n')[0], true]));
+t('DS-737 the records log is chmod 600', (statSync(recordsLog).mode & 0o777).toString(8), '600');
+t('DS-737 readRecords reads it back', N.readRecords({ path: recordsLog }).at(-1)?.key, 'B-1');
+t('DS-737 readRecords leaves out entries before `since`', N.readRecords({ path: recordsLog, since: Date.now() + 60_000 }).length, 0);
+const nLogged = logged737().length;
+cli('record', 'nosuchrepo', 'Z-1', 'done');
+t('DS-737 a refused record is not logged', logged737().length, nLogged);
 // DS-297 AC1: marked answered, so desk-q shows it waiting on the session, and it is not asked again.
 const betaRow = () => loadRepos().find((r) => r.name === 'beta').rows.find((x) => x.t.key === 'B-1');
 t('DS-297 AC1 the park is marked answered', typeof queueOf('beta').tickets['B-1'].park?.answered, 'string');
@@ -387,6 +400,12 @@ t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stri
 t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue().tickets['X-2'].state}`, '0 triaged');
 const x3 = N.record({ word: 'alpha', ticket: 'X-3', action: 'resume', text: 'the plain one' });
 t('DS-310 AC3 a repo\'s name finds the batch that holds the ticket', `${x3.ok} ${answers().at(-1).queue === xq} ${xQueue().tickets['X-3'].state} ${queueOf('alpha').tickets['X-3']}`, 'true true triaged undefined');
+// DS-737: the records log names the batch the answer went to as list --json does, however the repo was typed.
+writeFileSync(xq, JSON.stringify({ ...xQueue(), tickets: { ...xQueue().tickets, 'X-4': { key: 'X-4', added_at: minsAgo(600), ...parked('A', 5, 'Which header?') } } }));
+const x4 = cli('record', 'ALPHA', 'X-4', 'resume', 'the tall one');
+const x4Log = existsSync(join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl'))
+  ? JSON.parse(readFileSync(join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl'), 'utf8').trim().split('\n').at(-1)) : null;
+t('DS-737 a record typed with the repo\'s name logs the named batch that holds the ticket', `${x4.code} ${x4Log?.key} ${x4Log?.batch}`, '0 X-4 alpha:X-1');
 
 // ---- DS-279: every row desk-q puts in Needs you is asked about: a worker that gave up, and a PR only you move.
 put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
@@ -843,6 +862,8 @@ put('lambda', { port: 4100, beat: 1, supervised: true, batch: { usage_hold: { si
 const lambda = N.collect({ word: 'lambda' }).items;
 t('DS-344 AC5 a batch held on the usage limit is one item, and no ticket is one', lambda.map((i) => `${i.t.key} ${i.kind}`).join(), 'usage-limit usage');
 t('DS-344 AC5 its need names the limit and how many workers wait', /^held on the weekly usage limit until .+: nothing new starts, and 2 paused workers wait\. It carries on by itself once the limit lifts$/.test(lambda[0]?.need ?? ''), true);
+t('DS-737 a usage item\'s JSON carries its reset as an ISO time', N.listItems({ word: 'lambda' }).items.find((i) => i.key === 'usage-limit')?.resets_at, new Date(wreset * 1000).toISOString());
+t('DS-737 an item of another kind carries no resets_at', N.listItems({ word: 'beta' }).items.some((i) => 'resets_at' in i), false);
 t('DS-344 AC5 it offers done and not-now, and done is recorded', `${lambda[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'lambda', ticket: 'usage-limit', action: 'done' }).ok}`, 'done,not-now true');
 // A repo pinned to a subscription since set off: its queued work starts nowhere, and that is one item.
 put('studia', { port: 4110, beat: 1, supervised: true, batch: { subscription_off: { since: minsAgo(5), email: 'ops@studia.example', login: 'work-2' } }, tickets: { 'S-1': { state: 'triaged', lane: 'A' } } });

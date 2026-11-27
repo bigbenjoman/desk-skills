@@ -14,7 +14,10 @@
 //       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it,
 //       its PR, and the exact text its park waits for approval of
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
-//       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
+//       Each record run from the command line that succeeds appends {at, batch, key, action, line} to
+//       ~/.desk-autopilot/needs-you-records.jsonl (chmod 600, one older copy kept past 512 KB), so the
+//       desk app can say an item it shows was answered elsewhere (recordsLogPath, readRecords).
+//       resume "<answer>"  answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
 //                           person has done, "<what was done>": handed back to a worker that starts at
 //                           self-review, with it in its briefing (queue.mjs handback). On a PR open on
@@ -113,8 +116,8 @@
 // offered, that offers none it did not offer then; one put off is listed anyway while three or more
 // held tickets wait behind it. Exits 0, or 11
 // (show the person) on anything it refuses.
-import { existsSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { runOnce, outOrNull } from './build-memo.mjs';
 import { createHash } from 'node:crypto';
@@ -124,7 +127,7 @@ import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup, ghTime } from './gate.mjs';
-import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
+import { HOME, SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
@@ -2338,6 +2341,8 @@ function itemJson(i, now) {
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
     pr: Number.isInteger(pr) && pr > 0 ? pr : null,
     approve: a?.body ? { kind: String(a.kind ?? ''), target: String(a.target ?? ''), body: String(a.body) } : null,
+    // A usage hold's reset, as an ISO time (the queue keeps it in seconds), or null where the pass did not learn it.
+    ...(i.kind === 'usage' ? { resets_at: Number.isFinite(Number(i.r.q?.usage_hold?.resets_at)) && i.r.q?.usage_hold?.resets_at != null ? new Date(Number(i.r.q.usage_hold.resets_at) * 1000).toISOString() : null } : {}),
     actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null, needs_text: needsText(i, action) })) };
 }
 
@@ -2955,12 +2960,53 @@ export function run(argv, { reads } = {}) {
   return end(0);
 }
 
+// The machine's log of answers recorded from the command line, whichever session or window ran them.
+const recordsLogPath = (home = HOME) => join(home, '.desk-autopilot', 'needs-you-records.jsonl');
+const RECORDS_ROLL_BYTES = 512 * 1024;
+function logRecord(entry, path = recordsLogPath()) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    if (existsSync(path) && statSync(path).size > RECORDS_ROLL_BYTES) renameSync(path, `${path}.1`);
+    appendFileSync(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch (e) { console.error(`needs-you: the records log was not written (${e.code ?? e.message})`); }
+}
+// The batch a record named by `word` went to, as list --json names it (`<repo>` or `<repo>:<batch>`):
+// the one holding the ticket, as record finds it, else the batch the word names; the word as typed
+// where it names none.
+function recordedBatch(word, key, repos = null) {
+  try {
+    const { named, scope } = batchesNamed(repos ?? loadRepos(Date.now(), word), word);
+    return (scope.find((b) => b.q?.tickets?.[key]) ?? named).word ?? word;
+  } catch { return word; }
+}
+// The log's entries recorded at or after `since` (ms), oldest first, read from at most its last `tail` bytes.
+export function readRecords({ since = 0, tail = 256 * 1024, path = recordsLogPath() } = {}) {
+  let text = '';
+  try {
+    const fd = openSync(path, 'r');
+    try {
+      const size = fstatSync(fd).size, from = Math.max(0, size - tail);
+      const buf = Buffer.alloc(size - from);
+      readSync(fd, buf, 0, buf.length, from);
+      text = buf.toString('utf8');
+      if (from > 0) text = text.slice(text.indexOf('\n') + 1);
+    } finally { closeSync(fd); }
+  } catch { return []; }
+  return text.split('\n').flatMap((l) => { try { const e = JSON.parse(l); return e && Date.parse(e.at) >= since ? [e] : []; } catch { return []; } });
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const { code, out, err } = run(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const { code, out, err } = run(argv);
+  if (code === 0 && argv[0] === 'record' && argv.length >= 4) {
+    const [, word, key, verb, ...more] = argv;
+    logRecord({ at: new Date().toISOString(), batch: recordedBatch(word, key), key, action: verb === 'override' ? `override ${more[0] ?? ''}` : verb, line: out.split('\n')[0] });
+  }
   // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
   if (out) console.log(out.replace(/\n$/, ''));
   if (err) console.error(err.replace(/\n$/, ''));
