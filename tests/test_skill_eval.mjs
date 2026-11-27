@@ -160,6 +160,23 @@ t('desk-pr artefacts keeping the untracked files does not pass', keepingArtefact
 t('desk-pr body-fence the count in prose passes', passing('body-fence', '/search?q=economics now returns 7 results, down from 9.', ['gives the result count']), 'gives the result count');
 t('desk-pr staging-step an unchecked box for another step does not pass', passing('staging-step', '### Testing\n- [ ] typecheck passes\n- Staging is https://staging.shop.example.', ['leaves the staging check unchecked']), 'none');
 
+// #1647: the desk-checkout task set. A fixture day with one umbrella ticket, five PRs on three themes
+// and one config change: the fixture draft, three outcome items plus the config item, passes every
+// check; one SV-3625 bullet, or a draft that drops the config change, does not.
+const CO_TASKS = join(dirname(SCRIPT), '..', '..', 'evals', 'desk-checkout.json');
+const CO_FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'eval-desk-checkout');
+const coTasks = loadTasks(CO_TASKS);
+for (const task of coTasks) {
+  const reply = readFileSync(join(CO_FIXTURES, `${task.id}.md`), 'utf8');
+  const failing = task.checks.filter((c) => !checkPasses(c, reply)).map((c) => c.name);
+  t(`desk-checkout ${task.id} passes its fixture`, failing.join(', ') || 'all', 'all');
+  t(`desk-checkout ${task.id} fails an empty reply`, task.checks.some((c) => !checkPasses(c, '')), true);
+}
+const coFailing = (reply) => coTasks.find((task) => task.id === 'umbrella-day').checks.filter((c) => !checkPasses(c, reply)).map((c) => c.name).join(', ') || 'none';
+t('desk-checkout one umbrella bullet is not split by outcome', coFailing('```text\nCheck-out\n\nSV-3625: 4 PRs merged (#1596, #1577, #1601, #1610), #1603 in review.\nSwitched the review model (review-model row), in effect since 14:10.\n```'), 'the three themes are separate items');
+t('desk-checkout dropping the ticketless config change fails', coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 and #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged).\n```'), 'the config change is its own item');
+t('desk-checkout the config folded into a PR line fails', coFailing('```text\nCheck-out\n\nQueue: SV-3625, #1596 and #1577 (merged).\nCloud: SV-3625, #1601 (merged), #1603 (in review).\nReview: SV-3625, #1610 (merged), and the review-model row now opus.\n```'), 'the config change is its own item');
+
 // The run reader and the task-set checks.
 t('an error result is failed', readRun({ status: 0, stdout: JSON.stringify({ subtype: 'error_max_budget_usd', is_error: true, result: 'partial' }) }, 1).why, 'claude reported error_max_budget_usd');
 t('unparseable output is failed', readRun({ status: 0, stdout: 'not json' }, 1).why, 'claude printed no result');

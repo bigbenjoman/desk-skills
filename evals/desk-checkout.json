@@ -1,0 +1,42 @@
+{
+  "tasks": [
+    {
+      "id": "umbrella-day",
+      "prompt": "There is no repository, shell or network here: do not run any command or read any file, and do not ask questions. Answer from the facts below as if you had read them yourself; every state below was read again just now.\n\nRepo config: GitHub repo acme/desk, Jira ticket keys SV-<n>, §4 Check-out destination none. No previous check-out to read. No meetings attended today. Today is Thursday and the post is written today.\n\nJira: SV-3625 \"Desk platform improvements\" (In Progress), the only ticket touched today. No ticket moves.\n\nGitHub, all PRs by the user, all naming SV-3625:\n- #1596 fix(queue): drain stalled batches - merged today. Batches stuck behind a dead worker were never drained, so tickets sat queued for hours.\n- #1577 fix(queue): retry a lost claim - merged today. A worker that lost its claim on a ticket dropped it instead of retrying.\n- #1601 feat(cloud): start workers in the cloud - merged today. Workers could only run on the user's laptop.\n- #1603 feat(cloud): cloud worker logs - open, in review, checks green.\n- #1610 fix(review): retry a timed-out review - merged today. A review that timed out failed the whole PR.\n\nConfig: the repo config's review-model row changed today at 14:10 from sonnet to opus (read from desk-env get review-model and the config's git log). No ticket names it. A session says the user changed it because reviews were missing real bugs.\n\nClaude sessions: the sessions behind each PR above, nothing else.\n\nWrite the check-out post, ready to paste.",
+      "checks": [
+        {
+          "name": "in a text fence",
+          "contains": "```text"
+        },
+        {
+          "name": "names the umbrella ticket",
+          "contains": "SV-3625"
+        },
+        {
+          "name": "the queue PRs are one item",
+          "matches": "#1596[^\\n]*#1577|#1577[^\\n]*#1596"
+        },
+        {
+          "name": "the cloud work is an item",
+          "contains": "#1601"
+        },
+        {
+          "name": "the review fix is an item",
+          "contains": "#1610"
+        },
+        {
+          "name": "the three themes are separate items",
+          "matches": "^(?![\\s\\S]*(#1596|#1577)[^\\n]*(#1601|#1603|#1610))(?![\\s\\S]*(#1601|#1603)[^\\n]*(#1596|#1577|#1610))(?![\\s\\S]*#1610[^\\n]*(#1596|#1577|#1601|#1603))[\\s\\S]*#1610"
+        },
+        {
+          "name": "the config change is its own item",
+          "matches": "(^|\\n)(?![^\\n]*#\\d)[^\\n]*(review-model|review model)[^\\n]*"
+        },
+        {
+          "name": "the config change is in effect, not from tomorrow",
+          "absent": "from tomorrow"
+        }
+      ]
+    }
+  ]
+}
