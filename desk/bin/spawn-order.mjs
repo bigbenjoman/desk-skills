@@ -12,6 +12,28 @@ export const KEEP_ORDER_RULE = 'With --keep-order, tickets start in the order na
 export const bySpawnOrder = (gates, filesOf, named) => (a, b) => gates[b.ticket] - gates[a.ticket]
   || filesOf(a) - filesOf(b) || named(a) - named(b);
 
+// How many planned files a triage record names.
+export const plannedFiles = (rec) => (Array.isArray(rec?.files_in_scope) ? rec.files_in_scope.length : 0);
+
+// Every key reached from `from` through `succ` (key -> the keys it holds), `from` itself left out.
+export const reach = (key, from, succ) => {
+  const seen = new Set(); const stack = [...from];
+  while (stack.length) { const k = stack.pop(); if (seen.has(k) || k === key) continue; seen.add(k); stack.push(...(succ[k] ?? [])); }
+  return seen;
+};
+
+// `list` with blockers before what they block, otherwise in the order given: `blockers(item)` the keys
+// holding an item, `keyOf(item)` its own. A cycle falls back to its first item.
+export const blockersFirst = (list, blockers, keyOf = (x) => x) => {
+  const out = []; const done = new Set(); const pending = [...list];
+  while (pending.length) {
+    const i = pending.findIndex((x) => blockers(x).every((p) => done.has(p)));
+    const [x] = pending.splice(i < 0 ? 0 : i, 1);
+    out.push(x); done.add(keyOf(x));
+  }
+  return out;
+};
+
 // What a chain of tickets sharing file `f` is called: the file, or its folder for a skill's SKILL.md,
 // a README or an index file.
 export const chainName = (f) => {
@@ -41,28 +63,12 @@ export function resortQueue(tickets, { scope, fileCount }) {
   const shared = (a, b) => [...files.get(a)].filter((f) => files.get(b).has(f));
   const gates = {};
   for (const t of movable) {
-    const seen = new Set();
-    const stack = [...(succ[t.key] ?? []), ...open.filter((o) => o.key !== t.key && shared(t.key, o.key).length).map((o) => o.key)];
-    while (stack.length) {
-      const k = stack.pop();
-      if (seen.has(k) || k === t.key) continue;
-      seen.add(k);
-      stack.push(...(succ[k] ?? []));
-    }
-    gates[t.key] = [...seen].filter((k) => openKeys.has(k)).length;
+    const from = [...(succ[t.key] ?? []), ...open.filter((o) => o.key !== t.key && shared(t.key, o.key).length).map((o) => o.key)];
+    gates[t.key] = [...reach(t.key, from, succ)].filter((k) => openKeys.has(k)).length;
   }
   const was = new Map(movable.map((t, i) => [t.key, i]));
   const sorted = movable.map((t) => ({ ticket: t.key })).sort(bySpawnOrder(gates, (r) => fileCount(r.ticket), (r) => was.get(r.ticket)));
-  // Blockers before what they block, as plan-batch's topo puts them.
-  const pending = sorted.map((r) => r.ticket);
-  const order = [];
-  const done = new Set();
-  while (pending.length) {
-    const i = pending.findIndex((k) => blockersOf(byKey[k]).every((p) => !was.has(p) || done.has(p)));
-    const [k] = pending.splice(i < 0 ? 0 : i, 1);
-    order.push(k);
-    done.add(k);
-  }
+  const order = blockersFirst(sorted.map((r) => r.ticket), (k) => blockersOf(byKey[k]).filter((p) => was.has(p)));
   const now = new Map(order.map((k, i) => [k, i]));
   const moved = [];
   for (const k of order) {

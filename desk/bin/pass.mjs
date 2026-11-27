@@ -87,7 +87,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { resortQueue, resortLine } from './spawn-order.mjs';
+import { resortQueue, resortLine, plannedFiles } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -2902,7 +2902,7 @@ const budgetFiles = (key) => {
 // (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it.
 const RESORT = resortQueue(Object.values(fresh.tickets), {
   scope: budgetFiles,
-  fileCount: (k) => (Array.isArray(triageRec(k)?.files_in_scope) ? triageRec(k).files_in_scope.length : 0),
+  fileCount: (k) => plannedFiles(triageRec(k)),
 });
 const orderLines = [];
 if (RESORT.changed) {
