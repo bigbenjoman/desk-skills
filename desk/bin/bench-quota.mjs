@@ -29,6 +29,7 @@ import { loginOf } from './claude-logins.mjs';
 import { defaultLogin, login as makeLogin } from './logins.mjs';
 import { readCodexUsage } from './codex-usage.mjs';
 import { planFor } from './bench-report.mjs';
+import { alive } from './dir-lock.mjs';
 
 export const DEFAULT_CAP = 10;
 export const DEFAULT_RESERVE = 25;
@@ -188,16 +189,27 @@ export function record(entry, path = ledgerPath()) {
   appendFileSync(path, `${JSON.stringify(entry)}\n`);
 }
 
+// Whether the bench process that wrote a run's line still runs. A line with no pid is from a bench
+// that predates the pid, so long gone.
+const benchAlive = (e) => Number.isInteger(e.pid) && alive(e.pid);
+
 // The points the bench has used of this account's allowance in the window `now` reads: each run's
-// points, and a run whose after-reading never came (the bench stopped or died) counted as the whole
-// rise from its before-reading to now. With no reading now, the windows not yet reset, those runs
-// counted at their known points only.
-export function benchUsed(entries, account, now, at = Date.now()) {
+// points, and a run whose after-reading never came counted as the rise from its before-reading to now
+// while its bench still runs. Once that bench is gone (killed or crashed), the rise counts only up to
+// the next reading the bench took after it, the next run's before-reading, since all use after that is
+// other work on the account; with no such reading, up to now. With no reading now, the windows not yet
+// reset, those runs counted at their known points only.
+export function benchUsed(entries, account, now, at = Date.now(), isAlive = benchAlive) {
+  const mine = entries.filter((e) => e.account === account.key
+    && (now.why ? e.resetsAt * 1000 > at : Math.abs(e.resetsAt - now.resetsAt) <= SAME_WINDOW_S));
+  const nextReading = (e) => mine
+    .filter((o) => Date.parse(o.at) > Date.parse(e.at) && Number.isFinite(o.before))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))[0]?.before;
   let used = 0;
-  for (const e of entries) {
-    if (e.account !== account.key) continue;
-    if (now.why ? e.resetsAt * 1000 <= at : Math.abs(e.resetsAt - now.resetsAt) > SAME_WINDOW_S) continue;
-    used += Number.isFinite(e.points) ? e.points : now.why ? 0 : Math.max(0, now.used - e.before);
+  for (const e of mine) {
+    if (Number.isFinite(e.points)) { used += e.points; continue; }
+    const upTo = isAlive(e) ? undefined : nextReading(e);
+    used += upTo != null ? Math.max(0, upTo - e.before) : now.why ? 0 : Math.max(0, now.used - e.before);
   }
   return round1(used);
 }
@@ -235,7 +247,7 @@ export function startRun({ account, settings, ledger = ledgerPath(), env = proce
   const line = pointsLine(account, used, settings, before);
   const why = gate({ account, reading: before, used, settings });
   if (why) return { line, why };
-  const entry = { id, account: account.key, name: account.name, ...fields, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString() };
+  const entry = { id, account: account.key, name: account.name, ...fields, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString(), pid: process.pid };
   record(entry, ledger);
   return { line, before, entry };
 }
