@@ -56,25 +56,26 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
-**A check-out starts where the previous one ended.** Step 2 reads the destination back (the
-channel's, or the file's, previous check-out). Run the collectors again with `--since <the time it
+**A check-out starts where the last one ended: find that one before any collector runs.**
+Read the destination's last check-out, then give each collector `--since <the time it
 was posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or
 date names it>`: their window then starts where that check-out stopped, the evening before
-included, so nothing posted between it and midnight drops out, and their headers say from when. One
-written the next morning for its own day covered only that day, so the window starts at midnight.
-A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
-read again for its state now (step 3).
-Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
-day and say so. Say the window in your one line to the user, never in the post (step 4).
+included, so nothing posted between it and midnight drops out. One written the next morning for
+its own day covered only that day, so the window starts at midnight. A draft never sent moves
+nothing. Every item it called in review or WIP is read again for its state now (step 3).
+Where none can be found (no connector or permission, none posted, `none`),
+leave both flags out to cover the whole day, and say so. Each collector runs once
+either way. Say the window in your one line to the user, never in the post (step 4).
 
 ## 2. Gather
 
-Run the three collectors in one Bash call, from inside the repo (they use its config to decide
-scope):
+Run the three collectors once, with step 1's window, in one Bash call from inside the repo (its
+config scopes them):
 
 ```bash
 S=~/.claude/skills/desk-checkout/scripts; D=auto   # or today / yesterday / friday / 2026-09-23
-python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; python3 $S/claude_activity.py --day $D
+W="--since <its ISO time> --since-for <its day>"  # W= if none
+python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W
 ```
 
 `references/sources.md` covers the newer collectors: `worklog_activity.py`,
@@ -210,7 +211,7 @@ Then sort:
 
 ## 4. Draft
 
-Write it in the user's voice. Their previous check-out (gathered in step 2 when the destination is a
+Write it in the user's voice. Their previous check-out (read in step 1 when the destination is a
 channel, or the previous entry in the destination file) is the model for register, header and
 layout; `references/style.md` has the conventions and a worked example for when there is none. The
 short version:
