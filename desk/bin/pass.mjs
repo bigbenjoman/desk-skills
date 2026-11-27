@@ -69,8 +69,8 @@ import { makeBaseReads, memo } from './base-reads.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { liveBaseRed, readBaseRed, readGreen, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
-import { decideSupersededRepairs } from './pass/repair-superseded.mjs';
+import { liveBaseRed, readBaseRed, readGreenRec, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
+import { decideSupersededRepairs, greenRead } from './pass/repair-superseded.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges, holdersText } from './suite-wait.mjs';
 import { reclaimOrphans } from './lock-orphans.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
@@ -1760,37 +1760,76 @@ function finishPush(t) {
     report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${why}: left parked`);
     return true;
   };
-  const rows = ['git-push', 'pr-open'].filter((k) => E.permission(k) !== 'yes');
-  if (rows.length) return left(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
-  const stray = strayClosings(body);
-  if (stray.length) return left(`its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line ${stray.map((s) => `${s.line}: ${s.uses.join(', ')}`).join('; line ')})`);
+  const r = pushDraft(t, {
+    title: prTitleIn(texts.join('\n')), body,
+    summary: (n) => `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused`,
+    refuse: () => {
+      const stray = strayClosings(body);
+      return stray.length ? `its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line ${stray.map((s) => `${s.line}: ${s.uses.join(', ')}`).join('; line ')})` : null;
+    },
+  });
+  if (r.unlisted != null) return false;
+  if (r.why) return left(r.why);
+  if (r.wait) {
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${r.wait}: left parked, and each pass tries the push until it can requeue it`);
+    return true;
+  }
+  report.done.push(`${t.key}: ${prVerdict(r.pr)}; PR #${r.pr} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
+  return true;
+}
+// A worker's committed branch pushed and opened as a draft PR into the default branch, recorded done on it
+// (doneOnPr, plus `fields`): finishPush's and pushRepairFix's one path. `refuse()` is a reason of the
+// caller's own not to, read after the §3 rows; `title` falls back to the branch's last commit subject.
+// -> { pr } | { why } (refused) | { wait } (a slot, or a push with no answer or a 5xx: try again later)
+//    | { unlisted } (its PRs could not be listed)
+function pushDraft(t, { title, body, summary, refuse = () => null, fields = [] }) {
   const wt = t.worktree;
-  if (sh('git', ['-C', wt, 'status', '--porcelain'], { tolerant: true })) return left(`its worktree ${wt} has uncommitted changes`);
+  const rows = ['git-push', 'pr-open'].filter((k) => E.permission(k) !== 'yes');
+  if (rows.length) return { why: `config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}` };
+  const refused = refuse();
+  if (refused) return { why: refused };
+  if (sh('git', ['-C', wt, 'status', '--porcelain'], { tolerant: true })) return { why: `its worktree ${wt} has uncommitted changes` };
   const own = sh('git', ['-C', wt, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..${t.branch}`], { tolerant: true });
-  if (!(Number(own) > 0)) return left(`its branch ${t.branch} has no commit of its own on ${DEFAULT_BRANCH}`);
+  if (!(Number(own) > 0)) return { why: `its branch ${t.branch} has no commit of its own on ${DEFAULT_BRANCH}` };
   const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'all', '--json', 'number', '-q', '.[0].number']);
-  if (!open.ok) return false;
-  if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
+  if (!open.ok) return { unlisted: lastLine(open.out) };
+  if (/^\d+$/.test(open.out)) return { why: `PR #${open.out} already exists from ${t.branch}` };
   const slot = previewSlot(t, t.branch);
   const push = slot.wait ? null : shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
   if (push) { if (push.ok) keepSlot(slot); else freeSlot(slot); }
   if (slot.wait || (!push.ok && (push.unreached || transientPush(push.out)))) {
-    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${slot.wait ? `the push ${slot.wait}` : (push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx')}: left parked, and each pass tries the push until it can requeue it`);
-    return true;
+    return { wait: slot.wait ? `the push ${slot.wait}` : (push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx') };
   }
-  if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
-  const title = prTitleIn(texts.join('\n')) || sh('git', ['-C', wt, 'log', '-1', '--format=%s', t.branch], { tolerant: true });
+  if (!push.ok) return { why: `git push origin ${t.branch} was refused (${lastLine(push.out)})` };
+  const subject = title || sh('git', ['-C', wt, 'log', '-1', '--format=%s', t.branch], { tolerant: true }) || `fix: ${t.key}`;
   const bodyFile = join(STATE, 'pr-bodies', `${t.key}.md`);
   mkdirSync(join(STATE, 'pr-bodies'), { recursive: true });
   writeFileSync(bodyFile, `${body}\n`);
-  const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
+  const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', subject, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
-  if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
+  if (!made.ok || !n) return { why: `${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})` };
   keepSlot(slot, n);
-  q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
-  report.done.push(`${t.key}: ${prVerdict(n)}; PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
-  return true;
+  q('set', t.key, ...doneOnPr(n, { draft: true, summary: summary(n) }), ...fields);
+  return { pr: n };
+}
+// A red-base repair whose worker left its fix committed and unpushed, with the base still red: push the
+// branch and open the repair's draft PR, so it reaches the merge driver rather than a "push or discard"
+// for the person. -> { pr } | { why } (not pushed, and why) | null (nothing of its own to push).
+function pushRepairFix(t) {
+  const wt = t.worktree && existsSync(t.worktree) ? t.worktree : null;
+  if (!wt || !t.branch) return null;
+  const own = sh('git', ['-C', wt, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..${t.branch}`], { tolerant: true });
+  if (!(Number(own) > 0)) return null;
+  const checks = (readBaseRed(STATE)?.checks ?? []).map((c) => `"${c.name}"`).join(', ') || 'a required check';
+  const r = pushDraft(t, {
+    body: `Repairs the red ${DEFAULT_BRANCH}: ${checks} failed on its latest run there.\n\n`
+      + `The repair's worker (${t.key}) committed this fix and exited without opening a PR while ${DEFAULT_BRANCH} was still red, so the autopilot pass pushed ${t.branch} and opened this draft.\n\n(${t.key}/desk-autopilot repair-push)`,
+    summary: (n) => `draft PR #${n} opened by the pass: its worker left an unpushed fix while ${DEFAULT_BRANCH} was red`,
+    fields: ['handoff=null', 'park=null'],
+  });
+  if (r.unlisted != null) return { why: `its PRs could not be listed (${r.unlisted})` };
+  return r.pr ? { pr: r.pr } : { why: r.why ?? `${r.wait}: the next pass tries again` };
 }
 // The §3b check-in times, or null where the row cannot be read (the digest says why).
 const checkinTimesNow = () => { try { return checkinTimes(checkinRow()).times ?? null; } catch { return null; } };
@@ -2261,9 +2300,9 @@ const REPAIR_HANDLERS = {
     const since = t.added_at ?? t.spawned_at ?? null;
     const began = Date.parse(since ?? '');
     if (!Number.isFinite(began)) return null;
-    const red = readBaseRed(STATE);
-    const greenAt = Date.parse(readGreen(STATE, DEFAULT_BRANCH) ?? '');
-    const green = (!red || red.branch !== DEFAULT_BRANCH) && Number.isFinite(greenAt) && greenAt > began;
+    const g = greenRead({ red: readBaseRed(STATE), greenRec: readGreenRec(STATE, DEFAULT_BRANCH), base: DEFAULT_BRANCH, began, closedGreen: t.closed_green ?? null });
+    if (g.untested) return { why: 'untested', words: g.untested };
+    const { green, mark, at: greenAt } = g;
     // Its own changes: its worktree's, else its branch's on origin, read into a ref of its own.
     let files = [], onBase = false;
     const ref = `refs/desk-repair/${a.key}`;
@@ -2271,7 +2310,7 @@ const REPAIR_HANDLERS = {
     // The base as it is on origin now: a stale tracking ref would miss a fix that has landed. Unread,
     // only the driver's own green read (which reads the remote tip) can settle it, naming no PR.
     const based = mainGit(['fetch', '-q', 'origin', `+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}`]).ok;
-    if (!based) return green ? { why: 'green', by: null } : null;
+    if (!based) return green ? { why: 'green', by: null, mark } : null;
     if (t.worktree && existsSync(t.worktree)) { dir = t.worktree; head = 'HEAD'; }
     else if (t.branch && mainGit(['fetch', '-q', 'origin', `+refs/heads/${t.branch}:${ref}`]).ok) { dir = MAIN; head = ref; }
     try {
@@ -2288,15 +2327,17 @@ const REPAIR_HANDLERS = {
     } finally { if (head === ref) mainGit(['update-ref', '-d', ref]); }
     if (!green && !onBase) return null;
     // Its own files, where it has any, name the commit that fixed it in either case.
-    return { why: onBase ? 'on-base' : 'green', by: baseFixer(since, files, onBase || files.length ? null : new Date(greenAt).toISOString()) };
+    return { why: onBase ? 'on-base' : 'green', by: baseFixer(since, files, onBase || files.length ? null : new Date(greenAt).toISOString()), ...(onBase ? {} : { mark }) };
   },
   'pr-close': (a) => shOut('gh', ['pr', 'close', a.pr, '--repo', GH_REPO, '--comment', a.comment]),
+  'push-fix': (a, s) => pushRepairFix(s.tickets[a.key]),
   write: CLEARS_HANDLERS.write,
   'drop-worktree': CLEARS_HANDLERS['drop-worktree'],
 };
 runSteps({
   name: 'red-base repairs done elsewhere',
-  snapshot: () => ({ tickets: queue().tickets, isRepair: (k) => E.isBaseRedKey(k, DEFAULT_BRANCH), base: DEFAULT_BRANCH, dry: DRY }),
+  snapshot: () => ({ tickets: queue().tickets, isRepair: (k) => E.isBaseRedKey(k, DEFAULT_BRANCH), base: DEFAULT_BRANCH, dry: DRY,
+    repairKey: liveBaseRed(STATE, { branch: DEFAULT_BRANCH })?.repair_key ?? null }),
   decide: decideSupersededRepairs,
   handlers: REPAIR_HANDLERS,
   report,
