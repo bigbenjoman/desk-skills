@@ -2494,14 +2494,16 @@ function limitOf(x, now) {
 }
 // While a repo's new work runs on the fallback (fallback-login.mjs), the pass keeps the default's limit in
 // the queue's login_fallback rather than usage_hold. One still holding, a limit and not pacing, its reset
-// not passed, is the default login's limit as { at, type }; null for any other login, or with none.
+// not passed, is the default login's limit as { at, type }, as the pass reads it until a probe finds it
+// lifted; null for any other login, or with none. A record whose fallback (`login`) is the default now
+// was made for the default before it, so it holds nothing.
 function fallbackOut(repos, l, now) {
   let def = null;
   try { def = loginUses().defaults.claude; } catch { return null; }
   if (!def || def.dir !== l.dir) return null;
   for (const q of withOthers(repos).flatMap((r) => (r.batches ?? [r]).map((b) => b.q))) {
     const f = q?.login_fallback;
-    if (f?.type && f.type !== 'pace' && (f.resets_at == null || now < f.resets_at * 1000)) return { at: f.resets_at ?? null, type: f.type };
+    if (f?.type && f.type !== 'pace' && f.login !== def.name && (f.resets_at == null || now < f.resets_at * 1000)) return { at: f.resets_at ?? null, type: f.type };
   }
   return null;
 }

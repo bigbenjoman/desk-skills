@@ -331,9 +331,14 @@ withFallback({ ...fbRec, resets_at: Math.floor(NOW / 1000) - 60 });
 const fbPast = await start({ purpose: 'blank', repo: 'acme__voicepa' });
 t('nor is one whose reset has passed', fbPast.status === 429, false);
 if (fbPast.status === 201) await call('DELETE', `/api/sessions/${fbPast.json.id}`, { headers: auth });
+// The fallback since made the default (the login named `default` here): the record was for the one before it.
+withFallback({ ...fbRec, login: 'default' });
+const fbSwap = await start({ purpose: 'blank', repo: 'acme__voicepa' });
+t('nor one made for the default before it, once its fallback is the default', fbSwap.status === 429, false);
+if (fbSwap.status === 201) await call('DELETE', `/api/sessions/${fbSwap.json.id}`, { headers: auth });
 writeFileSync(vpQueue, vpBefore);
-await until(() => starts().length - nfb === 3);
-t('the refused one started nothing: the other three each started one', [fbOther.status, fbPace.status, fbPast.status, starts().length - nfb], [201, 201, 201, 3]);
+await until(() => starts().length - nfb === 4);
+t('the refused one started nothing: the other four each started one', [fbOther.status, fbPace.status, fbPast.status, fbSwap.status, starts().length - nfb], [201, 201, 201, 201, 4]);
 
 const reg = JSON.parse(readFileSync(join(H, '.desk-autopilot', 'ui', 'sessions.json'), 'utf8'));
 t('the registry is readable only by this user', (await import('node:fs')).statSync(join(H, '.desk-autopilot', 'ui', 'sessions.json')).mode & 0o777, 0o600);
