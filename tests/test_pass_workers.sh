@@ -1061,7 +1061,8 @@ check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(f
 # DS-1037 AC3: a worker that handed off partway through Stage 5 on context is followed by a fresh one
 # starting at Stage 5 from the briefing; a third such handoff in a row at that stage parks.
 midfile(){ node -e 'const [k, s = "5"] = process.argv.slice(1); require("fs").writeFileSync(`${process.env.DESK_AUTOPILOT_STATE}/handoffs/${k}.json`, JSON.stringify({ ticket: k, stage: s, criteria: ["AC1: the widget saves"], lane: "A", verification: ["tests: pass"], review: [], evidence: [], left: ["capture the after screenshot", "then Stage 6"], context: 31, threshold: "30" }))' "$@"; }
-handing H-10; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
+# Its threshold was already raised once (#1539 AC2), so its stageless sessions park rather than raise.
+handing H-10; q set H-10 handoff_pct=55; midfile H-10; hlog H-10 "$(printf 'AUTOPILOT_STAGE: 5/9 evidence\nAUTOPILOT_HANDOFF: 5')"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-1037 AC3 a mid-stage handoff at Stage 5 is followed by a fresh session at Stage 5" 'echo "$out" | grep -qF "H-10 handed off partway through Stage 5 on context (31% used; handoff-threshold 30): queued for a fresh session from Stage 5" && [ "$(spawned_for H-10 | tail -1 | grep -o "stage=[^ ]*")" = stage=5 ] && [ "$(field H-10 state)" = "\"running\"" ]'
 check "DS-1037 AC3 its briefing says so and lists what is left of the stage" 'b=$(brief H-10); grep -qF "## Handoff: this session starts at Stage 5" <<< "$b" && grep -qF "handed off partway through Stage 5" <<< "$b" && grep -qF "handoff-threshold 30" <<< "$b" && grep -qF "### Left of Stage 5" <<< "$b" && grep -qxF -- "- capture the after screenshot" <<< "$b"'
