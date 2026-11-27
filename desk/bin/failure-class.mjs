@@ -97,7 +97,8 @@ export function runsState(runs) {
 //         (its newest completed run at or since the merge base; null unread or with none; `held` for
 //         a check already held, which may read further back),
 //         failingTests?(check) -> [test] | null (the check's failing tests at this head),
-//         baseTests?(name, 'merge-base' | 'latest') -> [test] | null (the base's failing tests in that job there) }
+//         baseTests?(name, 'merge-base' | 'latest') -> [test] | null (the base's failing tests there, in that
+//         job's failing run: base-reads.mjs testsAt) }
 // -> { red, latest (those of red that are not red at the merge base), unknown, mine (the checks a fix
 //      try takes), record (the hold to keep, or null) }
 export function baseSplit(failing, head, held, read) {
@@ -156,12 +157,12 @@ function ownTests(f, where, read) {
 //   behind a task prefix (turbo's `web:test: FAIL <file>`), and go's `--- FAIL: <test>`;
 // - pytest's `FAILED <file>::<test>`;
 // - each junit `<testcase>` holding a `<failure>` or `<error>` the log prints, as `<classname>.<name>`.
-// Not read: a suite's own count line (`FAIL 2 check(s) failed`), which differs between runs and names no
+// Not read: a suite's own count line (`FAIL 2 check(s) failed`, `FAIL 2 check(s)`), which differs between runs and names no
 // test, and tests/run.sh's `-- first run` of a suite it retried, up to its `-- retry` or the next suite:
 // a failure its retry did not repeat is not a failing test of this run. [] for none or unread.
 const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
 const STAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/;
-const COUNT_LINE = /^\d+\s+(?:checks?|tests?|assertions?|specs?|suites?|cases?)(?:\(s\))?\s+(?:failed|failing)\b/i;
+const COUNT_LINE = /^\d+\s+(?:checks?|tests?|assertions?|specs?|suites?|cases?)(?:\(s\))?(?:\s+(?:failed|failing)\b.*)?$/i;
 const FAIL_LINE = [
   /^\s*---\s+FAIL:\s+(\S+)/,
   /^\s*(?:[\w@./-]+(?::[\w./-]+)*:\s+)?FAILED\s+(\S+::\S+)/,

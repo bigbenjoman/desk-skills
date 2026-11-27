@@ -81,11 +81,32 @@ export function makeBaseReads({ gh, repo, branch, cached = memo() }) {
     });
     return jobTests(id);
   };
-  // The base's failing tests in a job at one commit: its failed run's job; null unread or not an Actions job.
+  // The base's failing tests for a job at one commit: those of every failed job in the workflow run its
+  // failed check run belongs to, not only the job of that name. A sharded suite need not put a test in
+  // the same shard on the base as on the PR (the PR runs a scoped set, and shards balance by duration),
+  // so a test the base fails in any of that run's jobs is the base's. Null when that check run is not an
+  // Actions job, or any failed job's log is unread; [] when the job of that name names no test (a crash, a
+  // timeout), so the check is read by its name. Another failed job naming none (a job gathering the
+  // shards' results) adds nothing.
+  const FAILED_JQ = [...FAILED].map((c) => `.conclusion == "${c}"`).join(' or ');
   const testsAt = (sha, name) => {
     const failed = (checkRunsAt(sha, name) ?? []).filter((r) => FAILED.has(String(r?.conclusion ?? '').toLowerCase()));
-    const id = failed.map((r) => /\/job\/(\d+)/.exec(String(r.details_url ?? ''))?.[1]).find(Boolean);
-    return jobTests(id ?? null);
+    const m = failed.map((r) => /\/actions\/runs\/(\d+)\/job\/(\d+)/.exec(String(r.details_url ?? ''))).find(Boolean);
+    if (!m) return null;
+    const ids = cached(`run-failed-jobs:${m[1]}`, () => {
+      const r = gh(['api', `repos/${repo}/actions/runs/${m[1]}/jobs?per_page=100`, '--paginate', '--jq', `.jobs[] | select(${FAILED_JQ}) | .id`]);
+      return r.ok ? r.out.split('\n').map((l) => l.trim()).filter((l) => /^\d+$/.test(l)) : null;
+    });
+    if (!ids) return null;
+    const own = jobTests(m[2]);
+    if (!own?.length) return own;
+    const out = new Set(own);
+    for (const id of new Set(ids)) {
+      const t = jobTests(id);
+      if (t == null) return null;
+      for (const x of t) out.add(x);
+    }
+    return [...out];
   };
   // failure-class.mjs baseSplit's reads for one head.
   const forHead = (head) => ({

@@ -337,7 +337,7 @@ t('#805 with the lever off, a runner fault naming no changed file is re-run as s
   t('issue-1605 red at the merge base, the latest run on the base unread: base red by check name', `${latestNone.red.length} ${latestNone.mine.length}`, '1 0');
   // A suite tests/run.sh retried: its first run's failures are not this run's.
   const retried = ['== tests/test_a.mjs', 'ok: 3', 'retried: failed its first run, passed its retry', '-- first run', 'FAIL flaky one: got x', 'FAIL 1 check(s) failed',
-    '== tests/test_b.mjs', 'ok: 2', '-- first run', 'FAIL b first only: got y', '-- retry', 'FAIL b both: got z', '2026-11-27T10:00:00.1Z FAIL 3 check(s) failed'].join('\n');
+    '== tests/test_b.mjs', 'ok: 2', '-- first run', 'FAIL b first only: got y', '-- retry', 'FAIL b both: got z', '2026-11-27T10:00:00.1Z FAIL 3 check(s) failed', 'FAIL 2 check(s)', 'FAIL: 4 checks failed'].join('\n');
   t('issue-1605 P0 a retried suite\'s first run and a suite\'s count line name no failing test', JSON.stringify(failingTestNames(retried)), '["b both"]');
   const counts = (n) => baseSplit([red(SHARD)], HEAD, null, { ...read({ [SHARD]: 'fail' }, GREEN_NOW), failingTests: () => failingTestNames(`FAIL A: x\nFAIL ${n} check(s) failed`), baseTests: () => failingTestNames('FAIL A: x\nFAIL B: y\nFAIL 2 check(s) failed') });
   t('issue-1605 P0 a PR failing fewer of the base\'s tests, with its own count line: base red', `${counts(1).red.length} ${counts(1).mine.length}`, '1 0');
@@ -356,13 +356,22 @@ t('#805 with the lever off, a runner fault naming no changed file is re-run as s
     [`repos/${R}/actions/runs/45965634008/jobs?per_page=100`]: JOB_PR,
     [`repos/${R}/actions/jobs/${JOB_PR}/logs`]: 'FAIL DS-226 AC1 FileVault on is reported: got x\n',
     [`repos/${R}/actions/jobs/${JOB_BASE}/logs`]: 'FAIL DS-763 AC4 the whole pass shell suite: got y\n',
+    [`repos/${R}/actions/runs/1/jobs?per_page=100`]: `${JOB_BASE}\n888\n889\n`,
+    [`repos/${R}/actions/jobs/888/logs`]: 'FAIL DS-9 another shard\'s test: got z\n',
+    [`repos/${R}/actions/jobs/889/logs`]: 'one or more shards failed\n',
   };
   const calls = [];
   const gh = (args) => { calls.push(args); const out = answers[args[1]]; return out == null ? { ok: false, out: '' } : { ok: true, out }; };
   const br = makeBaseReads({ gh, repo: R, branch: 'main' }).forHead(HEAD);
   t('issue-1605 the PR\'s failing tests are read from its job of that name', JSON.stringify(br.failingTests(red(SHARD, '45965634008'))), '["DS-226 AC1 FileVault on is reported"]');
   t('issue-1605 the job is picked by its name', calls.find((a) => a[1].includes('/runs/45965634008/jobs'))?.[3], `[.jobs[] | select(.name == "${SHARD}") | .id][0] // empty`);
-  t('issue-1605 the base\'s failing tests are read from its failed run\'s job at the merge base', JSON.stringify(br.baseTests(SHARD, 'merge-base')), '["DS-763 AC4 the whole pass shell suite"]');
+  t('issue-1605 the base\'s failing tests are read from every failed job of its failed run at the merge base', JSON.stringify(br.baseTests(SHARD, 'merge-base')), '["DS-763 AC4 the whole pass shell suite","DS-9 another shard\'s test"]');
+  t('issue-1605 the run\'s failed jobs are picked by conclusion', calls.find((a) => a[1] === `repos/${R}/actions/runs/1/jobs?per_page=100`)?.[4], '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure") | .id');
+  // A test the base fails in another shard of that run is the base's, whichever shard the PR ran it in.
+  const moved = baseSplit([red(SHARD, '45965634008')], HEAD, null, { ...br, failingTests: () => ['DS-9 another shard\'s test'] });
+  t('issue-1605 a base test that ran in another shard on the base: base red, held', `${moved.red.length} ${moved.mine.length}`, '1 0');
+  const crashed = makeBaseReads({ gh: (args) => (args[1] === `repos/${R}/actions/jobs/${JOB_BASE}/logs` ? { ok: true, out: 'Error: the runner lost its connection\n' } : gh(args)), repo: R, branch: 'main' }).forHead(HEAD);
+  t('issue-1605 the base\'s job of that name naming no test (a crash): none, so read by name', JSON.stringify(crashed.baseTests(SHARD, 'merge-base')), '[]');
   const split = baseSplit([red(SHARD, '45965634008')], HEAD, null, br);
   t('issue-1605 AC1 end to end through the reads: not base red', `${split.red.length} ${JSON.stringify(split.mine[0]?.own)}`, '0 ["DS-226 AC1 FileVault on is reported"]');
 }
