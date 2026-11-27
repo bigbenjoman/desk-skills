@@ -61,7 +61,8 @@ export const oldCode = (version, installed = readInstalled()) => Boolean(install
 // `dirty` means a tracked file differs from the commit; untracked files are not installed code.
 // With a release folder, the same record is written into it as release.json, which rollback reads.
 function record(src, release = null) {
-  const git = (...a) => spawnSync('git', ['-C', src, ...a], { encoding: 'utf8' });
+  // No timeout: an install waits for git rather than recording a slow checkout as unversioned.
+  const git = gitIn(src, 0);
   const head = git('rev-parse', 'HEAD');
   const at = new Date().toISOString();
   const v = head.status === 0
@@ -91,17 +92,23 @@ function movedFrom(git, from, v) {
   const f = forwardOnMain(git, from, v.commit);
   return f.why ? skip(f.why) : { move: { at: v.at, from, to: v.commit, merges: f.merges } };
 }
-// A git runner on checkout `dir`, as forwardOnMain takes it.
+// A git runner on checkout `dir`, as forwardOnMain takes it; a timeout of 0 waits for git.
 export const gitIn = (dir, timeout = 10_000) => (...a) => spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout });
+// main's own commits after `from` up to `to`, first parent only, as the auto-release counts them, in the
+// checkout `git` runs on (gitIn), or null when git could not count them.
+export function mainCommitsBetween(git, from, to) {
+  const n = git('rev-list', '--first-parent', '--count', `${from}..${to}`);
+  const count = Number(String(n.stdout ?? '').trim());
+  return n.status === 0 && Number.isInteger(count) ? count : null;
+}
 // Whether `to` is a move forward from `from` along origin/main in the checkout `git` runs on (gitIn):
 // {merges}, main's own commits between them, first parent only, as the auto-release counts them; else
 // {why} it is no release. The release watch's record and the app's "Desk updated" toast both ask it.
 export function forwardOnMain(git, from, to) {
   if (git('merge-base', '--is-ancestor', from, to).status !== 0) return { why: `${String(from).slice(0, 12)} is not an ancestor of it` };
   if (git('merge-base', '--is-ancestor', to, MAIN_REF).status !== 0) return { why: `it is not on ${MAIN_REF.replace('refs/remotes/', '')}` };
-  const n = git('rev-list', '--first-parent', '--count', `${from}..${to}`);
-  const merges = Number(String(n.stdout ?? '').trim());
-  return n.status === 0 && Number.isInteger(merges) ? { merges } : { why: 'the merges between them could not be counted' };
+  const merges = mainCommitsBetween(git, from, to);
+  return merges != null ? { merges } : { why: 'the merges between them could not be counted' };
 }
 // Records the move in the release watch's releases.jsonl, the one row a release gets whoever installed it.
 async function recordMove(move) {

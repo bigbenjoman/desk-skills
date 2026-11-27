@@ -5,12 +5,12 @@
 //   installView()           GET /api/settings/install       the install, GitHub main and the auto-release state line
 //   appState()              the app build the server serves, a build that failed, and the installed commit:
 //                           /api/meta carries it, and the `server` event says when it moves
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { uiFailedFile, uiStampFile } from './desk-app.mjs';
 import * as E from './desk-env.mjs';
-import { readInstalled } from './installed.mjs';
+import { gitIn, mainCommitsBetween, readInstalled } from './installed.mjs';
 import { readSubscriptions, tilde } from './logins.mjs';
 
 const short = (sha) => String(sha ?? '').slice(0, 8);
@@ -115,15 +115,14 @@ export async function readSubscriptionsView(now = Date.now()) {
 // ---- the install (§9.6) -------------------------------------------------------------------------
 
 const git = (dir, ...a) => {
-  const r = spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 10_000 });
+  const r = gitIn(dir)(...a);
   return r.status === 0 ? String(r.stdout ?? '').trim() : null;
 };
 
 // main's own commits after `from` up to `to` (first parent only), as the release counts them, or null.
-export function commitsBetween(dir, from, to) {
+function commitsBetween(dir, from, to) {
   if (!dir || !from || !to || from === to) return from && from === to ? 0 : null;
-  const n = git(dir, 'rev-list', '--first-parent', '--count', `${from}..${to}`);
-  return n == null ? null : Number(n);
+  return mainCommitsBetween(gitIn(dir), from, to);
 }
 
 // The state line (§9.6): { glyph, text } from what the last pass recorded and main's check on its head.
