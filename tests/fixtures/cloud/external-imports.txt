@@ -1,0 +1,9 @@
+[?25l[2J[H Allow external CLAUDE.md file imports?
+
+ This project's CLAUDE.md imports files outside the current working directory. Never allow this for third-party repositories.
+
+ External imports:
+   /home/avr/notes/style.md
+
+ [38;5;174m❯ 1. Yes, allow external imports[39m
+   2. No, disable external imports

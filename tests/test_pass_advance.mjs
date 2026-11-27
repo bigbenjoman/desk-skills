@@ -114,6 +114,27 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('links a DONE worker asked for that were not made go to park-links', j(parkedLinks.at(-1)), j({ type: 'park-links', key: 'D', needs: [{ why: 'no grant', link: null }], pr: '12' }));
 }
 
+// issue-1549: a follow_on= that is not the JSON array is repaired where it lists names, and recorded on
+// the ticket where it does not, never dropped without a word.
+{
+  const run = (key, line, fields = {}) => advance(snap(ticket(key, fields), logOf(key, line, [said(line), RESULT])));
+  const doneSets = (as) => as.find((a) => a.type === 'done')?.sets ?? [];
+  const word = run('F-1', 'AUTOPILOT_DONE: pr=12 jira=none follow_on="studia-web-peak-check" said=one step');
+  t('issue-1549 AC1 a bare word is kept as a step', j(doneSets(word).filter((x) => x.startsWith('follow_on='))), j(['follow_on=[{"step":"studia-web-peak-check","row":null}]']));
+  t('issue-1549 AC1 and the repair is logged', j(lines(word, 'recovered')),
+    j(['F-1: repaired follow_on on its DONE marker (not a JSON array, read as [{"step":"studia-web-peak-check","row":null}]): "studia-web-peak-check"']));
+  const list = run('F-2', 'AUTOPILOT_DONE: pr=12 jira=none follow_on="a, b"');
+  t('issue-1549 AC1 a comma-separated list is kept as a step a name', j(doneSets(list)), j(['follow_on=[{"step":"a","row":null},{"step":"b","row":null}]']));
+  const obj = run('F-3', 'AUTOPILOT_DONE: pr=12 jira=none follow_on={} said=x');
+  t('issue-1549 AC2 an object is recorded unreadable on the ticket, its raw text kept', j(doneSets(obj)),
+    j([`result.done=${j({ said: 'x' })}`, `follow_on_unreadable=${j({ raw: '{}', error: 'not a JSON array', at: new Date(NOW).toISOString() })}`]));
+  t('issue-1549 AC2 and the pass report says it', j(lines(obj, 'recovered')), j(['F-3: follow-on unreadable: {} (not a JSON array), nothing kept; on its row and in the digest']));
+  const proper = run('F-4', 'AUTOPILOT_DONE: pr=12 jira=none follow_on=[{"step": "run x", "row": null}]');
+  t('issue-1549 AC3 a well-formed array is kept as before, with nothing logged', `${j(doneSets(proper))} ${lines(proper, 'recovered').length}`, `${j(['follow_on=[{"step":"run x","row":null}]'])} 0`);
+  t('issue-1549 a later DONE that reads clears an earlier unreadable record',
+    j(doneSets(run('F-5', 'AUTOPILOT_DONE: pr=12 jira=none', { follow_on_unreadable: { raw: '{}', error: 'not a JSON array', at: 'x' } }))), j(['follow_on_unreadable=null']));
+}
+
 // issue-1477: a finished ticket's done line leads with the review read from its PR, whatever its
 // worker's marker says, and keeps the worker's own words after it.
 {
@@ -372,6 +393,8 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
 t('a DONE after a PARK has finished', j(logMarkers('AUTOPILOT_PARK: q\nAUTOPILOT_DONE: pr=1', {})), j({ done: 'pr=1', reboots: 0 }));
 t('a PARK after a DONE is a park', j(logMarkers('AUTOPILOT_DONE: pr=1\nAUTOPILOT_PARK: q', {})), j({ park: 'q', reboots: 0 }));
 t('a handoff last is a handoff', j(logMarkers('AUTOPILOT_PARK: q\nAUTOPILOT_HANDOFF: 7', {})), j({ handoff: '7', reboots: 0 }));
+t('a handoff after a DONE naming its PR has finished', j(logMarkers('AUTOPILOT_DONE: pr=1568 jira=none\nAUTOPILOT_HANDOFF: 7', {})), j({ done: 'pr=1568 jira=none', reboots: 0 }));
+t('a handoff after a DONE with no PR is a handoff', j(logMarkers('AUTOPILOT_DONE: jira=none\nAUTOPILOT_HANDOFF: 7', {})), j({ handoff: '7', reboots: 0 }));
 t('a reboot stop already acted on is spent', j(logMarkers('AUTOPILOT_REBOOT: patch', { reboot_stops: 1 })), j({ reboots: 1 }));
 t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ reboot: 'patch', reboots: 1 }));
 

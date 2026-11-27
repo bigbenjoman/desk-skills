@@ -6,6 +6,8 @@
 //   node desk-changes.mjs [--days <n>] [--window <days>] [--json]
 //       the last 30 days' changes unless --days says, each with the tickets merged in the --window days
 //       (7 unless it says) before it and after it
+//   node desk-changes.mjs --config-entries <config path>
+//       configEntries for that config and its backups, every one, as one JSON array
 //
 // Three kinds of entry, oldest first:
 //   pr      a first-parent commit on origin's default branch that changed a worker-facing path
@@ -46,7 +48,7 @@ const WORKER_BIN = Object.freeze(new Set([
   'worker-agents.mjs', 'worker-settings.mjs', 'worker-tools.mjs', 'desk-env.mjs', 'desk-env.sh', 'config-schema.mjs',
   'desk-gh.mjs', 'desk-design.mjs', 'stitch-boards.mjs', 'handoff.mjs', 'desk-wait.mjs', 'clears-when.mjs',
   'closing-keywords.mjs', 'push-retry.mjs', 'review-post.mjs', 'preview-db.mjs', 'desk-codex.mjs', 'codex-exec.mjs',
-  'evidence.mjs', 'decisions.mjs', 'not-now.mjs', 'needs-you.mjs', 'desk-lines.mjs', 'test-scope.mjs',
+  'evidence.mjs', 'decisions.mjs', 'not-now.mjs', 'needs-you.mjs', 'desk-lines.mjs', 'test-scope.mjs', 'harvest.mjs',
 ]));
 const TEST_PATH = /(^|\/)(tests?|__tests__|fixtures)\/|(^|\/)test_[^/]*$|\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -114,8 +116,10 @@ function prEntries({ root, ref, since, pattern = null, git = runGit }) {
 // ---- config rows ----------------------------------------------------------------------------------
 // Each row whose items differ between consecutive copies of the config at `path` (the file and every
 // <its name>.bak* beside it, by modification time), dated by the later copy, from `since` on:
-// [{ kind: 'config', at, row, from, to, file }], `from` and `to` each the row's items. `from` is null for
-// a row the later copy added, `to` for one it dropped.
+// [{ kind: 'config', at, row, from, to, file, was_file, was_at }], `from` and `to` each the row's items.
+// `from` is null for a row the later copy added, `to` for one it dropped. `was_file` and `was_at` are the
+// earlier copy and its modification time: a backup desk-env writes is copied at the write, so its time is
+// when the change was made (worklog_activity.py dates a change by it).
 export function configEntries({ path, since = -Infinity }) {
   if (!path) return [];
   const dir = dirname(path);
@@ -136,7 +140,9 @@ export function configEntries({ path, since = -Infinity }) {
     for (const row of new Set([...was.keys(), ...now.keys()])) {
       const from = was.get(row) ?? null;
       const to = now.get(row) ?? null;
-      if (JSON.stringify(from) !== JSON.stringify(to)) entries.push({ kind: 'config', at: new Date(at).toISOString(), row, from, to, file: copies[i].file });
+      if (JSON.stringify(from) !== JSON.stringify(to)) {
+        entries.push({ kind: 'config', at: new Date(at).toISOString(), row, from, to, file: copies[i].file, was_file: copies[i - 1].file, was_at: new Date(copies[i - 1].mtime).toISOString() });
+      }
     }
   }
   return entries;
@@ -235,7 +241,12 @@ export function logLines(log) {
 const isMain = () => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 };
-if (isMain()) {
+if (isMain() && process.argv[2] === '--config-entries') {
+  // node desk-changes.mjs --config-entries <config path>: configEntries for that file, as JSON, for a
+  // reader in another language (desk-checkout's worklog_activity.py), so there is one config diff.
+  if (!process.argv[3] || process.argv.length > 4) { console.error('usage: desk-changes.mjs --config-entries <config path>'); process.exit(2); }
+  console.log(JSON.stringify(configEntries({ path: process.argv[3] })));
+} else if (isMain()) {
   const args = process.argv.slice(2);
   const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
   const days = opt('--days') == null ? 30 : Number(opt('--days'));

@@ -168,6 +168,16 @@ chmod +x "$T/stub/claude" "$T/stub/gh"
 cloud_ticket(){ q add "$1"; q set "$1" state=triaged lane=A "branch=feat/$1" location=cloud
   printf '# %s\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' "$1" > "$T/state-cl/tickets/$1.md"; }
 q init cl; q set-batch concurrency=2
+# issue-1642: a login that has not trusted the checkout parks before any start, naming the folder-trust
+# dialog and the command to answer it from the checkout; once trusted, the start goes ahead.
+CL_MAIN=$(node --input-type=module -e "import { repoRoot } from '$B/desk-env.mjs'; console.log(repoRoot())")
+printf '{"projects":{"/elsewhere":{"hasTrustDialogAccepted":true}}}' > "$HOME/.claude.json"
+cloud_ticket CW-0
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1642 AC2 an untrusted checkout parks before the start, naming the trust dialog and the checkout" '[ "$(field CW-0 state)" = "\"parked\"" ] && [ ! -e "$T/cloud-prompt" ] && field CW-0 park.question | grep -F "would wait on the folder-trust dialog" | grep -F "from the checkout: cd $CL_MAIN && claude, then choose" | grep -qF "Yes, I trust this folder"'
+check "issue-1642 AC2 the check writes nothing to the login .claude.json" '[ "$(cat "$HOME/.claude.json")" = "{\"projects\":{\"/elsewhere\":{\"hasTrustDialogAccepted\":true}}}" ]'
+q set CW-0 state=done
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ projects: { [process.argv[2]]: { hasTrustDialogAccepted: true } } }))' "$HOME/.claude.json" "$CL_MAIN"
 cloud_ticket CW-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field CW-1 state)" = "\"running\"" ] && [ "$(field CW-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
@@ -316,7 +326,7 @@ check "issue-1569 AC5 a cloud PR with a commit by another author parks the ticke
 rm -f "$T/cloud-view.json" "$T/cloud-prs.json"
 # #1581: the repo's subscription is login b, not the pass's own ~/.claude: the cloud session starts on b,
 # as a local worker would, and the spawn line and the ticket's cloud record name it.
-mkdir -p "$HOME/.claude-logins/b"
+mkdir -p "$HOME/.claude-logins/b"; cp "$HOME/.claude.json" "$HOME/.claude-logins/b/.claude.json"
 printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `unused` |\n| `claude` | `b` | `~/.claude-logins/b` | `default` |\n' > "$T/subs-cl.md"
 cloud_ticket CW-12; rm -f "$T/cloud-login"
 out=$(env -u CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS="$T/subs-cl.md" node "$B/pass.mjs" 2>&1)
@@ -352,6 +362,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 cp "$T/x1q.bak" "$X1Q"
 check "#1564 AC2 a sibling batch whose queue does not read holds cloud starts under the limit, and the pass says why" \
   '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "cloud sessions: none starts this pass, a sibling batch" && echo "$out" | grep -qF "queue does not read ("'
+# issue-1587 AC2: with the cloud full (CS-1 at the limit of 1) and a local slot free, the cloud-able CS-2
+# is counted in the local demand, so the slot shows free under a sibling batch's shared cap too: the
+# pass records local_free_at, and the next pass starts CS-2 on that slot.
+q set LS-2 state=done; q set-batch concurrency=2 local_free_at=null
+out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
+check "issue-1587 AC2 a local slot the cloud-able ticket could take stays free a pass, with a sibling batch: local_free_at is recorded" \
+  '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ "$(bfield local_free_at)" != null ]'
+out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
+check "issue-1587 AC2 and the next pass starts it on that local slot" \
+  '[ "$(field CS-2 state)" = "\"running\"" ] && [ "$(field CS-2 start_place.where)" = "\"local\"" ] && [ ! -e "$T/cloud-prompt" ]'
 q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
 # issue-1570: a cloud PR its session marked unfinished keeps the ticket running on its session. Once CI
 # on its head finishes the session is sent the results; after 2 follow-ups with no push it parks.
@@ -417,8 +437,10 @@ q add RR-1; q set RR-1 state=triaged lane=A branch=fix/RR-1
 refused_pass RR-1
 check "DS-752 AC1 a refused state=running write starts no worker, and the failed line names the ticket and says so" \
   '[ "$(spawns_of RR-1)" = 0 ] && [ "$(field RR-1 state)" = "\"triaged\"" ] && [ "$(field RR-1 session_id)" = null ] && [ "$(field RR-1 spawn_failed)" = null ] && echo "$out" | grep -q "RR-1: queue write refused, not recorded, so no worker was started — set state=running" && ! echo "$out" | grep -q "spawned: RR-1"'
+check "issue-1587 a local start refused after its worktree is set up records no place at start, so a cloud-able ticket stays cloud-able" '[ "$(field RR-1 start_place)" = null ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 AC2 with the queue writable again, the next pass starts exactly one worker" '[ "$(spawns_of RR-1)" = 1 ] && [ "$(field RR-1 state)" = "\"running\"" ]'
+check "issue-1587 and once its worker runs, its place at start is recorded" '[ "$(field RR-1 start_place.where)" = "\"local\"" ]'
 check "DS-752 AC6 a recorded write spawns, and the report reads as before" 'echo "$out" | grep -q "spawned: RR-1 port=[0-9]* db=none" && ! echo "$out" | grep -q "queue write refused"'
 q set RR-1 state=done session_id=null
 git -C "$T/repo" worktree add -q -b fix/RR-2 "$T/wt/RR-2"
@@ -597,6 +619,33 @@ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-ll" DESK_CONFIG="$T/config
 check "#1458 AC2 with only the light queue full, a new ticket starts and a resume into Stage 4 is held, naming the light lock queue" \
   '[ "$(spawns_of LL-1)" = 1 ] && [ "$(spawns_of LL-2)" = 0 ] && [ "$(field LL-2 resume)" = "\"pending\"" ] && echo "$out" | grep -qF "light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2" && echo "$out" | grep -q "Stage 4 (LL-2)"'
 for k in LL-1 LL-2; do q set "$k" state=done session_id=null; done
+# issue-1587: while the person uses this computer (processes not desk's over the machine profile's
+# baseline by its threshold), the local cap is person-use-floor; the cap comes back once their use has
+# stayed under it for person-use-calm-min. A desk worker's own tree never counts.
+pu_prev=$DESK_QUEUE; export DESK_QUEUE="$T/queue-pu.json"
+q init pu; q set-batch concurrency=3
+for k in PU-1 PU-2 PU-3; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+pu_machine(){ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `person-baseline-gb` | `1` | test |\n| `person-use-gb` | `2` | test |\n| `person-baseline-cpu` | `1` | test |\n| `person-use-cpu` | `8` | test |\n| `person-use-floor` | `2` | test |\n| `person-use-calm-min` | `%s` | test |\n' "$1" > "$T/machine-pu.md"; }
+pu_machine 10
+printf '  100     1 4194304 10.0 /Applications/IDE.app/ide\n  200     1 8388608 90.0 bash -c x desk-worker claude -p go\n' > "$T/ps-pu.out"
+pu_pass(){ out=$(AUTOPILOT_PERSON_USE=on AUTOPILOT_PERSON_USE_PS="$T/ps-pu.out" DESK_MACHINE="$T/machine-pu.md" node "$B/pass.mjs" 2>&1); }
+pu_pass
+# The floor counts every batch's local workers: batch X-1 has one running, so a floor of 2 leaves one.
+check "issue-1587 AC3 with the person using the computer, one local worker starts of three ready: the floor of 2, less the sibling batch's running one" \
+  '[ $(( $(spawns_of PU-1) + $(spawns_of PU-2) + $(spawns_of PU-3) )) = 1 ]'
+check "issue-1587 AC3 AC4 the pass says the mode and why (the IDE counts, the desk worker does not), and records it for desk-q" \
+  'echo "$out" | grep -qF "you'"'"'re using this computer: local cap 2, cloud first — other processes hold 4 GB, 3 over the 1 GB baseline" && [ "$(bfield person_use.on)" = true ]'
+check "issue-1587 AC4 the started ticket records its place at start, and why" \
+  '[ "$(jq -r "[.tickets[] | select(.start_place.where == \"local\") | .start_place.why] | join(\",\")" "$DESK_QUEUE")" = "it must run on this computer" ]'
+printf '  100     1 102400 1.0 /Applications/IDE.app/ide\n' > "$T/ps-pu.out"
+pu_pass
+check "issue-1587 AC3 back under the threshold, the mode stays on until it has stayed under for person-use-calm-min" \
+  '[ "$(bfield person_use.on)" = true ] && [ "$(bfield person_use.calm_since)" != null ] && [ $(( $(spawns_of PU-1) + $(spawns_of PU-2) + $(spawns_of PU-3) )) = 1 ]'
+pu_machine 0; pu_pass
+check "issue-1587 AC3 once it has, the mode switches off and the pass says the local cap is back" \
+  '[ "$(bfield person_use.on)" = false ] && echo "$out" | grep -qF "person in use: off, under the threshold for 0 min; the local cap is back"'
+for k in PU-1 PU-2 PU-3; do q set "$k" state=done session_id=null; done
+export DESK_QUEUE="$pu_prev"
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
@@ -860,7 +909,7 @@ for k in 23 24; do
   git -C "$T/wt/W-$k" fetch -q origin "fix/W-$k"; [ "$k" = 23 ] && git -C "$T/wt/W-$k" reset -q --hard FETCH_HEAD~1
   echo d > "$T/wt/W-$k/d.txt"; git -C "$T/wt/W-$k" add d.txt
   trailer=(); [ "$k" = 23 ] && trailer=(-m 'Co-Authored-By: Claude <noreply@anthropic.com>')
-  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" commit -q -m d "${trailer[@]}"
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" commit -q -m d ${trailer[@]+"${trailer[@]}"}
   GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" cherry-pick FETCH_HEAD >/dev/null
   q set "W-$k" "pass_rewrite={\"sha\":\"$(git --git-dir="$T/wb-origin.git" rev-parse "refs/heads/fix/W-$k")\",\"branch\":\"fix/W-$k\",\"base\":\"base-W-$k\",\"author\":{\"name\":\"t\",\"email\":\"t@example.com\"},\"strip\":true}"
 done
@@ -1671,7 +1720,9 @@ fbt(){ k=$1 st=$2; shift 2; jq -nc '{files_in_scope: $ARGS.positional}' --args "
 spawned(){ grep -qx "$1" "$T/fb-spawns"; }
 
 fbq fba ''
-fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
+# FB-1 to FB-4 name one file each, so the pass's re-sort (equal gates, then fewer files) keeps
+# them in queue order and the budget, not the sort, decides which start.
+fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts; fbt FB-3 triaged src/big.ts
 fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts; fbt FB-9 triaged src/edge.ts
 fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
 out=$(node "$B/pass.mjs" 2>&1)

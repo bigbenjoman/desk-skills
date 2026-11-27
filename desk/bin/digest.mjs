@@ -35,6 +35,8 @@ import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
 import { readWarnings } from './pass-metrics.mjs';
+import { unreadableFollowOn } from './harvest.mjs';
+import { attachArchive, everyTicket } from './queue-store.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
@@ -471,6 +473,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 // A repo's promotion for the day's last slot: {why} (no Promotion ref, or unreadable), {empty: true}
 // (nothing merged since it) or {range, prs, page}. Tests pass their own.
 const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
+// Each ticket whose worker's follow_on= field no step could be read from, as a warning dated when the pass read it.
+// Archived tickets too: one whose PR merged before the check-in has left the live queue.
+const followOnWarnings = (r) => Object.values(everyTicket(attachArchive(readJson(r.queue, null) ?? { tickets: {} }, r.queue)))
+  .filter((t) => t?.follow_on_unreadable?.at)
+  .map((t) => ({ at: t.follow_on_unreadable.at, text: `${t.key}: ${unreadableFollowOn(t.follow_on_unreadable.raw)}` }));
 
 export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {
   const slot = latestSlot(times, now);
@@ -523,7 +530,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         stalled: stalledPrs(r, now),
         held: newHolds(r),
         waiting: waitingBehind(r, prev?.at).filter((w) => !done.has(w.ticket)),
-        warnings: readWarnings(r.state).filter(inWindow),
+        warnings: [...readWarnings(r.state), ...followOnWarnings(r)].filter(inWindow),
       };
     });
     const maintenance = digestNotes().filter(inWindow);

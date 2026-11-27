@@ -231,7 +231,11 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   deploy, a job to start against the merged code). They depend on the merge; they never block it. Name
   each on your DONE line as `follow_on=` and a one-line JSON array, before any `said=`:
   `AUTOPILOT_DONE: pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}]`,
-  `row` being the §3 key the step needs (`null` where none does). Add `"after"` to a step that needs
+  `row` being the §3 key the step needs (`null` where none does). The field is always that JSON
+  array, even for one step: never a bare word (`follow_on=peak-check`) or a list of names. Before
+  printing the line, check it with `~/.claude/desk/bin/harvest.mjs --check-done '<the whole DONE
+  line>'`, run bare (a `node` command holding `..` is refused), which exits 1 naming the fault on
+  anything else; fix it and check again. With no follow-on steps, leave `follow_on=` out. Add `"after"` to a step that needs
   more than the merge: `"main"` once the merge is on the default branch (a staging or deployed check),
   `"production"` once production runs it (config §4 Promotion ref, `desk-env get promotion-ref`, has
   the merge commit). Leave it out
@@ -244,7 +248,10 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like), desk's state
   files or desk's read-only reports (`phase0-report`, `cache-report`, with any flags), with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
   found on your PR; the person sees it only if it fails or no checker could finish it. So word such a
-  step by the run or file it reads, and nothing else. A step you can run before the merge is not a
+  step by the run or file it reads, and nothing else. Name a line that run's log prints: where CI logs
+  only each suite's total, name that suite's total line and its 0 failed (`52 checks passed, 0 failed`
+  in shard 1/6 of main's tests run), never a per-check line inside it (`ok DS-763 AC4`), which that log
+  never carries. A step you can run before the merge is not a
   follow-on: run it.
 - **A check your PR's own tests or CI already make is not a follow-on either.** Name that test in
   your PR's Testing instead. A follow-on needs the merged code running where your checks cannot reach

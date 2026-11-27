@@ -47,7 +47,7 @@ export function decideDrift(s) {
 // ---- report: its opening -------------------------------------------------------
 // The snapshot adds the lines and findings of the phases before it:
 //   report                 the pass's report lists
-//   baseLines, maintLines, dateLines, linkLines, epicLines   each phase's own lines, in that order
+//   baseLines, maintLines, dateLines, linkLines, orderLines, epicLines   each phase's own lines, in that order
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
 //   budgetUnread           why each of this repo's other batches' queues did not read, so its running
 //                          tickets were not counted toward the per-file budget
@@ -60,7 +60,7 @@ export function decideReportOpening(s) {
   const acts = [];
   const r = s.report;
   if (!s.registry.read) acts.push(out(`! could not read the session registry — no ticket was advanced this pass: ${s.registry.why}`));
-  for (const l of [...s.baseLines, ...s.maintLines, ...s.dateLines, ...s.linkLines]) acts.push(out(l));
+  for (const l of [...s.baseLines, ...s.maintLines, ...s.dateLines, ...s.linkLines, ...(s.orderLines ?? [])]) acts.push(out(l));
   for (const [label, items] of [['spawned', r.spawned], ['advanced', r.advanced], ['done', r.done], ['failed', r.failed]]) {
     if (items.length) acts.push(out(`${label}: ${items.join(' | ')}`));
   }
