@@ -58,7 +58,16 @@ t('before it pushes, it reads where each server-set value its change branches on
 
 // ---- issue-1555: a session with desk-review reviews its own head and posts the verdict ----
 const base1555 = { key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] };
-const reviewed = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default', 'required-checks': ['Tests', 'Lint'] } } });
+const reviewed = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default', 'required-checks': ['Tests', 'Lint'] }, post: true } });
+const unposted = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default' }, post: false } });
+t('issue-1555 fix try 1: with §3 pr-self-review-comment yes, the brief grants the post DESK_CONFIG_FILE cannot carry',
+  reviewed.includes('§3 `pr-self-review-comment` to `yes`, which that file cannot carry: so desk-review\'s post step is to post on your own PR'), true);
+t('issue-1555 fix try 1: without it, the brief posts nothing and puts the report in the PR body',
+  [unposted.includes('post no review on the PR'), unposted.includes('Put the final report in the PR body'), unposted.includes('Post the final verdict'), unposted.includes('put that round\'s report in the PR body')].join(), 'true,true,false,true');
+t('issue-1555 fix try 1: a review with no post given reads as no', cloudPrompt({ ...base1555, review: { config: {} } }).includes('post no review on the PR'), true);
+const pluginRef = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-review', 'references', 'plugin.md'), 'utf8');
+t('issue-1555 fix try 1: desk-review\'s plugin.md takes the brief\'s word for pr-self-review-comment',
+  ['carries no §3 permission', 'stands in for §3 `pr-self-review-comment`', 'reads as `no`: report only'].every((x) => pluginRef.includes(x)), true);
 t('issue-1555 AC1 with desk-review available, the brief runs it at the pushed head, from the plugin',
   ['/desk:desk-review', CLOUD_REVIEW_PLUGIN, 'at your pushed head'].every((x) => reviewed.includes(x)), true);
 t('issue-1555 AC1 it fixes P0 and P1 findings within the session and reviews the new head',

@@ -161,17 +161,26 @@ export function deskReviewEnabled(settingsText) {
   try { return JSON.parse(String(settingsText ?? ''))?.enabledPlugins?.[CLOUD_REVIEW_PLUGIN] === true; } catch { return false; }
 }
 
-// The step that has the session review its own PR with desk-review, given `review` ({ config }: the
-// review rows it is to read, as DESK_CONFIG_FILE takes them), or [] with none.
+// The step that has the session review its own PR with desk-review, given `review` ({ config, post }:
+// the review rows it is to read, as DESK_CONFIG_FILE takes them, and whether this repo's config §3
+// `pr-self-review-comment` is `yes`), or [] with none. DESK_CONFIG_FILE carries no §3 permission
+// (desk-env.mjs), so the session has no §3 to read: the brief says which way that row reads, and
+// desk-review's plugin.md takes the brief's word for it.
 function reviewSteps(review) {
   if (!review) return [];
   const config = JSON.stringify(review.config ?? {});
+  const post = review.post === true;
+  const verdict = post ? 'post that round\'s verdict' : 'put that round\'s report in the PR body';
   return [
     `7. Once your draft PR is open, review it with desk-review (\`/desk:desk-review\`, from the \`${CLOUD_REVIEW_PLUGIN}\` plugin this repo enables) at your pushed head. ` +
       `First save this JSON to a file outside the repository and set DESK_CONFIG_FILE to that file's path for every desk-review command: \`${config}\`. ` +
       'Fix every P0 and P1 it confirms in this session, push, and review the new head again. ' +
-      `Run at most ${CLOUD_REVIEW_ROUNDS} review rounds: when round ${CLOUD_REVIEW_ROUNDS} still finds a P0 or P1, stop fixing, post that round's verdict, and say in the PR body what it left. ` +
-      'Post the final verdict on the PR in desk\'s format, as desk-review\'s post step writes it, with the full SHA of the head it reviewed, and push nothing after it.',
+      `Run at most ${CLOUD_REVIEW_ROUNDS} review rounds: when round ${CLOUD_REVIEW_ROUNDS} still finds a P0 or P1, stop fixing, ${verdict}, and say in the PR body what it left. ` +
+      (post
+        ? 'This repo\'s desk config sets §3 `pr-self-review-comment` to `yes`, which that file cannot carry: so desk-review\'s post step is to post on your own PR. ' +
+          'Post the final verdict on the PR in desk\'s format, as desk-review\'s post step writes it, with the full SHA of the head it reviewed, and push nothing after it.'
+        : 'This repo\'s desk config does not set §3 `pr-self-review-comment` to `yes`, so post no review on the PR: desk-review\'s post step reports only. ' +
+          'Put the final report in the PR body instead, with the full SHA of the head it reviewed, and push nothing after it.'),
   ];
 }
 

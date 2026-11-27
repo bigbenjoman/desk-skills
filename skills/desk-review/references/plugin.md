@@ -11,3 +11,7 @@ Call it `<plugin root>` below and write it out in full in every command.
 - Each named agent is `desk:<name>` (`desk:lena-code-reviewer`).
 - With `DESK_CONFIG_FILE` set (`echo "$DESK_CONFIG_FILE"` prints a path), `EXISTS=no` is not a
   stop: that file answers the config rows SKILL.md reads, and a row it lacks reads as unset.
+- That file carries no §3 permission, and with no repo config `desk-env perm` has none to read. The
+  brief that started this session stands in for §3 `pr-self-review-comment` on your own PR: a brief
+  that says the repo's config sets it to `yes` and tells you to post the verdict reads as `yes`
+  there, and Phase 7 posts. A brief that says nothing of it reads as `no`: report only, and say so.

@@ -4079,10 +4079,15 @@ function cloudReviewRows() {
 }
 // The review a cloud session runs at its pushed head (cloud-worker.mjs cloudPrompt's `review`):
 // set where the base branch the session clones enables the desk plugin in `.claude/settings.json`,
-// else null, and the brief is as before.
+// else null, and the brief is as before. `post` is this repo's §3 `pr-self-review-comment` read as
+// `yes`: DESK_CONFIG_FILE carries no §3 row, so the brief tells the session whether to post. `ask` reads
+// as no, since nobody answers a cloud session.
 function cloudReview() {
   const settings = sh('git', ['-C', MAIN, 'show', `origin/${DEFAULT_BRANCH}:.claude/settings.json`], { tolerant: true });
-  return deskReviewEnabled(settings) ? { config: cloudReviewRows() } : null;
+  if (!deskReviewEnabled(settings)) return null;
+  let post = false;
+  try { post = E.permission('pr-self-review-comment') === 'yes'; } catch { /* unread: no */ }
+  return { config: cloudReviewRows(), post };
 }
 function spawnCloud(t, pick) {
   const park = (why) => {
