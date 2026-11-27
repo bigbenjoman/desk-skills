@@ -62,8 +62,9 @@ const COPY_ONLY = "Desk can't record this one yet. Copy the needs-you command an
 const MERGE_HOLD = /merge it on GitHub|only a person merges/i;
 const mergeHold = (item) => item.kind === 'pr' && item.pr != null && item.actions.some((a) => a.action === 'done') && MERGE_HOLD.test(item.question);
 const ANSWERS = new Set(['answer', 'resume']);
-// needs-you record's words for an answer it took as an instruction to run elsewhere, recording nothing.
-const NOTHING_RECORDED = /(^|: )nothing recorded\./;
+// needs-you record's words for an answer it took as an instruction to run elsewhere, recording nothing:
+// admit and plan-first's open ("nothing recorded."), and a session item's open ("not requeued (…").
+const NOTHING_RECORDED = /(^|: )(nothing recorded\.|not requeued \()/;
 const UNDO_MS = 10_000;
 const READ_MS = 1000;
 

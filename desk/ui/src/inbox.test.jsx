@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Inbox, KIND_TIPS, recordCommand, Tabs } from './inbox.jsx';
 
@@ -336,6 +337,14 @@ describe('answering from the Inbox', () => {
     expect(row('SV-3844')).toBeTruthy();
   });
 
+  it('a session item\'s open, which says "not requeued (…)" and records nothing, shows Nothing changed and keeps the row', async () => {
+    const s = await open();
+    s.answer = { exit: 0, stdout: 'studia-web SV-3844: not requeued (it needs a plan or design agreed with you first). Open an interactive session in ~/studia/web and run /desk-ticket SV-3844.\n', stderr: '' };
+    await sendResume(s);
+    await waitFor(() => expect(detail().querySelector('[data-outcome="nothing"]')).toBeTruthy());
+    expect(row('SV-3844')).toBeTruthy();
+  });
+
   it('AC5 exit 11 shows "Desk didn\'t record that" with stdout under the action bar, keeps the text, and Choose another answer focuses the options', async () => {
     const s = await open();
     const refusal = "SV-3844's worktree holds work origin does not have (3 unpushed commits): push or discard it first.";
@@ -604,8 +613,20 @@ describe('items that answer differently', () => {
   it('AC16 every needs-you kind offers its own actions, each Runs: line naming desk\'s own command', async () => {
     const ACTIONS = { parked: ['resume', 'not-now'], session: ['resume', 'not-now'], spine: ['answer', 'not-now'], plan: ['approve', 'reject'], triage: ['answer', 'not-now'],
       held: ['start', 'not-now'], stopped: ['requeue', 'drop'], pr: ['done', 'not-now'], worktree: ['start', 'drop'], usage: ['done', 'not-now'], 'base-push': ['approve', 'not-now'],
-      config: ['done', 'not-now'], templates: ['done', 'not-now'], unset: ['done', 'not-now'], reviewer: ['done', 'not-now'], step: ['done', 'not-now'], lever: ['keep', 'drop'] };
-    expect(Object.keys(ACTIONS).sort()).toEqual(Object.keys(KIND_TIPS).sort());
+      config: ['done', 'not-now'], templates: ['done', 'not-now'], unset: ['done', 'not-now'], reviewer: ['done', 'not-now'], step: ['done', 'not-now'], lever: ['keep', 'drop'],
+      // The kinds needs-you emits beyond the tips, each with its constructor's actions (a session ask's are its own choices).
+      artifacts: ['done', 'not-now'], 'plan-first': ['open', 'not-now'], follow: ['done', 'not-now'], 'base-red': ['done', 'not-now'], duplicate: ['drop', 'not-now'],
+      'browser-signin': ['done', 'not-now'], 'upload-page': ['done', 'not-now'], 'lease-trial': ['done', 'not-now'], ask: ['Plan2', 'A', 'done', 'not-now'],
+      proposal: ['promote', 'reject', 'not-now'], 'ci-red': ['done', 'not-now'], ticketless: ['done', 'not-now'], 'cloud-archive': ['done', 'not-now'], stalled: ['done', 'not-now'],
+      'subscription-off': ['done', 'not-now'], 'base-sync': ['done', 'not-now'] };
+    // Every kind needs-you.mjs sets, as a literal or through its named constant, has a fixture here.
+    // Vitest runs in desk/ui, and jsdom's import.meta.url is not a file URL.
+    const src = readFileSync(`${process.cwd()}/../bin/needs-you.mjs`, 'utf8');
+    const named = Object.fromEntries([...src.matchAll(/^const ([A-Z_]+) = '([a-z-]+)';/gm)].map((m) => [m[1], m[2]]));
+    const emitted = new Set([...src.matchAll(/\bkind: (?:'([a-z-]+)'|([A-Z_]+)\b)/g)].map((m) => m[1] ?? named[m[2]]).filter(Boolean));
+    expect(emitted.size).toBeGreaterThan(25);
+    expect([...emitted].filter((k) => !(k in ACTIONS))).toEqual([]);
+    expect(Object.keys(KIND_TIPS).filter((k) => !(k in ACTIONS))).toEqual([]);
     const fixtures = Object.entries(ACTIONS).map(([kind, acts], n) => item(kind === 'usage' ? 'usage-limit' : kind === 'step' ? 'step:DS-9:2' : `K-${n + 1}`, 'studia-web', n + 1,
       { kind, id: `studia-web:${kind}:${kind}`, ...(kind === 'usage' ? { ticket: null, resets_at: new Date(2026, 10, 24, 8, 0).toISOString() } : kind === 'step' ? { ticket: null } : {}),
         actions: acts.map((a) => ({ action: a, recommended: false, why: null, note: null, needs_text: ['resume', 'answer'].includes(a) })) }));
