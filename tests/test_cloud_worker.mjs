@@ -328,7 +328,7 @@ t('issue-1570 AC3 desk-q shows it as idle since its last push, PR unfinished', c
 t('issue-1570 AC3 a local worker on its PR later is not shown so', cloudIdleText({ stage: '4/9 verify', cloud: { unfinished: { pr: 31 } } }), null);
 
 // ---- finished sessions to archive -------------------------------------------
-const cs =(id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });
+const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });
 const live = {
   A: { key: 'A', state: 'done', location: 'cloud', merged_at: '2026-11-02T10:00:00Z', cloud: cs('a', { name: 'w-ticket-A' }) },
   B: { key: 'B', state: 'done', location: 'cloud', cloud: cs('b') },
