@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Prefs, useColorScheme, usePrefs } from './color-scheme.js';
 import { Frame, WINDOW_DRAG } from './frame.jsx';
-import { saveKept, useKept } from './kept.js';
+import { keep, kept, saveKept, useKept } from './kept.js';
 import { ROUTES, screenAt } from './routes.js';
 import { blockedIn, useConnection, Writes } from './connection.jsx';
 import { clock, FirstRun, NotInstalled, SignedOut, Toast, Unreachable } from './system.jsx';
@@ -24,12 +24,10 @@ function systemView(c, get) {
 export const LATER_MS = 60 * 60 * 1000;
 const FAILED_SEEN = 'desk:build-failed-dismissed';
 export const reloadApp = () => { saveKept(); window.location.reload(); };
-const keptLocal = (k) => { try { return globalThis.localStorage?.getItem(k) ?? null; } catch { return null; } };
-const keepLocal = (k, v) => { try { globalThis.localStorage?.setItem(k, v); } catch { /* only the dismissal is lost */ } };
 
 function useAppBanners(c, get, reload) {
   const [later, setLater] = useState(null);
-  const [failedSeen, setFailedSeen] = useState(() => keptLocal(FAILED_SEEN));
+  const [failedSeen, setFailedSeen] = useState(() => kept('localStorage', FAILED_SEEN));
   useEffect(() => {
     if (later == null) return undefined;
     const back = () => { if (Date.now() - later >= LATER_MS) setLater(null); };
@@ -58,7 +56,7 @@ function useAppBanners(c, get, reload) {
       sub: 'The update itself still applies: supervisors and workers run the new desk code. Only the window stays on the previous app.',
       actions: [
         { label: 'Open install log', run: () => { get('/api/settings/install-log', { method: 'POST' }).catch(() => {}); } },
-        { label: 'Dismiss', run: () => { keepLocal(FAILED_SEEN, failed); setFailedSeen(failed); } },
+        { label: 'Dismiss', run: () => { keep('localStorage', FAILED_SEEN, failed); setFailedSeen(failed); } },
       ] });
   }
   return out;

@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { loadSnapshot } from './snapshot.js';
+import { keep, kept, saveKept } from './kept.js';
+import { plural, short } from './words.js';
 
 const RETRY_S = 5;
 const BLOCKED = {
@@ -17,16 +19,9 @@ const DOWN = 'desk:down';
 const CHECKOUT = 'desk:checkout';
 // Kept for this window only: the server said it is restarting after an update, so losing it is that.
 const RESTARTING = 'desk:restarting';
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 // §2.7's release toast; the toast draws its own ✓.
 export const releasedText = (sha, commits) =>
-  `Desk updated to ${String(sha).slice(0, 8)}${Number.isInteger(commits) && commits > 0 ? ` (${plural(commits, 'commit')})` : ''}. Supervisors move to it by themselves.`;
-
-const storage = (name) => { try { return globalThis[name] ?? null; } catch { return null; } };
-const kept = (name, key) => { try { return storage(name)?.getItem(key) ?? null; } catch { return null; } };
-const keep = (name, key, value) => {
-  try { if (value == null) storage(name)?.removeItem(key); else storage(name)?.setItem(key, value); } catch { /* storage refused: only the hint is lost */ }
-};
+  `Desk updated to ${short(sha)}${Number.isInteger(commits) && commits > 0 ? ` (${plural(commits, 'commit')})` : ''}. Supervisors move to it by themselves.`;
 
 // The window's view of the server:
 //   view      loading | app | unreachable | restarting | signed-out | not-installed | first-run;
@@ -72,6 +67,9 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
       try { copy = await loadSnapshot({ get: () => Promise.reject(new Error('unreachable')), store }); } catch { copy = null; }
     }
     const view = kept('sessionStorage', RESTARTING) != null ? 'restarting' : 'unreachable';
+    // The unreachable card unmounts the screens: what they keep is written first, so the page Desk.app
+    // reloads once the server is back, or the screen mounted again, takes it.
+    if (view === 'unreachable') saveKept();
     set((s) => ({ view, attempt: s.attempt + 1, left: RETRY_S, snapshot: s.snapshot ?? copy, toast: null }));
     if (!live.current) return;
     t.current.tick = setInterval(() => {
@@ -85,7 +83,9 @@ export function useConnection({ get = (u, o) => fetch(u, o), Events = globalThis
     stopTicking();
     let r;
     try { r = await get('/api/setup'); } catch { return down(); }
-    if (r.status === 401) { closeStream(); return set({ view: 'signed-out' }); }
+    // A restarted server knows no session: Desk.app signs in again and reloads the page, after the
+    // signed-out card has unmounted the screens, so what they keep is written first.
+    if (r.status === 401) { closeStream(); saveKept(); return set({ view: 'signed-out' }); }
     let setup = null;
     if (r.status === 200) { try { setup = await r.json(); } catch { setup = null; } }
     if (setup?.checkout) keep('localStorage', CHECKOUT, setup.checkout);

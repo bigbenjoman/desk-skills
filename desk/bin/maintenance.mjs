@@ -23,7 +23,7 @@
 // seconds), DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD and DESK_RESTART_CMD
 // (each run with sh -c).
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { uptime } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -259,17 +259,31 @@ export const RELEASE_CHECK = 'tests';
 export const FETCH_EVERY_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 60 * 1000;
 export const releaseFile = (dir) => join(dir, 'release.json');
-const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(dir), 'utf8')) ?? {}; } catch { return {}; } };
+export const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(dir), 'utf8')) ?? {}; } catch { return {}; } };
 const writeRelease = (dir, s) => { mkdirSync(dir, { recursive: true }); writeFileSync(releaseFile(dir), `${JSON.stringify(s, null, 2)}\n`); };
 
 // main's `tests` check on `sha`: {state: 'success' | 'pending' | 'failure', word} | {error}. A check
 // not started yet is pending, and so is a cancelled one, which is read again on later passes; any
 // other conclusion but success is a failure.
-export function releaseCheck(dir, sha) {
+const checkCall = (dir, sha) => {
   const jq = `[.check_runs[] | select(.name == "${RELEASE_CHECK}")] | sort_by(.started_at) | last | if . == null then "pending" elif .status != "completed" then "pending" else .conclusion end`;
-  const r = process.env.DESK_RELEASE_CHECK_CMD
-    ? shell(`${process.env.DESK_RELEASE_CHECK_CMD} ${sha}`, { cwd: dir })
-    : run('gh', ['api', `repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${RELEASE_CHECK}`, '--jq', jq], { cwd: dir, timeout: FETCH_TIMEOUT_MS });
+  return process.env.DESK_RELEASE_CHECK_CMD
+    ? ['sh', ['-c', `${process.env.DESK_RELEASE_CHECK_CMD} ${sha}`], { cwd: dir }]
+    : ['gh', ['api', `repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${RELEASE_CHECK}`, '--jq', jq], { cwd: dir, timeout: FETCH_TIMEOUT_MS }];
+};
+export const releaseCheck = (dir, sha) => checkAnswer(run(...checkCall(dir, sha)));
+// The same read without blocking: Desk's server (desk-ui-settings.mjs installView) answers other
+// requests while gh runs.
+export function releaseCheckAsync(dir, sha) {
+  const [cmd, args, opts] = checkCall(dir, sha);
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: 'utf8', ...opts }, (err, stdout, stderr) => resolve(checkAnswer({
+      ok: !err, status: err ? (Number.isInteger(err.code) ? err.code : null) : 0,
+      out: `${stdout ?? ''}${stderr ?? ''}`.trim(), error: err && !Number.isInteger(err.code) ? err.message : undefined,
+    })));
+  });
+}
+function checkAnswer(r) {
   const word = lastLine(r.out).trim().toLowerCase();
   if (!r.ok || !word) return { error: said(r) };
   if (word === 'success') return { state: 'success', word };

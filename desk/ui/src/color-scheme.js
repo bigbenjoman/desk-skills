@@ -4,24 +4,21 @@ const DARK = '(prefers-color-scheme: dark)';
 
 // The app's own display preferences (screen-spec §9.2): Theme and Density. Desk.app keeps them in its
 // preferences file outside desk's state (window.desk.prefs / setPref); no desk command runs. A window
-// without that bridge (an older Desk.app, a browser) keeps them in localStorage instead. Anything
-// missing or unreadable is the default, with no error.
+// without that bridge (an older Desk.app) shows a choice at once but saves nothing, so setPref answers
+// false. Anything missing or unreadable is the default, with no error. The choices are declared here
+// only: the shell's file keeps whatever the window sends for a known key.
 export const THEMES = ['system', 'light', 'dark'];
 export const DENSITIES = ['comfortable', 'compact'];
 export const DEFAULT_PREFS = { theme: 'system', density: 'comfortable' };
-const LOCAL = 'desk:prefs';
 const valid = (p) => ({
   theme: THEMES.includes(p?.theme) ? p.theme : DEFAULT_PREFS.theme,
   density: DENSITIES.includes(p?.density) ? p.density : DEFAULT_PREFS.density,
 });
-const local = {
-  read: () => { try { return valid(JSON.parse(globalThis.localStorage?.getItem(LOCAL) ?? 'null')); } catch { return { ...DEFAULT_PREFS }; } },
-  write: (p) => { try { globalThis.localStorage?.setItem(LOCAL, JSON.stringify(p)); return p; } catch { return null; } },
-};
+const CHOICES = { theme: THEMES, density: DENSITIES };
 
 // `bridge` is window.desk (the tests pass a stub). -> { prefs, setPref(key, value) -> Promise<boolean> }
 export function usePrefs(bridge = globalThis.window?.desk) {
-  const [prefs, setPrefs] = useState(() => (bridge?.prefs ? { ...DEFAULT_PREFS } : local.read()));
+  const [prefs, setPrefs] = useState(() => ({ ...DEFAULT_PREFS }));
   useEffect(() => {
     if (!bridge?.prefs) return undefined;
     let live = true;
@@ -29,13 +26,11 @@ export function usePrefs(bridge = globalThis.window?.desk) {
     return () => { live = false; };
   }, [bridge]);
   const setPref = useCallback(async (key, value) => {
-    if (!(key in DEFAULT_PREFS)) return false;
+    if (!CHOICES[key]?.includes(value)) return false;
     let saved = null;
     // Shown at once; the file follows.
     setPrefs((p) => ({ ...p, [key]: value }));
-    try {
-      saved = bridge?.setPref ? await bridge.setPref(key, value) : local.write({ ...local.read(), [key]: value });
-    } catch { saved = null; }
+    try { saved = bridge?.setPref ? await bridge.setPref(key, value) : null; } catch { saved = null; }
     if (saved && typeof saved === 'object') setPrefs(valid(saved));
     return !!saved;
   }, [bridge]);

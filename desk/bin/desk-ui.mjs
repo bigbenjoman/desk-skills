@@ -76,12 +76,13 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { userInfo } from 'node:os';
 import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { uiLogFile } from './desk-app.mjs';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
 import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
 import { makePrReader } from './desk-ui-ticket.mjs';
 import * as S from './desk-ui-settings.mjs';
-import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
+import { AGENTS, oldCode, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
@@ -287,11 +288,14 @@ function parkSeed({ ticket, batches }) {
 //                                            nothing else, so the request carries nothing
 // The `server` event, on the change stream, and /api/meta carry appState: { app: { build, failed },
 // installed, restartRequired }. The event is sent when install.sh moves one of them, with `released`
-// ({ from, commits }) when the installed commit moved, and `restarting` when this server is stopped
+// ({ from, commits }) when the installed commit moved forward on main, and `restarting` when this server is stopped
 // while the installed commit is not the one it runs.
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]*__[A-Za-z0-9._-]+$/;
 const repoFolders = (root = E.deskConfigRoot()) => {
-  try { return readdirSync(join(root, 'repos')).filter((s) => SLUG.test(s)).sort().map((slug) => ({ slug, name: S.repoNameOf(slug) })); } catch { return []; }
+  let slugs;
+  try { slugs = readdirSync(join(root, 'repos')).filter((s) => SLUG.test(s)).sort(); } catch { return []; }
+  const names = E.shownNames(slugs);
+  return slugs.map((slug, i) => ({ slug, name: names[i] }));
 };
 const CHECK_EVERY_MS = 60 * 1000;
 const openFile = (file) => new Promise((resolve) => {
@@ -668,15 +672,18 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
 
   // ---- Settings ----
   const { check = null, updates = S.readUpdates, open = openFile, appEveryMs = 2000, running = version } = settings;
-  const appNow = () => { const a = S.appState(); return { ...a, restartRequired: a.installed != null && a.installed !== running() }; };
+  const appNow = () => { const a = S.appState(); return { ...a, restartRequired: oldCode(running(), { commit: a.installed }) }; };
   let appWas = S.appState();
   const appWatch = setInterval(() => {
     const next = S.appState();
     if (JSON.stringify(next) === JSON.stringify(appWas)) return;
     const was = appWas;
     appWas = next;
-    const moved = next.installed !== was.installed && next.installed && was.installed;
-    feed.announce('server', { ...appNow(), ...(moved ? { released: { from: was.installed, commits: S.commitsBetween(readInstalled()?.from, was.installed, next.installed) } } : {}) });
+    // A release is the installed commit moving forward on main: a move back (a rollback) or one it
+    // can't count is no release, so the window shows no toast for it.
+    const commits = next.installed && was.installed && next.installed !== was.installed
+      ? S.commitsBetween(readInstalled()?.from, was.installed, next.installed) : null;
+    feed.announce('server', { ...appNow(), ...(commits > 0 ? { released: { from: was.installed, commits } } : {}) });
   }, appEveryMs);
   appWatch.unref?.();
   // The skill and plugin updates, counted in the background at most every UPDATES_EVERY_MS.
@@ -689,18 +696,28 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     }
     return upd.value;
   };
-  // main's tests check on one commit, read again once a minute.
-  const checked = { sha: null, at: -Infinity, value: null };
+  // main's tests check on one commit, read again at most once a minute and never on the request's own
+  // thread: gh can take up to a minute. A commit's first read is waited on; after that the last answer
+  // stands while the next one is read in the background.
+  const checked = { sha: null, at: -Infinity, value: null, running: null };
   const checkOf = (src, sha, real) => {
-    if (checked.sha !== sha || clock() - checked.at >= CHECK_EVERY_MS) Object.assign(checked, { sha, at: clock(), value: (check ?? real)(src, sha) });
-    return checked.value;
+    if (checked.sha !== sha) Object.assign(checked, { sha, at: -Infinity, value: null, running: null });
+    if (!checked.running && clock() - checked.at >= CHECK_EVERY_MS) {
+      checked.at = clock();
+      const mine = (v) => { if (checked.running === p) checked.value = v; };
+      const p = Promise.resolve().then(() => (check ?? real)(src, sha))
+        .then(mine, (e) => mine({ error: String(e?.message ?? e).split('\n')[0] }))
+        .finally(() => { if (checked.running === p) checked.running = null; });
+      checked.running = p;
+    }
+    return checked.value ?? (checked.running ?? Promise.resolve()).then(() => checked.value);
   };
   async function settingsRoute(req, res, path, method, query) {
     const fail = (what, e) => { console.error(`desk-ui: settings ${what}: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); };
     if (path === '/api/settings/install-log') {
       if (method !== 'POST') return refuse(res, 405, 'method', 'POST only.');
       if (query) return refuse(res, 400, 'body', 'This route takes nothing.');
-      const file = S.appLogFile();
+      const file = uiLogFile();
       if (!existsSync(file)) return refuse(res, 404, 'log', "There's no install log yet.");
       const exit = await open(file);
       audit(path, ['open', tilde(file)], exit);

@@ -8,25 +8,37 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { uiFailedFile, uiStampFile } from './desk-app.mjs';
 import * as E from './desk-env.mjs';
 import { readInstalled } from './installed.mjs';
 import { readSubscriptions, tilde } from './logins.mjs';
 
 const short = (sha) => String(sha ?? '').slice(0, 8);
 const yes = (v) => /^yes\b/i.test(String(v ?? '').trim());
-// A repo's name as its slug names it: owner__repo -> repo.
-export const repoNameOf = (slug) => String(slug).split('__').pop();
+const yesOrAsk = (v) => v === 'yes' || v === 'ask';
+
+// What §3 pr-merge-green does, read with autopilot-merge as desk-env mergeGrant reads the two. `perm(id)`
+// reads the repo's §3 rows. Settings has no batch, so a batch's Stage 3 approval is said, not read.
+export function mergeMeaning(v, perm) {
+  if (E.mergeGrant(null, perm).by === 'config') return 'Workers merge a PR once its checks pass.';
+  if (yesOrAsk(v) && yesOrAsk(perm('autopilot-merge'))) {
+    return `Workers merge on green only in a batch you approve merging for at Stage 3${v === 'ask' ? '; otherwise desk asks you before each merge' : ''}.`;
+  }
+  if (v === 'yes') return "A PR merges once its checks pass, in a session you run; workers leave theirs for you (autopilot-merge isn't yes).";
+  if (v === 'ask') return 'Desk asks you before each merge.';
+  return 'A person merges each PR.';
+}
 
 // ---- a repo's desk setup (§9.3) -----------------------------------------------------------------
 
 export const NOT_SET = "Desk can't use this until it's set.";
 const nonzero = (v) => /[1-9]/.test(String(v ?? ''));
 const dollars = (v) => (/^\d+(\.\d+)?$/.test(String(v)) ? `$${v}` : String(v));
-// The rows Settings shows, in §9.3's groups. `meaning(value, values)` says what the set value does.
+// The rows Settings shows, in §9.3's groups. `meaning(value, values, perm)` says what the set value
+// does; `perm(id)` reads another §3 row of the same repo.
 export const REPO_ROWS = [
   // §3's rows are permissions (permissionOrUnset), the rest config rows (repoConfigValue).
-  { group: 'Autonomy (§3)', id: 'pr-merge-green', label: 'Merge on green', perm: true,
-    meaning: (v) => (yes(v) ? 'Workers merge a PR once its checks pass.' : 'A person approves each merge.') },
+  { group: 'Autonomy (§3)', id: 'pr-merge-green', label: 'Merge on green', perm: true, meaning: (v, _, perm) => mergeMeaning(v, perm) },
   { group: 'Autonomy (§3)', id: 'pr-ready', label: 'Undraft PRs', perm: true,
     meaning: (v) => (yes(v) ? 'Workers take PRs out of draft when checks pass.' : 'PRs stay in draft until a person undrafts them.') },
   { group: 'Autonomy (§3)', id: 'autopilot-judgement', label: 'Take judgement calls', perm: true,
@@ -49,16 +61,17 @@ export const REPO_ROWS = [
 // -> { slug, name, rows: [{ group, id, label, value, meaning, set }] } | { slug, name, error }. A row
 // with no value of its own (blank, TODO or missing) is `Not set`.
 export function repoSettings(slug, root = E.deskConfigRoot()) {
-  const name = repoNameOf(slug);
+  const name = E.shortName(slug);
   if (!existsSync(join(root, 'repos', slug, 'config.md'))) {
     return { slug, name, error: `Can't read ${name}'s desk setup (desk-config.md missing). Run /desk-setup to create it.` };
   }
+  const perm = (id) => E.repoPermission(slug, id, root);
   const rows = REPO_ROWS.map((r) => {
     const values = r.list ? (E.repoConfigValues(slug, r.id, root) ?? []) : null;
     const raw = r.list ? (values.length ? values.join(', ') : null)
       : r.perm ? E.repoPermissionOrUnset(slug, r.id, root) : E.repoConfigValue(slug, r.id, root);
     if (raw == null || raw === '') return { group: r.group, id: r.id, label: r.label, value: 'Not set', meaning: NOT_SET, set: false };
-    return { group: r.group, id: r.id, label: r.label, value: r.value ? r.value(raw) : String(raw), meaning: r.meaning(raw, values), set: true };
+    return { group: r.group, id: r.id, label: r.label, value: r.value ? r.value(raw) : String(raw), meaning: r.meaning(raw, values, perm), set: true };
   });
   return { slug, name, rows };
 }
@@ -105,7 +118,6 @@ const git = (dir, ...a) => {
   const r = spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 10_000 });
   return r.status === 0 ? String(r.stdout ?? '').trim() : null;
 };
-const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')) ?? {}; } catch { return {}; } };
 
 // main's own commits after `from` up to `to` (first parent only), as the release counts them, or null.
 export function commitsBetween(dir, from, to) {
@@ -121,27 +133,29 @@ export function stateLine({ installed, head, check, release = {} }) {
   if (!head) return { glyph: '◌', text: "◌ Can't tell where GitHub main is: this checkout has never fetched it. desk tries again at the next pass." };
   if (head === installed) return { glyph: '✓', text: `✓ Up to date. Installed ${at} is GitHub main.` };
   if (release.blocked?.sha === head && release.blocked.why) return { glyph: '✕', text: `✕ Not installing ${to}: ${release.blocked.why}.` };
-  if (check?.error) return { glyph: '◌', text: `◌ Waiting: main's tests check on ${to} couldn't be read (${check.error}). desk tries again at the next pass.` };
   if (check?.state === 'failure') return { glyph: '✕', text: `✕ main's tests check failed on ${to}, not installing. You stay on ${at} until a newer commit passes.` };
-  if (check?.state === 'pending') return { glyph: '·', text: `· Waiting for main's tests check on ${to}. desk installs it once the check passes.` };
+  // A check it could not read is waited on, as the release itself waits on it (maintenance.mjs).
+  if (check?.state === 'pending' || check?.error) return { glyph: '·', text: `· Waiting for main's tests check on ${to}. desk installs it once the check passes.` };
   return { glyph: '·', text: `· ${to} passed its tests check. desk installs it at the next pass.` };
 }
 
-// `check(src, sha)` is releaseCheck; `release` is release.json. Both are passed in by the tests.
+// `check(src, sha, real)` gives releaseCheckAsync's answer, or a promise of it (desk-ui.mjs passes its
+// cached read, which calls `real`);
+// `release` is release.json. Both are passed in by the tests.
 export async function installView({ check = null, release = null, updates = null } = {}) {
   const M = await import('./maintenance.mjs');
   const inst = readInstalled();
   const src = (typeof inst?.from === 'string' && inst.from) || M.sourceCheckout();
-  const rel = release ?? readJson(M.releaseFile(M.maintDir()));
+  const rel = release ?? M.readRelease(M.maintDir());
   const head = src && existsSync(src) ? git(src, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/main') : null;
   const installed = inst?.commit ?? null;
   const ahead = head && installed && head !== installed ? commitsBetween(src, installed, head) : 0;
-  const c = head && installed && head !== installed ? (check ?? M.releaseCheck)(src, head, M.releaseCheck) : null;
+  const c = head && installed && head !== installed ? await (check ?? M.releaseCheckAsync)(src, head, M.releaseCheckAsync) : null;
   return {
     checkout: src ? tilde(src) : null,
     checked_at: rel.fetched_at ?? null,
     installed: installed && { commit: installed, at: inst.at ?? null },
-    main: head && { commit: head, ahead, check: c?.state ?? (c?.error ? 'unreadable' : head === installed ? 'success' : null) },
+    main: head && { commit: head, ahead, check: c?.state ?? (c?.error ? 'pending' : head === installed ? 'success' : null) },
     state: stateLine({ installed, head, check: c, release: rel }),
     updates,
   };
@@ -153,15 +167,20 @@ export const UPDATES_EVERY_MS = 6 * 60 * 60 * 1000;
 const UPDATES_TIMEOUT_MS = 5 * 60 * 1000;
 const runJson = (file, args) => new Promise((resolve) => {
   execFile(file, args, { shell: false, timeout: UPDATES_TIMEOUT_MS, maxBuffer: 4 << 20, encoding: 'utf8' },
-    // outdated and plugins exit 10 when anything is outdated: that is an answer, not a failure.
-    (err, stdout) => { try { resolve(err && err.code !== 10 ? null : JSON.parse(stdout)); } catch { resolve(null); } });
+    // outdated and plugins exit 10 when anything is outdated, and outdated exits 3 when a source could
+    // not be read (its JSON names them in `errors`): both are answers, not failures.
+    (err, stdout) => { try { resolve(err && err.code !== 10 && err.code !== 3 ? null : JSON.parse(stdout)); } catch { resolve(null); } });
 });
-// skills-upstream's answers counted: { count, names, at } or null when neither could be read.
+// skills-upstream's answers counted: { count, names, at, partial } or null when neither could be read.
+// `partial` is a side that could not be read, a skill source that errored or a plugin it could not
+// compare: the count may be short.
 export function countUpdates(skills, plugins, at) {
   if (!skills && !plugins) return null;
+  const pl = Array.isArray(plugins) ? plugins : [];
   const names = [...(skills?.results ?? []).filter((r) => r.outdated).map((r) => r.name),
-    ...(Array.isArray(plugins) ? plugins : []).filter((p) => p.status === 'outdated').map((p) => `plugin ${p.plugin}`)];
-  return { count: names.length, names, at };
+    ...pl.filter((p) => p.status === 'outdated').map((p) => `plugin ${p.plugin}`)];
+  const partial = !skills || !Array.isArray(plugins) || (skills.errors?.length ?? 0) > 0 || pl.some((p) => p.status === 'unknown');
+  return { count: names.length, names, at, partial };
 }
 // Runs the checkout's skills-upstream, which reads GitHub: in the background, at most every 6 h.
 export async function readUpdates(now = Date.now()) {
@@ -175,12 +194,8 @@ export async function readUpdates(now = Date.now()) {
 // ---- the app build -----------------------------------------------------------------------------
 
 const readLine = (f) => { try { return readFileSync(f, 'utf8').trim() || null; } catch { return null; } };
-// desk-app.mjs installUi's files: the source hash of the build served, and of a build that failed.
-export const appStampFile = (home = E.deskHome()) => join(home, 'ui', 'source-hash');
-export const appFailedFile = (home = E.deskHome()) => join(home, 'ui', 'build-failed');
-export const appLogFile = () => join(E.HOME, '.desk-autopilot', 'ui', 'desk-ui-build.log');
 // -> { app: { build, failed }, installed }: `failed` is the source hash that did not build, null when
 // the last build went in.
-export function appState(home = E.deskHome()) {
-  return { app: { build: readLine(appStampFile(home)), failed: readLine(appFailedFile(home)) }, installed: readInstalled(home)?.commit ?? null };
+export function appState() {
+  return { app: { build: readLine(uiStampFile()), failed: readLine(uiFailedFile()) }, installed: readInstalled()?.commit ?? null };
 }

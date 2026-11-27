@@ -5,10 +5,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { DENSITIES, THEMES, usePrefsContext } from './color-scheme.js';
 import { Button, clock } from './system.jsx';
+import { plural, short } from './words.js';
 
 const SAVED_MS = 2000;
-const short = (sha) => String(sha ?? '').slice(0, 8);
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const cap = (s) => `${s[0].toUpperCase()}${s.slice(1)}`;
 const day = (at) => {
   const d = new Date(at);
@@ -175,7 +174,7 @@ function RepoSection({ get, slug, name }) {
 
 // ---- Desk install ---------------------------------------------------------------------------------
 
-const CHECK_WORD = { success: '✓ tests passed', pending: '· tests running', failure: '✕ tests failed', unreadable: "◌ tests check couldn't be read" };
+const CHECK_WORD = { success: '✓ tests passed', pending: '· tests running', failure: '✕ tests failed' };
 const STATE_TONE = { '✓': 'text-done', '✕': 'text-fail', '◌': 'text-muted-fg', '·': 'text-foreground', '●': 'text-run' };
 function InstallSection({ get }) {
   const { data, failed } = useRead(get, '/api/settings/install');
@@ -201,8 +200,9 @@ function InstallSection({ get }) {
           <Group title="Skills & plugins">
             <p className="px-4 py-2.5 text-[13px]">
               {!u ? 'Not checked yet. desk checks for skill and plugin updates every 6 hours.'
-                : u.count === 0 ? `All up to date · checked ${day(u.at)}.`
-                  : `${plural(u.count, 'update')} available · ${u.names.join(' · ')} · checked ${day(u.at)}. desk doesn't install these by itself.`}
+                : u.count === 0 && u.partial ? `No updates found, but part of the check couldn't be read · checked ${day(u.at)}. desk tries again in 6 hours.`
+                  : u.count === 0 ? `All up to date · checked ${day(u.at)}.`
+                    : `${plural(u.count, 'update')} available · ${u.names.join(' · ')} · checked ${day(u.at)}.${u.partial ? " Part of the check couldn't be read." : ''} desk doesn't install these by itself.`}
             </p>
           </Group>
         </>
@@ -241,7 +241,7 @@ export function Settings({ path, go, get, routes }) {
   // no banner and no Inbox item.
   const updates = useRead(get, '/api/meta').data?.updates;
   const n = updates?.count ?? 0;
-  const repo = s.id === 'repo' ? repos.find((r) => r.slug === s.slug) ?? { slug: s.slug, name: s.slug.split('__').pop() } : null;
+  const repo = s.id === 'repo' ? repos.find((r) => r.slug === s.slug) ?? { slug: s.slug, name: s.slug } : null;
   return (
     <div className="flex h-full min-h-0">
       <nav aria-label="Settings" className="flex w-50 shrink-0 flex-col gap-px overflow-y-auto border-r border-border px-2 py-3">

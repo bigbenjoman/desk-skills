@@ -81,7 +81,20 @@ t('every repo folder is listed, with or without its config', await get('/api/set
 const web = await get('/api/settings/repos/studia__studia-web');
 const row = (id) => web.rows.find((r) => r.id === id);
 t('AC1 each row shows its value and meaning', [row('pr-merge-green'), row('pr-ready').value, row('concurrency').meaning, row('worker-budget').value],
-  [{ group: 'Autonomy (§3)', id: 'pr-merge-green', label: 'Merge on green', value: 'ask', meaning: 'A person approves each merge.', set: true }, 'yes', 'Up to 30 workers for this repo.', '$25']);
+  [{ group: 'Autonomy (§3)', id: 'pr-merge-green', label: 'Merge on green', value: 'ask', meaning: 'Desk asks you before each merge.', set: true }, 'yes', 'Up to 30 workers for this repo.', '$25']);
+// Merge on green reads with autopilot-merge, as desk-env mergeGrant does.
+const merge = (green, auto) => S.mergeMeaning(green, (id) => (id === 'pr-merge-green' ? green : auto));
+t('Merge on green\'s meaning follows mergeGrant: both rows, and a batch\'s Stage 3 approval', [
+  merge('yes', 'yes'), merge('yes', 'ask'), merge('ask', 'yes'), merge('ask', 'ask'), merge('yes', 'no'), merge('ask', 'no'), merge('no', 'yes'),
+], [
+  'Workers merge a PR once its checks pass.',
+  'Workers merge on green only in a batch you approve merging for at Stage 3.',
+  'Workers merge on green only in a batch you approve merging for at Stage 3; otherwise desk asks you before each merge.',
+  'Workers merge on green only in a batch you approve merging for at Stage 3; otherwise desk asks you before each merge.',
+  "A PR merges once its checks pass, in a session you run; workers leave theirs for you (autopilot-merge isn't yes).",
+  'Desk asks you before each merge.',
+  'A person merges each PR.',
+]);
 t('AC1 the Jira site row reads Not set, and why it matters', row('jira-site'),
   { group: 'People', id: 'jira-site', label: 'Jira site', value: 'Not set', meaning: "Desk can't use this until it's set.", set: false });
 t('AC1 rows come in §9.3\'s groups, in order', [...new Set(web.rows.map((r) => r.group))], ['Autonomy (§3)', 'Capacity (§3b)', 'Spend', 'Checks (§4)', 'People']);
@@ -120,7 +133,14 @@ t('AC5 installed c47f43ab, main waiting on its tests check: the state line', ins
 t('the install and main, with main 2 commits ahead', [inst.checkout, inst.installed.commit, inst.main.commit, inst.main.ahead, inst.main.check], [src, installed, head, 2, 'pending']);
 await server.updates();
 t('AC6 3 skill and plugin updates are counted, in the background', (await get('/api/settings/install')).updates,
-  { count: 3, names: ['context-audit', 'claude-statusline', 'plugin vercel'], at: '2026-11-27T08:00:00Z' });
+  { count: 3, names: ['context-audit', 'claude-statusline', 'plugin vercel'], at: '2026-11-27T08:00:00Z', partial: false });
+t('a count that may be short says so: a side unread, a skill source that errored, a plugin it couldn\'t compare', [
+  S.countUpdates(null, [], 'x').partial,
+  S.countUpdates({ results: [] }, null, 'x').partial,
+  S.countUpdates({ results: [{ name: 'a', outdated: true }], errors: [{ name: 'b', error: 'HTTP 502' }] }, [], 'x'),
+  S.countUpdates({ results: [] }, [{ plugin: 'p', status: 'unknown' }], 'x').partial,
+  S.countUpdates(null, null, 'x'),
+], [true, true, { count: 1, names: ['a'], at: 'x', partial: true }, true, null]);
 t('main\'s check is read once a minute, not on every request', checks.length, 1);
 t('the other state lines', [
   S.stateLine({ installed: head, head }).text,
@@ -130,9 +150,12 @@ t('the other state lines', [
 ], [
   `✓ Up to date. Installed ${head.slice(0, 8)} is GitHub main.`,
   `✕ main's tests check failed on ${head.slice(0, 8)}, not installing. You stay on ${installed.slice(0, 8)} until a newer commit passes.`,
-  `◌ Waiting: main's tests check on ${head.slice(0, 8)} couldn't be read (gh: HTTP 502). desk tries again at the next pass.`,
+  `· Waiting for main's tests check on ${head.slice(0, 8)}. desk installs it once the check passes.`,
   `✕ Not installing ${head.slice(0, 8)}: ~/studia/desk-skills has uncommitted changes, so nothing was pulled or installed.`,
 ]);
+
+const unread = await S.installView({ check: async () => ({ error: 'gh: HTTP 502' }), release: {} });
+t('a check it couldn\'t read is waited on, as the release waits on it', [unread.main.check, unread.state.glyph], ['pending', '·']);
 
 // ---- AC7, AC9, AC11, AC12: the app build and the installed commit, on the change stream
 const meta0 = await get('/api/meta');
@@ -154,6 +177,7 @@ t('AC9 the server, stopped after an update, says it is restarting', [server.rest
 const n = heard.length;
 writeFileSync(join(DESK_HOME, 'installed.json'), JSON.stringify({ commit: installed, at: '2026-11-27T10:12:00Z', from: src }));
 for (let i = 0; i < 40 && heard.length === n; i++) await sleep(25);
+t('a move back to an older commit is no release: no toast', [heard.length > n, heard.at(-1)?.[1].installed, heard.at(-1)?.[1].released], [true, installed, undefined]);
 heard.length = 0;
 t('a server stopped on the code it runs says nothing', [server.restarting(), heard.length], [undefined, 0]);
 
@@ -169,20 +193,22 @@ t('it is audited', readFileSync(join(HOME, '.desk-autopilot', 'ui', 'audit.jsonl
   [['/api/settings/install-log', ['open', '~/.desk-autopilot/ui/desk-ui-build.log']]]);
 
 // ---- AC14, AC15: the app's own preferences file (Desk.app's main process)
-const { readPrefs, writePrefs, DEFAULT_PREFS } = await import('../desk/shell/app.mjs');
+const { readPrefs, writePrefs } = await import('../desk/shell/app.mjs');
 const prefsFile = join(T, 'userData', 'preferences.json');
-t('AC15 a missing preferences file is System and Comfortable', readPrefs(prefsFile), { theme: 'system', density: 'comfortable' });
+// The window shows nothing read as System and Comfortable (settings.test.jsx AC15).
+t('AC15 a missing preferences file reads as nothing, with no error', readPrefs(prefsFile), {});
 mkdirSync(dirname(prefsFile), { recursive: true });
 writeFileSync(prefsFile, '{not json');
-t('AC15 an unreadable one is the defaults too, with no error', readPrefs(prefsFile), DEFAULT_PREFS);
-writeFileSync(prefsFile, JSON.stringify({ theme: 'purple', density: 'compact' }));
-t('a value that is not a choice reads as its default', readPrefs(prefsFile), { theme: 'system', density: 'compact' });
+t('AC15 an unreadable one reads as nothing too', readPrefs(prefsFile), {});
+writeFileSync(prefsFile, JSON.stringify({ theme: 42, density: 'compact', path: '/etc' }));
+t('a value that is not a word, or a key it does not keep, is dropped', readPrefs(prefsFile), { density: 'compact' });
 const auditBefore = readFileSync(join(HOME, '.desk-autopilot', 'ui', 'audit.jsonl'), 'utf8');
 t('AC14 Theme Dark is written to the app\'s own file', [writePrefs(prefsFile, { theme: 'dark' }), JSON.parse(readFileSync(prefsFile, 'utf8'))],
-  [{ theme: 'dark', density: 'compact' }, { theme: 'dark', density: 'compact' }]);
+  [{ density: 'compact', theme: 'dark' }, { density: 'compact', theme: 'dark' }]);
 t('AC14 and no desk command ran for it', readFileSync(join(HOME, '.desk-autopilot', 'ui', 'audit.jsonl'), 'utf8'), auditBefore);
-t('a key or value that is not a choice writes nothing', [writePrefs(prefsFile, { theme: 'neon' }), writePrefs(prefsFile, { path: '/etc' }), writePrefs(prefsFile, null), JSON.parse(readFileSync(prefsFile, 'utf8')).theme],
-  [null, null, null, 'dark']);
+t('a key it does not keep, or a value that is not a word, writes nothing',
+  [writePrefs(prefsFile, { theme: '../../etc' }), writePrefs(prefsFile, { theme: 'x'.repeat(40) }), writePrefs(prefsFile, { path: 'etc' }), writePrefs(prefsFile, null), JSON.parse(readFileSync(prefsFile, 'utf8')).theme],
+  [null, null, null, null, 'dark']);
 // The IPC handlers, through createShell with a stubbed Electron.
 const ipc = {};
 const { createShell } = await import('../desk/shell/app.mjs');
@@ -191,8 +217,8 @@ createShell({ BrowserWindow: function W() { return fakeWin; }, ipcMain: { handle
   session: { fromPartition: () => ({ webRequest: { onBeforeSendHeaders() {}, onCompleted() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, cookies: { set: async () => {} } }) } },
 { origin: ORIGIN, token: () => null, probe: async () => null, watch: () => {}, setTimer: () => 0, clearTimer: () => {} }).open();
 const page = { sender: fakeWin.webContents, senderFrame: { url: `${ORIGIN}/` } };
-t('the window reads the defaults before anything is saved', await ipc['desk:prefs-get'](page), DEFAULT_PREFS);
-t('the window saves a theme to userData/preferences.json', [await ipc['desk:prefs-set'](page, { theme: 'dark' }), JSON.parse(readFileSync(join(T, 'userData2', 'preferences.json'), 'utf8')).theme], [{ theme: 'dark', density: 'comfortable' }, 'dark']);
+t('the window reads nothing before anything is saved', await ipc['desk:prefs-get'](page), {});
+t('the window saves a theme to userData/preferences.json', [await ipc['desk:prefs-set'](page, { theme: 'dark' }), JSON.parse(readFileSync(join(T, 'userData2', 'preferences.json'), 'utf8')).theme], [{ theme: 'dark' }, 'dark']);
 t('another page can neither read nor save them', [await ipc['desk:prefs-get']({ sender: {}, senderFrame: { url: `${ORIGIN}/` } }), await ipc['desk:prefs-set']({ sender: fakeWin.webContents, senderFrame: { url: 'https://evil.example/' } }, { theme: 'light' })], [null, false]);
 
 server.close();

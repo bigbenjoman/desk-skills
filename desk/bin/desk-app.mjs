@@ -132,8 +132,9 @@ export function install(src) {
 
 const uiDir = () => join(E.deskHome(), 'ui');
 export const uiDist = () => join(uiDir(), 'dist');
-const uiStampFile = () => join(uiDir(), 'source-hash');
-const uiFailedFile = () => join(uiDir(), 'build-failed');
+// The source hash of the build served, and of a build that failed (read by desk-ui-settings.mjs appState).
+export const uiStampFile = () => join(uiDir(), 'source-hash');
+export const uiFailedFile = () => join(uiDir(), 'build-failed');
 export const uiLogFile = () => join(E.HOME, '.desk-autopilot', 'ui', 'desk-ui-build.log');
 
 // Builds in a copy of the source, then swaps the new build in for the one the server serves: until

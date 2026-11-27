@@ -8,12 +8,20 @@ const live = new Map(); // key -> () => its current value
 const restored = new Map(); // key -> the value the last page left, until a mount takes it
 let armed = false;
 
-const storage = () => { try { return globalThis.sessionStorage ?? null; } catch { return null; } };
+// Web Storage (`name` localStorage or sessionStorage) that a refusal never throws from.
+export const storage = (name) => { try { return globalThis[name] ?? null; } catch { return null; } };
+export const kept = (name, key) => { try { return storage(name)?.getItem(key) ?? null; } catch { return null; } };
+// A null `value` removes the key.
+export const keep = (name, key, value) => {
+  try { if (value == null) storage(name)?.removeItem(key); else storage(name)?.setItem(key, value); } catch { /* storage refused: only the hint is lost */ }
+};
+const session = () => storage('sessionStorage');
 const PREFIX = 'desk:kept:';
 
-// Writes every kept value now: Reload calls it before location.reload().
+// Writes every kept value now: Reload calls it before location.reload(), and the connection before a
+// system card takes the window's place, since that unmounts the screens holding them.
 export function saveKept() {
-  const s = storage();
+  const s = session();
   if (!s) return;
   for (const [key, value] of live) { try { s.setItem(PREFIX + key, JSON.stringify(value())); } catch { /* storage refused: only the restore is lost */ } }
 }
@@ -24,7 +32,7 @@ function arm() {
 }
 // What the last page left under `key`, read from storage once; React may call an initialiser twice.
 function take(key) {
-  const s = storage();
+  const s = session();
   let raw = null;
   try { raw = s?.getItem(PREFIX + key) ?? null; s?.removeItem(PREFIX + key); } catch { raw = null; }
   if (raw != null) { try { restored.set(key, JSON.parse(raw)); } catch { restored.set(key, undefined); } }

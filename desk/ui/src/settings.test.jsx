@@ -12,7 +12,7 @@ const serve = (table) => vi.fn((url) => (url in table ? json(table[url]) : new P
 
 const REPOS = [{ slug: 'studia__studia-web', name: 'studia-web' }, { slug: 'studia__studia-zendesk', name: 'studia-zendesk' }];
 const WEB = { slug: 'studia__studia-web', name: 'studia-web', rows: [
-  { group: 'Autonomy (§3)', id: 'pr-merge-green', label: 'Merge on green', value: 'ask', meaning: 'A person approves each merge.', set: true },
+  { group: 'Autonomy (§3)', id: 'pr-merge-green', label: 'Merge on green', value: 'ask', meaning: 'Desk asks you before each merge.', set: true },
   { group: 'People', id: 'jira-site', label: 'Jira site', value: 'Not set', meaning: "Desk can't use this until it's set.", set: false },
 ] };
 const SUBS = { file: '~/.config/desk/subscriptions.md', pinned: ['studia-web and ai-agents run on ops@studia.example (work-2)'], rows: [
@@ -43,7 +43,7 @@ describe('a repo\'s settings', () => {
     const merge = await screen.findByText('Merge on green');
     const row = merge.closest('[data-row]');
     expect(within(row).getByText('ask')).toBeTruthy();
-    expect(within(row).getByText('A person approves each merge.')).toBeTruthy();
+    expect(within(row).getByText('Desk asks you before each merge.')).toBeTruthy();
     const jira = screen.getByText('Jira site').closest('[data-row]');
     expect(within(jira).getByText('Not set')).toBeTruthy();
     expect(within(jira).getByText("Desk can't use this until it's set.")).toBeTruthy();
@@ -212,22 +212,49 @@ describe('app updated', () => {
     expect(document.querySelector('[data-banner]')).toBeNull();
   });
 
-  it('AC8 a reload keeps the screen, the Inbox item open and the unsent answer', () => {
-    function Probe({ tag }) {
+  // "The filter text" is the answer typed and not sent, with the Inbox's filters and the item open: the
+  // Inbox has no free-text filter. The keys are App's and the Inbox's own (App.jsx, inbox.jsx).
+  it('AC8 a reload keeps the screen, the Inbox item open, its filters and the unsent answer', () => {
+    function Probe() {
       const [path, setPath] = useKept('path', '/');
-      const [draft, setDraft] = useKept('inbox:draft:x', '');
-      return <div data-probe={tag}><span>{path}</span><span>{draft}</span><button type="button" onClick={() => { setPath('/inbox'); setDraft('run the checks'); }}>type</button></div>;
+      const [sel, setSel] = useKept('inbox:sel', null);
+      const [repo, setRepo] = useKept('inbox:repo', '');
+      const [kind, setKind] = useKept('inbox:kind', '');
+      const [draft, setDraft] = useKept('inbox:draft:SV-3844', '');
+      const type = () => { setPath('/inbox'); setSel('SV-3844'); setRepo('studia-web'); setKind('park'); setDraft('run the checks'); };
+      return <div data-kept={JSON.stringify([path, sel, repo, kind, draft])}><button type="button" onClick={type}>type</button></div>;
     }
-    render(<Probe tag="before" />);
+    const keptNow = () => JSON.parse(document.querySelector('[data-kept]').dataset.kept);
+    render(<Probe />);
     fireEvent.click(screen.getByRole('button', { name: 'type' }));
     window.dispatchEvent(new Event('pagehide')); // the reload
     cleanup();
-    render(<Probe tag="after" />);
-    expect(screen.getByText('/inbox')).toBeTruthy();
-    expect(screen.getByText('run the checks')).toBeTruthy();
+    render(<Probe />);
+    expect(keptNow()).toEqual(['/inbox', 'SV-3844', 'studia-web', 'park', 'run the checks']);
     cleanup();
-    render(<Probe tag="again" />); // read back once: a screen opened again later starts fresh
-    expect(screen.queryByText('/inbox')).toBeNull();
+    render(<Probe />); // read back once: a screen opened again later starts fresh
+    expect(keptNow()).toEqual(['/', null, '', '', '']);
+  });
+
+  it('a 401 before Desk.app signs in again keeps an unsent answer, though the card unmounts its screen', async () => {
+    function Draft() {
+      const [draft, setDraft] = useKept('inbox:draft:SV-3844', '');
+      return <div><span>{draft}</span><button type="button" onClick={() => setDraft('run the checks')}>type</button></div>;
+    }
+    const s = stream();
+    let signedIn = true;
+    const table = { '/api/setup': { installed: true, repos: 1 }, '/api/snapshot': { at: AT, rev: 1 }, '/api/meta': META };
+    const get = vi.fn((url) => (url === '/api/setup' && !signedIn ? json({ error: { code: 'unauthorized' } }, 401) : url in table ? json(table[url]) : new Promise(() => {})));
+    vi.stubGlobal('caches', undefined);
+    render(<App deps={{ get, Events: s.Events, routes: { inbox: Draft } }} />);
+    await screen.findByRole('navigation', { name: 'Desk' });
+    await act(async () => {});
+    act(() => { fireEvent.keyDown(window, { key: '1', metaKey: true }); });
+    fireEvent.click(await screen.findByRole('button', { name: 'type' }));
+    signedIn = false;
+    await act(async () => { s.error(); });
+    await vi.waitFor(() => { if (screen.queryByRole('button', { name: 'type' })) throw new Error('still mounted'); }, { timeout: 2000, interval: 5 });
+    expect(sessionStorage.getItem('desk:kept:inbox:draft:SV-3844')).toBe('"run the checks"');
   });
 });
 

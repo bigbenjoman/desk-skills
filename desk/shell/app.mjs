@@ -124,18 +124,19 @@ export async function externalUrl(raw, sites = async () => []) {
   return (await sites()).includes(u.host) ? u.href : null;
 }
 // The app's own display preferences (screen-spec §9.2), in Electron's userData folder: outside desk's
-// state, and written by no desk command. A missing or unreadable file, or a value that is not one of
-// the choices, reads as the default, with no error.
-export const PREFS = { theme: ['system', 'light', 'dark'], density: ['comfortable', 'compact'] };
-export const DEFAULT_PREFS = { theme: 'system', density: 'comfortable' };
-const pick = (raw) => Object.fromEntries(Object.entries(PREFS).map(([k, xs]) => [k, xs.includes(raw?.[k]) ? raw[k] : DEFAULT_PREFS[k]]));
+// state, and written by no desk command. The window owns the choices and their defaults
+// (desk/ui/src/color-scheme.js): this file keeps a known key's one-word value, and a missing or
+// unreadable file reads as nothing, which the window shows as the defaults, with no error.
+export const PREF_KEYS = ['theme', 'density'];
+const word = (v) => typeof v === 'string' && /^[a-z][a-z-]{0,31}$/.test(v);
+const pick = (raw) => Object.fromEntries(PREF_KEYS.filter((k) => word(raw?.[k])).map((k) => [k, raw[k]]));
 export function readPrefs(file) {
-  try { return pick(JSON.parse(readFileSync(file, 'utf8'))); } catch { return { ...DEFAULT_PREFS }; }
+  try { return pick(JSON.parse(readFileSync(file, 'utf8'))); } catch { return {}; }
 }
-// One choice changed -> the preferences as saved, or null for a key or value that is not a choice.
+// One choice changed -> the preferences as saved, or null for a key it does not keep or a value that is not a word.
 export function writePrefs(file, change) {
   const keys = change && typeof change === 'object' && !Array.isArray(change) ? Object.keys(change) : [];
-  if (!keys.length || keys.some((k) => !PREFS[k]?.includes(change[k]))) return null;
+  if (!keys.length || keys.some((k) => !PREF_KEYS.includes(k) || !word(change[k]))) return null;
   const next = { ...readPrefs(file), ...Object.fromEntries(keys.map((k) => [k, change[k]])) };
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(`${file}.tmp`, `${JSON.stringify(next, null, 2)}\n`);
