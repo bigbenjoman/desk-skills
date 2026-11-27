@@ -1,7 +1,9 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
-// covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs
-import { resortQueue, resortLine, chainName } from '../desk/bin/spawn-order.mjs';
+// covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs desk/bin/config-schema.mjs
+import { resortQueue, resortLine, chainName, priorityMode, priorityRank, priorityHold, priorityHoldLine } from '../desk/bin/spawn-order.mjs';
+import { ROWS } from '../desk/bin/config-schema.mjs';
+import { readFileSync } from 'node:fs';
 import { layOrder } from '../desk/bin/queue-writer.mjs';
 
 let fails = 0;
@@ -79,6 +81,50 @@ const why = (r) => r.moved.map((m) => `${m.key}: ${m.why}`).join(' | ');
   t('#1623 a tie on gates and files keeps the queue\'s order', `${r.changed} ${r.order.join(' ')}`, 'false B A');
 }
 t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainName('desk/bin/pass.mjs')} ${chainName('skills/desk-ticket/SKILL.md')}`, 'pass.mjs desk-ticket');
+
+// ---- #1624 §3b "Queue order: priority" ----
+{
+  const order = ['p0', 'p1', 'p2', 'p3'];
+  const recs = { HI: { priority: 'P2' }, LO: { priority: 'P3' }, X: { priority: 'P9' }, N: { priority: null }, G: {} };
+  const rank = (k) => priorityRank(recs[k], order);
+  t('#1624 AC4 a tracker priority ranks by §4 Priority; unlisted, unset and no tracker priority rank last alike', ['HI', 'LO', 'X', 'N', 'G'].map(rank).join(' '), '2 3 4 4 4');
+  t('#1624 AC4 with no tracker every ticket ranks the same', priorityRank({}, order) === priorityRank({ priority: undefined }, order), true);
+
+  const files = { HI: ['f'], LO: ['g'], LOF: ['f'], R: ['f'] };
+  recs.LOF = { priority: 'P3' };
+  const hold = (key, mode, more) => priorityHold(key, { mode, rank, files: (k) => files[k] ?? [], waiting: ['HI', key], ...more });
+  // The P2 is held anyway (it collides with a running ticket on f), one slot is free: a P3 on g would leave it idle.
+  t('#1624 AC3 AC5 soft: a P3 fills an idle slot while the P2 is held anyway and they share no file', hold('LO', 'soft', { pending: new Set(), free: 1 }), null);
+  t('#1624 AC3 AC5 soft: a P3 sharing a file with the held P2 does not start, so it cannot delay it', hold('LOF', 'soft', { pending: new Set(), free: 1 })?.key, 'HI');
+  t('#1624 AC3 AC5 soft: a P3 does not take the one slot a P2 that can start this pass needs', hold('LO', 'soft', { pending: new Set(['HI']), free: 1 })?.key, 'HI');
+  t('#1624 AC3 soft: with a slot for each, the P3 starts beside the P2', hold('LO', 'soft', { pending: new Set(['HI']), free: 2 }), null);
+  t('#1624 AC2 AC5 strict: the P3 waits for the held P2 even with a slot idle', hold('LO', 'strict', { pending: new Set(), free: 3 })?.key, 'HI');
+  t('#1624 AC4 AC5 off: priority holds nothing', [hold('LOF', 'off', { pending: new Set() }), hold('LO', 'off', { pending: new Set(['HI']), free: 1 })].join(','), ',');
+  t('#1624 a higher priority holds nothing of its own, nor one of the same priority', priorityHold('HI', { mode: 'strict', rank, files: () => [], waiting: ['HI', 'LO', 'X'] }), null);
+  t('#1624 a ticket that blocks a higher one is never held by it, even at strict', hold('LO', 'strict', { blocks: (a, b) => a === 'LO' && b === 'HI' }), null);
+  t('#1624 the held ticket\'s line names the higher one and the row', priorityHoldLine('LOF', hold('LOF', 'soft', { pending: new Set() }), 'soft'), 'LOF: waits for HI, a higher priority (§3b "Queue order: priority" soft: it is held, and shares f)');
+}
+{
+  t('#1624 AC1 AC5 the row reads strict, soft and off', ['strict', 'soft', 'off', '`Strict`'].map((v) => priorityMode(v).mode).join(' '), 'strict soft off strict');
+  t('#1624 AC5 a missing or TODO row is soft, said nowhere', [undefined, null, '', 'TODO'].map((v) => `${priorityMode(v).mode}/${priorityMode(v).bad}`).join(' '), 'soft/null soft/null soft/null soft/null');
+  const bad = priorityMode('high');
+  t('#1624 AC5 an invalid row is read as soft, and said', `${bad.mode} ${bad.bad}`, 'soft config §3b "Queue order: priority" is "high" — want `strict`, `soft` or `off`; read as soft');
+  const row = ROWS.find((e) => e.id === 'queue-priority');
+  t('#1624 AC1 the schema has the §3b row, default soft', `${row?.section} ${row?.label} ${row?.default}`, '3b Queue order: priority soft');
+  const tmpl = readFileSync(new URL('../desk-config.md', import.meta.url), 'utf8').split('\n').find((l) => l.startsWith('| Queue order: priority |'));
+  t('#1624 AC1 the template\'s row recommends soft', tmpl?.split('|')[2].trim(), '`soft`');
+}
+{
+  // A P1 gating nothing behind a P3 hub gating one: priority sorts first at soft and strict, throughput alone at off.
+  const ts = [tk('LO'), tk('HI'), tk('D', { state: 'parked', held_by: 'LO' })];
+  const files = { LO: ['a'], HI: ['b'], D: ['d'] };
+  const pr = { LO: 3, HI: 1, D: 3 };
+  const go = (priority) => resortQueue(ts, { scope: (k) => files[k] ?? [], fileCount: (k) => (files[k] ?? []).length, rank: (k) => pr[k], priority });
+  t('#1624 AC3 soft: a higher priority sorts ahead of a hub gating more', `${go('soft').order.join(' ')} | ${why(go('soft'))}`, 'HI LO D | HI: higher priority');
+  t('#1624 AC2 strict sorts the same', go('strict').order.join(' '), 'HI LO D');
+  t('#1624 AC4 off: the throughput order alone', go('off').order.join(' '), 'LO HI D');
+  t('#1624 a blocker still starts before what it blocks, whatever its priority', resortQueue([tk('LO'), tk('HI', { state: 'parked', held_by: 'LO' })], { scope: () => [], fileCount: () => 0, rank: (k) => (k === 'HI' ? 0 : 3), priority: 'strict' }).order.join(' '), 'LO HI');
+}
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');

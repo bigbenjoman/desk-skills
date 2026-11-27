@@ -29,6 +29,8 @@
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
 //                children list is left out, with epic_error, when it could not be read
 //   labels       the issue's labels, as written (a feature-mode batch promotes when a `milestone` merges)
+//   priority     the issue's value of the field §4 Priority names (else Jira's `priority`), as text, else
+//                null: the pass ranks it for §3b "Queue order: priority"
 //   priority_proposal  {label, to, line} when the ticket carries a pending proposal on its priority (a
 //                label §4 Priority proposal labels matches, or a description line asking a person to
 //                promote it or reject it: priority-proposal.mjs), else null; needs-you lists it
@@ -42,8 +44,9 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ghRepo, queueFile, stateDir, ticketKind, personStepLabels, personInputLabels, proposalLabelPatterns } from './desk-env.mjs';
+import { configValues, ghRepo, queueFile, stateDir, ticketKind, personStepLabels, personInputLabels, proposalLabelPatterns } from './desk-env.mjs';
 import { priorityProposal } from './priority-proposal.mjs';
+import { priorityOf } from './candidates.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { issueBody } from './ticket-fill.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
@@ -170,7 +173,7 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'repository', 'labels', 'priority_proposal', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'repository', 'labels', 'priority', 'priority_proposal', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
 
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
@@ -189,6 +192,7 @@ const asText = (v) => {
   const s = Array.isArray(v) ? v.map(asText).filter(Boolean).join(', ') : String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
   return s || null;
 };
+const priorityField = () => { try { return priorityOf(configValues('jira-priority')).field; } catch { return 'priority'; } };
 const fieldNamed = (issue, re) => Object.entries(issue.names ?? {}).find(([, n]) => re.test(String(n).trim()))?.[0];
 
 if (kind.kind !== 'tracker') {
@@ -221,6 +225,9 @@ if (kind.kind !== 'tracker') {
     const repoField = fieldNamed(issue, /^repository$/i);
     rec.repository = repoField ? asText(issue.fields?.[repoField]) : null;
     rec.labels = Array.isArray(issue.fields?.labels) ? issue.fields.labels.map(String) : [];
+    // The tracker priority, from the field §4 Priority names (else Jira's own): the pass ranks it for
+    // §3b "Queue order: priority" (spawn-order.mjs priorityRank). Unset is null.
+    rec.priority = asText(issue.fields?.[priorityField()]);
     rec.priority_proposal = priorityProposal({ labels: rec.labels, description: issue.fields?.description }, proposalLabelPatterns());
     Object.assign(rec, epicOf(issue));
     design(issue.fields?.description);

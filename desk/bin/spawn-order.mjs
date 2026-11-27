@@ -49,10 +49,13 @@ export const chainName = (f) => {
 // no unstarted ticket holds it: the per-file budget holds the unstarted one at spawn instead.
 // -> { order: those tickets' keys in their new order, gates, moved: [{ key, why }] for each that overtook
 //    another, changed }
-const unstarted = (t) => ['queued', 'triaged', 'parked'].includes(t.state) && !t.spawned_at;
+export const unstarted = (t) => ['queued', 'triaged', 'parked'].includes(t.state) && !t.spawned_at;
 // A ticket the re-sort may move: unstarted, and nobody placed it.
 export const resortable = (t) => unstarted(t) && !t.placed;
-export function resortQueue(tickets, { scope, fileCount }) {
+// With `rank(key)` (priorityRank: lower is higher priority) and `priority` strict or soft, a higher
+// priority starts first, before SPAWN_ORDER_RULE: the per-person constraint on the throughput order
+// (§3b "Queue order: priority"). At `off`, or without `rank`, priority is not read.
+export function resortQueue(tickets, { scope, fileCount, rank = null, priority = 'off' }) {
   const open = tickets.filter(unstarted);
   const movable = open.filter(resortable);
   const openKeys = new Set(open.map((t) => t.key));
@@ -67,7 +70,10 @@ export function resortQueue(tickets, { scope, fileCount }) {
     gates[t.key] = [...reach(t.key, from, succ)].filter((k) => openKeys.has(k)).length;
   }
   const was = new Map(movable.map((t, i) => [t.key, i]));
-  const sorted = movable.map((t) => ({ ticket: t.key })).sort(bySpawnOrder(gates, (r) => fileCount(r.ticket), (r) => was.get(r.ticket)));
+  const ranked = rank && priority !== 'off';
+  const rankOf = (k) => (ranked ? rank(k) : 0);
+  const throughput = bySpawnOrder(gates, (r) => fileCount(r.ticket), (r) => was.get(r.ticket));
+  const sorted = movable.map((t) => ({ ticket: t.key })).sort((a, b) => rankOf(a.ticket) - rankOf(b.ticket) || throughput(a, b));
   const order = blockersFirst(sorted.map((r) => r.ticket), (k) => blockersOf(byKey[k]).filter((p) => was.has(p)));
   const now = new Map(order.map((k, i) => [k, i]));
   const moved = [];
@@ -75,7 +81,7 @@ export function resortQueue(tickets, { scope, fileCount }) {
     const passed = order.filter((o) => was.get(o) < was.get(k) && now.get(o) > now.get(k));
     if (!passed.length) continue;
     const tie = passed.find((o) => gates[o] === gates[k] && shared(k, o).length);
-    const why = tie ? `clears ${chainName(shared(k, tie)[0])} chain` : gates[k] > 0 ? `gates ${gates[k]}` : 'fills an idle slot';
+    const why = passed.some((o) => rankOf(o) > rankOf(k)) ? 'higher priority' : tie ? `clears ${chainName(shared(k, tie)[0])} chain` : gates[k] > 0 ? `gates ${gates[k]}` : 'fills an idle slot';
     moved.push({ key: k, why });
   }
   return { order, gates, moved, changed: moved.length > 0 };
@@ -85,3 +91,58 @@ export function resortQueue(tickets, { scope, fileCount }) {
 export const resortLine = (r) => (r.changed
   ? `spawn order re-sorted for throughput: ${r.order.join(', ')} (${r.moved.map((m) => `${m.key} ${m.why}`).join('; ')})`
   : null);
+
+// ---- priority: §3b "Queue order: priority" ----------------------------------------------------------
+export const PRIORITY_MODES = ['strict', 'soft', 'off'];
+// The row as read: `strict`, `soft` or `off`. Unset (missing, blank, TODO) is `soft`, the template's
+// default; anything else is said and read as `soft`. -> { mode, bad: null | message }
+export function priorityMode(raw, row = 'Queue order: priority') {
+  const v = String(raw ?? '').trim().replace(/^`|`$/g, '').toLowerCase();
+  if (PRIORITY_MODES.includes(v)) return { mode: v, bad: null };
+  if (v === '' || /^todo\b/.test(v)) return { mode: 'soft', bad: null };
+  return { mode: 'soft', bad: `config §3b "${row}" is "${raw}" — want \`strict\`, \`soft\` or \`off\`; read as soft` };
+}
+
+// Where a triage record's tracker priority (`priority`, ticket-facts.mjs) sits in `order`, §4 Priority's
+// values in lower case, highest first: lower is higher priority. A value unset or not listed, and a
+// ticket with no tracker priority (no tracker, or not a tracker ticket), ranks after every listed one,
+// so with no tracker every ticket ranks the same.
+export function priorityRank(rec, order) {
+  const v = String(rec?.priority ?? '').trim().toLowerCase();
+  const i = v ? order.indexOf(v) : -1;
+  return i < 0 ? order.length : i;
+}
+
+// What holds unstarted ticket `key` from starting now for a higher-priority one, or null.
+//   mode     strict, soft or off
+//   rank     key -> priorityRank (lower is higher priority)
+//   waiting  the keys of the unstarted tickets not started yet: each higher than `key` may hold it
+//   pending  those of them that may still start this pass (spawnable, not yet tried); the rest are held
+//            anyway (a file collision, a blocker, the test lock, an open question)
+//   free     the slots this pass has left, `key`'s own included
+//   files    key -> the files its work collides on
+//   blocks   (a, b) -> true where a holds b through blocker links: a higher ticket `key` itself holds
+//            never holds it, or neither would start
+// strict: any higher ticket waiting holds it. soft: one only where it would lose time, so `key` may
+// take a slot that would otherwise sit idle: the higher ones that may still start this pass hold it only
+// when they would need its slot, and one held anyway only where `key` shares a file with it.
+// -> { key: the higher ticket, why } or null
+export function priorityHold(key, { mode, rank, waiting, pending = new Set(), free = 1, files, blocks = () => false }) {
+  if (mode === 'off') return null;
+  const higher = [...waiting].filter((h) => h !== key && rank(h) < rank(key) && !blocks(key, h));
+  if (!higher.length) return null;
+  if (mode === 'strict') return { key: higher[0], why: 'strict: a lower priority never starts first' };
+  const before = higher.filter((h) => pending.has(h));
+  if (before.length && before.length >= free) return { key: before[0], why: 'it may start this pass, and needs the slot' };
+  const mine = new Set(files(key));
+  for (const h of higher) {
+    if (pending.has(h)) continue;
+    const f = files(h).find((x) => mine.has(x));
+    if (f) return { key: h, why: `it is held, and shares ${f}` };
+  }
+  return null;
+}
+
+// The pass's line for a ticket priorityHold holds.
+export const priorityHoldLine = (key, hold, mode, row = 'Queue order: priority') =>
+  `${key}: waits for ${hold.key}, a higher priority (§3b "${row}" ${mode}: ${hold.why})`;

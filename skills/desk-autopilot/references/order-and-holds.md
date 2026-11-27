@@ -39,7 +39,14 @@ by the same rule**, so the order keeps up as tickets merge, park and are admitte
 gates every other unstarted ticket that shares a planned file with it, and every ticket blocked by it
 or by one of those, through any chain. The pass report prints the new order only when it changed,
 and desk-q marks each ticket the re-sort moved ahead with `^` and why (`gates 4`, `clears
-desk-checkout chain`, `fills an idle slot`). If the user asks for a literal chain that would idle a gate,
+desk-checkout chain`, `fills an idle slot`, `higher priority`). Config §3b "Queue order: priority"
+bounds both the re-sort and which ticket starts by the tracker priority (each triage record's
+`priority`, ranked by §4 Priority): at `strict` a lower priority never starts while a higher one waits
+to start; at `soft` (unset or invalid reads as `soft`) higher priorities sort first, and a lower one
+starts first only into a slot that would otherwise sit idle, or past a higher one held anyway (a file
+collision, a blocker, the test lock) that it shares no file with; at `off` priority is not read. A
+ticket that blocks a higher one is never held by it. A ticket priority holds is in the report's
+waiting list, naming the higher one. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
 up to that file's per-file budget (`concurrency-and-memory.md`). A ticket added mid-batch is not

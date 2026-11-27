@@ -79,7 +79,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { slotCandidatesOn, slotLines } from './candidates.mjs';
+import { slotCandidatesOn, slotLines, priorityOf } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
@@ -87,7 +87,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { resortQueue, resortLine, plannedFiles } from './spawn-order.mjs';
+import { resortQueue, resortLine, plannedFiles, priorityMode, priorityRank, priorityHold, priorityHoldLine, unstarted, reach } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -2900,11 +2900,25 @@ const budgetFiles = (key) => {
 // The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
 // resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
 // (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it.
+// Config §3b "Queue order: priority": the tracker priority (each triage record's `priority`, ranked by
+// §4 Priority) as a constraint on that order and on which ticket starts (spawn-order.mjs priorityHold).
+const PRIORITY_ROW = E.CONFIG_ROWS['queue-priority'].row;
+const PRIORITY = priorityMode(E.configValue('queue-priority'), PRIORITY_ROW);
+let priorityOrder = [];
+try { priorityOrder = priorityOf(E.configValues('jira-priority')).order; } catch { /* no readable §4 Priority: every ticket ranks the same */ }
+const rankOfKey = new Map();
+const priorityRankOf = (k) => {
+  if (!rankOfKey.has(k)) rankOfKey.set(k, priorityRank(triageRec(k), priorityOrder));
+  return rankOfKey.get(k);
+};
 const RESORT = resortQueue(Object.values(fresh.tickets), {
   scope: budgetFiles,
   fileCount: (k) => plannedFiles(triageRec(k)),
+  rank: priorityRankOf,
+  priority: PRIORITY.mode,
 });
 const orderLines = [];
+if (PRIORITY.bad) orderLines.push(PRIORITY.bad);
 if (RESORT.changed) {
   q('order', ...RESORT.order);
   const why = new Map(RESORT.moved.map((m) => [m.key, m.why]));
@@ -4730,7 +4744,27 @@ let slotStopAt = null;
 const loopFrom = { attempts, running: localKeys().length };
 // The memory share a local start was refused: no later local ticket starts this pass, though a cloud one may.
 let memStop = false;
+// Priority (§3b "Queue order: priority"): an unstarted ticket waits while a higher-priority unstarted one
+// would lose time by its start (spawn-order.mjs priorityHold). `tried` are the candidates this loop has
+// reached, so the rest may still start; `startedNow` those it started.
+const tried = new Set();
+const startedNow = new Set();
+const blockerSucc = {};
+for (const x of Object.values(fresh.tickets)) for (const p of blockersOf(x)) (blockerSucc[p] ??= []).push(x.key);
+const priorityHeldBy = (t) => {
+  if (PRIORITY.mode === 'off' || !unstarted(t) || toResume(t) || toHandoff(t)) return null;
+  const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key)).map((x) => x.key);
+  const pending = new Set(spawnable.filter((x) => !tried.has(x.key) && x.key !== t.key && !toResume(x) && !toHandoff(x) && !startsInCloud(x) === !startsInCloud(t)).map((x) => x.key));
+  const free = startsInCloud(t) ? cloudSlots - cloudAttempts : (memStop ? 0 : ticketSlots) - attempts;
+  // With no slot left, decideSpawn says so: priority holds nothing that would not start anyway.
+  if (free <= 0) return null;
+  return priorityHold(t.key, { mode: PRIORITY.mode, rank: priorityRankOf, waiting, pending, free, files: budgetFiles,
+    blocks: (a, b) => reach(a, blockerSucc[a] ?? [], blockerSucc).has(b) });
+};
 for (const t of spawnable) {
+  const pHold = priorityHeldBy(t);
+  tried.add(t.key);
+  if (pHold) { report.waiting.push(priorityHoldLine(t.key, pHold, PRIORITY.mode, PRIORITY_ROW)); continue; }
   const [verdict] = runSteps({
     name: 'spawn loop',
     // stop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it,
@@ -4750,6 +4784,7 @@ for (const t of spawnable) {
     continue;
   }
   if (verdict?.type !== 'start') continue;
+  startedNow.add(t.key);
   if (verdict.how === 'resume') {
     // eslint-disable-next-line no-await-in-loop
     await resumeKilled(t);
