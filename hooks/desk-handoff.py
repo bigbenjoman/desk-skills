@@ -218,9 +218,17 @@ def family(model):
     return ""
 
 
-# The oldest version of each family whose default window is 1M, with no [1m] (Claude Code's model
-# configuration docs). An older version reaches 1M only through its [1m] variant.
-DEFAULT_1M_SINCE = {"fable": (0, 0), "sonnet": (5, 0), "haiku": (5, 5), "opus": (4, 7)}
+def load_default_1m_since():
+    """The oldest version of each family whose default window is 1M, with no [1m]: desk's
+    bin/model-windows.json, which handoff-report.mjs reads too. Unreadable, no model is 1M by default."""
+    try:
+        with open(os.path.join(DESK_HOME, "bin", "model-windows.json")) as f:
+            return {k: tuple(v) for k, v in json.load(f)["default_1m_since"].items()}
+    except Exception:
+        return {}
+
+
+DEFAULT_1M_SINCE = load_default_1m_since()
 
 
 def version(model):

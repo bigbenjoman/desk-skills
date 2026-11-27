@@ -115,8 +115,8 @@ const GAP = 'No source measures a handoff at 20-30%; on a 1M window the absolute
 const FIRE = /desk handoff: context is at \d+% of a ([\d,]+)-token window(?: \(threshold |, past this worker's threshold of )([\d.]+)%/;
 const SMALL_WINDOW = 200_000;
 const LARGE_WINDOW = 1_000_000;
-// desk-handoff.py's DEFAULT_1M_SINCE: the oldest version of each family whose default window is 1M.
-const DEFAULT_1M_SINCE = { fable: [0, 0], sonnet: [5, 0], haiku: [5, 5], opus: [4, 7] };
+// The oldest version of each family whose default window is 1M, shared with desk-handoff.py.
+const DEFAULT_1M_SINCE = JSON.parse(readFileSync(new URL('./model-windows.json', import.meta.url), 'utf8')).default_1m_since;
 const NAMED = /\(repo-relative: (\.handoffs\/[^\s)]+\.md)\)/;
 const HANDOFF_FILE = /\.handoffs\/[A-Za-z0-9._-]+\.md/;
 
@@ -288,7 +288,7 @@ function sessionOf(file, text) {
   };
 }
 
-// Whether a model's default window is 1M with no [1m] (desk-handoff.py's default_1m).
+// Whether a model's default window is 1M with no [1m], parsed as desk-handoff.py's default_1m does.
 function default1m(model) {
   const parts = String(model ?? '').toLowerCase().replace('[1m]', '').split('-');
   const since = DEFAULT_1M_SINCE[parts.find((p) => p && p !== 'claude' && !/^\d+$/.test(p))];
