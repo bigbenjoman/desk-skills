@@ -36,7 +36,7 @@ import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
 import { readWarnings } from './pass-metrics.mjs';
 import { unreadableFollowOn } from './harvest.mjs';
-import { readArchive } from './queue-store.mjs';
+import { attachArchive, everyTicket } from './queue-store.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
@@ -475,8 +475,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
 // Each ticket whose worker's follow_on= field no step could be read from, as a warning dated when the pass read it.
 // Archived tickets too: one whose PR merged before the check-in has left the live queue.
-const archivedOf = (file) => { try { return readArchive(file).tickets; } catch { return {}; } };
-const followOnWarnings = (r) => Object.values({ ...archivedOf(r.queue), ...readJson(r.queue, null)?.tickets })
+const followOnWarnings = (r) => Object.values(everyTicket(attachArchive(readJson(r.queue, null) ?? { tickets: {} }, r.queue)))
   .filter((t) => t?.follow_on_unreadable?.at)
   .map((t) => ({ at: t.follow_on_unreadable.at, text: `${t.key}: ${unreadableFollowOn(t.follow_on_unreadable.raw)}` }));
 
