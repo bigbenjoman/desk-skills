@@ -2493,6 +2493,9 @@ function limitOf(x, now) {
   const k = full.reduce((a, b) => (r[b].resetsAt > r[a].resetsAt ? b : a));
   return { type: k, at: r[k].resetsAt };
 }
+// One Claude login's limit as the Usage screen reads it (limitOf): -> { type, at } | null.
+export const loginLimit = (repos, login, now = Date.now()) =>
+  limitOf({ out: holdOut(repos, login, now), reading: readUsage({ dirs: stateDirs({ self: usageDir() }), login, now }) }, now);
 
 // Each subscription at its limit that repos run on, earliest reset first (the default first on a tie):
 //   -> [{ x, limit, repos }], `repos` the repo-table rows whose subscription is that login, the most
