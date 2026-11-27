@@ -16,6 +16,7 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
 import { namedBatches } from './batches.mjs';
+import { runsInCloud } from './pass/shared.mjs';
 
 // A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
 // desk-q and borrowing through liveBeat, which also counts a recorded next pass still to come.
@@ -162,8 +163,9 @@ export function otherQueues({ self, home = E.deskHome() } = {}) {
   return out;
 }
 
-// The workers a queue has running: its running tickets, and its base conflict fix while one runs.
-const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state === 'running').length + (q.base_fix?.running ? 1 : 0);
+// The workers a queue has running here: its running tickets but those in a cloud session, which hold
+// nothing on this computer, and its base conflict fix while one runs.
+const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state === 'running' && !runsInCloud(t)).length + (q.base_fix?.running ? 1 : 0);
 
 // The machine-wide worker budget, borrowing on or off: the machine profile's cap is a hard limit on
 // the workers running in every repo together, so a pass starts at most the cap less every queue's

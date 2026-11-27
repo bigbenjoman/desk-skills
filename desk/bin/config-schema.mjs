@@ -675,6 +675,7 @@ export const ROWS = Object.freeze([
   v('worker-models', '3b', 'Worker models', 'worker-models', 'standard=sonnet high=opus', dflt('default')),
   v('worker-effort', '3b', 'Worker effort', 'worker-effort', '0=medium 4b=high task=low', dflt('none')),
   v('worker-location', '3b', 'Worker location', 'worker-location', 'local', dflt('local')),
+  v('cloud-sessions', '3b', 'Cloud sessions at once', 'whole', '4', dflt('4')),
   v('batches-run-by', '3b', 'Batches run by', 'batches-run-by', 'supervisor', dflt('session')),
   v('borrow-idle', '3b', 'Borrow idle workers', 'on-off', 'off', dflt('off')),
   v('park-after', '3b', 'Park an unanswered question after (minutes)', 'whole', '15'),
