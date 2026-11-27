@@ -392,7 +392,10 @@ await A.press(DOWN);
 await A.press('\r');
 t('AC2 Enter on voicepa opens its queue', A.crumbs(), 'desk-q › voicepa');
 t('AC12 no row on an 80-column repo screen is wider than 80', A.frame().filter((l) => l.length > 80).length, 0);
+// At 80 columns a Queue row is narrower than every column, so it has no TITLE; at 120 it has one.
+A.output.columns = 120; A.output.resize();
 t('AC13 a title that does not fit ends in an ellipsis', /VPL-4 .*…$/.test(A.frame().find((l) => /VPL-4/.test(l)) ?? ''), true);
+A.output.columns = 80; A.output.resize();
 // Grouped: Running VPL-1 and VPL-2, Ready VPL-4, Waiting VPL-3.
 await A.press(DOWN); await A.press(DOWN); await A.press(DOWN); await A.press('\r');
 t('AC3 down to the Waiting ticket and Enter opens it', A.crumbs(), 'desk-q › voicepa › VPL-3');
@@ -725,13 +728,14 @@ t('DS-179 AC1 at 120 and 80 columns, the stuck row is no wider than the terminal
 t('DS-179 AC1 it says what it waits on, cut with …, and keeps its title', Object.entries(stk(120)).filter(([, l]) => !/After BLK-101, BLK-102, .*… +STK-1 title$/.test(l)).map(([v, l]) => `${v}: ${l}`).join(), '');
 t('DS-179 a reason that fits is written whole', rowFor(Q.daysScreen(stuck10, 'acme__stuck10', { now: FIXED, width: 120 }), 'BLK-101').includes('Needs your answer · ~'), true);
 
-const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 100, () => FIXED);
+// 110 columns: wide enough for every column at its minimum, so TITLE is still shown.
+const Rz = screen({ kind: 'repo', slug: 'acme__wide' }, 110, () => FIXED);
 await sleep(20);
 const w1 = () => Rz.frame().find((l) => /^[ ›] +\d+ {2}W-1 /.test(l)) ?? '';
 const w1Before = w1().length;
 Rz.output.columns = 160;
 Rz.output.resize();
-t('DS-167 AC6 resized from 100 to 160 columns, the redraw fits titles to the new width', `${w1Before} ${w1().length} ${w1().endsWith('…')}`, '100 160 true');
+t('DS-167 AC6 resized from 110 to 160 columns, the redraw fits titles to the new width', `${w1Before} ${w1().length} ${w1().endsWith('…')}`, '110 160 true');
 Rz.ui.finish(0);
 
 // ---- DS-164: a place (every repo, a repo, a ticket) and a view of it. The ACs' voicepa is tidy here,
@@ -2209,11 +2213,13 @@ const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} 
 // One cell of a repo Queue row, trimmed, cut where the header puts its column: WAITING is there only
 // while a row shows a time, and TICKET widens to the longest key, so no column has a fixed place.
 const QUEUE_COLS = ['TICKET', 'STATE', 'WAITING', 'WHAT IT NEEDS', 'STARTS', 'SHIPS', 'TITLE'];
-const cellOf = (ls, key, name) => {
-  const h = ls.find((l) => /TICKET +STATE /.test(l)) ?? '';
+const queueHeadOf = (ls) => ls.find((l) => /TICKET +STATE /.test(l)) ?? '';
+// `rowOf` finds the row: by default the one whose TICKET cell is exactly `key`.
+const cellOf = (ls, key, name, rowOf = fxRow) => {
+  const h = queueHeadOf(ls);
   const cols = QUEUE_COLS.map((c) => [c, h.indexOf(c)]).filter(([, i]) => i >= 0);
   const at = cols.findIndex(([c]) => c === name);
-  return at < 0 ? null : fxRow(ls, key).slice(cols[at][1], cols[at + 1]?.[1]).trim();
+  return at < 0 ? null : rowOf(ls, key).slice(cols[at][1], cols[at + 1]?.[1]).trim();
 };
 t('DS-279 (DS-280 AC2) a red PR the merge driver reruns is merging, and names the check and the rerun next',
   `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, e2e failed · rerun 1 of 2 next.');
@@ -3342,6 +3348,93 @@ try {
   const youOf = (out) => Number(/^◆ (\d+) tickets? needs? you/m.exec(out)?.[1] ?? 0);
   t('DS-959 AC9 the end of the trial adds one to the needs-you count', youOf(run(due)) - youOf(run(none)), 1);
   for (const c of sleepers) c.kill();
+}
+
+// ---- DS-1046: a long base-repair key is cut rather than widening TICKET, and narrower than every
+// column the Queue drops TITLE, then WAITING, then STARTS; an over-wide status line ends in … at the width.
+{
+  const KEY = 'base-red-main-20261126175442';
+  put(I.T, I.env, 'q1046', { port: 5660, conc: '3 / 5', beat: 1, queue: { batch: 'q1046', concurrency: 3, tickets: {
+    [KEY]: { state: 'running', stage: '3/9' },
+    'Q-1': { state: 'triaged', open_questions: 0 },
+    'Q-2': { state: 'parked', park: { question: 'which copy?' }, group: { g: 'needs', at: minsAgo(135) } },
+  } } });
+  const state = join(I.env.HOME, '.desk-autopilot', 'acme__q1046');
+  mkdirSync(join(state, 'merge-driver.lock.d'), { recursive: true });
+  writeFileSync(join(state, 'merge-driver.lock.d', 'pid'), `${process.pid}\n`);
+  writeFileSync(join(state, 'merge-driver.log'), `17:54:42Z HOLDING on red main: required check tests failed on its latest run there, so no PR merges into it but its repair ${KEY}'s\n`);
+  writeFileSync(join(state, 'merge-stages.jsonl'), `${JSON.stringify({ key: 'Q-0', pr: 9, desk: { minutes: 12 }, undraft: 3, merge: 4, external: { wait: 30, rereviews: 2 }, recorded: minsAgo(60) })}\n`);
+  const r1046 = Q.loadRepos(NOW).find((r) => r.name === 'q1046');
+  const at = (width) => lines(Q.repoScreen(r1046, { now: NOW, width }));
+  const colsAt = (width) => QUEUE_COLS.filter((c) => new RegExp(`(^| )${c}( |$)`).test(queueHeadOf(at(width))));
+  const keyRow = (ls) => ls.find((l) => /^ +(-|\d+) {2}base-red/.test(l)) ?? '';
+  // One cell of the row whose TICKET cell starts with `lead`, trimmed, where the header puts its column.
+  const leadRow = (ls, lead) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${esc(lead)}`).test(l)) ?? '';
+  const cell1046 = (ls, lead, name) => cellOf(ls, lead, name, leadRow) ?? '';
+  const q88 = at(88), h88 = queueHeadOf(q88), leads = ['base-red', 'Q-1 ', 'Q-2 '];
+  const cut88 = cell1046(q88, 'base-red', 'TICKET');
+  t('DS-1046 AC1 at 88 columns every row keeps STATE, WHAT IT NEEDS (at least 36), STARTS and SHIPS, and the long key is cut with …',
+    `${colsAt(88).join(',')} ${h88.indexOf('STARTS') - h88.indexOf('WHAT IT NEEDS') >= 36} ${cut88.endsWith('…') && KEY.startsWith(cut88.slice(0, -1)) && cut88.length < KEY.length} ${['STATE', 'WHAT IT NEEDS', 'STARTS', 'SHIPS'].every((c) => leads.every((k) => cell1046(q88, k, c)))}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS true true true');
+  t('DS-1046 AC1 at 88 columns no line of the Queue is wider than the terminal', q88.filter((l) => [...l].length > 88).join(' | '), '');
+  const q140 = at(140);
+  t('DS-1046 AC2 at 140 columns the base-repair key shows in full and no column is dropped',
+    `${colsAt(140).join(',')} ${keyRow(q140).includes(`${KEY} `)}`, `${QUEUE_COLS.join(',')} true`);
+  // Narrowing a column at a time, each width's columns as a set; each change drops one column, in order.
+  const seen = [];
+  for (let w = 140; w >= 40; w--) { const c = colsAt(w).join(','); if (seen.at(-1) !== c) seen.push(c); }
+  const dropped = seen.slice(1).map((c, i) => seen[i].split(',').filter((x) => !c.split(',').includes(x)).join('+'));
+  t('DS-1046 AC3 narrower than every column at its minimum, TITLE goes first, then WAITING, then STARTS, and WHAT IT NEEDS and SHIPS last',
+    dropped.join(' > '), 'TITLE > WAITING > STARTS > SHIPS > WHAT IT NEEDS');
+  const countsAt = (ls) => ls.filter((l) => l.includes('merge driver up'));
+  const stagesAt = (ls) => ls.filter((l) => l.startsWith('merge time by stage'));
+  t('DS-1046 AC4 at 88 columns the merge driver\'s HOLDING line and the merge time by stage each end in … at the width, on one line',
+    [...countsAt(q88), ...stagesAt(q88)].map((l) => `${[...l].length}${l.endsWith('…') ? '…' : ''}`).join(' '), '88… 88…');
+  // Wide enough, the stages line is whole and the driver's last line keeps its 100-character cut.
+  const q400 = at(400);
+  t('DS-1046 AC4 wide enough, the merge time by stage is whole and the driver line is not cut at the width',
+    `${stagesAt(q400).map((l) => l.endsWith('…')).join()} ${countsAt(q400).map((l) => l.endsWith(`last: ${readFileSync(join(state, 'merge-driver.log'), 'utf8').trim().slice(0, 99)}…`)).join()}`, 'false true');
+  // A dated repo, whose STARTS and SHIPS read "today 21:30": at 88 columns a same-day time drops its
+  // "today" so STARTS stays, and wide enough it keeps it.
+  dated('q1046d', 5664, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { [KEY]: { state: 'running', stage: '3/9' }, 'D-1': ready, 'D-2': ready } });
+  const rd = Q.loadRepos(FIXED).find((r) => r.name === 'q1046d');
+  const dAt = (width) => lines(Q.repoScreen(rd, { now: FIXED, width }));
+  const d88 = dAt(88), d140 = dAt(140), dLeads = ['base-red', 'D-1 ', 'D-2 '];
+  const dCells = (ls, c) => dLeads.map((k) => cellOf(ls, k, c, leadRow) ?? '');
+  t('DS-1046 AC1 a dated repo at 88 columns: every row keeps STATE, WHAT IT NEEDS, STARTS and SHIPS, a same-day time without its "today"',
+    `${QUEUE_COLS.filter((c) => queueHeadOf(d88).includes(c)).join(',')} ${['STATE', 'WHAT IT NEEDS', 'STARTS', 'SHIPS'].every((c) => dCells(d88, c).every(Boolean))} ${[...dCells(d88, 'STARTS'), ...dCells(d88, 'SHIPS')].some((s) => /^▲?\d\d:\d\d$/.test(s))} ${[...dCells(d88, 'STARTS'), ...dCells(d88, 'SHIPS')].every((s) => !s.includes('today ')) && dLeads.every((k) => [...leadRow(d88, k)].length <= 88)}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS true true true');
+  t('DS-1046 AC2 a dated repo at 140 columns keeps every column and its "today"',
+    `${QUEUE_COLS.filter((c) => queueHeadOf(d140).includes(c)).join(',')} ${[...dCells(d140, 'STARTS'), ...dCells(d140, 'SHIPS')].some((s) => /^▲?today \d\d:\d\d$/.test(s))}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS,TITLE true');
+  // The same with a 10-character key beside the long one: it is never cut, and STARTS goes only where
+  // the room WHAT IT NEEDS and the long key could give up is narrower than STARTS at its heading.
+  dated('q1046k', 5666, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { [KEY]: { state: 'running', stage: '3/9' }, 'issue-1485': ready, 'D-2': ready } });
+  const rk = Q.loadRepos(FIXED).find((r) => r.name === 'q1046k');
+  const kCut = [], kDropped = [];
+  for (let w = 60; w <= 140; w++) {
+    const ls = lines(Q.repoScreen(rk, { now: FIXED, width: w })), h = queueHeadOf(ls);
+    if (!leadRow(ls, 'issue-1485 ')) kCut.push(w);
+    const slack = (h.indexOf('SHIPS') - h.indexOf('WHAT IT NEEDS') - 36) + (h.indexOf('STATE') - h.indexOf('TICKET') - 11);
+    if (!h.includes('STARTS') && h.includes('SHIPS') && slack >= 'STARTS'.length + 2) kDropped.push(w);
+  }
+  t('DS-1046 a 10-character key beside a long one is whole at every width, and STARTS goes only when it has no room at its heading',
+    `cut at ${kCut.join() || 'none'}; STARTS dropped with room at ${kDropped.join() || 'none'}`, 'cut at none; STARTS dropped with room at none');
+  // A slow repo late in December, whose dates fall in the next year ("6 Jan 2026"): at 88 columns a
+  // date drops its year so STARTS stays, and wide enough it keeps it. Before the real clock, as FIXED
+  // is, so its passes are live.
+  const DEC = new Date(2025, 11, 28, 18, 0).getTime();
+  dated('q1046y', 5665, { workers: 1, at: DEC, hours: [30, 40, 50, 60, 30, 40, 50, 60, 30, 40, 50, 60], tickets: { [KEY]: { state: 'running', stage: '3/9' }, 'Y-1': ready, 'Y-2': ready, 'Y-3': ready, 'Y-4': ready } });
+  const ry = Q.loadRepos(DEC).find((r) => r.name === 'q1046y');
+  const yAt = (width) => lines(Q.repoScreen(ry, { now: DEC, width }));
+  const y88 = yAt(88), y140 = yAt(140), yLeads = ['base-red', 'Y-1 ', 'Y-2 ', 'Y-3 ', 'Y-4 '];
+  const yCells = (ls, c) => yLeads.map((k) => cellOf(ls, k, c, leadRow) ?? '');
+  t('DS-1046 AC1 a repo dated into next year at 88 columns: every row keeps STATE, WHAT IT NEEDS, STARTS and SHIPS, a date without its year',
+    `${QUEUE_COLS.filter((c) => queueHeadOf(y88).includes(c)).join(',')} ${['STATE', 'WHAT IT NEEDS', 'STARTS', 'SHIPS'].every((c) => yCells(y88, c).every(Boolean))} ${[...yCells(y88, 'STARTS'), ...yCells(y88, 'SHIPS')].every((s) => !/ \d{4}$/.test(s)) && yLeads.every((k) => [...leadRow(y88, k)].length <= 88)}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS true true');
+  t('DS-1046 AC2 a repo dated into next year at 140 columns keeps every column and the year',
+    `${QUEUE_COLS.filter((c) => queueHeadOf(y140).includes(c)).join(',')} ${[...yCells(y140, 'STARTS'), ...yCells(y140, 'SHIPS')].some((s) => / 2026$/.test(s))}`,
+    'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS,TITLE true');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
