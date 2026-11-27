@@ -25,9 +25,19 @@ A session in a configured repo is summarised only when that repo's §3 read-tran
 `yes` (or `ask` and passed with --include <slug>); a session in no configured repo follows
 the current repo's row.
 
+Every source and its permission: references/sources.md.
+
 Usage:
   claude_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD] [--include <slug>]
   claude_activity.py --session <id-prefix> [--tail 6]   # the last substantive replies, in full
+  claude_activity.py --window-turns [--turn-threshold 40000] [--reply-chars 500]
+
+--window-turns: a long session (its activity spans more than half the window, or its prompts and
+replies in the window pass --turn-threshold characters) is listed turn by turn, each prompt the person
+typed in the window with Claude's final reply to it (long replies cut at --reply-chars), in place of
+its first and last prompts and how it ended. Other sessions are listed as usual. Use it when one
+session ran through the day (an orchestrator, or a session kept open), where the end alone loses
+everything before its last replies.
 """
 import argparse
 import glob
@@ -177,7 +187,7 @@ def read_session(path, since, until, drafting_from=None):
     s = {
         "id": os.path.basename(path)[:-6], "cwd": None, "branches": Counter(), "prompts": [],
         "texts": [], "tools": Counter(), "commits": [], "prs": set(), "tickets": Counter(),
-        "first": None, "last": None, "entrypoint": None, "drafted": None,
+        "first": None, "last": None, "entrypoint": None, "drafted": None, "turns": [],
     }
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -203,8 +213,12 @@ def read_session(path, since, until, drafting_from=None):
             text, tools = assistant_parts(entry)
             if prompt:
                 s["prompts"].append(prompt)
+                s["turns"].append({"when": when, "prompt": prompt, "reply": None})
             if text:
                 s["texts"].append((when, text))
+                if not s["turns"]:
+                    s["turns"].append({"when": when, "prompt": None, "reply": None})  # a turn begun before the window
+                s["turns"][-1]["reply"] = text  # the last text before the next prompt is the turn's final reply
             for tool in tools:
                 name = tool.get("name", "?")
                 s["tools"][name] += 1
@@ -225,6 +239,14 @@ def read_session(path, since, until, drafting_from=None):
                 s["first"] = s["first"] or when
                 s["last"] = when
     return s
+
+
+def is_long(s, since, until, threshold):
+    """True for a session whose activity spans more than half the window, or whose prompts and replies
+    in it pass `threshold` characters."""
+    span = (s["last"] - s["first"]) if s["first"] and s["last"] else timedelta(0)
+    size = sum(len(p) for p in s["prompts"]) + sum(len(t) for _, t in s["texts"])
+    return span > (until - since) / 2 or size > threshold
 
 
 def claude_folders():
@@ -278,6 +300,11 @@ def main():
     ap.add_argument("--tail", type=int, default=6)
     ap.add_argument("--prompt-chars", type=int, default=280)
     ap.add_argument("--max-prompts", type=int, default=8)
+    ap.add_argument("--window-turns", action="store_true",
+                    help="list a long session's turns in the window: each prompt with Claude's final reply")
+    ap.add_argument("--turn-threshold", type=int, default=40000,
+                    help="characters of prompts and replies in the window that make a session long")
+    ap.add_argument("--reply-chars", type=int, default=500)
     args = ap.parse_args()
     since, until = window.resolve(args.day, since=args.since, since_for=args.since_for)
     REPOS, CURRENT = desk_repos.load_all(args.include)
@@ -344,6 +371,15 @@ def main():
             print("commits: " + " | ".join(shorten(c, 90) for c in s["commits"][:6]))
         if s["prs"]:
             print("PRs acted on: " + ", ".join("#" + p for p in sorted(s["prs"])))
+        if args.window_turns and is_long(s, since, until, args.turn_threshold):
+            print(f"turns in the window ({len(s['turns'])}; a long session, so each prompt with Claude's final reply):")
+            for turn in s["turns"]:
+                asked = shorten(turn["prompt"], args.prompt_chars) if turn["prompt"] else "(continued from before the window)"
+                print(f"  - {turn['when'].astimezone():%H:%M} asked: {asked}")
+                if turn["reply"]:
+                    print(f"    replied: {shorten(turn['reply'], args.reply_chars)}")
+            print()
+            continue
         prompts = s["prompts"]
         if prompts:
             print("asked:")
