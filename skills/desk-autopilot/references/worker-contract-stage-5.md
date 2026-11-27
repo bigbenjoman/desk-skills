@@ -244,7 +244,10 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like), desk's state
   files or desk's read-only reports (`phase0-report`, `cache-report`, with any flags), with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
   found on your PR; the person sees it only if it fails or no checker could finish it. So word such a
-  step by the run or file it reads, and nothing else. A step you can run before the merge is not a
+  step by the run or file it reads, and nothing else. Name a line that run's log prints: where CI logs
+  only each suite's total, name that suite's total line and its 0 failed (`52 checks passed, 0 failed`
+  in shard 1/6 of main's tests run), never a per-check line inside it (`ok DS-763 AC4`), which that log
+  never carries. A step you can run before the merge is not a
   follow-on: run it.
 - **A check your PR's own tests or CI already make is not a follow-on either.** Name that test in
   your PR's Testing instead. A follow-on needs the merged code running where your checks cannot reach
