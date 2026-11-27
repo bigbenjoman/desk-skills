@@ -103,6 +103,7 @@ function put(name, r) {
     // Plan-first work is listed at once unless a world sets its own wait.
     `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
+    (r.fileBudget ? `| Per-file collision budget | \`3 over 1000 lines, else 2; serial: none\` | \`${r.fileBudget}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.holds ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Merge holds | ${r.holds.map((h) => `\`${h}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
@@ -1239,7 +1240,8 @@ writeFileSync(join(env.DESK_HOME, 'repos', 'acme__ypsilon', 'queue.json'), JSON.
 t('a put-off item comes back once its worktree is held for a new reason', 'Y-1' in yItems(), true);
 
 // ---- A ready ticket held back by a collision with a running one says so, fix try or not.
-put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
+// A budget of one place a file, so a single running ticket fills each file it names.
+put('phi', { port: 5000, beat: 1, supervised: true, fileBudget: '1', tickets: {
   'F-1': { state: 'running', lane: 'A', stage: '4/9', collides_with: 'F-2|F-3' },
   'F-2': { state: 'triaged', lane: 'A', collides_with: 'F-1', fix: { try: 1, of: 2, pr: 131, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
