@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 import { repoStateOf } from './desk-env.mjs';
 import { FAILED } from './gate.mjs';
+import { FIRST_RUN } from './logins.mjs';
 
 export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
@@ -230,22 +231,41 @@ export function parseCloudStart(out) {
   return { error: err ? err.slice(err.search(/\bError\b/)) : (lines.slice(-3).join(' ') || 'it printed nothing') };
 }
 
+// The first-run prompt (logins.mjs FIRST_RUN) a start's captured output shows last, as the one it is
+// waiting on: a start that answered the folder-trust dialog may then wait on the next one.
+//   -> 'trust' | 'imports' | 'env', or null
+export function firstRunPrompt(out) {
+  const s = clean(out);
+  let best = null;
+  let at = -1;
+  for (const [id, p] of Object.entries(FIRST_RUN)) {
+    const re = new RegExp(p.seen.source, 'gi');
+    for (const m of s.matchAll(re)) if (m.index > at) { at = m.index; best = id; }
+  }
+  return best;
+}
+
 // Starts one cloud session. `claude --cloud` will not run in print mode, so `script` gives it a
 // terminal: BSD script takes the command as arguments, util-linux script a shell string, which
 // reads the prompt from the environment rather than quoting it in. `name` is the session's display
 // name (`--name` also names a new cloud session), so the person can tell which ones are finished.
 // `env` is the login's (logins.mjs loginEnv): its CLAUDE_CONFIG_DIR picks the account the session
-// starts under. A start that does not answer in `timeout` adds `timedOut: true`.
+// starts under. `cwd` is the checkout it starts from, whose folder trust the login answers for. A start
+// that does not answer in `timeout` adds `timedOut: true`, and `waits` naming the first-run prompt its
+// captured output ends at (firstRunPrompt), when it shows one.
 //   -> parseCloudStart's result
-export function startCloud(prompt, { claude = 'claude', name = null, platform = process.platform, timeout = 120_000, env = process.env } = {}) {
+export function startCloud(prompt, { claude = 'claude', name = null, platform = process.platform, timeout = 120_000, env = process.env, cwd } = {}) {
   const args = platform === 'darwin' || platform.endsWith('bsd')
     ? ['-q', '/dev/null', claude, '--cloud', prompt, ...(name ? ['--name', name] : [])]
     : ['-q', '-e', '-c', `"$DESK_CLOUD_CLAUDE" --cloud "$DESK_CLOUD_PROMPT"${name ? ' --name "$DESK_CLOUD_NAME"' : ''}`, '/dev/null'];
   const r = spawnSync('script', args, {
-    encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}),
     env: { ...env, DESK_CLOUD_CLAUDE: claude, DESK_CLOUD_PROMPT: prompt, DESK_CLOUD_NAME: name ?? '' },
   });
-  if (r.error?.code === 'ETIMEDOUT') return { error: `no answer in ${timeout / 1000}s`, timedOut: true };
+  if (r.error?.code === 'ETIMEDOUT') {
+    const waits = firstRunPrompt(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
+    return { error: `no answer in ${timeout / 1000}s`, timedOut: true, ...(waits ? { waits } : {}) };
+  }
   if (r.error) return { error: r.error.message };
   const got = parseCloudStart(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
   return got.error && r.status ? { error: `${got.error} (exit ${r.status})` } : got;

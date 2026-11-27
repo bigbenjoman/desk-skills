@@ -37,7 +37,9 @@ plan seeds them) are put in that order too (`queue.mjs order`), apart from one t
 ticket too (`queue.mjs order --placed`), so that order holds. **Every pass re-sorts the unstarted tickets nobody placed
 by the same rule**, so the order keeps up as tickets merge, park and are admitted. There a ticket
 gates every other unstarted ticket that shares a planned file with it, and every ticket blocked by it
-or by one of those, through any chain. The pass report prints the new order only when it changed,
+or by one of those, through any chain. Cloud-able tickets and local-only ones are sorted as two lists,
+each in the places its own kind holds, so a free cloud session takes the first ready cloud-able ticket
+and a free local slot the first ready local-only one; gates and shared files still count across both. The pass report prints the new order only when it changed,
 and desk-q marks each ticket the re-sort moved ahead with `^` and why (`gates 4`, `clears
 desk-checkout chain`, `fills an idle slot`). If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`

@@ -47,7 +47,7 @@ import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { defaultFull, fallbackCall } from './fallback-login.mjs';
-import { checkLogin, cloudStartCommand, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
+import { checkLogin, cloudStartPark, firstRunGaps, firstRunPark, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, recentHistory, buildHistory, ghMergedPrs, readEstimates, sizeOf, typicalSlotHours, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -2900,10 +2900,12 @@ const budgetFiles = (key) => {
 };
 // The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
 // resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
-// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it.
+// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it. The
+// cloud-able tickets and the local-only ones are sorted apart, as each kind has its own slots first.
 const RESORT = resortQueue(Object.values(fresh.tickets), {
   scope: budgetFiles,
   fileCount: (k) => plannedFiles(triageRec(k)),
+  cloud: startsInCloud,
 });
 const orderLines = [];
 if (RESORT.changed) {
@@ -4176,6 +4178,12 @@ function spawnCloud(t, pick) {
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); cloudSpawned += 1; return; }
+  const { login, email } = pick;
+  const who = email ? `${email} (login ${login.name})` : `login ${login.name}`;
+  // A first-run prompt the login has not answered for this checkout would hold the start until it times
+  // out: parked at once instead, naming it. Its .claude.json is read only.
+  const { gaps } = firstRunGaps(login, MAIN);
+  if (gaps.length) { park(firstRunPark(gaps, { who, login, checkout: MAIN })); return; }
   const tests = E.configValues('test-cmd') ?? [];
   const started = new Date().toISOString();
   // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
@@ -4184,14 +4192,12 @@ function spawnCloud(t, pick) {
   if (!recordRunning(t.key, ['stage=cloud', 'location=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null'],
     'no cloud session was started')) return;
   const name = cloudName(GH_REPO, t.key);
-  const { login, email } = pick;
-  const who = email ? `${email} (login ${login.name})` : `login ${login.name}`;
   // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
   const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
-  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview() }), { name, env });
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview() }), { name, env, cwd: MAIN });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
-    park(s.timedOut ? `claude --cloud on ${who} gave ${s.error}. A first cloud start on a login asks whether the session may use the environment's variables, and nothing answers that in the background: run this once in a terminal and answer it: ${cloudStartCommand(login)}` : s.error);
+    park(cloudStartPark(s, { who, login, checkout: MAIN }));
     return;
   }
   // config_dir is kept so the retry follow-up (advanceCloud) reaches the session on the same login.
