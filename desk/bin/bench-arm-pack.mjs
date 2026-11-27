@@ -4,10 +4,12 @@
 //
 //   node bench-arm-pack.mjs --tasks <file.json> --max-budget-usd <usd> [--total-budget-usd <usd>]
 //                           [--out <dir>] [--timeout <seconds>] [--seed <n>] [--limit 10]
-//                           [--baseline-arm opus] [--skills <dir>]
+//                           [--baseline-arm opus] [--model opus] [--skills <dir>]
 //
-// Both arms are opus at medium effort. The baseline arm keeps the name an earlier bench run gave it
-// (--baseline-arm), so its stored results are reused rather than paid for again. --limit runs the
+// Both arms run one model (--model, default opus) at medium effort. The baseline arm keeps the name
+// and model an earlier bench run gave it (--baseline-arm, --model), so its stored results are reused
+// rather than paid for again: the model is part of the run key, so `opus` never reuses a run stored
+// as `claude-opus-5-5`. --limit runs the
 // first n tasks of the set. The pack is START_4B_FILES, the skill files a worker starting at Stage 4b
 // reads, read from the installed skills (--skills, default desk-env's skillsDir) and joined in that
 // order with every paragraph an earlier file already holds dropped; nothing else is cut. Each pack
@@ -84,9 +86,9 @@ export function readPack(dir) {
 
 // argv -> bench.mjs's options with the two arms, plus { limit, skills }. An --arm of its own is refused.
 export function parseArgs(argv) {
-  if (argv.includes('--arm')) throw new Error(`bench-arm-pack.mjs sets its own arms: the baseline and ${PACK_ARM}, both ${MODEL}:${EFFORT}`);
-  const own = { '--limit': 'limit', '--baseline-arm': 'baseline', '--skills': 'skills' };
-  const o = { limit: '10', baseline: 'opus', skills: null };
+  if (argv.includes('--arm')) throw new Error(`bench-arm-pack.mjs sets its own arms: the baseline and ${PACK_ARM}, both on --model at ${EFFORT}`);
+  const own = { '--limit': 'limit', '--baseline-arm': 'baseline', '--model': 'model', '--skills': 'skills' };
+  const o = { limit: '10', baseline: 'opus', model: MODEL, skills: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (!own[argv[i]]) { rest.push(argv[i]); continue; }
@@ -95,7 +97,8 @@ export function parseArgs(argv) {
   }
   if (!/^\d+$/.test(o.limit) || !(Number(o.limit) > 0)) throw new Error(`--limit must be a positive whole number, not ${o.limit}`);
   if (o.baseline === PACK_ARM) throw new Error(`--baseline-arm cannot be ${PACK_ARM}, the pack arm's own name`);
-  const b = benchArgs([...rest, '--arm', `${o.baseline}=${MODEL}:${EFFORT}`, '--arm', `${PACK_ARM}=${MODEL}:${EFFORT}`]);
+  if (!/^[\w.-]+$/.test(o.model)) throw new Error(`--model must be a model name, not ${o.model}`);
+  const b = benchArgs([...rest, '--arm', `${o.baseline}=${o.model}:${EFFORT}`, '--arm', `${PACK_ARM}=${o.model}:${EFFORT}`]);
   return { ...b, limit: Number(o.limit), skills: o.skills ?? skillsDir() };
 }
 

@@ -13,7 +13,7 @@
 // calls avail), sampled every second, logged once the command exits as a `release` line in the lease
 // log with the ticket (the worker's DESK_EXIT_KEY) and the step (test, tsc or lint) it ran.
 import { spawn } from 'node:child_process';
-import { fstatSync, readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { bound } from './run-bounds.mjs';
 
@@ -48,8 +48,11 @@ const SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 };
 // it), so the child keeps the lock if this process is killed; samples the guest's used memory until
 // it exits, passing signals on, then logs the peak. -> the exit code to leave with.
 async function runMeasured(lock, ws) {
-  let fd9 = false;
-  try { fstatSync(9); fd9 = true; } catch { /* not under flock */ }
+  // with-lock.sh says when it holds fd 9 (DESK_RUN_FD9=1). An fstat here cannot tell: node opens
+  // descriptors of its own at start (kqueue and pipes on macOS), so fd 9 can be node's, and passing
+  // that on makes spawn fail with EBADF before the command runs.
+  const fd9 = process.env.DESK_RUN_FD9 === '1';
+  delete process.env.DESK_RUN_FD9;
   const stdio = ['inherit', 'inherit', 'inherit', ...(fd9 ? [null, null, null, null, null, null, 9] : [])];
   const every = whole(process.env.DESK_PEAK_SAMPLE_MS) ?? 1000;
   const t0 = Date.now();
