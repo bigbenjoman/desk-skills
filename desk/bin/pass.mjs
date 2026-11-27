@@ -3151,7 +3151,12 @@ const LOCAL_SPARE = fresh.local_free_at != null && !PERSON.on;
 // take a local slot: the rest, and the cloud-able ones too where LOCAL_SPARE lets them.
 const spawnableCloud = spawnable.filter((t) => startsInCloud(t));
 const spawnableLocal = spawnable.filter((t) => !startsInCloud(t) || LOCAL_SPARE);
-const lockWanted = (spawnableLocal.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue || auditDue;
+// §3b "Cloud sessions at once" (read here, counted below): with this batch's own cloud sessions alone
+// the cloud cannot take every cloud-able ticket, so the rest want local room counted, and the lock that
+// borrowing and a sibling batch's shared cap count it under (cloudOverflow).
+const CLOUD = E.cloudSessions();
+const cloudOverflowGuess = LOCAL_SPARE || PERSON.on ? 0 : Math.max(0, spawnableCloud.length - Math.max(0, CLOUD.n - runningCloud.length));
+const lockWanted = ((spawnableLocal.length || cloudOverflowGuess) && !spawnHeld) ||(gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue || auditDue;
 // A cloud start counts its sibling batches' cloud sessions against §3b "Cloud sessions at once", so it
 // takes the lock too, whatever the local slots, memory or the batch's number say: else two batches'
 // passes could each read the count unlocked and together start past the limit.
@@ -3178,8 +3183,32 @@ const WEIGHT = workerWeight(E.configValue('worker-memory'), { ceiling: MACHINE_C
 // the same GB. This read only sizes the pass's slots: each spawn reserves its weight under the store's
 // lock first (memHeld), and with the kind on one that no longer fits does not start.
 const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, weight: WEIGHT.gb, take: !DRY });
+// §3b "Cloud sessions at once": the cloud sessions this repo may have running together, counted from
+// this queue's and its sibling batches' running cloud tickets. A cloud session holds no local slot, so
+// low memory, the test-lock queue and the machine and repo caps do not hold one; the holds on every
+// spawn (pacing, the usage limit, maintenance, the batch budget) still do, but for memory harm, which is
+// this computer's. A row that does not read starts none, and says so.
+if (CLOUD.bad && spawnableCloud.length > 0) report.stalled.push(CLOUD.bad);
+const siblingQueues = otherRepos.filter((o) => o.slug === REPO_SLUG);
+const cloudRunning = runningCloud.length + siblingQueues.filter((o) => o.q)
+  .reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter((r) => r?.state === 'running' && runsInCloud(r)).length, 0);
+// The lock a cloud start wanted and could not take holds it this pass, as an unlocked repo cap holds a
+// local one: counted unlocked, two batches' passes could start past the limit together.
+const cloudUnlocked = cloudLockWanted && !borrowLock;
+if (cloudUnlocked) report.waits.push(`cloud sessions: none starts this pass, its sibling batches' count read without the borrow lock (${lockWhy ?? 'not taken'})`);
+// A sibling batch whose queue does not read may have cloud sessions running that the count above
+// misses, so it holds cloud starts as an unread count does.
+const cloudUnread = spawnableCloud.length > 0 ? siblingQueues.filter((o) => o.error) : [];
+if (cloudUnread.length && !cloudUnlocked) report.waits.push(`cloud sessions: none starts this pass, a sibling batch's queue does not read (${cloudUnread.map((o) => o.error).join('; ')})`);
+const cloudHeld = !!(ELIG_CLOUD_HELD || MAINT.hold || CLOUD.bad || cloudUnlocked || cloudUnread.length);
+const cloudSlots = cloudHeld ? 0 : Math.max(0, CLOUD.n - cloudRunning);
+// The cloud-able tickets the cloud has no room for this pass, while they may not take a local slot yet
+// (LOCAL_SPARE): counted in the local demand all the same, so that where borrowing or a sibling batch
+// caps the slots at the demand, a slot they could take still shows as free and local_free_at is written.
+// The loop starts none of them locally this pass; while the person uses the computer they never go local.
+const cloudOverflow = LOCAL_SPARE || PERSON.on ? 0 : Math.max(0, spawnableCloud.length - cloudSlots);
 const SLOTS_SNAP = {
-  borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnableLocal.length,
+  borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnableLocal.length + cloudOverflow,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
   // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
   ownBaseFix: fresh.base_fix?.running ? 1 : 0,
@@ -3201,26 +3230,6 @@ let SLOTS = null;
 runPhase({ name: 'slots', snapshot: () => SLOTS_SNAP, decide: decideSlots, handlers: { slots: (a) => { SLOTS = a; } }, report });
 const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine, memLine } = SLOTS;
 const CEILING = E.memoryCeiling();
-// §3b "Cloud sessions at once": the cloud sessions this repo may have running together, counted from
-// this queue's and its sibling batches' running cloud tickets. A cloud session holds no local slot, so
-// low memory, the test-lock queue and the machine and repo caps do not hold one; the holds on every
-// spawn (pacing, the usage limit, maintenance, the batch budget) still do, but for memory harm, which is
-// this computer's. A row that does not read starts none, and says so.
-const CLOUD = E.cloudSessions();
-if (CLOUD.bad && spawnableCloud.length > 0) report.stalled.push(CLOUD.bad);
-const siblingQueues = otherRepos.filter((o) => o.slug === REPO_SLUG);
-const cloudRunning = runningCloud.length + siblingQueues.filter((o) => o.q)
-  .reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter((r) => r?.state === 'running' && runsInCloud(r)).length, 0);
-// The lock a cloud start wanted and could not take holds it this pass, as an unlocked repo cap holds a
-// local one: counted unlocked, two batches' passes could start past the limit together.
-const cloudUnlocked = cloudLockWanted && !borrowLock;
-if (cloudUnlocked) report.waits.push(`cloud sessions: none starts this pass, its sibling batches' count read without the borrow lock (${lockWhy ?? 'not taken'})`);
-// A sibling batch whose queue does not read may have cloud sessions running that the count above
-// misses, so it holds cloud starts as an unread count does.
-const cloudUnread = spawnableCloud.length > 0 ? siblingQueues.filter((o) => o.error) : [];
-if (cloudUnread.length && !cloudUnlocked) report.waits.push(`cloud sessions: none starts this pass, a sibling batch's queue does not read (${cloudUnread.map((o) => o.error).join('; ')})`);
-const cloudHeld = !!(ELIG_CLOUD_HELD || MAINT.hold || CLOUD.bad || cloudUnlocked || cloudUnread.length);
-const cloudSlots = cloudHeld ? 0 : Math.max(0, CLOUD.n - cloudRunning);
 let cloudAttempts = 0;
 // The cloud sessions this pass started: in report.spawned, but holding none of the local room counted above.
 let cloudSpawned = 0;
@@ -3306,7 +3315,12 @@ let baseFixResume = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
-const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
+// While the person uses this computer, the local cap is person-use-floor, counted across every repo's
+// local workers that this pass can read: a running worker over it is left running, and no new one
+// starts, a ticket's (localSlots), a base worker's (baseFixRoom) or a blind audit's alike.
+const localElsewhere = otherRepos.filter((o) => o.q).reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter(runningHere).length, 0);
+const PERSON_ROOM = PERSON.on ? Math.max(0, PERSON.rows.floor - running.length - localElsewhere) : Infinity;
+const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked && PERSON_ROOM > 0;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
@@ -3314,6 +3328,7 @@ const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
   : repoUnlocked ? repoLine
+  : PERSON_ROOM <= 0 ? personModeLine(PERSON.rows.floor)
   : REPO.line);
 if (BASE && SOURCE && BASE !== SOURCE) {
   const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
@@ -3585,10 +3600,8 @@ const triageBrief = (t) => {
 // of 1 it holds the batch's one worker, from the pass that starts it, and no ticket borrows a way round
 // that.
 const { workers: ticketWorkers, plan: ticketPlan, slots: ticketSlots } = ticketSlotsOf(SLOTS_SNAP, slots, { baseFixLive, baseFixOn: baseFix != null });
-// While the person uses this computer, the local cap is person-use-floor, counted across every repo's
-// local workers that this pass can read: a running worker over it is left running, and no new one starts.
-const localElsewhere = otherRepos.filter((o) => o.q).reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter(runningHere).length, 0);
-const localSlots = PERSON.on ? Math.min(ticketSlots, Math.max(0, PERSON.rows.floor - running.length - localElsewhere)) : ticketSlots;
+// The person-use floor (PERSON_ROOM, above) caps the ticket slots too.
+const localSlots = Math.min(ticketSlots, PERSON_ROOM);
 let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
@@ -6456,7 +6469,7 @@ if (!DRY) {
       // The room the pass counted, less what it has spawned since, within the batch's own number less
       // its base conflict fix, running or started this pass.
       room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - localSpawned() <= 0 || REPO.room - localSpawned() <= 0
-        || attempts >= Math.min(concurrency - running.length - (baseFixLive || baseFix ? 1 : 0), MACHINE.room, REPO.room) ? 'no room' : null),
+        || attempts >= Math.min(concurrency - running.length - (baseFixLive || baseFix ? 1 : 0), MACHINE.room, REPO.room, PERSON_ROOM) ? 'no room' : null),
     });
     if (au.line) out.push(au.line);
   } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
@@ -6713,7 +6726,7 @@ async function promotionChecksStep(qx) {
   clear();
   const last = bf?.tries?.[bf.tries.length - 1];
   // The ticket workers and blind audits this pass started took slots baseFixRoom counted before they did.
-  const roomLeft = attempts < Math.min(concurrency - running.length, MACHINE.room, REPO.room);
+  const roomLeft = attempts < Math.min(concurrency - running.length, MACHINE.room, REPO.room, PERSON_ROOM);
   if (baseFixLive) {
     out.push(last?.kind === 'checks' && last.pr === n ? `${said}; check try ${last.try} of ${FIX_TRIES_MAX} is at it (session ${bf.running})`
       : `${said}; its check try waits on the base ${tryWhat(last)} worker on ${BASE}`);

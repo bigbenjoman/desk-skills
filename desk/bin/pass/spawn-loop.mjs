@@ -108,7 +108,8 @@ export function* decideSpawn(s) {
     return yield skip;
   }
   // Held without taking a slot: a resume at a stage that runs no suite may still start in its place.
-  if (yield { type: 'lock-queue', key }) {
+  // A ticket placed in the cloud runs no suite on this computer, so this computer's test lock never holds it.
+  if (!cloud && (yield { type: 'lock-queue', key })) {
     yield { type: 'lock-queue-held', key };
     return yield skip;
   }
@@ -146,8 +147,13 @@ export function* decideSpawn(s) {
   // has its own, so it still goes ahead.
   const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
   if (!s.resume && !pick) return yield skip;
-  // Its place at start, with why: recorded on the ticket for desk-q, and location set to match.
-  yield { type: 'place', key, where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
+  // Its place at start, with why: recorded on the ticket for desk-q, and location set to match. A new
+  // local session records it only once its worktree is set up and it starts (afterSetup): a place
+  // 'local' ends its cloud eligibility (shared.mjs cloudAble), so a start that stops before then
+  // (the database down, origin hung) must leave the ticket as cloud-able as it was.
+  const placed = { type: 'place', key, where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
+  const placeNow = cloud || s.resume || s.handoff;
+  if (placeNow) yield placed;
   yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
@@ -157,11 +163,11 @@ export function* decideSpawn(s) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');
     return yield skip;
   }
-  return yield* afterSetup(s, pick, yield { type: 'setup', key });
+  return yield* afterSetup(s, pick, yield { type: 'setup', key }, placed);
 }
 
 // The verdict on a local ticket once its worktree setup has run.
-function* afterSetup(s, pick, setup) {
+function* afterSetup(s, pick, setup, placed) {
   const { t } = s;
   const key = t.key;
   const skip = { type: 'skip', key };
@@ -194,6 +200,7 @@ function* afterSetup(s, pick, setup) {
     return yield { type: 'park', key, line: `worktree setup failed, not spawned — ${why}${answered}` };
   }
   if (t.db_wait && !s.dry) yield set(key, 'db_wait=null');
+  yield placed;
   return yield { type: 'start', key, how: 'local', pick, setup };
 }
 

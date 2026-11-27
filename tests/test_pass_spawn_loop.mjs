@@ -201,7 +201,7 @@ const { threw, calls } = withNoIo(() => {
       t(`a cloud ticket back for a ${kind} fix try on its PR is set up for a local worker`, j([types(back.actions).includes('setup'), back.verdict.how]), j([true, 'local']));
     }
     t('so is one back for more work on its PR with no try', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 } }))).verdict.how, 'local');
-    t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
+    t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-4)), j(['take-slot', 'setup', 'place', 'start']));
   }
 
   // #1564: a cloud session has its own limit, §3b "Cloud sessions at once", and takes no local slot.
@@ -256,6 +256,18 @@ const { threw, calls } = withNoIo(() => {
     t('issue-1587 AC3 a local-only ticket still takes the floor\'s slot', step(snap(ticket('L'), { ...personSnap, slots: 1 })).verdict.how, 'local');
     t('issue-1587 AC3 a cloud-able ticket still goes to a free cloud session', step(snap(able('C'), { personUse: true })).verdict.how, 'cloud');
     t('issue-1587 a ticket admitted before cloud_ok (location=cloud) is still cloud-able', step(snap(ticket('O', { location: 'cloud' }), { cloudSlots: 0, cloudRunning: 4, localSpare: true })).verdict.how, 'local');
+    const lockFull = step(snap(able('C')), { 'lock-queue': true });
+    t('issue-1587 a ticket placed in the cloud is never held by this computer\'s test-lock queue',
+      j([lockFull.verdict.how, types(lockFull.actions).includes('lock-queue')]), j(['cloud', false]));
+    const spareSnap = { cloudSlots: 0, cloudRunning: 4, localSpare: true };
+    t('issue-1587 one placed locally still waits on a full test-lock queue', step(snap(able('C'), spareSnap), { 'lock-queue': true }).verdict.type, 'skip');
+    const dbDown = step(snap(able('C'), { ...spareSnap, dbDown: true }));
+    t('issue-1587 a local start the database holds records no place, so it stays cloud-able', j([dbDown.verdict.type, places(dbDown.actions)]), j(['skip', []]));
+    const hung = step(snap(able('C'), spareSnap), { setup: { hung: 'origin hung' } });
+    t('issue-1587 nor does one whose worktree setup found origin hung', j([hung.verdict.type, places(hung.actions)]), j(['skip', []]));
+    const setUp = step(snap(able('C'), spareSnap));
+    t('issue-1587 a local start records its place once its worktree is set up, before it starts',
+      types(setUp.actions).filter((x) => ['setup', 'place', 'start'].includes(x)).join(), 'setup,place,start');
     const back = step(snap(able('C', { result: { pr: 31 } }), { cloudSlots: 4 }));
     t('issue-1587 one back for more work on its PR runs here, not the cloud', back.verdict.how, 'local');
   }

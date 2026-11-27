@@ -352,6 +352,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 cp "$T/x1q.bak" "$X1Q"
 check "#1564 AC2 a sibling batch whose queue does not read holds cloud starts under the limit, and the pass says why" \
   '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "cloud sessions: none starts this pass, a sibling batch" && echo "$out" | grep -qF "queue does not read ("'
+# issue-1587 AC2: with the cloud full (CS-1 at the limit of 1) and a local slot free, the cloud-able CS-2
+# is counted in the local demand, so the slot shows free under a sibling batch's shared cap too: the
+# pass records local_free_at, and the next pass starts CS-2 on that slot.
+q set LS-2 state=done; q set-batch concurrency=2 local_free_at=null
+out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
+check "issue-1587 AC2 a local slot the cloud-able ticket could take stays free a pass, with a sibling batch: local_free_at is recorded" \
+  '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ "$(bfield local_free_at)" != null ]'
+out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
+check "issue-1587 AC2 and the next pass starts it on that local slot" \
+  '[ "$(field CS-2 state)" = "\"running\"" ] && [ "$(field CS-2 start_place.where)" = "\"local\"" ] && [ ! -e "$T/cloud-prompt" ]'
 q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
 # issue-1570: a cloud PR its session marked unfinished keeps the ticket running on its session. Once CI
 # on its head finishes the session is sent the results; after 2 follow-ups with no push it parks.
