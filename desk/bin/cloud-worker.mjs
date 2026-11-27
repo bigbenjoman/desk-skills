@@ -98,6 +98,35 @@ export function attributionFound(view) {
   return found;
 }
 
+// `text` without its lines that carry an attribution mark, and without the blank lines that leaves at its end.
+export function stripAttribution(text) {
+  const kept = String(text ?? '').split('\n').filter((l) => !ATTRIBUTION_MARKS.some(([re]) => re.test(l)));
+  while (kept.length && !kept.at(-1).trim()) kept.pop();
+  return kept.join('\n');
+}
+
+// Rewrites the commits on `head` that `base` lacks, oldest first, as `author`, each message through
+// stripAttribution: each keeps its own tree and dates, on its rewritten parents. `git(args, { env, input })`
+// runs git in the repo and returns its stdout, throwing on failure. -> { head, n } once `git diff` finds
+// the new head's tree the old one's, else { error }.
+export function rewriteCommits(git, { head, base, author }) {
+  const shas = git(['rev-list', '--reverse', '--topo-order', head, '--not', base]).split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!shas.length) return { error: `${head.slice(0, 7)} has no commits that ${base} lacks` };
+  const done = new Map();
+  for (const sha of shas) {
+    const [tree, parents = '', aDate, cDate] = git(['log', '-1', '--format=%T%n%P%n%aI%n%cI', sha]).split('\n');
+    const msg = stripAttribution(git(['log', '-1', '--format=%B', sha]));
+    if (!msg.trim()) return { error: `commit ${sha.slice(0, 7)}'s message is nothing but attribution` };
+    const env = { ...process.env, GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, GIT_AUTHOR_DATE: aDate,
+      GIT_COMMITTER_NAME: author.name, GIT_COMMITTER_EMAIL: author.email, GIT_COMMITTER_DATE: cDate };
+    const ps = parents.split(' ').filter(Boolean).flatMap((p) => ['-p', done.get(p) ?? p]);
+    done.set(sha, git(['commit-tree', tree, ...ps], { env, input: `${msg}\n` }).trim());
+  }
+  const out = done.get(shas.at(-1));
+  try { git(['diff', '--quiet', head, out]); } catch { return { error: `the rewrite of ${head.slice(0, 7)} would change its tree` }; }
+  return { head: out, n: shas.length };
+}
+
 // The repo's §1 and §5 commit and PR rules, as the cloud session is to follow them. `rules` is
 // { author: { name, email }, prTitle, prBody, mergeMethod, noAttribution }, each null or false where unset.
 function rulesSection(rules) {
@@ -105,14 +134,14 @@ function rulesSection(rules) {
   const lines = [];
   if (r.author) {
     lines.push(`- Author every commit as \`${r.author.name} <${r.author.email}>\`: run \`git config user.name "${r.author.name}"\` and \`git config user.email "${r.author.email}"\` before your first commit. ` +
-      'A PR with a commit authored as anyone else is parked, not merged.');
+      'A PR with a commit authored as anyone else has its commits rewritten before it merges.');
   }
   if (r.prTitle) lines.push(`- PR title: \`${r.prTitle}\`.`);
   if (r.prBody) lines.push(`- PR body: ${r.prBody}.`);
   if (r.mergeMethod) lines.push(`- PRs here merge by ${r.mergeMethod}: write your commits for that.`);
   if (r.noAttribution) {
     lines.push(`- No AI attribution anywhere: in commit messages, commit authors, the PR title and body, and PR comments, add none of these: ${ATTRIBUTION_MARKS.map(([, what]) => what).join(', ')}. ` +
-      'Your harness may add these by default: remove them before you push, and amend any commit that has one. A PR carrying any of them is parked, not merged.');
+      'Your harness may add these by default: remove them before you push, and amend any commit that has one. A PR carrying any of them has them stripped and its commits rewritten before it merges.');
   }
   return lines.length ? ['', `## This repo's rules`, '', ...lines] : [];
 }

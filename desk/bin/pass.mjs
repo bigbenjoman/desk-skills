@@ -35,7 +35,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT, attributionFound, authorMismatches } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -1030,12 +1030,13 @@ function advanceCloud(t) {
   // The PR is read against the rules its session was told (cloudRules) before the ticket is done: where
   // §5 forbids AI attribution, for that (a cloud session's harness adds a co-author trailer and a session
   // link by default, and no hook here sees its commits), and where an author is known, for commits
-  // authored as anyone else. Broken, the ticket parks on its PR's branch, where a requeue is a local
-  // worker (cloudPrHere).
+  // authored as anyone else. Broken, the pass removes it itself, once (scrubCloudPr), and reads the PR
+  // again next pass. It parks on its PR's branch, where a requeue is a local worker (cloudPrHere), only
+  // where it may not or could not, or where the PR still breaks them after that one scrub.
   const forbidden = E.attributionForbidden(E.configValue('ai-attribution'));
   const author = cloudAuthor();
   if (forbidden || author) {
-    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments'], { fresh: true });
+    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,commits,comments,baseRefName,headRefName'], { fresh: true });
     let view = null;
     try { view = got.ok ? JSON.parse(got.out) : null; } catch { view = null; }
     if (!view) {
@@ -1044,10 +1045,23 @@ function advanceCloud(t) {
     }
     const found = [...(forbidden ? attributionFound(view) : []), ...authorMismatches(view, author)];
     if (found.length) {
-      const line = `cloud PR #${pr.number} breaks this repo's commit and PR rules: ${found.join('; ')}. Fix its commits, body and comments, then requeue ${t.key}`;
-      q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`);
-      q('park', t.key, line);
-      report.parked.push(`${t.key}: ${line}`);
+      const prior = Number(c.scrubbed) || 0;
+      const s = prior ? { park: 'it still does after the pass removed what it found once' } : scrubCloudPr(t, pr, view, { forbidden, author });
+      if (s.wait) {
+        report.waiting.push(`${t.key}: cloud PR #${pr.number} breaks this repo's commit and PR rules (${found.join('; ')}), which the pass removes, but ${s.wait}; tried again next pass`);
+        return;
+      }
+      if (s.park) {
+        const why = s.did?.length ? `The pass ${s.did.join(', ')}, but ${s.park}` : `${s.park[0].toUpperCase()}${s.park.slice(1)}`;
+        const line = `cloud PR #${pr.number} breaks this repo's commit and PR rules: ${found.join('; ')}. ${why}. Fix its commits, body and comments, then requeue ${t.key}`;
+        q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`);
+        q('park', t.key, line);
+        report.parked.push(`${t.key}: ${line}`);
+        return;
+      }
+      // No pr_at yet: it would make the ticket cloudPrHere, and so never read here again.
+      q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify({ ...c, scrubbed: prior + 1 })}`);
+      report.advanced.push(`${t.key}: cloud PR #${pr.number} broke this repo's commit and PR rules (${found.join('; ')}): the pass ${s.did.join(', ')}, and reads it again next pass`);
       return;
     }
   }
@@ -1055,6 +1069,78 @@ function advanceCloud(t) {
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
   report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
+}
+
+// Removes from cloud PR `pr` (its `view`, gh pr view --json body,commits,comments,baseRefName,headRefName)
+// what breaks the repo's rules (issue-1569 AC2), without asking: where `forbidden`, the attribution in its
+// body and comments, and its commits rewritten as `author` with their attribution lines dropped wherever a
+// commit carries a mark or another author. -> { did: [what it did] }, { wait } for a later pass to try
+// again, or { park, did } naming why it stopped and what it had done by then.
+function scrubCloudPr(t, pr, view, { forbidden, author }) {
+  const marked = (o) => forbidden && attributionFound(o).length > 0;
+  const commits = marked({ commits: view.commits }) || authorMismatches(view, author).length > 0;
+  const body = marked({ body: view.body });
+  const comments = (view.comments ?? []).filter((x) => marked({ body: x?.body }));
+  const rows = [...(commits ? ['git-force-with-lease'] : []), ...(body || comments.length ? ['pr-edit'] : [])].filter((k) => E.permission(k) !== 'yes');
+  if (rows.length) return { park: `the pass may not remove it: config §3 ${rows.map((k) => `${E.permissionKey(k)} is "${E.permission(k)}"`).join(' and ')}` };
+  if (commits && !author) return { park: 'its commits need rewriting as the repo identity, and neither §1 Git author nor the repo\'s git user.name and user.email is set' };
+  if (DRY) return { wait: 'this is a dry run' };
+  const did = [];
+  if (commits) {
+    const r = rewriteCloudCommits(t, view.headRefName || pr.headRefName, view.baseRefName || DEFAULT_BRANCH, author);
+    if (!r.did) return r;
+    did.push(r.did);
+  }
+  if (body) {
+    const file = join(STATE, 'cloud', `${t.key.replace(/[^\w.-]/g, '-')}-pr-${pr.number}-body.md`);
+    try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${stripAttribution(view.body)}\n`); }
+    catch (e) { return { park: `the pass could not write the PR body to ${file} (${lastLine(e.message)})`, did }; }
+    const r = shOut('gh', ['pr', 'edit', String(pr.number), '--repo', GH_REPO, '--body-file', file]);
+    if (!r.ok) return { park: `the pass's gh pr edit ${pr.number} --body-file ${file} was refused (${lastLine(r.out)})`, did };
+    did.push('stripped it from the PR body');
+  }
+  for (const x of comments) {
+    const id = /#issuecomment-(\d+)$/.exec(String(x?.url ?? ''))?.[1];
+    if (!id) return { park: `the pass could not tell which comment to edit from its URL "${x?.url ?? ''}"`, did };
+    const left = stripAttribution(x.body);
+    const r = shOut('gh', ['api', '-X', left.trim() ? 'PATCH' : 'DELETE', `repos/${GH_REPO}/issues/comments/${id}`, ...(left.trim() ? ['-f', `body=${left}`] : [])]);
+    if (!r.ok) return { park: `the pass could not ${left.trim() ? 'edit' : 'delete'} comment ${id} (${lastLine(r.out)})`, did };
+    did.push(left.trim() ? `stripped it from comment ${id}` : `deleted comment ${id}, which was nothing but attribution`);
+  }
+  return { did };
+}
+
+// Rewrites the commits on cloud branch `head` that `base` lacks as `author` (cloud-worker.mjs
+// rewriteCommits: same tree, checked by git diff) and force-pushes them with a lease on the head it fetched.
+// A lease refused (the branch moved meanwhile) is tried once more from a new fetch. -> { did }, { wait }
+// or { park }. The refs it fetches into are its own, deleted after.
+function rewriteCloudCommits(t, head, base, author) {
+  const ref = `refs/desk/cloud/${t.key.replace(/[^\w.-]/g, '-')}`;
+  const git = (args, { env, input } = {}) => execGit('git', ['-C', MAIN, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...(env ? { env } : {}), input: input ?? '' });
+  try {
+    for (let i = 0; i < 2; i++) {
+      const got = shOut('git', ['-C', MAIN, 'fetch', '--no-tags', 'origin', `+refs/heads/${base}:${ref}-base`, `+refs/heads/${head}:${ref}`]);
+      if (!got.ok) return { wait: `the pass could not fetch ${head} to rewrite it (${lastLine(got.out)})` };
+      const old = shOut('git', ['-C', MAIN, 'rev-parse', ref]);
+      if (!old.ok) return { wait: `the pass could not read the ${head} it fetched (${lastLine(old.out)})` };
+      let r;
+      try { r = rewriteCommits(git, { head: old.out, base: `${ref}-base`, author }); }
+      catch (e) { r = { error: `the rewrite of ${head} failed (${lastLine(`${e.stderr ?? ''}` || e.message)})` }; }
+      if (r.error) return { park: r.error };
+      const slot = previewSlot(t, head);
+      if (slot.wait) return { wait: `its rewritten push ${slot.wait}` };
+      const pushed = shOut('git', ['-C', MAIN, 'push', `--force-with-lease=refs/heads/${head}:${old.out}`, 'origin', `${r.head}:refs/heads/${head}`]);
+      if (pushed.ok) {
+        keepSlot(slot);
+        return { did: `rewrote its ${r.n} commit(s) as ${author.name} <${author.email}> with the same tree (${head} ${old.out.slice(0, 9)} → ${r.head.slice(0, 9)})` };
+      }
+      freeSlot(slot);
+      if (!/stale info/.test(pushed.out)) return { park: `the pass's push of its rewritten commits to ${head} was refused (${lastLine(pushed.out)})` };
+    }
+    return { park: `the pass's lease on ${head} failed twice: the branch moved while it was rewritten` };
+  } finally {
+    for (const r of [ref, `${ref}-base`]) shOut('git', ['-C', MAIN, 'update-ref', '-d', r]);
+  }
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.

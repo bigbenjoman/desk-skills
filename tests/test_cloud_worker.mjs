@@ -8,7 +8,8 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT, attributionFound, authorMismatches, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS } from '../desk/bin/cloud-worker.mjs';
+import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
@@ -59,8 +60,8 @@ const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', bran
 t('issue-1569 AC1 the prompt has a section of the repo\'s rules', ruled.includes("## This repo's rules"), true);
 t('issue-1569 AC1 it names the git author, PR title and body shapes and merge method',
   ['Author every commit as `Ada Lovelace <ada@example.com>`', 'PR title: `type(scope): <TICKET> description`', 'PR body: intro · ### Changes · ### Testing', 'merge by squash'].every((x) => ruled.includes(x)), true);
-t('issue-1569 AC5 it names the author as git user.name and user.email, and says another author parks',
-  ['git config user.name "Ada Lovelace"', 'git config user.email "ada@example.com"', 'authored as anyone else is parked'].every((x) => ruled.includes(x)), true);
+t('issue-1569 AC5 it names the author as git user.name and user.email, and says another author\'s commits are rewritten',
+  ['git config user.name "Ada Lovelace"', 'git config user.email "ada@example.com"', 'authored as anyone else has its commits rewritten before it merges'].every((x) => ruled.includes(x)), true);
 t('issue-1569 the no-attribution rule names every mark the check looks for', ATTRIBUTION_MARKS.every(([, what]) => ruled.includes(what)), true);
 // The hook is installed on its own (install.sh), so it keeps its own BANNED: the two must match, mark for mark.
 const hookSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'deny-ai-attribution.py'), 'utf8');
@@ -102,6 +103,42 @@ t('issue-1569 AC5 a co-authored commit with the expected author among its author
 t('issue-1569 AC5 a commit authored as anyone else is named, with who it was authored as',
   authorMismatches(marked, ada).join('|'), 'commit 9876543 authored as Claude <noreply@anthropic.com>, not Ada Lovelace <ada@example.com>');
 t('issue-1569 AC5 with no author known, nothing is checked', authorMismatches(marked, null).length, 0);
+
+// ---- removing attribution (issue-1569 AC2) -----------------------------------
+t('issue-1569 AC2 stripAttribution drops each marked line and the blank lines that leaves at the end',
+  JSON.stringify(stripAttribution('Done.\n\nKeep this.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n')), JSON.stringify('Done.\n\nKeep this.'));
+t('issue-1569 AC2 stripAttribution leaves a clean text as it was', stripAttribution('a\n\nb'), 'a\n\nb');
+t('issue-1569 AC2 stripAttribution of nothing but attribution is empty', stripAttribution('Co-Authored-By: Claude <noreply@anthropic.com>'), '');
+{
+  // A real repo: a base commit, then two cloud commits authored as Claude with its trailers.
+  const repo = join(S, 'rewrite');
+  mkdirSync(repo, { recursive: true });
+  const env = (who) => ({ ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email });
+  const claude = { name: 'Claude', email: 'noreply@anthropic.com' };
+  const run = (args, o = {}) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: env(ada), ...o });
+  run(['init', '-q', '-b', 'main']);
+  writeFileSync(join(repo, 'a.txt'), 'a\n'); run(['add', '.']); run(['commit', '-q', '-m', 'base']);
+  run(['checkout', '-q', '-b', 'cloud']);
+  writeFileSync(join(repo, 'b.txt'), 'b\n'); run(['add', '.']);
+  run(['commit', '-q', '-m', 'feat: one\n\nWhy it is.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01X'], { env: env(claude) });
+  writeFileSync(join(repo, 'c.txt'), 'c\n'); run(['add', '.']);
+  run(['commit', '-q', '-m', 'feat: two'], { env: env(claude) });
+  const git = (args, { env: e, input } = {}) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(e ?? process.env), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, input: input ?? '' });
+  const old = run(['rev-parse', 'cloud']).trim();
+  const r = rewriteCommits(git, { head: old, base: 'main', author: ada });
+  t('issue-1569 AC2 rewriteCommits rewrites each commit the base lacks', r.n, 2);
+  t('issue-1569 AC2 the rewritten head has the old head\'s tree', r.head && run(['rev-parse', `${r.head}^{tree}`]).trim(), run(['rev-parse', `${old}^{tree}`]).trim());
+  t('issue-1569 AC2 the rewritten commits sit on the same base', r.head && run(['rev-parse', `${r.head}~2`]).trim(), run(['rev-parse', 'main']).trim());
+  const log = r.head ? run(['log', '--format=%an <%ae>|%cn <%ce>|%B', 'main..' + r.head]) : '';
+  t('issue-1569 AC2 every rewritten commit is authored and committed as the repo identity', log.split('\n').filter((l) => l.includes('|')).every((l) => l.startsWith('Ada Lovelace <ada@example.com>|Ada Lovelace <ada@example.com>|')), true);
+  t('issue-1569 AC2 the trailers are gone, and the rest of the message stays', /Co-Authored-By|Claude-Session/.test(log) || !log.includes('Why it is.') || !log.includes('feat: two'), false);
+  t('issue-1569 AC2 the author dates are kept', r.head && run(['log', '-1', '--format=%aI', r.head]).trim(), run(['log', '-1', '--format=%aI', old]).trim());
+  t('issue-1569 AC2 the original branch is left alone', run(['rev-parse', 'cloud']).trim(), old);
+  // A git whose diff finds the trees differ: the rewrite is refused, never pushed.
+  const differs = (args, o) => { if (args[0] === 'diff') throw new Error('trees differ'); return git(args, o); };
+  t('issue-1569 AC2 a rewrite whose tree differs is refused', rewriteCommits(differs, { head: old, base: 'main', author: ada }).error, `the rewrite of ${old.slice(0, 7)} would change its tree`);
+  t('issue-1569 AC2 a head with nothing the base lacks is refused', /has no commits that main lacks/.test(rewriteCommits(git, { head: run(['rev-parse', 'main']).trim(), base: 'main', author: ada }).error ?? ''), true);
+}
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));
