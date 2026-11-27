@@ -324,7 +324,7 @@ t('issue-1570 the prompt asks a session that cannot finish for WIP and what is l
   const msg = cloudFollowUpMsg({ pr: 31, head: 'abcdef1234', mark: 'WIP', checks: [ok('Lint'), { name: 'Tests', status: 'completed', conclusion: 'failure' }] });
   t('issue-1570 AC2 the follow-up carries the check results on its head', ['PR #31', 'CI on abcdef1 has finished: Tests failure; 1 of 2 passed.', 'take WIP and what is left out'].every((x) => msg.includes(x)), true);
 }
-t('issue-1570 AC3 desk-q shows it as idle since its last push, PR unfinished', cloudIdleText({ stage: 'cloud', cloud: { unfinished: { pr: 31, pushed_at: '2026-11-26T22:00:00Z' } } })?.replace(/\d\d:\d\d$/, 'HH:MM'), 'cloud session idle since Nov 26 HH:MM, PR #31 unfinished');
+t('issue-1570 AC3 desk-q shows it as idle since its last push, PR unfinished', cloudIdleText({ stage: 'cloud', cloud: { unfinished: { pr: 31, pushed_at: '2026-11-26T12:00:00Z' } } })?.replace(/\d\d:\d\d/, 'HH:MM'), 'cloud session idle since Nov 26 HH:MM, PR #31 unfinished');
 t('issue-1570 AC3 a local worker on its PR later is not shown so', cloudIdleText({ stage: '4/9 verify', cloud: { unfinished: { pr: 31 } } }), null);
 
 // ---- finished sessions to archive -------------------------------------------
