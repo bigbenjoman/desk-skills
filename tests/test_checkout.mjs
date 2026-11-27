@@ -35,8 +35,8 @@ const config = (slug, rows, perms) => {
   ].join('\n'));
 };
 const jira = (project, dest) => ({ Tracker: 'jira', 'Jira site': 'acme.atlassian.net', 'Jira project': project, 'Ticket key pattern': `${project}-[0-9]+`, Priority: 'customfield_10207', 'Check-out destination': dest });
-config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
-config('acme__lib', jira('LIB', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'ask' });
+config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes', 'read-others': 'yes' });
+config('acme__lib', jira('LIB', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'ask', 'read-others': 'ask' });
 config('acme__other', jira('OTH', '#elsewhere'), { 'read-transcripts': 'no', 'read-own-work': 'no' });
 config('acme__side', { Tracker: 'none', 'Check-out destination': 'none' }, { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
 
@@ -60,7 +60,9 @@ ${body}
 };
 fake('gh', `
 if (args[0] === 'api' && args[1] === 'user') { console.log('me'); process.exit(0); }
-if (args[0] === 'api' && args.includes('search/issues')) out(args.find((a) => a.startsWith('q=')).includes('reviewed-by') ? 'reviewed' : 'mine');
+const q = args.find((a) => a.startsWith('q=')) || '';
+if (args[0] === 'api' && args.includes('search/issues') && q.includes('is:merged')) out('merged_' + q.match(/repo:(\\S+)/)[1].replace('/', '_'));
+else if (args[0] === 'api' && args.includes('search/issues')) out(q.includes('reviewed-by') ? 'reviewed' : 'mine');
 else if (args[0] === 'api') out(args[1].replace(/[^A-Za-z0-9]+/g, '_'));
 else if (args[0] === 'pr' && args[1] === 'view') out('pr_' + args[4].replace('/', '_') + '_' + args[2]);
 else process.exit(1);`);
@@ -299,6 +301,14 @@ put('pr_acme_side_14', { reviewDecision: 'REVIEW_REQUIRED', isDraft: true, statu
 put('reviewed', { items: [pr('acme/app', 20, 'Alice\'s change', { user: { login: 'alice' } }), pr('acme/app', 21, 'Reviewed last week', { user: { login: 'bob' } })] });
 put('repos_acme_app_pulls_20_reviews', [{ user: { login: 'me' }, state: 'CHANGES_REQUESTED', submitted_at: at(14) }, { user: { login: 'carol' }, state: 'APPROVED', submitted_at: at(14) }]);
 put('repos_acme_app_pulls_21_reviews', [{ user: { login: 'me' }, state: 'APPROVED', submitted_at: before }]);
+// Merged PRs in the window per repo, split by author; one merged before the window is not counted.
+put('merged_acme_app', { items: [
+  pr('acme/app', 10, 'Fix the redirect', { state: 'closed', pull_request: { merged_at: at(15) } }),
+  pr('acme/app', 30, 'Alice merged', { state: 'closed', user: { login: 'alice' }, pull_request: { merged_at: at(11) } }),
+  pr('acme/app', 31, 'Bob merged', { state: 'closed', user: { login: 'bob' }, pull_request: { merged_at: at(12) } }),
+  pr('acme/app', 32, 'Merged last week', { state: 'closed', pull_request: { merged_at: before } }),
+] });
+put('merged_acme_side', { items: [pr('acme/side', 40, 'Side merged', { state: 'closed', pull_request: { merged_at: at(16) } })] });
 const github = script('github_activity.py', '--day', DAY);
 t('github: exits 0', github.status, 0);
 const go = github.stdout;
@@ -309,8 +319,38 @@ has('github: pushed commits, less merges and older ones', go, '- nobody/x#12 A p
 lacks('github: a PR nothing happened to is left out', go, 'Untouched today');
 has('github: a review given on the day', go, "## Reviews you gave (1)\n- acme/app#20 Alice's change (by alice) — you: changes requested");
 lacks('github: a review from before the day is left out', go, 'Reviewed last week');
-has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__other: §3 read-own-work is no - skipped');
+has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees\n- acme__other: §3 read-own-work is no - skipped');
 lacks('github: and none of it shows', go, 'Other thing');
+has('#1534 merged PRs in the window are counted per repo, yours and everyone\'s', go, '## Merged PRs in the window, by author (yours / everyone\'s)\n- acme/app: 1 mine / 3 all\n');
+has('#1534 everyone\'s count needs read-others; without it only yours is given', go, '- acme/side: 1 mine / all not counted (acme__side: §3 read-others is no - skipped) [Side project]');
+has('#1534 and the read-others no is listed with what was skipped', go, '- acme__other: §3 read-own-work is no - skipped\n- acme__side: §3 read-others is no - skipped');
+lacks('#1534 a repo whose read-own-work is no is not counted', go, '- acme/other:');
+const ghCalls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('is:merged'));
+t('#1534 without read-others the search asks only for your PRs', ghCalls.some((l) => l.includes('repo:acme/side') && l.includes('author:me')), true);
+t('#1534 with it, everyone\'s', ghCalls.some((l) => l.includes('repo:acme/app') && !l.includes('author:')), true);
+// read-others has its own consent: --include, given for read-own-work, does not grant it, and a
+// side repo with no desk config has no read-others row, so only the user's PRs are counted there.
+put('merged_acme_lib', { items: [
+  pr('acme/lib', 50, 'Lib merged', { state: 'closed', pull_request: { merged_at: at(13) } }),
+  pr('acme/lib', 51, 'Dana merged', { state: 'closed', user: { login: 'dana' }, pull_request: { merged_at: at(13) } }),
+] });
+put('merged_solo_proj', { items: [pr('solo/proj', 60, 'Solo merged', { state: 'closed', pull_request: { merged_at: at(14) } })] });
+const ghRun = (...args) => {
+  const from = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').length - 1;
+  const r = spawnSync('python3', ['-B', join(SCRIPTS, 'github_activity.py'), '--day', DAY, ...args], { cwd: APP, env: { ...env, DESK_CHECKOUT_SIDE_REPOS: 'acme/side,solo/proj' }, encoding: 'utf8' });
+  if (r.status) console.log(r.stderr);
+  return { ...r, merged: readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').slice(from).filter((l) => l.includes('is:merged')) };
+};
+const lib = ghRun('--include', 'acme__lib');
+t('#1534 --include alone: exits 0', lib.status, 0);
+has('#1534 --include alone does not count everyone\'s, and says which flag would', lib.stdout, '- acme/lib: 1 mine / all not counted (acme__lib: §3 read-others is ask - pass --include-others acme__lib once the user agrees)');
+has('#1534 the read-others ask is listed with what was skipped', lib.stdout, '- acme__lib: §3 read-others is ask - pass --include-others acme__lib once the user agrees');
+t('#1534 --include alone searches only your PRs there', lib.merged.some((l) => l.includes('repo:acme/lib') && l.includes('author:me')), true);
+has('#1534 a side repo with no desk config: only yours', lib.stdout, '- solo/proj: 1 mine / all not counted (no desk config) [Side project]');
+t('#1534 and its search asks only for your PRs', lib.merged.every((l) => !l.includes('repo:solo/proj') || l.includes('author:me')), true);
+const libOthers = ghRun('--include', 'acme__lib', '--include-others', 'acme__lib');
+has('#1534 --include-others counts everyone\'s', libOthers.stdout, '- acme/lib: 1 mine / 2 all');
+t('#1534 --include-others searches every author there', libOthers.merged.some((l) => l.includes('repo:acme/lib') && !l.includes('author:')), true);
 
 // jira_activity.py: what the user did in each in-scope repo's Jira project.
 put('api_3_myself', { accountId: 'me-id', displayName: 'Me Person' });
@@ -367,6 +407,8 @@ has('a change in effect is never from tomorrow', skill, 'a change already in eff
 has('an unreadable setting goes under Check before posting', skill, 'If the source cannot be read,\n  name the claim under **Check before posting** with why.');
 const style = readFileSync(join(REPO, 'skills/desk-checkout/references/style.md'), 'utf8');
 has('style: no window qualifier in the header', style, 'Never a window qualifier such as\n  `(since yesterday\'s post)`');
+has('#1471 style: never a ticket as the user last left it', style, 'Don\'t describe a ticket as the user last left it.');
+has('#1471 style: never from the next deploy unread', style, 'Don\'t write "from the next deploy" without reading the latest production deploy.');
 lacks('style: the day is no longer added just for posting late', style, 'with the day when posting late or for another day');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
@@ -392,6 +434,25 @@ has('#819 a failed read keeps the collector\'s state and says so', skill, 'If th
 has('#819 Check before posting lists it', skill, 'each PR whose state could not be\n  read again when its line was written');
 has('#819 only in a repo the GitHub collector was allowed to read', skill, 'Read only in a repo the GitHub collector read (its\n  `read-own-work` `yes`, or `ask` and the user agreed)');
 has('#819 and never in any other repo', skill, 'Never read a PR in any other repo: its\n  state stays as its source gave it.');
+has('#1471 step 3 sends each ticket and deploy claim to be read again', skill, '**Read each ticket again as you write its bullet, with every PR naming its key, and the latest\n  deploy before any deploy claim**: `references/current-state.md` says how.');
+has('#1471 one no read settled goes under Check before posting', skill, 'each ticket or deploy claim no read settled.');
+const current = readFileSync(join(REPO, 'skills/desk-checkout/references/current-state.md'), 'utf8');
+has('#1471 each ticket is read again as its bullet is written', current, '**Read each ticket again as you write its bullet, with every PR naming its key.**');
+has('#1471 its status is read from its tracker', current, '`desk-jira get <KEY>` for that ticket\'s repo');
+has('#1471 another repo\'s ticket is read from that repo\'s checkout', current, '`DESK_REPO_DIR=<its main checkout> desk-jira get <KEY>`');
+lacks('#1471 never DESK_SLUG for desk-jira, which ignores it', current, '`DESK_SLUG=<slug>`');
+has('#1471 with every PR naming its key, any author, open or merged', current, 'gh pr list --repo <owner/name> --state all --search "<KEY>" --json number,title,author,state,isDraft,mergedAt');
+has('#1471 the bullet states what those reads show', current, 'The bullet states what those reads show.');
+has('#1471 a teammate\'s fix is named or the ticket left out', current, 'is said as that, naming who and which PR\n("Sam fixed it in #1540 (merged), now in Review"), or left out.');
+has('#1471 and its ask is dropped', current, 'Any ask in its bullet is\ndropped, and so is any claim that PR settles');
+has('#1471 a failed ticket read goes under Check before posting', current, 'name the ticket under **Check before posting** as last\nseen by them.');
+has('#1471 a deploy claim is read from the latest production deploy', current, '**is read from\nthe latest production deploy first**');
+has('#1471 GitHub deployments first', current, '1. Its newest successful GitHub deployment to production.');
+has('#1471 a newer failed or unfinished deployment is skipped', current, 'Take the first whose latest status is `success`: a newer one that failed or is still\n   queued or in progress is skipped, never compared.');
+lacks('#1471 never only the single newest deployment', current, 'per_page=1`, then');
+has('#1471 then the default branch\'s deploy workflow', current, '2. With no successful deployment found, the newest successful run of the deploy workflow on the\n   repo\'s default branch');
+has('#1471 a merge the latest deploy contains is live, never from the next deploy', current, 'Then its line says it is live and since when, never "from the next deploy"');
+has('#1471 an unread deploy goes under Check before posting', current, 'the line says only that it merged, and the deploy claim goes\nunder **Check before posting** with why');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });

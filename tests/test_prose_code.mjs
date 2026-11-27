@@ -12,6 +12,7 @@
 // covers: desk/bin/preview-db.mjs desk/bin/own-pr.mjs desk/bin/migration-renames.mjs desk/bin/untracked.mjs desk/bin/pass/pr-status.mjs desk/bin/ticket-fill.mjs desk/bin/ticket-lint.mjs desk/bin/ask-ledger.mjs desk/bin/cache-report.mjs desk/bin/subscription-use.mjs
 // covers: desk/bin/claims.mjs desk/bin/release-watch.mjs desk/bin/loop-tick.mjs desk/bin/ps-rows.mjs
 // covers: desk/bin/desk-q-server.mjs desk/bin/desk-ui.mjs desk/bin/desk-ui-events.mjs
+// covers: desk/bin/desk-changes.mjs desk/bin/levers-audit.mjs desk/bin/levers-trips.mjs
 // The covers lines name every module the check imports, directly or through another (checked below),
 // so a change to any of them runs this suite.
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;

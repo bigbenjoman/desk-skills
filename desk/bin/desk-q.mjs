@@ -114,6 +114,12 @@ function systemCopier(text, out = null) {
 // login's CLI, or a rule change that checks first, never holds the screen. done({ code, out, err }).
 const DESK_ENV_MJS = join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs');
 const deskEnvLogins = (args, done) => deskEnvRun(['logins', ...args], done);
+// What a desk-env logins run that migrated the file printed (the dated backup, each row's before and
+// after, why ~/.claude moved), as lines for the message, or [] when it moved and changed nothing.
+function migrationSaid(r) {
+  const out = String(r?.code === 0 ? r.out ?? '' : '').split('\n').filter((l) => l.trim());
+  return out.some((l) => / -> | moved to Removed: /.test(l)) ? out.filter((l) => / -> | moved to Removed: |\(previous copy: /.test(l)) : [];
+}
 const deskEnvSubscription = (args, done) => deskEnvRun(['subscription', ...args], done);
 function deskEnvRun(args, done) {
   const p = spawn(process.execPath, [DESK_ENV_MJS, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -558,8 +564,11 @@ export function interactive({
     if (!args) return;
     tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
     saveStarted();
-    loginsWith(args, () => {
+    loginsWith(args, (r) => {
       forgetLogins();
+      // A migration (or a pin that moved ~/.claude to Removed) shows what it printed in the terminal.
+      const said = migrationSaid(r);
+      if (said.length) msg = said.join('\n');
       saveEnded(true);
     });
   }
@@ -623,15 +632,16 @@ export function interactive({
     saveStarted();
     msg = 'Saving…';
     const fail = (r) => { stopAdding(); msg = notSaved(r); saveEnded(); if (!done) draw(); };
-    const next = () => {
+    const next = (r) => {
       forgetLogins();
       adding = { tool: a.tool, login: a.first.next, label: null };
       selId = 'adding';
-      msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
+      // The pin moved ~/.claude to Removed: what that migration printed comes first.
+      msg = [...migrationSaid(r), `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`].join('\n');
       saveEnded(true);
       if (!done) draw();
     };
-    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
+    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next(r)));
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.

@@ -218,6 +218,16 @@ export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.k
 // start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
 export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so it holds
+// no local slot and the maintenance window neither waits for one nor stops it, in any repo; a review try
+// on a cloud ticket's PR runs here.
+export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
+// A killed worker waiting to resume, and a session handed off to its next stage (both run here).
+export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
+export const toHandoff = (r) => r.handoff === 'pending';
+// A ticket the spawn loop starts in a cloud session, taking one of §3b "Cloud sessions at once" and no
+// local slot: a resume or handoff of one runs here.
+export const startsInCloud = (t) => runsInCloud(t) && !toResume(t) && !toHandoff(t);
 // The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its
 // session ended with where there is one, which the ticket ledger's failed event records.
 export const failedField = (why, { subtype = null, at = new Date().toISOString() } = {}) =>

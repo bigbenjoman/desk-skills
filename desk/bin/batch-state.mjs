@@ -7,6 +7,7 @@ import { personClears } from './clears-when.mjs';
 import { attachArchive, mergedPrs } from './queue-store.mjs';
 import { PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
+import { isRealDay, localDay } from './machine.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -64,6 +65,14 @@ export const slotWaitWords = (heldBy) => `waiting for a slot (held by ${heldBy.j
 // What holds the slots a pending handoff waits for, as the last pass recorded on its handoff wait
 // (pass/deadlines.mjs), or null where none holds it.
 export const slotHeldBy = (t) => (t?.state === 'triaged' && t.handoff === 'pending' && t.waits?.handoff?.held_by?.length ? t.waits.handoff.held_by : null);
+// The words for a pending handoff a running ticket's files hold back, `collision` being
+// [{ file, with: [the tickets holding it] }]: the pass report and desk-q both say it in these words.
+export const collisionWaitWords = (collision) => `held by collision on ${collision.map((c) => `${c.file} with ${c.with.join(', ')}`).join('; ')}`;
+// The collision a pending handoff waits on, as the last pass recorded on its handoff wait, or null.
+export const collisionHeldBy = (t) => (t?.state === 'triaged' && t.handoff === 'pending' && t.waits?.handoff?.collision?.length ? t.waits.handoff.collision : null);
+// What a pending handoff waits on with nothing for the person to do, in those words: full slots or a
+// collision, or null where neither holds it.
+export const handoffWaitText = (t) => (slotHeldBy(t) ? slotWaitWords(slotHeldBy(t)) : collisionHeldBy(t) ? collisionWaitWords(collisionHeldBy(t)) : null);
 
 // merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it: only
 // its current PR merging counts (merge-driver.sh release_chain, queue.mjs requeue's own holds). Whether t,
@@ -289,14 +298,11 @@ export function heldBehindOf(q, key) {
 
 // A label that holds a ticket until a calendar day, read on this machine's local date.
 const UNTIL_LABEL = /^blocked-until-(.*)$/i;
-export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export { localDay };
 // The YYYY-MM-DD day a blocked-until label names, or null when that is not a real day.
 export function untilDay(label) {
   const m = UNTIL_LABEL.exec(String(label ?? '').trim());
-  const d = m && /^(\d{4})-(\d{2})-(\d{2})$/.exec(m[1]);
-  if (!d) return null;
-  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
-  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]) ? m[1] : null;
+  return m && isRealDay(m[1]) ? m[1] : null;
 }
 // The hold a ticket's labels ask for: { label, bad: true } for a blocked-until label whose date cannot
 // be read (it wins), else { label, until } for the latest day one names, else null.

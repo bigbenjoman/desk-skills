@@ -23,10 +23,20 @@ carries on in the same turn. This command is still the way back in after a `/cle
 1. **Find the handoff.** It is the one this session's context names in a line `desk handoff: read
    <path> (in <root>) and continue from its next step`. The hook already chose it (the handoff this
    session was told to write, else the newest written one), and only when it is written, under a day
-   old and not resumed before. **With no such line, do not pick one yourself**: the hook named none
-   because that handoff is unwritten, stale or already resumed. List the `.md` files in `<repo root>/.handoffs/` changed in
-   the last day that do not start `<!-- desk handoff placeholder`, with each one's first lines, and
-   ask which to resume, or say there is none and stop.
+   old and not resumed before. **With no such line, do not pick one yourself.** The hook names none
+   in a session started fresh rather than by `/clear` (a new terminal, say), so ask it now:
+
+   ```bash
+   python3 ~/.claude/hooks/desk-handoff.py pick
+   ```
+
+   Exit 0 prints the one handoff that is written, under a day old, not resumed before and not held by
+   a compacting session, and records it as resumed: that is the handoff. It picks nothing in a
+   session `/clear` or a compaction began, where the hook named none on purpose (that session's own
+   handoff is unwritten, stale or already resumed). Otherwise (none, several, or after `/clear`)
+   list the `.md` files in `<repo root>/.handoffs/` changed in the last day that do not start
+   `<!-- desk handoff placeholder`, newest first, with each one's first lines, and ask which to
+   resume, or say there is none and stop.
 2. **Read it whole**, along with any file it says to read first. **If it has a `Session name:`
    line, your first output is the line `/rename <that name>`**, on its own, for the person to run:
    `/clear` dropped the name, and only the person can run `/rename`.
@@ -42,5 +52,6 @@ carries on in the same turn. This command is still the way back in after a `/cle
 
 - Asking the person what to do next when the handoff names a next step
 - Starting work the handoff does not name before its next step is done
-- Resuming a handoff the context did not name without the person choosing it
+- Resuming a handoff that neither the context nor `desk-handoff.py pick` named without the person
+  choosing it
 - Burying the `/rename` line after other output, or leaving it out when the handoff names the session

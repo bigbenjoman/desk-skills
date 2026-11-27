@@ -276,6 +276,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Preferred dev-server port | `3000` | `TODO` (autopilot workers start at this port + 1) |
 | Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
 | Memory ceiling for parallel work (GB) | WSL: `16` · otherwise physical RAM minus ~8 | `TODO` (`DESK_CLEARANCE_MEM_GB` overrides) |
+| Worker memory weight (GB) | `none` | `TODO` (a whole number of GB, or `none`: what each of this repo's workers counts for against the machine profile's `memory-ceiling-gb`, which every repo's running workers share; a pass starts a worker only while the weights of the workers running in every repo leave room for its own, as well as the machine's worker cap. `/desk-setup` proposes it from this repo's measured peaks where it has them. Unset or `none` is the flat share, the ceiling over the machine's worker cap: 5 on a 15 GB, 3-worker machine) |
 | Spawn gate (available memory) | start work > 8 GiB · hold 4–8 · drop to 1 below 4 | `TODO` |
 | Swap growth that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, `desk-env mem watch` says `SWAP-GROWING` when swap used grows by this much within 10 minutes, and the pass holds new workers for 10 minutes after. Unset is `2`) |
 | tmpfs /tmp size that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, with `/tmp` a tmpfs, the watch says `TMPFS-HIGH` when it holds this much, and the pass clears the regenerable caches in it, then holds new workers while it still holds this much, naming what is left in needs-you. Unset is `2`) |
@@ -288,6 +289,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Worker models | `default` | `TODO` (`default`, or `standard=<model> high=<model>`: lane A or E sized XS or S runs on standard, the rest on high; either may add `finder=<alias>` (a model alias: the Agent tool takes no full name) for self-review finders and `text=<model>` for the Stage 7 PR and Jira session, both unset by default, so both run on the worker's model until a run of the eval harness (`desk/bin/skill-eval.mjs`) on each model shows finding quality holds) |
 | Worker effort | `none` | `TODO` (`none`, or `<start>=<effort>` pairs in one backtick span, e.g. `0=medium 4b=high task=low`. Read only with the `effort` lever on in Phase 0 levers: each worker session then runs at the effort named for how it starts, a stage (`0`, `3` to `9`, `4b`), `task` (a fix or review try) or `resume`, and a start not named runs at `medium`, passed explicitly. An effort is `low`, `medium`, `high`, `xhigh` or `max`; anything else refuses the spawn, naming it. A cloud session cannot be given an effort, so with the lever on every ticket runs locally, whatever Worker location says. Unset is `none`) |
 | Worker location | `local` | `TODO` (`local`, or `cloud`: each ticket that needs nothing on this computer runs in a Claude Code cloud session, and the batch plan says where each runs and why) |
+| Cloud sessions at once | `4` | `TODO` (a whole number, read only at Worker location `cloud`: how many of the batch's tickets may run in a cloud session at once. A cloud session takes none of this computer's worker slots, memory or locks, so it starts beside the local workers, not in their place; pacing, the usage limit and the maintenance window still hold it. `0` starts none. Unset is `4`) |
 | Batches run by | `supervisor` on macOS, or Linux with systemd · `session` elsewhere | `TODO` (`supervisor` or `session`: once Stage 3 has asked, at `supervisor` the orchestrator hands the batch to the supervisor, installing it if it is not installed and loaded, writes a handoff and ends the session; at `session` it runs passes through `/loop` in the session. The supervisor needs macOS launchd or a Linux systemd user manager. Unset is `session`) |
 | Borrow idle workers | `off` | `TODO` (`on`, or `off`: at `on` a pass may start workers above the batch's own number, up to the cap, into machine slots other live batches are not using) |
 | Park an unanswered question after (minutes) | `15` | `TODO` |
@@ -316,7 +318,8 @@ repo. Left `TODO` or absent, each falls back to the machine profile, `~/.config/
 sizes from the detected hardware; a value set here wins. With no profile they behave as unset.
 The profile's memory ceiling and worker cap are hard limits across every repo: a memory ceiling set
 here above the profile's reads as the profile's, and a pass starts no worker once the workers running
-in every repo's queue reach the profile's cap (a queue that cannot be read counts at its repo's cap).
+in every repo's queue reach the profile's cap (a queue that cannot be read counts at its repo's cap),
+or once their memory weights leave no room under the profile's memory ceiling for one more of its own.
 
 ## 3c. Harness rules written by setup
 

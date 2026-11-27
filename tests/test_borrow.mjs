@@ -162,12 +162,26 @@ t('DS-305 borrowing reads a named batch\'s heartbeat from its own state director
 named('acme__b', 'Y-1', '{ not json');
 t('DS-305 an unreadable named batch\'s queue is named and counted at its repo\'s cap', /acme\/b batch Y-1's queue cannot be read \(.*batches\/Y-1\/queue\.json is not valid JSON.*\), so it counts at its cap of 4 workers/.test(budget(queuePath('acme__a'), 1)), true);
 
+// #1564 AC1: a ticket running in a cloud session holds nothing on this computer, so the machine budget
+// leaves it out; one back on a local worker for its PR (cloudPrHere) counts again.
+fresh();
+repo('acme__a', { share: 2, running: 1 });
+named('acme__b', 'C-1', JSON.stringify({ tickets: {
+  'C-2': { key: 'C-2', state: 'running', location: 'cloud', cloud: { started: minsAgo(5) } },
+  'C-3': { key: 'C-3', state: 'running', location: 'cloud', cloud: { started: minsAgo(5) } },
+  'C-4': { key: 'C-4', state: 'running', location: 'cloud', result: { pr: 9 } },
+  'C-5': { key: 'C-5', state: 'running' },
+} }));
+t('#1564 AC1 the machine budget counts the local workers only, not the cloud sessions', budget(queuePath('acme__a'), 1), 'machine budget: 3 of the machine\'s 10 worker(s) running across every repo');
+
 // A repo's batches share its §3b cap. A named batch of `slug` with `running` and `ready` tickets and
 // a heartbeat `beat` minutes old in its own state directory, planning its next pass in `next` minutes.
-function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next, last } = {}) {
+// `cloudReady` more ready tickets that start in a cloud session.
+function batchOf(slug, name, { share = 2, running = 0, ready = 0, cloudReady = 0, beat = 1, next, last } = {}) {
   const tickets = {};
   for (let i = 1; i <= running; i++) tickets[`${name}-R${i}`] = { key: `${name}-R${i}`, state: 'running' };
   for (let i = 1; i <= ready; i++) tickets[`${name}-Y${i}`] = { key: `${name}-Y${i}`, state: 'triaged', open_questions: 0 };
+  for (let i = 1; i <= cloudReady; i++) tickets[`${name}-C${i}`] = { key: `${name}-C${i}`, state: 'triaged', open_questions: 0, location: 'cloud' };
   const q = named(slug, name, JSON.stringify({ version: 1, batch: name, concurrency: share, tickets, ...(last ? { last_start: last } : {}) }));
   if (beat != null) {
     const dir = join(env.HOME, '.desk-autopilot', slug, 'batches', name, 'orchestrators');
@@ -190,6 +204,10 @@ repo('acme__a', { conc: '2 / 3', share: 2, running: 2, ready: 1 });
 r = repoRoom(queuePath('acme__a'), { running: 2, wanted: 1 });
 t('DS-308 AC3 the standing batch, holding every slot but one, leaves it for X-1', r.room, 0);
 t('DS-308 AC3 and says so', r.line, 'repo workers: 2 of the §3b cap of 3 running — the standing batch (this pass) 2, batch X-1 0; 1 kept for batch X-1, which has 2 ready and 0 running: nothing starts this pass');
+// #1564: a batch whose ready tickets all start in a cloud session wants no local slot, so none is kept for it.
+x1q = batchOf('acme__a', 'X-1', { cloudReady: 2 });
+t('#1564 AC1 a batch with only cloud tickets ready keeps no local slot', repoRoom(queuePath('acme__a'), { running: 2, wanted: 1 }).room, 1);
+x1q = batchOf('acme__a', 'X-1', { ready: 2 });
 fresh();
 repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 1 });
 x1q = batchOf('acme__a', 'X-1', { running: 1, ready: 1 });
@@ -434,6 +452,19 @@ t('DS-308 pass AC6: and prints no repo workers line', /repo workers/.test(out), 
   delete process.env.CLAUDE_CODE_SESSION_ID;
   B.writeBeat(dir, qp, { batch: 's1', now: Date.now() + 1000 });
   t('#1359 one written outside a session names none', B.lastBeat(dir, qp)?.session, null);
+}
+
+// #1544 AC4: borrowed slots left unused because the lock gate held tickets: the borrowing line names it.
+{
+  const p = { slots: 4, own: 2, borrow: 2, line: null, count: 'machine 3 of 10' };
+  t('#1544 AC4 none started: the borrowing line names the lock gate and how many it held',
+    B.borrowedLine(p, { share: 2, running: 2, spawned: 0, lockHeld: 17 }), 'borrowing: 2 may be borrowed, none started: the lock gate held 17 (machine 3 of 10)');
+  t('#1544 AC4 some borrowed: the line says how many were left unused and names the lock gate',
+    B.borrowedLine(p, { share: 2, running: 0, spawned: 3, lockHeld: 4 }), 'borrowing: 1 worker borrowed this pass, 1 above the batch\'s own number of 2, 1 left unused: the lock gate held 4 (machine 3 of 10)');
+  t('#1544 AC4 every borrowed slot used: the line does not name the gate',
+    /lock gate/.test(B.borrowedLine(p, { share: 2, running: 0, spawned: 4, lockHeld: 4 })), false);
+  t('#1544 AC4 nothing held by the gate: the line reads as before',
+    B.borrowedLine(p, { share: 2, running: 2, spawned: 0, lockHeld: 0 }), 'borrowing: 2 may be borrowed, none started (machine 3 of 10)');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all borrow checks passed');

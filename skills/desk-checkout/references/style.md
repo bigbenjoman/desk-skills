@@ -70,8 +70,17 @@ here. Where there are none to read:
 - Don't write "Worked on X" with no outcome. Say what changed or what was found.
 - Don't give a count over a different window from the post's. "17 more fixes merged" since midnight
   in a post that covers the evening before too is wrong; count from the previous post.
+- Don't give everyone's merged PRs as the user's. A merged-PR count is the user's own, the `mine`
+  figure in the GitHub collector's *Merged PRs in the window*: "35 more PRs merged" reads as their
+  work when 16 were. Everyone's figure goes in only with words saying it includes others ("35 in
+  all, 16 mine"). Write "more" only when the previous post's count had the same author scope; where
+  it counted everyone's, or it is unclear whose, give the count without "more".
 - Don't take when a setting changed from a plan. Read it: one already applied is "now", not
   "from tomorrow".
+- Don't describe a ticket as the user last left it. Read its status and every PR naming its key
+  as you write it: a teammate's fix since then makes an ask in it moot.
+- Don't write "from the next deploy" without reading the latest production deploy. A merge it
+  already contains is live.
 - Don't list every ticket key raised in bulk triage.
 - Don't use em-dashes as connectors; use a spaced hyphen ` - `, a colon or a full stop.
 - Don't use reflexive hedges like "I think" or "possibly". State real uncertainty once, with what

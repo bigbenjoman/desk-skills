@@ -194,6 +194,17 @@ function slots(s) {
   t('and it is not a person stall', j(held.stalls), '[]');
   t('AC7 it holds every spawn, so no ticket gets a slot with avail high', j([held.spawnHeld, slots(slotsSnap(held)).slots]), j([harm, 0]));
   t('AC9 with no harm signal, avail high gives the slots as before', slots(slotsSnap(eligibility(snap(byKey(triaged('A'), triaged('B')))))).slots, 2);
+  // #1564 AC3: memory harm is this computer's, so it holds no cloud start; every other hold does, and a
+  // pacing hold behind it still does.
+  const harmed = { memory: { low: false, avail: 20, hold: 4, start: 8, dropTo: 1, harm } };
+  const pace = { bad: null, hold: true, line: 'pace: 7-day 70% against 50% even' };
+  const cloudOf = (more) => { const e = eligibility(snap(byKey(triaged('A', { location: 'cloud' })), more)); return [e.spawnHeld, e.cloudHeld, keys(e.spawnable)]; };
+  t('#1564 AC3 memory harm alone holds the local starts, not a cloud one', j(cloudOf(harmed)), j([harm, null, ['A']]));
+  t('#1564 AC3 behind memory harm, pacing still holds a cloud start', j(cloudOf({ ...harmed, pace })), j([harm, PACE_HELD, []]));
+  t('#1564 AC3 pacing alone holds a cloud start', j(cloudOf({ pace })), j([PACE_HELD, PACE_HELD, []]));
+  t('#1564 AC3 so do the maintenance window and the usage limit', j([cloudOf({ maintHold: true })[1], cloudOf({ usageHold: { type: 'five_hour', resetsAt: null } })[1] != null]), j(['the maintenance window holds every spawn', true]));
+  const fixTry = eligibility(snap(byKey(triaged('A', { location: 'cloud' }), triaged('B', { location: 'cloud', fix: { finished: false } })), { ...harmed, pace }));
+  t('#1564 AC3 behind memory harm and pacing, a cloud fix try still may start', j([fixTry.cloudHeld, keys(fixTry.spawnable)]), j([null, ['B']]));
 }
 
 // ---- slots, and borrowing ----

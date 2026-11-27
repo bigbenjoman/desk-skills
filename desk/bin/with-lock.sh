@@ -162,7 +162,11 @@ case "$name" in test|tsc)
   [ -n "$peak" ] || { grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && peak=on; }
   [ "$peak" = on ] && measure=(node "$here/locked-run.mjs" run "$name" --) ;;
 esac
-run_cmd() { exec ${measure[@]+"${measure[@]}"} "$@"; }
+# A measured run's locked-run.mjs hands fd 9 on to the command only when this shell holds it (flock).
+run_cmd() {
+  if [ -n "${measure[*]+x}" ] && { : >&9; } 2>/dev/null; then export DESK_RUN_FD9=1; else unset DESK_RUN_FD9; fi
+  exec ${measure[@]+"${measure[@]}"} "$@"
+}
 # An autopilot worker's test run keeps its temporary files on disk, never in a tmpfs /tmp: its TMPDIR is
 # a folder of its own in the repo's cache folder (spawn-worker.sh), named by this pid, which the command
 # keeps, so a later run removes it once that pid is gone. In it, Jest's default cache (jest_<uid in base
@@ -191,7 +195,9 @@ outer="${DESK_LOCK_HELD:-}"; watching=""
 watch_caller() {
   [ -z "$outer" ] && [ -z "$watching" ] || return 0
   watching=1
-  node "$here/lock-caller-watch.mjs" "$$" 9>&- </dev/null >/dev/null 2>&1 &
+  # Started from /, never from the run's directory: the watch outlives the run by up to a poll, and a
+  # process working in a worktree holds it from a spawn (pass.mjs busyWorktree).
+  (cd / && exec node "$here/lock-caller-watch.mjs" "$$") 9>&- </dev/null >/dev/null 2>&1 &
 }
 # The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
 # (tests/related.sh) does not wait for a second one behind its own.

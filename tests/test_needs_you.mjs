@@ -1245,14 +1245,18 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
 } });
+// The last pass held F-2 and F-3 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
+const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
+mkdirSync(phiState, { recursive: true });
+writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), collisions: [{ key: 'F-2', with: ['F-1'], files: ['a.mjs'] }, { key: 'F-3', with: ['F-1'], files: ['a.mjs'] }] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
 const phi = strip(repoScreen(phr));
 t('a fix try held back by a collision waits for the running ticket, not the next free worker, in Ready',
-  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (collides), then a worker repairs it, try 1 of 2 true');
-t('a ticket held back by a collision says it collides', /F-3 +○ ready +waits for F-1 \(collides\)/.test(phi), true);
+  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (shared files), then a worker repairs it, try 1 of 2 true');
+t('a ticket held back by a collision says it shares files', /F-3 +○ ready +waits for F-1 \(shared files\)/.test(phi), true);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
-t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).includes('waits for F-1 (collides), then a worker repairs it'), true);
+t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).replace(/\n▌ /g, ' ').includes('waits for F-1 (shared files), then a worker repairs it'), true);
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.

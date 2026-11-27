@@ -168,6 +168,13 @@ export function readyAt(e) {
   return v && Number.isFinite(e?.undraft) && Number.isFinite(t) ? t : null;
 }
 
+// The recorded stages of `state` as desk-q-eta.mjs's forecast reads them: [{key, ready, merged, outage}]
+// (ms), one for each PR with an undraft read.
+export const forecastStages = (state) => readStages(state).flatMap((e) => {
+  const ready = readyAt(e);
+  return ready == null ? [] : [{ key: e.key, ready, merged: Date.parse(e.merged), outage: !!e.external?.outage }];
+});
+
 export const fmt = (m) => (m == null ? '—' : m >= 90 ? `${Math.round(m / 6) / 10}h` : `${Math.round(m)}m`);
 
 // The summary as one line, or null with nothing recorded.

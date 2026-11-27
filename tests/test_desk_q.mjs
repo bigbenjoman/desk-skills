@@ -89,6 +89,7 @@ function put(T, env, name, r) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n` +
     (r.runBy ? `| Batches run by | \`supervisor\` | \`${r.runBy}\` |\n` : '') +
     (r.gate ? `| Spawn gate (available memory) | \`start work > 8 GiB\` | \`${r.gate}\` |\n` : '') +
+    (r.weight ? `| Worker memory weight (GB) | \`none\` | \`${r.weight}\` |\n` : '') +
     (r.jira ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${r.jira}\` |\n` : '') +
     (r.perms ? `\n## 3. Permissions\n\n| Key | Your setting |\n|---|---|\n${Object.entries(r.perms).map(([k, v]) => `| \`${k}\` | \`${v}\` |\n`).join('')}` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -528,6 +529,28 @@ const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
   unbanded(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
+// issue-1523 AC5: the machine line's GB, each running worker at its repo's weight against the ceiling.
+{
+  const fake = (slug, n) => ({ slug, rows: Array.from({ length: n }, () => ({ k: 'running' })), prs: [] });
+  const weights = { heavy: '5', light: '2' };
+  const mem = Q.machineMemory([fake('heavy', 2), fake('light', 1)], { cap: 4, ceiling: 15, weightOf: (s) => weights[s] ?? null });
+  t('issue-1523 AC5 GB in use sums each repo\'s weight', JSON.stringify(mem), JSON.stringify({ used: 12, ceiling: 15, light: 2, heavy: 5 }));
+  t('issue-1523 AC5 a repo with no weight weighs the flat share', Q.machineMemory([fake('plain', 2)], { cap: 3, ceiling: 15, weightOf: () => null }).used, 10);
+  t('issue-1523 AC5 no memory ceiling, no GB figure', Q.machineMemory([fake('heavy', 2)], { cap: 4, ceiling: null, weightOf: () => '5' }), null);
+  t('issue-1523 AC5 3 GB free fits a light worker, not a heavy one', JSON.stringify(Q.weightedRoom(1, mem)), JSON.stringify({ room: 1, light: true }));
+  t('issue-1523 AC5 room for heavy workers reads as plain room', JSON.stringify(Q.weightedRoom(3, { used: 5, ceiling: 15, light: 2, heavy: 5 })), JSON.stringify({ room: 2, light: false }));
+  t('issue-1523 AC5 no ceiling leaves the count\'s room', JSON.stringify(Q.weightedRoom(3, null)), JSON.stringify({ room: 3, light: false }));
+}
+// issue-1523 AC5: with a memory ceiling in the machine profile the header line shows the GB beside the count.
+{
+  const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null,
+    heavy: { port: 3100, conc: '2 / 3', beat: 1, weight: '5', queue: { batch: 'h', concurrency: 2, tickets: { 'H-1': { state: 'running', stage: '4/9' }, 'H-2': { state: 'running', stage: '3/9' } } } },
+    light: { port: 3200, conc: '2 / 3', beat: 1, weight: '2', queue: { batch: 'l', concurrency: 2, tickets: { 'L-1': { state: 'running', stage: '4/9' } } } } });
+  writeFileSync(gw.env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n| memory-ceiling-gb | `15` | x |\n');
+  const head = lines(spawnSync('node', [BIN, '--plain', '--all'], { env: { ...gw.env, DESK_MEM_AVAIL_GB: '30' }, encoding: 'utf8' }).stdout).find((l) => l.startsWith('● '));
+  t('issue-1523 AC5 the machine line shows GB in use against the ceiling, alongside the worker count, and room for a light worker',
+    head, '● 3 workers running │ machine cap 10 · 12 of 15 GB · room for a light worker (2 GB) │ 30.0 GiB free');
+}
 // The room uses the spawn gate the repos set, the highest of them, and 8 GiB only for a repo that sets none.
 const gateRoom = (over, avail) => {
   const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null, ...over });
@@ -1209,6 +1232,13 @@ const wrapRow = (key) => (wrapOut.find((l) => l.includes(` ${key} `)) ?? '').rep
 t('issue-1418 AC1 a final stage marked done reads as finishing, not running', wrapRow('W-1').startsWith('1 W-1 ◑ finishing worker finished, next pass records it started overdue') || wrapRow('W-1'), true);
 t('issue-1418 AC1 so does a worker that printed its DONE marker', wrapRow('W-2').startsWith('2 W-2 ◑ finishing ') || wrapRow('W-2'), true);
 t('issue-1418 AC1 a worker still in its last stage is running', wrapRow('W-3').startsWith('3 W-3 ● running ') || wrapRow('W-3'), true);
+// issue-1543 AC1 and AC3: the key explains ◑ finishing, and leaves out · waiting, which no row shows.
+t('issue-1543 AC1 the key has an entry for ◑ finishing, and none for a label no row shows', wrapOut.filter((l) => l.startsWith('key ')).join('\n'),
+  'key   ● running: holds a worker │ ◑ finishing: worker done, the next pass records it');
+// issue-1543 AC2: the Timeline's and Days' keys name ◑ finishing too, and no · waiting.
+// --plain ships is the ships list, so the Timeline is drawn without it.
+const finKey = (view) => { const o = WR.run(...(view === 'days' ? ['--plain'] : []), view, 'wrap').out.replace(ANSI, ''); return `${/◑ finishing/.test(o.slice(o.lastIndexOf('● running')))} ${/· waiting/.test(o)}`; };
+t('issue-1543 AC2 the Timeline and Days keys name ◑ finishing, and leave out · waiting', `${finKey('ships')} / ${finKey('days')}`, 'true false / true false');
 t('issue-1418 AC1 only the running one counts as a held worker', wrapOut.find((l) => /workers \d+ of \d+/.test(l))?.match(/workers \d+ of \d+/)?.[0], 'workers 1 of 3');
 // The render time, and the minute either side of it the run may have crossed.
 const renderTimes = [-1, 0, 1].map((m) => whenAt(wrapAt + m * 60000, wrapAt));
@@ -1503,6 +1533,21 @@ const key80 = lines(Q.repoScreen(repo217('hold'), { now: FIXED, width: 80 }));
 const k80i = key80.findIndex((l) => l.startsWith('key '));
 t('DS-217 AC10 at 80 columns the key line breaks between states, never past the width',
   `${k80i > 0} ${key80.slice(k80i).filter((l) => l.length > 80).length} ${key80[k80i + 1]?.startsWith('      ')}`, 'true 0 true');
+// issue-1543 AC2: every label desk-q can draw has key text once a row shows it. `✓ done` is the one
+// label the Queue never lists, so the key never needs it.
+const keyLines = (ks, w) => Q.stateKey(ks, w).map((l) => l.line.replace(ANSI, ''));
+const keyText = (ks, w) => keyLines(ks, w).join('\n');
+t('issue-1543 AC2 every label a row can show is explained in the key',
+  Object.keys(Q.LABEL).filter((k) => k !== 'done').filter((k) => !keyText([k]).split(/ │ |\n/).some((e) => { const s = e.replace(/^key {3}/, ''); return s.startsWith(`${Q.LABEL[k]}: `) && !/: (undefined|null)?$/.test(s); })).join(), '');
+t('issue-1543 AC3 a label no row shows is left out: a finishing row alone draws no · waiting', /· waiting/.test(keyText(['finishing'])), false);
+const allKs = Object.keys(Q.LABEL).filter((k) => k !== 'done');
+// Only an entry wider than the line on its own (◇ put off at 60) runs past it, alone on its line.
+t('issue-1543 AC4 (#1504) at 60, 80 and 120 columns the key wraps at whole entries, never past the width',
+  [60, 80, 120].map((w) => {
+    const ls = keyLines(allKs, w);
+    const entries = ls.flatMap((l) => l.replace(/^key {3}|^ {6}/, '').split(' │ '));
+    return `${w}:${ls.every((l) => l.length <= w || !l.includes(' │ '))} ${entries.every((e) => /^\S+ [a-z ]+: \S/.test(e))} ${ls.length > 1} ${ls.find((l) => l.includes('◑ finishing')).length <= w}`;
+  }).join(' / '), '60:true true true true / 80:true true true true / 120:true true true true');
 // AC10 and AC11 on the screen: each state in its colour, its meaning grey; every colour in the rows and
 // the key line at least 4.5:1 on the window and on the selected row, in the One Dark palette the
 // approved design measured, docs/design/DS-227/index.html (256-colour greys are fixed: 8 + 10 * (n - 232)).
@@ -2021,6 +2066,23 @@ const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
 t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note naming what held them',
   `${cell219('np')} | ${notesOf('np').join(' / ')} | ${cell219('moved')} ${notesOf('moved').length}`,
   `▲ no progress 3h 5m | nothing started or merged for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
+// Time the queue held nothing to work on is not counted as no progress.
+const merged1519 = { state: 'done', result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } };
+const pass1519 = { at: minsAgo(1), by: 'session', held: held219, errors: 0, progress_at: minsAgo(485) };
+put219('idle1519', 5960, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519 } });
+put219('admit1519', 5970, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'AD-1': { ...ready, added_at: minsAgo(1) } } });
+put219('stall1519', 5980, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'SL-1': { ...ready, added_at: minsAgo(480) } } });
+put219('requeue1519', 5990, { supervised: false, pass: pass1519, tickets: { 'IE-1': merged1519, 'RQ-1': { ...ready, added_at: minsAgo(480), requeued_at: minsAgo(1) } } });
+const ov1519 = Q.overview(Q.loadRepos(NOW).filter((r) => r.name.endsWith('1519')), { now: NOW, avail: 30 });
+const cell1519 = (name) => (rowOf(ov1519, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
+t('issue-1519 AC2 a live batch with nothing left in it reads idle since its last merge, with no no-progress note',
+  `${/^● idle since (\d\d:\d\d|\d+ [A-Z][a-z]{2})$/.test(cell1519('idle1519'))} ${notesIn(lines(ov1519), 'idle1519').length}`, 'true 0');
+t('issue-1519 AC1/AC3 a ticket admitted a minute ago to a batch idle since a merge 8h ago: the clock starts at its admission',
+  `${cell1519('admit1519')} ${notesIn(lines(ov1519), 'admit1519').length}`, '● session · 1m ago 0');
+t('issue-1519 AC1 a ticket added 8h ago and parked until its requeue a minute ago: the clock starts at the requeue',
+  `${cell1519('requeue1519')} ${notesIn(lines(ov1519), 'requeue1519').length}`, '● session · 1m ago 0');
+t('issue-1519 AC4 a ready ticket waiting 8h with no start or merge still reads no progress',
+  `${cell1519('stall1519')} | ${notesIn(lines(ov1519), 'stall1519').join(' / ')}`, `▲ no progress 8h 0m | nothing started or merged for 8h 0m. Last pass: ${held219}.`);
 t('DS-219 AC2 two errored passes in a row: the red band above the header names the repo and the error\'s first line; one does not',
   `${bandAt219('err: the last 2 passes errored: no repo config found for acme/err')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
 t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervisor + session, and one note with both fixes',
@@ -2169,6 +2231,8 @@ t('DS-279 AC9 11 failed checks on try 1: a worker repairs it while running, the 
   `${rail279('V-705').includes('11 checks failed · a worker repairs it, try 1 of 2')} ${rail279('V-697').includes('#697 · 11 checks failed · next free worker repairs it, try 1 of 2')}`, 'true true');
 t('DS-279 AC9 no row with a failed check leads with a pass count', q279.filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | '), '');
 t('DS-279 AC10 a DIRTY PR on its first try names the base branch', rail279('V-704'), 'Moves without you: #704 · merge conflict with main · next free worker repairs it, try 1 of 2.');
+t('issue-1530 AC2 a fix try\'s row still says its PR now needs the person\'s merge, after the try',
+  Q.needText(r279, { t: { key: 'V-697', ...board['V-697'], new_holds: ['infra/main.tf'] }, k: 'ready' }), '#697 · 11 checks failed · next free worker repairs it, try 1 of 2 · now needs your merge: infra/main.tf');
 // The machine cap is shared by every repo: a batch with free workers still waits while it is full.
 for (const r of repos279) r.machine = { running: 10, cap: 10 };
 t('desk-q machine cap: a queued fix try waits for a machine slot while every repo\'s workers fill the cap',
@@ -2403,6 +2467,10 @@ t('DS-420 AC4 a PR the driver stopped rerunning says it is red after that many r
 // needText reads the clock, so its running check started 30 minutes before this call.
 const m420 = { ...ds280['M-4'], pr_status: { ...ds280['M-4'].pr_status, checks: ds280['M-4'].pr_status.checks.map((c, i) => (i ? c : { ...c, started: clockAgo(30) })) } };
 t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, m420)} | ${need420(m420)}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
+t('issue-1530 AC2 a PR a later change put under a merge hold says it now needs the person\'s merge, after its reason',
+  need420({ ...m420, new_holds: ['infra/main.tf'] }), '#904 · check 1 running, 30m · 2 of 3 done · now needs your merge: infra/main.tf');
+t('issue-1530 AC2 with passes stopped the row says it too',
+  Q.needText({ ...r280, live: false }, { t: { ...m420, new_holds: ['infra/main.tf'] }, k: 'merging', pr: true }).endsWith(' · now needs your merge: infra/main.tf'), true);
 const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
 t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
   Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');

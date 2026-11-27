@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { localDay } from '../desk/bin/machine.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -380,13 +381,14 @@ f = await O.until(checked);
 t('DS-472 AC9 x removes the login, and the footer says its folder and sign-in stay', footer(f, 'spare@example.test is removed'),
   'spare@example.test is removed from the rules for this computer. Its folder and sign-in are left as they are. u undoes.');
 t('DS-472 AC9 its folder and sign-in are left as they are', `${existsSync(SPARE)} ${existsSync(join(SPARE, '.claude.json'))}`, 'true true');
-t('DS-472 AC9 the file names it as removed', /^\| `claude` \| `spare` \| `~\/.claude-logins\/spare` \|$/m.test(subsText()), true);
+const spareRemoved = `| \`claude\` | \`spare\` | \`~/.claude-logins/spare\` | \`${localDay()}\` |`;
+t('DS-472 AC9 #1489 AC3 the file names it as removed, today', subsText().split('\n').includes(spareRemoved), true);
 t('DS-472 AC9 the view no longer lists it', rowOf(f, 'spare@example.test'), null);
 const check17 = JSON.parse(deskEnv('check', '--json').stdout);
 t('DS-472 AC17 the next account check does not list it again', check17.logins.some((l) => l.name === 'spare'), false);
 await O.press('u');
 f = await O.until((x) => checked(x) && x.some((l) => l.includes('is back')));
-t('u after x lists it again, unused', `${ruleIn('claude', 'spare')} ${/^\| `claude` \| `spare` \| `~\/.claude-logins\/spare` \|$/m.test(subsText())}`, 'unused false');
+t('u after x lists it again, unused', `${ruleIn('claude', 'spare')} ${subsText().split('\n').includes(spareRemoved)}`, 'unused false');
 t('and the view shows it unused', useOf(f, 'spare@example.test'), '○ unused');
 O.done();
 // A worker's deny rules match on the command's start, and --batch may come first; desk-env refuses it too.

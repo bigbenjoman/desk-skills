@@ -63,10 +63,15 @@ Never fails a session: any error exits 0 with no output.
 
 Worker mode: in an autopilot worker (DESK_AUTOPILOT_WORKER=1 with DESK_HANDOFF_FILE, which
 spawn-worker.sh exports and worker-settings.mjs registers this hook for, on PostToolUse, Stop and
-SessionStart), the threshold is the handoff-threshold lever's value from the worker's pin
-(DESK_LEVER_VALUES `handoff-threshold=<pct>`, on both windows), else the §2 rows as above. Past it,
-partway through a stage a session can start at (the last `AUTOPILOT_STAGE:` line the worker printed
-names Stage 3 or later), inject once: commit, write the handoff briefing with `handoff.mjs write
+SessionStart), the threshold is the ticket's raised one (DESK_HANDOFF_PCT, which pass.mjs sets once
+two sessions in a row handed off without moving a stage or adding a commit), else the
+handoff-threshold lever's value from the worker's pin (DESK_LEVER_VALUES `handoff-threshold=<pct>`),
+each on both windows, else the §2 rows as above. The state stamps the context at the session's first
+check (`start`: used, window, time and root), which `desk-env drift` reads as start-up use. Past the
+threshold, once the context has also grown by MIN_GROWTH tokens since that first check (or the last
+compaction; DESK_HANDOFF_MIN_GROWTH overrides it), and partway through a stage a session can start at
+(the last `AUTOPILOT_STAGE:` line the worker printed names Stage 3 or later, else, before it prints
+one, the stage a fresh session was started at, DESK_START_STAGE), inject once: commit, write the handoff briefing with `handoff.mjs write
 --stage <stage> --left …`, print `AUTOPILOT_HANDOFF: <stage>` and end the turn; pass.mjs then starts
 a fresh worker at that stage from the briefing. Stop blocks once while DESK_HANDOFF_FILE is unwritten
 since. No .handoffs/ file is named and the loop step never runs; SessionStart records the model and,
@@ -76,7 +81,8 @@ Any other worker (a fix or base try: AUTOPILOT_TASK, or no DESK_HANDOFF_FILE) ne
 the hook is silent in it.
 
 Run as `desk-handoff.py offer-1m [--asked] [<dir>]` (not a hook event), it is /desk-update's one-time
-offer to lower a 1M threshold of 45 to 20: see offer_1m.
+offer to lower a 1M threshold of 45 to 20: see offer_1m. Run as `desk-handoff.py pick [<dir>]`, it is
+/desk-resume's choice in a session started fresh, which SessionStart names no handoff for: see pick.
 """
 import calendar
 import glob
@@ -88,6 +94,7 @@ import sys
 import time
 
 DEFAULT_PCT = 45
+MIN_GROWTH = 30_000  # tokens a worker session gains before it may hand off (DESK_HANDOFF_MIN_GROWTH)
 SMALL_WINDOW = 200_000
 LARGE_WINDOW = 1_000_000
 FRESH_SECONDS = 24 * 3600
@@ -582,62 +589,103 @@ def lever_value():
     return "config"
 
 
-def lever_pct():
-    """The lever's value as a percentage, or None for `config` or a value that is not one."""
+def as_pct(value):
+    """A percentage from 0 to 100 (both excluded), or None."""
     try:
-        pct = float(lever_value())
-    except ValueError:
+        pct = float(value)
+    except (TypeError, ValueError):
         return None
     return pct if 0 < pct < 100 else None
 
 
-def current_stage(transcript):
-    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None."""
+def lever_pct():
+    """The lever's value as a percentage, or None for `config` or a value that is not one."""
+    return as_pct(lever_value())
+
+
+def raised_pct():
+    """The ticket's raised threshold (DESK_HANDOFF_PCT, which pass.mjs sets once its sessions hand off
+    without moving a stage), or None."""
+    return as_pct(os.environ.get("DESK_HANDOFF_PCT"))
+
+
+def min_growth():
+    """Tokens the context must gain since the session started (or last compacted) before it hands off."""
     try:
-        lines = transcript_lines(transcript)
-    except Exception:
-        return None
-    for raw in reversed(lines):
-        if b"AUTOPILOT_STAGE" not in raw:
-            continue
+        return max(0, int(os.environ.get("DESK_HANDOFF_MIN_GROWTH", MIN_GROWTH)))
+    except ValueError:
+        return MIN_GROWTH
+
+
+def current_stage(transcript):
+    """The stage the worker's last `AUTOPILOT_STAGE:` line names ("4", "4b"), or None.
+
+    The tail usually holds it; the whole file is read only when the tail does not, so a None means
+    the worker has printed no stage line at all."""
+    for limit in (TAIL_LIMIT, None):
         try:
-            e = json.loads(raw)
+            lines = transcript_lines(transcript, limit)
         except Exception:
-            continue
-        if e.get("type") != "assistant" or e.get("isSidechain"):
-            continue
-        for c in reversed((e.get("message") or {}).get("content") or []):
-            if not isinstance(c, dict):
+            return None
+        for raw in reversed(lines):
+            if b"AUTOPILOT_STAGE" not in raw:
                 continue
-            if c.get("type") == "text":
-                found = STAGE_LINE.findall(c.get("text") or "")
-                if found:
-                    return found[-1].lower()
-            elif c.get("type") == "tool_use" and c.get("name") == "Bash":
-                m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
-                if m:
-                    return m.group(2).lower()
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            if e.get("type") != "assistant" or e.get("isSidechain"):
+                continue
+            for c in reversed((e.get("message") or {}).get("content") or []):
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text":
+                    found = STAGE_LINE.findall(c.get("text") or "")
+                    if found:
+                        return found[-1].lower()
+                elif c.get("type") == "tool_use" and c.get("name") == "Bash":
+                    m = ECHO_STAGE.match(str((c.get("input") or {}).get("command") or ""))
+                    if m:
+                        return m.group(2).lower()
+        if os.path.getsize(transcript) <= TAIL_LIMIT:
+            break  # the tail was the whole file
     return None
+
+
+def worker_stage(transcript):
+    """The stage the worker is in: its last stage line, else the stage spawn-worker.sh started this
+    session at (DESK_START_STAGE, from AUTOPILOT_START_STAGE). A fresh session after a handoff or a
+    park starts partway through a stage and may print no stage line until the next one; without
+    this it could never hand off before then."""
+    stage = current_stage(transcript)
+    if stage:
+        return stage
+    start = (os.environ.get("DESK_START_STAGE") or "").strip().lower()
+    return start if start in RESUME_STAGES else None
 
 
 def on_worker_context(event, data, session, root, path):
     state = load_state(session)
     if state.get("fired_at"):
         return
-    pin = lever_pct()
-    pct, pct_1m = (pin, pin) if pin else session_threshold(state, root)
+    raised, pin = raised_pct(), lever_pct()
+    pct, pct_1m = (raised, raised) if raised else (pin, pin) if pin else session_threshold(state, root)
     transcript = data.get("transcript_path") or ""
     used = context_used(transcript)
     if used is None:
         save_state(session, state)
         return
     w = window(state, used)
+    # The context at the session's first check: its start-up use, which `desk-env drift` reads.
+    state.setdefault("start", {"used": used, "window": w, "at": time.time(), "root": root})
+    state.setdefault("base_used", used)
     if w >= LARGE_WINDOW:
         pct = pct_1m
     if pct:
         state["arm"] = {"pct": pct, "window": w}
     now = used * 100.0 / w
-    stage = current_stage(transcript) if pct and now >= pct else None
+    grown = used - state["base_used"] >= min_growth()
+    stage = worker_stage(transcript) if pct and now >= pct and grown else None
     # Before Stage 3 no fresh session can start where this one is: it carries on, checked again later.
     if stage not in RESUME_STAGES:
         save_state(session, state)
@@ -646,7 +694,8 @@ def on_worker_context(event, data, session, root, path):
     save_state(session, state)
     key = os.path.splitext(os.path.basename(path))[0]
     value = lever_value()
-    source = (f"handoff-threshold {value}" if pin else
+    source = ("raised for this ticket, DESK_HANDOFF_PCT" if raised else
+              f"handoff-threshold {value}" if pin else
               "config §2 Handoff at context %" + (" on a 1M window" if w >= LARGE_WINDOW else ""))
     inject(event, (
         f"desk handoff: context is at {now:.0f}% of a {w:,}-token window, past this worker's "
@@ -689,7 +738,7 @@ def on_worker_session_start(data, session):
         m = data["model"]
         state["model"] = m.get("id") if isinstance(m, dict) else str(m)
     if data.get("source") == "compact":
-        for k in ("fired_at", "blocked", "stage"):
+        for k in ("fired_at", "blocked", "stage", "base_used"):
             state.pop(k, None)
     save_state(session, state)
 
@@ -901,6 +950,9 @@ def on_session_start(data, session, root):
         if source == "compact" and recorded:
             state.update(kept=recorded, kept_at=time.time())
     pct, pct_1m = session_threshold(state, root)
+    # How this session began, under which Claude process: `pick` resumes nothing for a session whose
+    # /clear or compaction this hook has already settled.
+    state.update(start_source=source, start_pid=claude_pid(), started_at=time.time())
     save_state(session, state)
     if source not in ("clear", "compact") or not (pct or pct_1m):
         return
@@ -923,18 +975,12 @@ def on_session_start(data, session, root):
     if time.time() - os.path.getmtime(latest) > FRESH_SECONDS:
         return
     name = os.path.basename(latest)
-    consumed_path = os.path.join(handoff_dir(root), ".consumed")
-    try:
-        consumed = open(consumed_path).read().split()
-    except Exception:
-        consumed = []
-    if name in consumed:
+    if name in consumed_names(root):
         return
     # A compaction carries on the session that wrote it, which holds the handoff; only a /clear
     # carries it out.
     if source == "clear":
-        with open(consumed_path, "a") as f:
-            f.write(name + "\n")
+        consume(root, name)
     else:
         hold(root, latest)
     rel = os.path.relpath(latest, root)
@@ -981,7 +1027,68 @@ def offer_1m(args):
     return 0
 
 
+def consumed_names(root):
+    try:
+        return open(os.path.join(handoff_dir(root), ".consumed")).read().split()
+    except Exception:
+        return []
+
+
+def consume(root, name):
+    with open(os.path.join(handoff_dir(root), ".consumed"), "a") as f:
+        f.write(name + "\n")
+
+
+def started_fresh():
+    """Whether this session began fresh (a new or resumed session), as SessionStart recorded it, and
+    not by /clear or a compaction: SessionStart has then already chosen its handoff, or chosen none
+    on purpose (its own is unwritten, stale or resumed), so no other session's is taken for it. Read
+    from the session's own state (CLAUDE_CODE_SESSION_ID) and from this Claude process's newest
+    session; either saying /clear or a compaction, or neither found, is not fresh."""
+    sources = []
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid and load_state(sid).get("start_source"):
+        sources.append(load_state(sid)["start_source"])
+    pid, best = claude_pid(), None
+    for p in glob.glob(os.path.join(STATE_DIR, "*.json")):
+        try:
+            with open(p) as f:
+                s = json.load(f)
+            at = float(s.get("started_at") or 0)
+        except Exception:
+            continue
+        if s.get("start_pid") == pid and (best is None or at > best[0]):
+            best = (at, s.get("start_source"))
+    if best:
+        sources.append(best[1])
+    return bool(sources) and not any(s in ("clear", "compact") for s in sources)
+
+
+def pick(args):
+    """`desk-handoff.py pick [<dir>]`: /desk-resume in a session the hook named no handoff for
+    because it started fresh rather than by /clear or a compaction. Where exactly one handoff fits
+    the /clear rule (written, under 24 hours old, not consumed, not held), print its path, mark it
+    consumed and exit 0; with none or several, or in a session not known to have started fresh,
+    print nothing and exit 1, and the person chooses."""
+    root = git(args[0] if args else os.getcwd(), "rev-parse", "--show-toplevel")
+    if not root or not started_fresh():
+        return 1
+    skip = set(held_names(root)) | set(consumed_names(root))
+    fits = [f for f in handoffs(root) if os.path.basename(f) not in skip
+            and time.time() - os.path.getmtime(f) <= FRESH_SECONDS]
+    if len(fits) != 1:
+        return 1
+    consume(root, os.path.basename(fits[0]))
+    print(fits[0])
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["pick"]:
+        try:
+            sys.exit(pick(sys.argv[2:]))
+        except Exception:
+            sys.exit(1)
     if sys.argv[1:2] == ["offer-1m"]:
         try:
             sys.exit(offer_1m(sys.argv[2:]))

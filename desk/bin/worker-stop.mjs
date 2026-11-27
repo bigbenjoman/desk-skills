@@ -27,14 +27,15 @@ export function workerProcs(sid, rows, self = process.pid) {
   return treeTarget(rows.filter((r) => startsSession(r.args, sid)).map((r) => r.pid), rows, self);
 }
 
-// The pids still alive of what `target` names, read from `rows`.
-const left = (target, rows) => rows.filter((r) => target.groups.includes(r.pgid) || target.pids.includes(r.pid)).map((r) => r.pid);
+// The pids still alive of what `target` names, read from `rows` (processRows): the one rule for which
+// processes a stop target covers, so the pids queue.mjs stop records are the ones endProcs signals.
+export const targetPids = (target, rows) => rows.filter((r) => target.groups.includes(r.pgid) || target.pids.includes(r.pid)).map((r) => r.pid);
 
 // SIGTERM every group and pid `target` names, wait up to `graceMs` for them to go, then SIGKILL what is
 // left and wait up to `killMs`. -> { ended: [pid], left: [pid] }: those that were signalled and went,
 // and those still alive at the end.
 export function endProcs(target, { graceMs = 10_000, killMs = 3_000, rows = processRows, kill = (p, s) => process.kill(p, s) } = {}) {
-  const before = left(target, rows());
+  const before = targetPids(target, rows());
   // A SIGKILL goes only to what is still alive, so a pid freed since the SIGTERM is never signalled.
   const signal = (sig, alive = null) => {
     const live = alive && rows().filter((r) => alive.includes(r.pid));
@@ -43,7 +44,7 @@ export function endProcs(target, { graceMs = 10_000, killMs = 3_000, rows = proc
   };
   const waitGone = (ms) => {
     for (const until = Date.now() + ms; ;) {
-      const now = left(target, rows());
+      const now = targetPids(target, rows());
       if (!now.length || Date.now() >= until) return now;
       sleepSync(100);
     }

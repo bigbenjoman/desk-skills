@@ -163,6 +163,20 @@ kill -9 -- "-$WPID" 2>/dev/null
 wait "$stopper"; wait "$WPID" 2>/dev/null
 check "a pass started while a stop holds the lock refuses, naming it"    '[ $prc -ne 0 ] && [[ "$out" == *"queue.mjs stop S-13"* ]] && [ "$(f S-13 state)" = "\"parked\"" ]'
 
+# issue-1553 comment 2: a ticket worked in a cloud session has no process here. stop records its session
+# abandoned and hands it to needs-you's archive list, holding the ticket; requeue refuses it running, and
+# after the stop sends it back with no session, so the pass starts a new one.
+q add C-1; q set C-1 state=triaged lane=A location=cloud branch=feat/C-1
+q set C-1 state=running stage=cloud 'cloud={"session":"session_01abc","url":"https://claude.ai/code/session_01abc","name":"widgets-ticket-C-1","started":"2026-11-27T02:29:00Z"}'
+before=$(sum); q requeue C-1
+check "issue-1553 a running cloud ticket is not requeued, and is told to stop first" '[ $rc -ne 0 ] && [[ "$out" == *"running in a cloud session: queue.mjs stop C-1 first"* ]] && [ "$(sum)" = "$before" ]'
+q stop C-1
+check "issue-1553 stop finds a cloud worker: its session is recorded abandoned" '[ $rc -eq 0 ] && [[ "$out" == *"its cloud session https://claude.ai/code/session_01abc is recorded abandoned"* ]] && [ "$(f C-1 cloud.abandoned_at)" != null ]'
+check "issue-1553 the cloud ticket is held as a stopped worker is"          '[ "$(f C-1 state)" = "\"parked\"" ] && [ "$(f C-1 park.kind)" = "\"stopped\"" ] && [[ "$(f C-1 park.question)" == *"recorded abandoned"* ]]'
+check "issue-1553 the abandoned session goes on needs-you's archive list"     '[[ "$out" == *"needs-you asks you to archive it"* ]] && node -e "import(process.argv[1]).then((m) => process.exit(m.readPending(process.argv[2]).some((d) => d.session === \"session_01abc\" && d.key === \"C-1\") ? 0 : 1))" "$B/cloud-worker.mjs" "$T/state"'
+q requeue C-1
+check "issue-1553 after the stop, requeue works with no local worker"         '[ $rc -eq 0 ] && [ "$(f C-1 state)" = "\"triaged\"" ] && [ "$(f C-1 location)" = "\"cloud\"" ] && [ "$(f C-1 cloud)" = null ]'
+
 rm -rf "${T:?}"
 echo "queue stop: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

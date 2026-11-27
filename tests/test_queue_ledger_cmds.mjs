@@ -120,6 +120,10 @@ const run = (q0, args, { file, env = {} } = {}) => {
   t('AC3 stop: parked, then the fields it cleared', `${r.status} ${said}`, '0 parked ST-1, legacy_set ST-1 / queue.mjs stop');
   t('DS-895 AC5 stop: the parked event is of kind stopped, and no legacy event holds the park',
     `${evs[0]?.data.kind} ${evs.some((e) => e.type === 'legacy_set' && 'park' in e.data.fields)}`, 'stopped false');
+  let stops = {};
+  try { stops = JSON.parse(readFileSync(join(STATE, 'worker-stops.json'), 'utf8')); } catch { /* not written */ }
+  t('issue-1614 AC1 stop: records the stop, its time and the pids it ended, where the memory watch reads it',
+    `${Number.isFinite(stops['ST-1']?.at)} ${stops['ST-1']?.pids?.includes(worker.pid)}`, 'true true');
 }
 
 // handback: a lane C park whose session step the person did goes back to a worker at Stage 4b.
