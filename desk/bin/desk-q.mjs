@@ -47,7 +47,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud } from './pass/shared.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -753,7 +753,11 @@ export function loadRepos(now = Date.now(), word = null) {
   // Every batch carries the machine's load, so a repo's screen can say when the machine cap, not the
   // batch's own workers, is what holds its ready tickets back. `others` are the batches not loaded.
   const machine = { running: machineRunning([...all, ...others]), cap: machineCap(), others };
-  for (const r of all) r.machine = machine;
+  // And its repo's cloud sessions, every batch's, as the pass counts them against §3b "Cloud sessions at
+  // once", so a named batch's screen names that limit when a sibling batch fills it.
+  const cloud = new Map();
+  for (const r of all) if (!r.error) cloud.set(r.slug, (cloud.get(r.slug) ?? 0) + cloudRunning(r));
+  for (const r of all) { r.machine = machine; r.repoCloud = cloud.get(r.slug) ?? 0; }
   return all;
 }
 
@@ -3313,14 +3317,13 @@ function countsLine(r, now = Date.now()) {
 // or the machine cap, which every repo's workers share.
 function startWait(r, t) {
   // A ticket that starts in a cloud session waits only on §3b "Cloud sessions at once", never on a
-  // worker or machine slot. A resume or handoff of one runs here, so it waits as a local ticket does.
-  // (pass/eligibility.mjs toResume and toHandoff, which import this module, so are not imported here.)
-  const resumes = ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(t.resume) || t.handoff === 'pending';
-  if (runsInCloud(t) && !resumes) {
+  // worker or machine slot, counted over every batch of its repo (loadRepos repoCloud). A resume or
+  // handoff of one runs here, so it waits as a local ticket does.
+  if (startsInCloud(t)) {
     let limit;
     try { limit = cloudSessions(repoConfigValue(r.slug, 'cloud-sessions')); } catch { limit = cloudSessions(null); }
     if (limit.bad) return `waits for config §3b "Cloud sessions at once" to read as a whole number`;
-    const busy = cloudRunning(r);
+    const busy = Math.max(r.repoCloud ?? 0, cloudRunning(r));
     return busy >= limit.n ? `waits for a cloud session (${busy} of ${limit.n} busy)` : null;
   }
   if (r.workers === 0) return 'workers set to 0';

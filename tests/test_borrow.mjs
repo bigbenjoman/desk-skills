@@ -176,10 +176,12 @@ t('#1564 AC1 the machine budget counts the local workers only, not the cloud ses
 
 // A repo's batches share its §3b cap. A named batch of `slug` with `running` and `ready` tickets and
 // a heartbeat `beat` minutes old in its own state directory, planning its next pass in `next` minutes.
-function batchOf(slug, name, { share = 2, running = 0, ready = 0, beat = 1, next, last } = {}) {
+// `cloudReady` more ready tickets that start in a cloud session.
+function batchOf(slug, name, { share = 2, running = 0, ready = 0, cloudReady = 0, beat = 1, next, last } = {}) {
   const tickets = {};
   for (let i = 1; i <= running; i++) tickets[`${name}-R${i}`] = { key: `${name}-R${i}`, state: 'running' };
   for (let i = 1; i <= ready; i++) tickets[`${name}-Y${i}`] = { key: `${name}-Y${i}`, state: 'triaged', open_questions: 0 };
+  for (let i = 1; i <= cloudReady; i++) tickets[`${name}-C${i}`] = { key: `${name}-C${i}`, state: 'triaged', open_questions: 0, location: 'cloud' };
   const q = named(slug, name, JSON.stringify({ version: 1, batch: name, concurrency: share, tickets, ...(last ? { last_start: last } : {}) }));
   if (beat != null) {
     const dir = join(env.HOME, '.desk-autopilot', slug, 'batches', name, 'orchestrators');
@@ -202,6 +204,10 @@ repo('acme__a', { conc: '2 / 3', share: 2, running: 2, ready: 1 });
 r = repoRoom(queuePath('acme__a'), { running: 2, wanted: 1 });
 t('DS-308 AC3 the standing batch, holding every slot but one, leaves it for X-1', r.room, 0);
 t('DS-308 AC3 and says so', r.line, 'repo workers: 2 of the §3b cap of 3 running — the standing batch (this pass) 2, batch X-1 0; 1 kept for batch X-1, which has 2 ready and 0 running: nothing starts this pass');
+// #1564: a batch whose ready tickets all start in a cloud session wants no local slot, so none is kept for it.
+x1q = batchOf('acme__a', 'X-1', { cloudReady: 2 });
+t('#1564 AC1 a batch with only cloud tickets ready keeps no local slot', repoRoom(queuePath('acme__a'), { running: 2, wanted: 1 }).room, 1);
+x1q = batchOf('acme__a', 'X-1', { ready: 2 });
 fresh();
 repo('acme__a', { conc: '2 / 3', share: 2, running: 1, ready: 1 });
 x1q = batchOf('acme__a', 'X-1', { running: 1, ready: 1 });

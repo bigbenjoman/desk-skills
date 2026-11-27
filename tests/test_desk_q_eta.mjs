@@ -411,6 +411,14 @@ t('#1564 AC4: at the cloud limit, a ready cloud ticket waits for a cloud session
   [/\sC-4\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(cloudFull, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudFull, 'C-5'))], [true, true]);
 t('#1564 AC1: with every worker busy but a cloud session free, a ready cloud ticket starts at the next pass',
   [/\sC-4\s+○ ready\s+starts at the next pass\s/.test(bRow(cloudRoom, 'C-4')), /\sC-5\s+○ ready\s+waits for a worker \(1 of 1 busy\)\s/.test(bRow(cloudRoom, 'C-5'))], [true, true]);
+// #1564 AC2: the limit counts every batch of the repo, as the pass does, so a named batch's own screen
+// names it when the standing batch's cloud sessions fill it.
+repo('cloudsib', 4660, { tickets: { 'D-1': { state: 'running', stage: '3/9', location: 'cloud' }, 'D-2': { state: 'running', stage: '3/9', location: 'cloud' } },
+  sizes: { 'D-1': 'M', 'D-2': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN, cloud: 2 });
+repo('cloudsib', 4660, { batch: 'side', tickets: { 'D-3': { state: 'triaged', location: 'cloud' } }, sizes: { 'D-3': 'M' }, history: range(12, (i) => ['M', 2 + (i % 5)]), pass: FIXED - 2 * MIN, cloud: 2 });
+const sideBatch = Q.loadRepos(FIXED).find((r) => r.repo === 'cloudsib' && r.batch === 'side');
+t('#1564 AC2: a named batch\'s ready cloud ticket waits on the cloud sessions its sibling batch holds',
+  /\sD-3\s+○ ready\s+waits for a cloud session \(2 of 2 busy\)\s/.test(bRow(Q.repoScreen(sideBatch, { now: FIXED, width: 200 }), 'D-3')), true);
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });
 const shipsG = Q.run(['ships', 'gone', '--plain'], { now: FIXED });
 t('DS-185 AC7: ships --plain prints no paused cell, for a batch between passes or stopped', [/paused/.test(shipsW), /paused/.test(shipsG)], [false, false]);

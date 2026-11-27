@@ -16,7 +16,7 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
 import { namedBatches } from './batches.mjs';
-import { runsInCloud } from './pass/shared.mjs';
+import { runningHere, startsInCloud } from './pass/shared.mjs';
 
 // A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
 // desk-q and borrowing through liveBeat, which also counts a recorded next pass still to come.
@@ -165,7 +165,7 @@ export function otherQueues({ self, home = E.deskHome() } = {}) {
 
 // The workers a queue has running here: its running tickets but those in a cloud session, which hold
 // nothing on this computer, and its base conflict fix while one runs.
-const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state === 'running' && !runsInCloud(t)).length + (q.base_fix?.running ? 1 : 0);
+const runningIn = (q) => Object.values(q.tickets ?? {}).filter(runningHere).length + (q.base_fix?.running ? 1 : 0);
 
 // The machine-wide worker budget, borrowing on or off: the machine profile's cap is a hard limit on
 // the workers running in every repo together, so a pass starts at most the cap less every queue's
@@ -199,8 +199,9 @@ export function machineBudget({ running, wanted = 0, machine = machineCap(), que
   return { room, line: head + tail };
 }
 
-// A ticket another batch could start now: triaged, with no question open, and not held.
-const isReady = (t) => t?.state === 'triaged' && (t.open_questions ?? 0) === 0 && !isHeld(t);
+// A ticket another batch could start now on a local slot: triaged, with no question open, not held, and
+// not one that starts in a cloud session, which takes none of these slots.
+const isReady = (t) => t?.state === 'triaged' && (t.open_questions ?? 0) === 0 && !isHeld(t) && !startsInCloud(t);
 
 export const batchLabel = (b) => (b == null ? 'the standing batch' : `batch ${b}`);
 
