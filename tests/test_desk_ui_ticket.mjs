@@ -57,6 +57,10 @@ const QUEUE = { version: 1, batch: 'w', concurrency: 2, tickets: {
   'DS-571': { key: 'DS-571', state: 'done', merged_at: at(8, 0), merge: { pr: 657, at: at(9, 45) }, result: { pr: 657 }, pr_status: recorded(657, REQUIRED.map(passed)) },
   // Its first PR #601 merged, and its replacement #658 has no status recorded yet.
   'DS-572': { key: 'DS-572', state: 'done', merged_at: at(8, 0), merge: { pr: 601, at: at(8, 0) }, result: { pr: 658 } },
+  // The merge driver recorded its own clock (09:46) and a pass then read GitHub's time (09:44) for #660.
+  'DS-573': { key: 'DS-573', state: 'done', merged_at: at(9, 46), merge: { pr: 660, at: at(9, 46) }, result: { pr: 660 }, pr_status: recorded(660, REQUIRED.map(passed), { state: 'MERGED', merged_at: at(9, 44) }) },
+  // A merge recorded with no PR, its PR #602 kept as merged_pr, and replacement #661 with no status yet.
+  'DS-574': { key: 'DS-574', state: 'done', merged_at: at(8, 0), merge: { pr: null, at: at(8, 0) }, merged_pr: [602], result: { pr: 661 } },
 } };
 const QUEUE_FILE = join(process.env.DESK_HOME, 'repos', SLUG, 'queue.json');
 writeFileSync(QUEUE_FILE, JSON.stringify(QUEUE));
@@ -132,6 +136,8 @@ t('a replacement PR that merged reads its own merge time', (await get(api('DS-56
 t('a ticket whose recorded status is an earlier PR\'s reads no merge time for its own', (await get(api('DS-570'))).body.merged_at, null);
 t('a merge the merge driver recorded reads before a pass refreshes the PR\'s status', (await get(api('DS-571'))).body.merged_at, at(9, 45));
 t('a replacement PR with no status yet does not read the first PR\'s merge time', (await get(api('DS-572'))).body.merged_at, null);
+t('GitHub\'s merge time a pass read wins over the merge driver\'s clock', (await get(api('DS-573'))).body.merged_at, at(9, 44));
+t('a merge with no PR named is not a replacement PR\'s when merged_pr keeps another', (await get(api('DS-574'))).body.merged_at, null);
 t('the ticket page carries the worker count', typeof tk.passes.workers, 'number');
 
 // ---- AC6: one failed, 13 passed: the failed row first, each with its job link

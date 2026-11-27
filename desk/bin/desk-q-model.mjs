@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, quietStateName } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, slotWaitWords } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
-import { attachArchive, owesReopen } from './queue-store.mjs';
+import { attachArchive, mergedPrs, owesReopen } from './queue-store.mjs';
 import { PRODUCTION_BROKEN } from './promotion.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -4481,13 +4481,16 @@ function subscriptionEmail(slug) {
 }
 const isoOrNull = (t) => (t == null ? null : isoOf(t));
 // When ticket `t`'s PR #`pr` merged, or null. merged_at keeps a first PR's merge once a ticket is requeued,
-// so it is not read for a later PR: the merge driver's record (queue.mjs merged) names the PR it merged
-// before a pass refreshes that PR's status, and that status (`ps`, prStatusOf) decides after. merged_at
-// alone is read only where neither names a PR.
+// so it is not read for a later PR. The PR's own status (`ps`, prStatusOf) gives GitHub's time once a pass
+// has read it merged; before that, the merge driver's record (queue.mjs merged) of that PR, whose time can be
+// the driver's clock. merged_at alone is read only where no merge record and no kept merged PR
+// (merged_pr, mergedPrs) names another PR.
 function mergedAtOf(t, pr, ps) {
-  if (pr != null && t.merge?.pr === pr) return t.merge.at ?? t.merged_at ?? null;
-  const own = t.merge?.pr == null;
-  if (ps) return ps.state === 'MERGED' ? ps.merged_at ?? (own ? t.merged_at ?? null : null) : null;
+  if (ps?.state === 'MERGED' && ps.merged_at) return ps.merged_at;
+  if (pr != null && t.merge?.pr != null && Number(t.merge.pr) === Number(pr)) return t.merge.at ?? t.merged_at ?? null;
+  const kept = mergedPrs(t).map((x) => x.pr);
+  const own = t.merge?.pr == null && (!kept.length || kept.includes(Number(pr)));
+  if (ps) return ps.state === 'MERGED' && own ? t.merged_at ?? null : null;
   return t.pr_status == null && own ? t.merged_at ?? null : null;
 }
 
