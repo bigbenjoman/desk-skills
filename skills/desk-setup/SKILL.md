@@ -168,7 +168,7 @@ is every start at `medium`, then one start lowered at a time against the Phase 0
 location `cloud`, against that all-`medium` stretch, since the first step moves tickets here). For worker location,
 Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
 Claude Code cloud session, whose tokens and cost are not reported, so its cost cannot be compared
-with local.
+with local. At `cloud`, run the trust check (`references/step-1-this-computer.md`, *Cloud trust*).
 
 **Phase 0 levers are not asked.** A new config gets `none` (every lever off). On a re-run keep what
 the row holds, never turning a lever on or off for the user, and run `desk-env levers`: say its `on:`

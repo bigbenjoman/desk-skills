@@ -131,3 +131,13 @@ rounds. A subscription is a Claude login the check above found signed in, and no
   <default|email>` (`SLUG` from `desk-env where`), which refuses an email that is not one of this
   computer's subscriptions and leaves the config unchanged. Otherwise it is the §3b `Subscription`
   row's value when step 5 writes the config.
+
+### Cloud trust
+
+Once §3b Worker location is `cloud` (and in the Cloud environment step, where there is one), run
+`node ~/.claude/desk/bin/desk-env.mjs subscription cloud-trust` in the repo. It reads, and never
+writes, the `.claude.json` of each login that may start this repo's cloud sessions (its
+Subscription's login, and the default's fallback), and prints one line per login. Say each line that
+names a prompt word for word: the person runs its command once in a terminal, from the checkout. A
+background start waits on the folder-trust dialog, or on the external CLAUDE.md imports prompt, until
+it times out, and the pass parks a cloud ticket whose login has not answered them.
