@@ -327,6 +327,24 @@ check "DS-835 AC2: a refused merge is backed off, recorded failed for its ticket
   'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(jq -r "select(.pr == \"835\") | .event" "$HOME/.desk-autopilot/merges.jsonl" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
 q drop T-835
 
+# ---- a PR someone else merged after the gate read it is not merged again, and its line names them --
+SHA836=8368368368368368368368368368368368368368; SHA837=8378378378378378378378378378378378378378
+q add T-836 Task A; q set T-836 branch=fix/T-836 state=done result.pr=836
+q add T-837 Task A; q set T-837 branch=fix/T-837 state=done result.pr=837
+cat > "$T/prs.json" <<EOF
+{
+  "836": { "head": "fix/T-836", "base": "main", "sha": "$SHA836", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "someone-else" },
+  "837": { "head": "fix/T-837", "base": "main", "sha": "$SHA837", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "premergedBy": "" }
+}
+EOF
+: > "$T/merges.log"
+all=; for i in 1 2 3; do loop; all="$all$out"; done
+check "DS-1030 AC4: a PR GitHub shows merged at the driver's merge is not merged again, and its line names the GitHub user" \
+  '[ -z "$(merged)" ] && echo "$all" | grep -q "#836 already merged on GitHub by github someone-else — not merged by this driver" && node "$B/merge-log.mjs" show --repo acme/widgets --pr 836 --latest | jq -e ".by == \"github someone-else\" and .merged_by == \"someone-else\" and .ticket == \"T-836\"" >/dev/null'
+check "DS-1030 AC4: merged by someone GitHub does not name, the driver records the merger unknown" \
+  'node "$B/merge-log.mjs" show --repo acme/widgets --pr 837 --latest | jq -e ".by == \"unknown\" and .merged_by == null" >/dev/null'
+q drop T-836; q drop T-837
+
 # ---- DS-850: a red main takes no merge but its repair ticket's; green or unread, it merges as before --
 # main's tip R1 has Lint's run still going; its parent R0's run of the required check `test` failed.
 R1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1; R0=a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0; R2=a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2; R3=a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3; R4=a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4

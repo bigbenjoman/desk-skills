@@ -13,9 +13,9 @@
 //       off records `disarmed`, which releases the PR.
 //   merge-log.mjs record ... [--ticket <key>]
 //       names the ticket the PR is for, as the merge driver does.
-//   merge-log.mjs record ... --event merged [--merged-by <login>]
-//       a `merged` line carries `merged_by`, the login GitHub names as the merger, read from GitHub when
-//       --merged-by is not given (an empty one: GitHub names none). With none named, `who` is `unknown`.
+//   merge-log.mjs record ... --event merged
+//       a `merged` line carries `merged_by`, the login GitHub names as the merger, read from GitHub. With
+//       none named, `who` is `unknown`.
 //   merge-log.mjs show [--repo <owner/name>] [--pr <n>]
 //       the events, oldest first, one line each.
 //   merge-log.mjs show --pr <n> --latest [--repo <owner/name>]
@@ -158,9 +158,9 @@ if (isMain) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v ?? ''; };
   const latestFlag = args.includes('--latest'); if (latestFlag) args.splice(args.indexOf('--latest'), 1);
-  const repoFlag = flag('--repo'); const by = flag('--by'); const event = flag('--event'); const why = flag('--why'); const prFlag = flag('--pr'); const ticket = flag('--ticket'); const mergedByFlag = flag('--merged-by');
+  const repoFlag = flag('--repo'); const by = flag('--by'); const event = flag('--event'); const why = flag('--why'); const prFlag = flag('--pr'); const ticket = flag('--ticket');
   const [cmd, pr, sha] = args;
-  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--ticket <key>] [--why <text>] [--merged-by <login>] | show [--pr <n>] | show --pr <n> --latest   [--repo <owner/name>]';
+  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--ticket <key>] [--why <text>] | show [--pr <n>] | show --pr <n> --latest   [--repo <owner/name>]';
   const die = (m) => { console.error(`merge-log: ${m}`); process.exit(EXIT.SHOW_PERSON); };
   let repo = repoFlag;
   if (!repo) { try { repo = E.ghRepo(); } catch (e) { die(`no --repo, and §0 GitHub repo could not be read (${e.message})`); } }
@@ -181,7 +181,7 @@ if (isMain) {
     console.log(`claimed ${repo}#${pr} at ${sha.slice(0, 12)} for ${by}`);
   } else {
     if (!EVENTS.includes(event) || event === 'claim') die(usage);
-    const mergedBy = event !== 'merged' ? undefined : mergedByFlag !== null ? mergedByFlag || null : ghMergedBy(repo, pr);
+    const mergedBy = event === 'merged' ? ghMergedBy(repo, pr) : undefined;
     const e = record({ repo, pr, sha, by, event, ticket, why, mergedBy });
     console.log(`recorded ${repo}#${pr} ${event} at ${sha.slice(0, 12)} by ${e.by}${e.merged_by ? ` (GitHub: ${e.merged_by})` : ''}`);
   }

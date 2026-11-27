@@ -1385,13 +1385,24 @@ EOF_RESOLVE
   lease_take "$n" "$sha" "$want" || return 1
   # With the kind on, the merge call is bounded (desk_timeout: 124, or 137 where it outlived the TERM),
   # so the hold is too; in shadow it runs as before.
-  local mcall=() mrc msecs="$MERGE_SECS"
+  local mcall=() mrc msecs="$MERGE_SECS" pre who
   [ -n "$MLEASE_ENFORCED" ] && mcall=(desk_timeout "$msecs")
   # Claimed in the machine-wide merge log first (merge-log.mjs), so a session merging the same PR, or
   # one that already did, stops this merge instead of racing it, and who merged it is recorded.
   if ! claimed=$(node "$DESK_RUN_BIN/merge-log.mjs" claim "$n" "$sha" --by "$MERGER" --repo "$REPO" 2>&1); then
     lease_free "$n"
     log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
+  fi
+  # Already merged on GitHub since the gate read it: someone else merged it, so the merge log names them
+  # as GitHub does (`github <login>`, `unknown` where it names none) and nothing is merged here. Unread,
+  # it merges as before.
+  pre=$(${mcall[@]+"${mcall[@]}"} gh pr view "$n" --repo "$REPO" --json state,mergedBy -q '"\(.state) \(.mergedBy.login // "")"' 2>/dev/null)
+  if [ "${pre%% *}" = MERGED ]; then
+    who="${pre#MERGED}"; who="${who# }"; who="${who:+github $who}"; who="${who:-unknown}"
+    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$who" --event merged ${key:+--ticket "$key"} --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
+    lease_free "$n"; rm -f "$SD/green-$n"
+    log "#$n already merged on GitHub by $who — not merged by this driver"
+    return 1
   fi
   out=$(${mcall[@]+"${mcall[@]}"} gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); mrc=$?
   if [ -n "$MLEASE_ENFORCED" ] && { [ "$mrc" -eq 124 ] || [ "$mrc" -eq 137 ]; }; then

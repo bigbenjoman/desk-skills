@@ -82,7 +82,7 @@ function holdLease(dir, mode, label) {
   t('AC5 the enqueue names the method', r.calls.find((c) => c.includes('PUT')), `api -X PUT repos/${R}/pulls/501/merge-async -f merge_method=squash`);
 }
 
-// DS-1030: the merged line names who actually merged the PR, as GitHub reports it.
+// The merged line names who actually merged the PR, as GitHub reports it.
 {
   const r = run({ before: true, login: 'someone-else' });
   t('DS-1030 AC1 a PR already merged before the enqueue is not enqueued, and its line names the GitHub user', [r.code, r.calls.filter((c) => c.includes('PUT')).length, r.log.map((e) => `${e.event} ${e.by} ${e.merged_by ?? ''}`.trim())], [0, 0, [`claim ${BY}`, 'merged github someone-else someone-else']]);
