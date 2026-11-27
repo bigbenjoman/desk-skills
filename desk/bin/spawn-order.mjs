@@ -2,6 +2,7 @@
 // this order and prints the rule above it; the skills' generated text (tests/prose_facts.mjs) reads the
 // same sentences from here, so the rule is written once, beside the comparator that applies it.
 import { blockersOf } from './queue-states.mjs';
+import { laidOrder } from './queue-writer.mjs';
 
 export const SPAWN_ORDER_RULE = 'Blockers start first, then the tickets that gate the most others (directly or through any chain of holds), then the fewest planned files, then the order named.';
 export const KEEP_ORDER_RULE = 'With --keep-order, tickets start in the order named, blockers still first.';
@@ -102,10 +103,11 @@ export const FALLBACK_SLOT_HOURS = Object.freeze({ XS: 0.5, S: 1, M: 2, L: 4, XL
 
 // When the last of `order`'s tickets would finish, in hours from now, with `workers` slots filled in
 // queue order: a ticket starts at the first free slot once every blocker of it in play has finished
-// and it shares no file with a ticket running then. `running` are [{ key, hours }] holding slots now,
-// `hoursOf(key)` a ticket's slot time, `scope(key)` its files, `blockers(key)` the keys holding it.
+// and none of its files is already held by as many tickets running then as `places(file)` allows (the
+// pass's per-file budget, placesFor). `running` are [{ key, hours }] holding slots now, `hoursOf(key)`
+// a ticket's slot time, `scope(key)` its files, `blockers(key)` the keys holding it.
 // A ticket that can never start (a blocker cycle) is left out.
-export function projectedFinish(order, { workers, hoursOf, scope, blockers, running = [] }) {
+export function projectedFinish(order, { workers, hoursOf, scope, blockers, running = [], places = () => 1 }) {
   const n = Math.max(1, workers);
   const inPlay = new Set([...order, ...running.map((r) => r.key)]);
   const done = new Set();
@@ -117,7 +119,7 @@ export function projectedFinish(order, { workers, hoursOf, scope, blockers, runn
     active = active.filter((a) => (a.end <= at ? (done.add(a.key), false) : true));
     if (active.length < n) {
       const i = pending.findIndex((k) => blockers(k).every((b) => !inPlay.has(b) || done.has(b))
-        && !active.some((a) => scope(k).some((f) => a.files.has(f))));
+        && scope(k).every((f) => active.filter((a) => a.files.has(f)).length < Math.max(1, places(f))));
       if (i >= 0) {
         const [k] = pending.splice(i, 1);
         const end = at + Math.max(0, hoursOf(k));
@@ -132,12 +134,8 @@ export function projectedFinish(order, { workers, hoursOf, scope, blockers, runn
   return last;
 }
 
-// The queue's keys once `order` is laid over the places its tickets hold now, as layOrder lays it.
-const laidKeys = (tickets, order) => {
-  const slots = new Set(order);
-  const next = order[Symbol.iterator]();
-  return tickets.map((t) => (slots.has(t.key) ? next.next().value : t.key));
-};
+// The queue's keys once `order` is laid over the places its tickets hold now, as the pass lays it.
+const laidKeys = (tickets, order) => laidOrder({ tickets: Object.fromEntries(tickets.map((t) => [t.key, t])) }, order).order;
 
 // The re-sort at §3b "Queue order: placed tickets" `move-and-say`. Each placed unstarted ticket, in
 // queue order, is let go to the re-sort when that cuts the projected finish of the whole queue
@@ -176,6 +174,13 @@ export const gainText = (min) => (min >= 120 ? `${Math.round(min / 6) / 10}h` : 
 // How a placed ticket's move reads in the pass report and the digest: "from 2 to 5, the queue
 // finishes about 45m sooner".
 export const placedMoveText = (m) => `from ${m.from} to ${m.to}, the queue finishes about ${gainText(Math.round(m.gainH * 60))} sooner`;
+// How the pass records a placed ticket's move: `set` the queue.mjs set pairs for its ticket (placed
+// cleared, placed_move for desk-q), `line` its entry in the pass's metrics line `queue_moves`, which
+// the check-in digest reads (pass-metrics.mjs readQueueMoves).
+export function placedMoveRecord(m) {
+  const move = { from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60) };
+  return { set: ['placed=null', `placed_move=${JSON.stringify(move)}`], line: { key: m.key, ...move, text: placedMoveText(m) } };
+}
 
 // The pass's report line for a re-sort, or null when the order did not change.
 export const resortLine = (r) => (r.changed

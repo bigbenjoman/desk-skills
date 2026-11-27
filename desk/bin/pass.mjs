@@ -87,7 +87,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, placedMoveText, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from './spawn-order.mjs';
+import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -2898,51 +2898,6 @@ const budgetFiles = (key) => {
   if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
-// The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
-// resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
-// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it. The
-// cloud-able tickets and the local-only ones are sorted apart, as each kind has its own slots first.
-// At §3b "Queue order: placed tickets" `move-and-say` it may also move a placed ticket, when that
-// brings the projected finish of the whole queue forward by more than §3b "Queue order: move
-// threshold" (placedMoves); each such move is said in the report, on the ticket (`placed_move`, which
-// desk-q shows) and on this pass's metrics line, which the check-in digest lists.
-const resortOpts = { scope: budgetFiles, fileCount: (k) => plannedFiles(triageRec(k)), cloud: startsInCloud };
-const configOr = (id) => { try { return E.configValue(id); } catch { return null; } };
-const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
-  const now = Date.now();
-  const history = (() => { try { return recentHistory(readHistory(STATE) ?? [], now); } catch { return []; } })();
-  const bySize = new Map();
-  const sizeHours = (size) => {
-    if (!bySize.has(size)) bySize.set(size, (history.length >= MIN_HISTORY ? typicalSlotHours({ history, size, now }) : null) ?? FALLBACK_SLOT_HOURS[size] ?? FALLBACK_SLOT_HOURS.unknown);
-    return bySize.get(size);
-  };
-  const hoursOf = (k) => sizeHours(sizeIn(triageRec(k)));
-  const running = Object.values(fresh.tickets).filter((t) => t.state === 'running')
-    .map((t) => ({ key: t.key, hours: hoursOf(t.key) - Math.max(0, (now - (Date.parse(t.spawned_at) || now)) / 3_600_000) }));
-  const blockers = (k) => blockersOf(fresh.tickets[k] ?? {});
-  return placedMoves(Object.values(fresh.tickets), {
-    ...resortOpts,
-    thresholdH: moveThresholdMin(configOr('move-threshold')) / 60,
-    finished: (t) => FINISHED.includes(t.state),
-    finish: (keys) => projectedFinish(keys, { workers: concurrency, hoursOf, scope: budgetFiles, blockers, running }),
-  });
-})() : { ...resortQueue(Object.values(fresh.tickets), resortOpts), placedMoved: [] };
-const orderLines = [];
-if (RESORT.changed) {
-  for (const m of RESORT.placedMoved) {
-    q('set', m.key, 'placed=null', `placed_move=${JSON.stringify({ from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60) })}`);
-    fresh.tickets[m.key].placed = null;
-  }
-  q('order', ...RESORT.order);
-  const why = new Map(RESORT.moved.map((m) => [m.key, m.why]));
-  for (const t of all) {
-    if (why.has(t.key) && t.resort_why !== why.get(t.key)) q('set', t.key, `resort_why=${why.get(t.key)}`);
-    else if (!why.has(t.key) && t.resort_why != null) q('set', t.key, 'resort_why=null');
-  }
-  layOrder(fresh, RESORT.order);
-  orderLines.push(resortLine(RESORT));
-  for (const m of RESORT.placedMoved) orderLines.push(`placed ticket moved (§3b Queue order: placed tickets is move-and-say): ${m.key} ${placedMoveText(m)}`);
-}
 // The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
 // its batch's queue and triage record, and those handed off there between sessions with `handoff: true`
 // (budgetHolds); a review try there fills none, as here. A queue that does not read counts nothing, and
@@ -3042,6 +2997,57 @@ const placesFor = (f) => {
   const k = configuredPlaces(f);
   return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
 };
+// The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
+// resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
+// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it. The
+// cloud-able tickets and the local-only ones are sorted apart, as each kind has its own slots first.
+// At §3b "Queue order: placed tickets" `move-and-say` it may also move a placed ticket, when that
+// brings the projected finish of the whole queue forward by more than §3b "Queue order: move
+// threshold" (placedMoves): the projection fills this batch's slots under the per-file budget above,
+// each ticket's slot time read from its size as the forecast reads it. Each such move is said in the
+// report, on the ticket (`placed_move`, which desk-q shows, kept as `resort_why` is kept) and on this
+// pass's metrics line, which the check-in digest lists.
+const resortOpts = { scope: budgetFiles, fileCount: (k) => plannedFiles(triageRec(k)), cloud: startsInCloud };
+const configOr = (id) => { try { return E.configValue(id); } catch { return null; } };
+const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
+  const now = Date.now();
+  const history = (() => { try { return recentHistory(readHistory(STATE) ?? [], now); } catch { return []; } })();
+  let stages = [];
+  try { stages = MS.forecastStages(E.repoStateOf(STATE)); } catch { /* none read */ }
+  const bySize = new Map();
+  const sizeHours = (size) => {
+    if (!bySize.has(size)) bySize.set(size, (history.length >= MIN_HISTORY ? typicalSlotHours({ history, stages, size, now }) : null) ?? FALLBACK_SLOT_HOURS[size] ?? FALLBACK_SLOT_HOURS.unknown);
+    return bySize.get(size);
+  };
+  const hoursOf = (k) => sizeHours(sizeIn(triageRec(k)));
+  const running = Object.values(fresh.tickets).filter((t) => t.state === 'running' && !reviewOnlyTry(t))
+    .map((t) => ({ key: t.key, hours: hoursOf(t.key) - Math.max(0, (now - (Date.parse(t.spawned_at) || now)) / 3_600_000) }));
+  const blockers = (k) => blockersOf(fresh.tickets[k] ?? {});
+  return placedMoves(Object.values(fresh.tickets), {
+    ...resortOpts,
+    thresholdH: moveThresholdMin(configOr('move-threshold')) / 60,
+    finished: (t) => FINISHED.includes(t.state),
+    finish: (keys) => projectedFinish(keys, { workers: concurrency, hoursOf, scope: budgetFiles, blockers, running, places: placesFor }),
+  });
+})() : { ...resortQueue(Object.values(fresh.tickets), resortOpts), placedMoved: [] };
+const orderLines = [];
+if (RESORT.changed) {
+  const placedNow = new Set(RESORT.placedMoved.map((m) => m.key));
+  for (const m of RESORT.placedMoved) {
+    q('set', m.key, ...placedMoveRecord(m).set);
+    fresh.tickets[m.key].placed = null;
+  }
+  q('order', ...RESORT.order);
+  const why = new Map(RESORT.moved.map((m) => [m.key, m.why]));
+  for (const t of all) {
+    if (why.has(t.key) && t.resort_why !== why.get(t.key)) q('set', t.key, `resort_why=${why.get(t.key)}`);
+    else if (!why.has(t.key) && t.resort_why != null) q('set', t.key, 'resort_why=null');
+    if (!placedNow.has(t.key) && t.placed_move != null) q('set', t.key, 'placed_move=null');
+  }
+  layOrder(fresh, RESORT.order);
+  orderLines.push(resortLine(RESORT));
+  for (const m of RESORT.placedMoved) orderLines.push(`placed ticket moved (§3b Queue order: placed tickets is move-and-say): ${m.key} ${placedMoveText(m)}`);
+}
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(runningAll.filter(reviewOnlyTry).map((r) => r.key));
 // A ticket handed off between sessions, its next one not yet started, keeps the places its files fill
@@ -7204,7 +7210,7 @@ if (!DRY) {
   // began (this pass's own, above, or another repo's) has already read past PASS_AT.
   if (step.warn) Object.assign(line, { warning: warningText(line, step.streak), warned_at: new Date().toISOString() });
   if (RESORT.changed && RESORT.placedMoved.length) {
-    Object.assign(line, { queue_moves: RESORT.placedMoved.map((m) => ({ key: m.key, from: m.from, to: m.to, gain_min: Math.round(m.gainH * 60), text: placedMoveText(m) })), moved_at: new Date().toISOString() });
+    Object.assign(line, { queue_moves: RESORT.placedMoved.map((m) => placedMoveRecord(m).line), moved_at: new Date().toISOString() });
   }
   const wrote = appendMetrics(STATE, line);
   if (!wrote.ok) lines.push(`metrics: this pass's metrics line was not written to ${metricsPath(STATE)} (${wrote.why})${line.queue_moves ? ', so the check-in digest will not list its placed-ticket moves' : ''}`);

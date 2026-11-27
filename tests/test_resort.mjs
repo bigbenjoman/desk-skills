@@ -1,8 +1,8 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
 // covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs
-import { resortQueue, resortLine, chainName, placedMoves, projectedFinish, placedMoveText, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from '../desk/bin/spawn-order.mjs';
-import { layOrder } from '../desk/bin/queue-writer.mjs';
+import { resortQueue, resortLine, chainName, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from '../desk/bin/spawn-order.mjs';
+import { layOrder, laidOrder, applySet } from '../desk/bin/queue-writer.mjs';
 import { blockersOf } from '../desk/bin/queue-states.mjs';
 
 let fails = 0;
@@ -25,6 +25,8 @@ const why = (r) => r.moved.map((m) => `${m.key}: ${m.why}`).join(' | ');
   const r = run(ts, files);
   t('#1623 AC5 a hub gating three by blocker links overtakes two tickets gating none', laid(ts, r), 'H A B L1 L2 L3');
   t('#1623 AC4 and it is marked with its gates', why(r), 'H: gates 3');
+  const q = { tickets: Object.fromEntries(ts.map((x) => [x.key, x])) };
+  t('#1625 laidOrder gives the order layOrder lays, and leaves the queue as it was', `${laidOrder(q, r.order).order.join(' ')} | ${Object.keys(q.tickets).join(' ')}`, 'H A B L1 L2 L3 | A B H L1 L2 L3');
 }
 {
   // H shares a file with each of L1-L3, which share none with each other.
@@ -131,6 +133,15 @@ const cloudRun = (tickets, files) => resortQueue(tickets, { scope: (k) => files[
   t('#1625 AC4 the move is recorded with where it was, where it went and the gain',
     moved.placedMoved.map((m) => `${m.key} ${m.from}->${m.to} ${Math.round(m.gainH * 60)}m`).join(' | '), 'X 1->6 60m');
   t('#1625 AC4 and says so in words', placedMoveText(moved.placedMoved[0]), 'from 1 to 6, the queue finishes about 60m sooner');
+  // The record the pass writes for it: the queue.mjs set pairs, applied as queue.mjs applies them,
+  // clear placed and leave placed_move for desk-q; the metrics entry carries the same for the digest.
+  const rec = placedMoveRecord(moved.placedMoved[0]);
+  const x = tk('X', { placed: true });
+  applySet(x, rec.set);
+  t('#1625 AC4/AC5 the move is recorded on the ticket: placed cleared, placed_move from, to and the gain',
+    `${x.placed} ${JSON.stringify(x.placed_move)}`, 'null {"from":1,"to":6,"gain_min":60}');
+  t('#1625 AC4/AC5 and on the pass\'s metrics line for the check-in digest', JSON.stringify(rec.line),
+    '{"key":"X","from":1,"to":6,"gain_min":60,"text":"from 1 to 6, the queue finishes about 60m sooner"}');
   t('#1625 AC3 a second placed ticket whose move gains nothing more stays placed', `${moved.released.join(' ')} ${q.tickets.Y.placed}`, 'X true');
 
   const under = placedMoves(ts(), { ...opts, thresholdH: 60 / 60 });
@@ -138,6 +149,8 @@ const cloudRun = (tickets, files) => resortQueue(tickets, { scope: (k) => files[
 }
 t('#1625 a ticket sharing a file with one running waits for it, and a running ticket holds its slot',
   projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['b'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }] }), 3);
+t('#1625 a file with two places lets a ticket start beside the one running on it, as the per-file budget does',
+  projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['f'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }], places: () => 2 }), 3);
 t('#1625 a size reads a fixed slot time when there is no history', `${FALLBACK_SLOT_HOURS.M} ${FALLBACK_SLOT_HOURS.unknown}`, '2 2');
 
 t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainName('desk/bin/pass.mjs')} ${chainName('skills/desk-ticket/SKILL.md')}`, 'pass.mjs desk-ticket');
