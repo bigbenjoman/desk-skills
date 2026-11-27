@@ -719,7 +719,8 @@ function filterPage(html) {
   t('DS-1043 AC2 the menu sticks to the top and scrolls sideways', /\.side\{position:sticky;top:0;[^}]*overflow-x:auto\}/.test(phone), true);
   t('DS-1043 AC2 its items sit in one row as buttons', /\.side ul\{flex-direction:row;flex-wrap:nowrap/.test(phone) && /\.side a\{min-height:44px;[^}]*border-radius:999px/.test(phone), true);
   // AC3: the repo filter.
-  t('DS-1043 AC3 a chip per repo', [...hLog.matchAll(/data-pick-repo="([^"]*)"/g)].map((m) => m[1]).join(','), ',desk-skills,ai-agents,studia-web');
+  // In the configured order, the lever table's column order.
+  t('DS-1043 AC3 a chip per repo', [...hLog.matchAll(/data-pick-repo="([^"]*)"/g)].map((m) => m[1]).join(','), ',ai-agents,studia-web,desk-skills');
   t('DS-1043 AC3 the lever cells carry their repo', section(hLog, 'lev-h').includes('<span class="repo" data-repo="desk-skills">'), true);
   t('DS-1043 AC3 so do the changes', /<div class="change-log" data-kind="other" data-repo="ai-agents"/.test(hLog) && /<details class="change" data-kind="lever" data-repo="desk-skills">/.test(hLog), true);
   t('DS-1043 AC3 and the merge-time and parking groups', ['<tbody data-repo="ai-agents"><tr class="grp">', '<span class="fold-line" data-repo="desk-skills">'].every((s) => section(hLog, 'ms-h').includes(s)) && section(hLog, 'st-h').includes('<tbody data-repo="desk-skills">'), true);
@@ -727,7 +728,7 @@ function filterPage(html) {
   f.press(f.repo, 'ai-agents');
   t('DS-1043 AC3 picking a repo shows only its parts', j([...new Set(f.els.filter((e) => e.attrs['data-repo'] && !e.hidden).map((e) => e.attrs['data-repo']))]), j(['ai-agents']));
   t('DS-1043 AC3 and hides every other repo’s', f.els.filter((e) => e.attrs['data-repo'] && e.attrs['data-repo'] !== 'ai-agents').every((e) => e.hidden), true);
-  t('DS-1043 AC3 its button reads pressed', f.repo.map((b) => b.attrs['aria-pressed']).join(), 'false,false,true,false');
+  t('DS-1043 AC3 its button reads pressed', f.repo.map((b) => b.attrs['aria-pressed']).join(), 'false,true,false,false');
   f.press(f.repo, '');
   t('DS-1043 AC3 All repos shows them all again', f.els.every((e) => !e.hidden), true);
   // AC6: the kind filter.
