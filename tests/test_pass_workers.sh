@@ -1196,6 +1196,48 @@ check "#1465 a restart whose resume file is for another branch starts at Stage 0
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 for k in Q-1 Q-2 Q-3 Q-4; do q set "$k" state=done; done
 
+# ---- #1483: a GitHub issue's ticket file is refreshed from the issue before its worker spawns -------
+# With no tracker, issue-<n> is a GitHub issue. The gh stub answers each issue's updated time from
+# $T/issue-<n>.updated and its text from $T/issue-<n>.json, and logs every call.
+cp "$T/config.md" "$T/config.keep"
+printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `none` |\n' >> "$T/config.md"
+GH_CALLS="$T/gh-calls"; : > "$GH_CALLS"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$GH_CALLS"
+case "\$*" in
+  "issue view "*" --json updatedAt --jq .updatedAt") cat "$T/issue-\$3.updated" ;;
+  "issue view "*" --json title,body,comments,updatedAt") cat "$T/issue-\$3.json" ;;
+  *createdAt,reviews*) echo '{"createdAt":"2026-11-01T09:00:00Z","reviews":[]}' ;;
+esac
+exit 0
+EOF
+admitted(){ printf '# %s\n\nSource: GitHub issue acme/widgets#%s\n\nBadge on the card\n\n## Acceptance criteria\n- AC1: the badge shows on the card\n' "$1" "${1#issue-}" > "$T/state-h/tickets/$1.md"; touch -t 202611010000 "$T/state-h/tickets/$1.md"; }
+gh_issue(){ echo "$2" > "$T/issue-$1.updated"; jq -cn --arg u "$2" --arg b "$3" --arg c "${4:-}" '{title: "Badge on the card", body: $b, updatedAt: $u, comments: (if $c == "" then [] else [{author: {login: "ben"}, createdAt: $u, body: $c}] end)}' > "$T/issue-$1.json"; }
+same_body=$'## Acceptance criteria\n- AC1: the badge shows on the card'
+admitted issue-71; gh_issue 71 2026-11-20T10:00:00Z "$same_body" "Also: AC2 the badge shows on the list page."
+q add issue-71; q set issue-71 state=triaged lane=A branch=fix/issue-71
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 AC1 a fresh spawn refreshes the ticket file from an issue changed since admission" 'spawned_for issue-71 >/dev/null && grep -qF "Also: AC2 the badge shows on the list page." "$T/state-h/tickets/issue-71.md" && grep -qF "## Comments" "$T/state-h/tickets/issue-71.md"'
+check "#1483 AC1 the refresh is recorded on the queue and the spawn line" '[ "$(field issue-71 issue_read)" = "\"2026-11-20T10:00:00Z\"" ] && echo "$out" | grep -q "issue-71 .*ticket file refreshed from issue #71, updated 2026-11-20T10:00:00Z"'
+check "#1483 with no PR open, the refresh writes no Decisions entry" '! grep -q "^## Decisions" "$T/state-h/tickets/issue-71.md"'
+q set issue-71 state=done
+printf '# issue-72\n\nSource: GitHub issue acme/widgets#72\n\nBadge on the card\n\n%s\n' "$same_body" > "$T/state-h/tickets/issue-72.md"
+cp "$T/state-h/tickets/issue-72.md" "$T/issue-72.before"
+gh_issue 72 2026-11-01T10:00:00Z "$same_body"
+q add issue-72; q set issue-72 state=triaged lane=A branch=fix/issue-72
+: > "$GH_CALLS"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1483 AC3 an issue unchanged since admission costs one updated-time read, and the file is left alone" 'spawned_for issue-72 >/dev/null && [ "$(grep -c "^issue view 72 " "$GH_CALLS")" = 1 ] && grep -q "^issue view 72 .*--json updatedAt --jq .updatedAt$" "$GH_CALLS" && diff -q "$T/issue-72.before" "$T/state-h/tickets/issue-72.md" >/dev/null && [ "$(field issue-72 issue_read)" = null ]'
+q set issue-72 state=done
+handing issue-73; hfile issue-73 7 "typecheck: pass"; q set issue-73 handoff_stage=7 result.pr=61; q park issue-73 "which reviewer?"
+admitted issue-73; gh_issue 73 2026-11-20T10:00:00Z $'## Acceptance criteria\n- AC1: the badge shows on the card and the list'
+respawn issue-73
+check "#1483 AC2 a criterion changed with a PR open writes a dated Decisions entry naming it" 'grep -qF "desk pass: issue #73 changed after PR #61 was opened" "$T/state-h/tickets/issue-73.md" && grep -qF "the badge shows on the card and the list" "$T/state-h/tickets/issue-73.md"'
+check "#1483 AC2 the handed-off worker restarts at Stage 3 to build and re-review it, not at Stage 7" 'spawned_for issue-73 | grep -q "stage=3 " && brief issue-73 | grep -qF "## New decisions since PR #61" && brief issue-73 | grep -qF "Build and re-review it before taking the PR as done" && echo "$out" | grep -q "issue-73 fresh session from Stage 3 .*refreshed from issue #73"'
+q set issue-73 state=done
+cp "$T/config.keep" "$T/config.md"
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+
 # ---- DS-742: a worker queue.mjs stop ended stays held until the person lets it start -------------
 all_done
 handing S-1; hlog S-1 "AUTOPILOT_STAGE: 5/9 evidence"
