@@ -59,13 +59,15 @@ export const openUnknowns = (unknowns, t) => {
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 
-// A done ticket whose draft's red checks name no file its PR changes, so the pass re-runs them once before
-// any fix try (fix-tries.mjs classedRerun): its `rerun`, or its `wait` for the run's other jobs to finish
-// first. Its PR is open but nothing is done with it: the ticket waits on checks, which the queue table and
-// desk-q both show as its state.
+// An undraft record of the one rerun the pass gives a draft's red checks whose failed logs name no file its
+// PR changes (fix-tries.mjs classedRerun): the `rerun`, its `wait` for the run's other jobs to finish first,
+// or the `wait` while the rerun runs (fix-tries.mjs outsideRerunWait).
+export const outsideRerunRecord = (u) => (u?.call === 'rerun' || (u?.call === 'wait' && /^checks/.test(u.why ?? ''))) && /names? no file this PR changes/.test(u.why ?? '');
+// A done ticket whose open draft holds such a record: its PR is open but nothing is done with it until
+// that rerun finishes, so the ticket waits on checks, which the queue table and desk-q both show as its state.
 export const checksRerun = (t) => {
-  const u = t?.undraft, ps = prStatusOf(t);
-  return ps?.state === 'OPEN' && ps.isDraft === true && (u?.call === 'rerun' || (u?.call === 'wait' && /^checks/.test(u.why ?? ''))) && /names? no file this PR changes/.test(u.why ?? '');
+  const ps = prStatusOf(t);
+  return ps?.state === 'OPEN' && ps.isDraft === true && outsideRerunRecord(t.undraft);
 };
 
 // The words for a pending handoff that full slots hold, `heldBy` naming what holds them: the pass report

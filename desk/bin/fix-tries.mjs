@@ -34,7 +34,7 @@
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, loginIn, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
-import { IDLE_RECHECK_MS } from './batch-state.mjs';
+import { IDLE_RECHECK_MS, outsideRerunRecord } from './batch-state.mjs';
 import { normaliseLine, readError, pathsIn } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
@@ -1402,6 +1402,15 @@ function classedRerun(mine, checks, ctx) {
   }
   if (runner) return { call: 'rerun', why: `its ${names} ${one ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${one ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
   return { call: 'rerun', why: `its ${names} ${one ? 'check\'s failed log names' : 'checks\' failed logs name'} no file this PR changes, so ${one ? 'its run is' : 'their runs are'} re-run once at this head, every job, before any fix worker`, gate: { ...rerun.gate, full: true } };
+}
+// While that rerun runs, undraftCall reads only pending checks and waits on them: the wait's reason, as
+// the draft's record (pass/undraft.mjs), keeps saying whose rerun it is, so the ticket still reads as
+// waiting on checks (batch-state.mjs checksRerun). Only while the record before it is that rerun, or
+// this wait, on the same PR at the same head; null otherwise.
+export function outsideRerunWait(t, c, pr, head) {
+  const u = t?.undraft;
+  if (c?.call !== 'wait' || !/^checks still running/.test(c.why ?? '') || !outsideRerunRecord(u) || u.pr !== pr || u.sha !== head) return null;
+  return /no file this PR changes/.test(c.why) ? c.why : `${c.why} in the rerun of checks whose failed logs name no file this PR changes`;
 }
 // A fix try or stuck reason for checks classedRerun left to go ahead, saying so.
 function withRerunNote(c, note) {

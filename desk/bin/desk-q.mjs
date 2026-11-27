@@ -612,7 +612,10 @@ function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   // Checks whose failed logs name no file the PR changes are re-run once before any fix worker
   // (fix-tries.mjs classedRerun), after the rest of their run finishes: the ticket waits on them, not on a
   // worker, so it reads as on checks rather than merging.
-  if (checksRerun(t)) return { ...merging(['draft', null], [` · waiting on checks: ${u.call === 'wait' ? 'their run finishing, then ' : ''}re-run once as their failed logs name no file this PR changes, out of draft once green`, null]), k: 'checks' };
+  if (checksRerun(t)) {
+    const when = u.call === 'rerun' ? '' : / in the rerun of /.test(u.why ?? '') ? ' (running now)' : ' after their run finishes';
+    return { ...merging(['draft', null], [` · waiting on checks: re-run once${when} as their failed logs name no file this PR changes, out of draft once green`, null]), k: 'checks' };
+  }
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);

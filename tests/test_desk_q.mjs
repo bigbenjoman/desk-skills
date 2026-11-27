@@ -2772,15 +2772,17 @@ put(I.T, I.env, 'rerun1640', { port: 5691, conc: '3 / 5', beat: 1, perms: { 'aut
   'V-1640': red1640(rerun1640),
   'V-1641': red1640(wait1640),
   'V-1642': red1640({ call: 'rerun', why: 'its "CI (shard 6/6)" check was cancelled, so its run is re-run' }),
+  'V-1643': red1640({ call: 'wait', why: 'checks still running (CI (shard 6/6)) in the rerun of checks whose failed logs name no file this PR changes' }),
 } } });
 const r1640 = Q.loadRepos(NOW).find((r) => r.name === 'rerun1640');
 r1640.machine = { running: 0, cap: 10 };
 const screen1640 = railText(Q.ticketScreen(r1640, 'V-1640', { now: NOW }));
 t('#1640 AC4 a draft whose rerun is pending reads as waiting on checks', screen1640.includes('draft · waiting on checks: re-run once as their failed logs name no file this PR changes, out of draft once green'), true);
 t('#1640 AC4 not as cancelled checks re-run', screen1640.includes('cancelled checks re-run'), false);
-t('#1640 AC4 so does one waiting for its run to finish before the rerun', railText(Q.ticketScreen(r1640, 'V-1641', { now: NOW })).includes('draft · waiting on checks: their run finishing, then re-run once'), true);
+t('#1640 AC4 so does one waiting for its run to finish before the rerun', railText(Q.ticketScreen(r1640, 'V-1641', { now: NOW })).includes('draft · waiting on checks: re-run once after their run finishes as'), true);
+t('#1640 AC4 and one whose rerun is running', railText(Q.ticketScreen(r1640, 'V-1643', { now: NOW })).includes('draft · waiting on checks: re-run once (running now) as'), true);
 const state1640 = (k) => Q.shownState(r1640.q, r1640.q.tickets[k], r1640.ctx);
-t('#1640 AC4 its state is on checks, not done or merging, before and during the rerun; another rerun stays merging', ['V-1640', 'V-1641', 'V-1642'].map(state1640).join(), 'checks,checks,merging');
+t('#1640 AC4 its state is on checks, not done or merging, before, at and during the rerun; another rerun stays merging', ['V-1640', 'V-1641', 'V-1643', 'V-1642'].map(state1640).join(), 'checks,checks,checks,merging');
 t('#1640 AC4 the Queue row\'s state reads ▸ on checks, under Merging', lines(Q.repoScreen(r1640, { width: 160, now: NOW }).replace(ANSI, '')).find((l) => / V-1640 /.test(l))?.includes('▸ on checks'), true);
 t('#1640 AC4 the key says what on checks means', keyText(['checks'], 160).includes('▸ on checks: red checks re-run once, then it merges or gets a fix try'), true);
 
