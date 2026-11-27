@@ -379,6 +379,24 @@ out=$(STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["docs/cl
 check "DS-374 AC1: a path that only looks like .claude/ keeps its lane" \
   '[ $rc -eq 0 ] && lc_ok B && [ "$(lc .lane_reason)" = "size S" ]'
 
+# issue-1530: a planned file under a §4 Merge holds path puts merge_holds on the record, read from the
+# config rather than judged by the model, so the plan says the PR needs the person's merge.
+sed 's/^| Other work id patterns | `none` |$/&\n| Merge holds | `.github\/**: workflow change` |/' "$T/config.md" > "$T/config-holds.md"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(DESK_CONFIG="$T/config-holds.md" STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["src/a.js",".github/workflows/ci.yml"]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "issue-1530 AC1: a planned file under a merge hold puts merge_holds on the record, naming the path and why" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .merge_holds)" = "[{\"glob\":\".github/**\",\"why\":\"workflow change\",\"files\":[\".github/workflows/ci.yml\"]}]" ]'
+check "issue-1530 AC1: triage says the PR will need the person's merge" \
+  '[[ "$out" == *"[triage] fix-thing  needs your merge: .github/workflows/ci.yml"* ]]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(DESK_CONFIG="$T/config-holds.md" STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["widgets: .github/workflows/ci.yml","otherrepo: .github/workflows/x.yml"]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "issue-1530 AC1: an entry prefixed with this repo's name is matched without it, and another repo's is not matched" \
+  '[ $rc -eq 0 ] && [ "$(lc -c ".merge_holds[].files")" = "[\".github/workflows/ci.yml\"]" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(DESK_CONFIG="$T/config-holds.md" STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["src/a.js"],"merge_holds":[{"glob":"x","why":"y","files":["x"]}]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "issue-1530 AC4: a plan touching no held path has no merge_holds, even one the model wrote" \
+  '[ $rc -eq 0 ] && [ "$(lc .merge_holds)" = null ] && [[ "$out" != *"needs your merge"* ]]'
+
 # The prompt names each linked canvas's snapshot, found by URL, so an epic's child in its
 # feature batch reads the epic's snapshot under the repo state.
 EPIC_URL=https://claude.ai/design/p/epic-boards; OWN_URL=https://claude.ai/design/p/own-boards; NONE_URL=https://claude.ai/design/p/no-snap

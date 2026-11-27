@@ -124,6 +124,7 @@ import { claudeAncestor, kindMode, leaseCli, ledgerStarts, releasePreviews, slot
 import { liveWaiters } from './admit-ledger.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLogged } from './asks.mjs';
+import { newHolds, writeHoldAsks } from './new-holds.mjs';
 import * as GR from './gate-reviewer.mjs';
 import { tmpfsStep, settledLines as tmpfsSettled } from './tmp-sweep.mjs';
 import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
@@ -5409,6 +5410,31 @@ runSteps({
   },
   report,
 });
+
+// ---- new merge holds -------------------------------------------------------
+// An open PR's files are read against §4 Merge holds once per head (new-holds.mjs). A file held at a
+// later head that the PR did not touch before means a change pushed since (a fix try, a later round)
+// made its merge the person's: it is kept on the ticket as new_holds for desk-q and the check-in
+// digest, said in the report, and put to the person as one ask recommending keeping the change. Asks
+// are the repo's (asks.mjs), in the standing batch's folder, and one whose files are held no more goes.
+{
+  const askFailed = (t, what, e) => report.failed.push(`${t.key}: the ask that PR #${t.result?.pr ?? '?'} now needs your merge could not be ${what} (${String(e?.message ?? e).split('\n')[0]})`);
+  let handle = null;
+  try { handle = E.githubHandle(); } catch { handle = null; }
+  const heldAt = (n) => {
+    const r = shOut('node', [join(BIN, 'gate.mjs'), 'held', String(n), '--repo', GH_REPO, ...(handle ? ['--merger', handle] : []), '--files-cache', join(DRIVER_DIR, 'pr-files.json')]);
+    if (!r.ok) return null;
+    try { return JSON.parse(r.out); } catch { return null; }
+  };
+  for (const { t, s } of [...drafts, ...undrafted]) {
+    const r = newHolds(t, s, { defaultBranch: REPO_DEFAULT, read: () => heldAt(s.pr) });
+    if (!r || DRY) continue;
+    const record = writeHoldAsks(STATE, r, (what, e) => askFailed(t, what, e));
+    q('set', t.key, `hold_read=${JSON.stringify(record)}`,...(r.changed ? [`new_holds=${JSON.stringify(r.holds)}`] : []));
+    t.new_holds = r.holds;
+    if (r.line) out.push(r.line);
+  }
+}
 
 // ---- follow steps ----------------------------------------------------------
 // The decision is pass/follow-steps.mjs decideFollowSteps: a merged ticket's steps that only read CI,
