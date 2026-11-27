@@ -147,18 +147,19 @@ const laidKeys = (tickets, order) => laidOrder({ tickets: Object.fromEntries(tic
 // the moves already taken. -> resortQueue's result for the queue with those tickets let go, plus
 // `released` (their keys) and `placedMoved`: [{ key, from, to, gainH }], `from` and `to` its
 // 1-based place among the unfinished tickets before and after, `gainH` the hours its own move saved.
-export function placedMoves(tickets, { scope, fileCount, finish, thresholdH, finished = () => false }) {
+// `cloud` is resortQueue's, so a placed ticket let go moves only among the places of its own kind.
+export function placedMoves(tickets, { scope, fileCount, cloud, finish, thresholdH, finished = () => false }) {
   const byKey = new Map(tickets.map((t) => [t.key, t]));
   const openKeys = (ts, order) => laidKeys(ts, order).filter((k) => unstarted(byKey.get(k)));
   const as = (released) => tickets.map((t) => (released.has(t.key) ? { ...t, placed: false } : t));
   let released = new Set();
-  let best = resortQueue(tickets, { scope, fileCount });
+  let best = resortQueue(tickets, { scope, fileCount, cloud });
   let bestH = finish(openKeys(tickets, best.order));
   const gains = [];
   for (const t of tickets.filter((x) => unstarted(x) && x.placed)) {
     const trial = new Set([...released, t.key]);
     const view = as(trial);
-    const r = resortQueue(view, { scope, fileCount });
+    const r = resortQueue(view, { scope, fileCount, cloud });
     const h = finish(openKeys(view, r.order));
     if (bestH - h > thresholdH) {
       gains.push({ key: t.key, gainH: bestH - h });

@@ -43,7 +43,7 @@ and a free local slot the first ready local-only one; gates and shared files sti
 and desk-q marks each ticket the re-sort moved ahead with `^` and why (`gates 4`, `clears
 desk-checkout chain`, `fills an idle slot`). Placed tickets stay put while config §3b "Queue order:
 placed tickets" is `keep`. At `move-and-say` the pass also moves a placed ticket, one at a time in
-queue order, when that brings the projected finish of the whole queue forward by more than §3b
+queue order and only among the places of its own kind (cloud-able or local-only), when that brings the projected finish of the whole queue forward by more than §3b
 "Queue order: move threshold" (minutes). The projection fills the batch's worker slots in queue order,
 blockers and shared files holding as they do at spawn (other batches' tickets included), with each ticket's slot time read from its
 size: the repo's recent merge times (`desk-q-eta.mjs`) where it has enough, else a fixed time per

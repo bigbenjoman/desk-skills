@@ -155,6 +155,13 @@ const cloudRun = (tickets, files) => resortQueue(tickets, { scope: (k) => files[
 
   const under = placedMoves(ts(), { ...opts, thresholdH: 60 / 60 });
   t('#1625 AC5 no move when the gain is not over the threshold', `${under.placedMoved.length} ${under.released.length} ${laid(ts(), under)}`, '0 0 X Y H L1 L2 L3');
+
+  // #1626's split holds for a placed ticket let go: X starting in the cloud, with no other cloud
+  // ticket, has no place of its own kind to move to, so it stays first; local Y moves instead.
+  const cloudTs = () => ts().map((y) => (y.key === 'X' ? { ...y, location: 'cloud' } : y));
+  const split = placedMoves(cloudTs(), { ...opts, cloud: (y) => y.location === 'cloud', thresholdH: 30 / 60 });
+  t('#1625 a placed cloud ticket let go moves only among cloud places, so a local one moves instead',
+    split.placedMoved.map((m) => `${m.key} ${m.from}->${m.to}`).join(' | '), 'Y 2->6');
 }
 t('#1625 a ticket sharing a file with one running waits for it, and a running ticket holds its slot',
   projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['b'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }] }), 3);
