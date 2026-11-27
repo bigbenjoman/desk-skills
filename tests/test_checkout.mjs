@@ -59,6 +59,20 @@ ${body}
   chmodSync(f, 0o755);
 };
 fake('gh', `
+// #1666 a rate limit: a call whose arguments contain $FAKE_LIMIT_MATCH fails with GitHub's secondary
+// limit for its first $FAKE_LIMIT_TIMES calls (counted in limit.count), with a Retry-After header
+// under -i when $FAKE_RETRY_AFTER is set; -i prints a header block before the body, as gh api -i does.
+if (process.env.FAKE_LIMIT_MATCH && args.join(' ').includes(process.env.FAKE_LIMIT_MATCH)) {
+  const cf = process.env.FAKE_DIR + '/limit.count';
+  const n = existsSync(cf) ? Number(readFileSync(cf, 'utf8')) : 0;
+  if (n < Number(process.env.FAKE_LIMIT_TIMES)) {
+    require('node:fs').writeFileSync(cf, String(n + 1));
+    if (args.includes('-i')) process.stdout.write('HTTP/2.0 403 Forbidden\\r\\n' + (process.env.FAKE_RETRY_AFTER ? 'Retry-After: ' + process.env.FAKE_RETRY_AFTER + '\\r\\n' : '') + '\\r\\n{"message":"You have exceeded a secondary rate limit."}');
+    process.stderr.write('gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)\\n');
+    process.exit(1);
+  }
+}
+if (args.includes('-i')) process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n');
 if (args[0] === 'api' && args[1] === 'user') { console.log('me'); process.exit(0); }
 const q = args.find((a) => a.startsWith('q=')) || '';
 const page = (args.find((a) => a.startsWith('page=')) || 'page=1').slice(5);
@@ -420,6 +434,61 @@ t('#1534 and its search asks only for your PRs', lib.merged.every((l) => !l.incl
 const libOthers = ghRun('--include', 'acme__lib', '--include-others', 'acme__lib');
 has('#1534 --include-others counts everyone\'s', libOthers.stdout, '- acme/lib: 1 mine / 2 all');
 t('#1534 --include-others searches every author there', libOthers.merged.some((l) => l.includes('repo:acme/lib') && !l.includes('author:')), true);
+
+// #1666 a rate-limited gh call waits and retries; one still limited fails naming the limit and when
+// to retry; a failed optional search is skipped, said in its section, and the run goes on.
+const limited = (match, times, extra = {}) => {
+  rmSync(join(FAKE, 'limit.count'), { force: true });
+  return spawnSync('python3', ['-B', join(SCRIPTS, 'github_activity.py'), '--day', DAY], { cwd: APP, encoding: 'utf8',
+    env: { ...env, FAKE_LIMIT_MATCH: match, FAKE_LIMIT_TIMES: String(times), DESK_GH_BACKOFF_BASE: '0.01', DESK_GH_BACKOFF_TOTAL: '0.05', ...extra } });
+};
+const once = limited('is:pr author:me', 1, { FAKE_RETRY_AFTER: '0' });
+t('#1666 a secondary limit, then success: exits 0', once.status, 0);
+has('#1666 it waited as Retry-After said', once.stderr, "gh: GitHub's secondary rate limit; waiting 0s, then retrying");
+has('#1666 and the retried search was read', once.stdout, '- acme/app#10 Fix the redirect — opened; merged');
+const twice = limited('is:pr author:me', 2);
+t('#1666 with no Retry-After, exponential backoff: exits 0', twice.status, 0);
+has('#1666 the first wait is the base', twice.stderr, 'waiting 0.01s');
+has('#1666 the next doubles', twice.stderr, 'waiting 0.02s');
+has('#1666 and the search was read', twice.stdout, '- acme/app#10 Fix the redirect');
+const stuck = limited('is:pr author:me', 99);
+t('#1666 a persistent limit on a required search fails', stuck.status, 1);
+has('#1666 naming the limit and the tries', stuck.stderr, "gh search failed for 'is:pr author:me updated:>=2026-10-26': GitHub's secondary rate limit, still hit after 3 tries over 0s; retry after ");
+has('#1666 and when to retry', stuck.stderr, '(in 60s)');
+const noReviews = limited('reviewed-by', 99);
+t('#1666 a failed reviews search does not end the run', noReviews.status, 0);
+has('#1666 the reviews section says it was skipped and why', noReviews.stdout, "## Reviews you gave (0)\nskipped, not read (GitHub's secondary rate limit, still hit after 3 tries");
+has('#1666 the rest is still there', noReviews.stdout, '- acme/app: 1 mine / 3 all');
+const noMerged = limited('is:merged', 99);
+t('#1666 a failed merged-count search does not end the run', noMerged.status, 0);
+has('#1666 its line says it was skipped and why', noMerged.stdout, "- acme/app: skipped, not counted (GitHub's secondary rate limit, still hit after 3 tries");
+has('#1666 reviews still read', noMerged.stdout, "- acme/app#20 Alice's change (by alice) — you: changes requested");
+const noIssues = limited('commenter:', 99);
+has('#1666 a failed issue search is skipped and said', noIssues.stdout, "- issues you commented on: skipped, not read (GitHub's secondary rate limit");
+const notLimit = probe(`import github_activity as g; print(json.dumps([g.rate_limit("gh: Not Found (HTTP 404)"), g.rate_limit("gh: API rate limit exceeded for user ID 1. (HTTP 403)"), g.rate_limit("gh: too many requests rate limit (HTTP 429)"), g.rate_limit("gh: Resource not accessible by integration (HTTP 403)")]))`);
+t('#1666 only a 403 or 429 naming a rate limit is one, and which', JSON.stringify(notLimit), '[null,"primary","primary",null]');
+const reset = probe(`import github_activity as g, time; h, b = g.split_headers("HTTP/2.0 403 Forbidden\\nX-Ratelimit-Reset: %d\\n\\n{}" % (time.time() + 30)); print(json.dumps([27 < g.wait_for(h, "primary") <= 30, g.wait_for(h, "secondary"), b]))`);
+t('#1666 a primary limit waits for its reset header', JSON.stringify(reset), '[true,null,"{}"]');
+
+// #1666 issues with neither a label nor a `prefix:` are themed by a shared #NNNN, then a shared title
+// word, before `other`.
+const themed = probe(`import github_activity as g
+iss = lambda n, title, body="", labels=(): {"number": n, "title": title, "body": body, "labels": [{"name": l} for l in labels]}
+print(json.dumps(g.themes([
+  iss(1, "Cloud worker loses its slot"), iss(2, "Cloud session never reports back"),
+  iss(3, "Checkout collector dies on a rate limit", "Follows #1646"), iss(4, "Grouping files most under other", "Part of #1646"),
+  iss(1646, "Collect more sources"), iss(5, "Queue stalls overnight"), iss(6, "Queue order ignores priority"),
+  iss(7, "Tidy the README"), iss(8, "ci: shard the suites"), iss(9, "Cloud thing", labels=["bug"]),
+])))`);
+t('#1666 a shared title word names a theme', themed['1'], 'theme: cloud');
+t('#1666 for each issue sharing it', themed['2'], 'theme: cloud');
+t('#1666 a #NNNN two issues reference names a theme', themed['3'], 'theme: #1646');
+t('#1666 the issue referenced joins it', themed['1646'], 'theme: #1646');
+t('#1666 and the other referencing it', themed['4'], 'theme: #1646');
+t('#1666 another shared word', `${themed['5']} ${themed['6']}`, 'theme: queue theme: queue');
+t('#1666 an issue sharing nothing is other', themed['7'], 'theme: other');
+t('#1666 a prefix still wins', themed['8'], 'theme: ci');
+t('#1666 and a label', themed['9'], 'label: bug');
 
 // jira_activity.py: what the user did in each in-scope repo's Jira project.
 put('api_3_myself', { accountId: 'me-id', displayName: 'Me Person' });

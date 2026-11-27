@@ -9,9 +9,15 @@ everyone's (the latter only for a configured repo whose own §3 read-others is `
 and passed with --include-others <slug>), so a post's merged count says whose PRs it means.
 
 Issues are listed too: those you opened, closed or commented on in the window, in every repo read,
-grouped by scope, then repo, then label (or, with none, the title's `prefix:`). On a repo whose §4
-Tracker is `none` they are its tickets. Every search pages through up to the API's 1000 results, and
-a list cut short there says so.
+grouped by scope, then repo, then label (or, with none, the title's `prefix:`, else a `#NNNN` or a
+title word shared with another such issue, else `other`). On a repo whose §4 Tracker is `none` they
+are its tickets. Every search pages through up to the API's 1000 results, and a list cut short there
+says so.
+
+A gh call GitHub rate-limits (HTTP 403 or 429 naming its primary or secondary limit) waits, as
+Retry-After or the limit's reset says, else with exponential backoff, for up to about 3 minutes, then
+fails naming the limit and when to retry. Only the search of your own PRs ends the run on that; any
+other search that fails is skipped, and its section says so and why.
 
 Rows are grouped by scope (see desk_repos.py): this check-out (the current repo and any
 configured desk repo sharing its §4 Check-out destination), side projects
@@ -28,10 +34,13 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.dont_write_bytecode = True  # a __pycache__ in the installed skill reads as a user edit to install.sh
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,9 +48,100 @@ import window  # noqa: E402
 import desk_repos  # noqa: E402
 
 
+class GhFailed(Exception):
+    """A gh call that failed for good; str() says why (for a rate limit: which, and when to retry)."""
+
+
+# A rate-limited call waits and retries: Retry-After (or a primary limit's reset) when the response
+# gives one, else exponential backoff from BACKOFF_BASE seconds, for up to BACKOFF_TOTAL in all. The
+# DESK_GH_BACKOFF_* variables override both (tests).
+BACKOFF_BASE = float(os.environ.get("DESK_GH_BACKOFF_BASE") or 10)
+BACKOFF_TOTAL = float(os.environ.get("DESK_GH_BACKOFF_TOTAL") or 180)
+
+
+def split_headers(text):
+    """(headers, body) of `gh api -i` output; headers is {} when there is no header block."""
+    if not text.startswith("HTTP/"):
+        return {}, text
+    head, _, body = text.replace("\r\n", "\n").partition("\n\n")
+    headers = {}
+    for line in head.split("\n")[1:]:
+        key, sep, value = line.partition(":")
+        if sep:
+            headers[key.strip().lower()] = value.strip()
+    return headers, body
+
+
+def rate_limit(text):
+    """'secondary' or 'primary' when a failed call's output says GitHub rate-limited it (HTTP 403 or
+    429), else None. gh prints the API's message with the status, e.g. `gh: You have exceeded a
+    secondary rate limit ... (HTTP 403)` or `gh: API rate limit exceeded for user ID 1. (HTTP 403)`."""
+    low = text.lower()
+    if not any(s in low for s in ("http 403", "http 429", " 403 ", " 429 ")):
+        return None
+    if "secondary rate limit" in low or "abuse detection" in low:
+        return "secondary"
+    return "primary" if "rate limit" in low else None
+
+
+def wait_for(headers, kind):
+    """Seconds until a rate-limited call may retry, as the response says, or None when it does not."""
+    try:
+        if headers.get("retry-after"):
+            return max(0.0, float(headers["retry-after"]))
+        if kind == "primary" and headers.get("x-ratelimit-reset"):
+            return max(0.0, float(headers["x-ratelimit-reset"]) - time.time())
+    except ValueError:
+        pass
+    return None
+
+
+def primary_reset():
+    """Seconds until the soonest exhausted primary limit resets, from `gh api rate_limit` (which does
+    not count against it), or None."""
+    out = subprocess.run(["gh", "api", "rate_limit"], capture_output=True, text=True)
+    try:
+        res = json.loads(out.stdout).get("resources", {}).values() if out.returncode == 0 else []
+        resets = [r["reset"] for r in res if isinstance(r, dict) and r.get("remaining") == 0 and r.get("reset")]
+    except (ValueError, AttributeError, KeyError):
+        return None
+    return max(0.0, min(resets) - time.time()) if resets else None
+
+
+def gh_call(*args, headers=False):
+    """stdout of `gh <args>` (with headers=True, `gh api -i`, as (headers, body)); raises GhFailed.
+    A rate-limited call waits and retries (see BACKOFF_*) before it fails, and its failure names the
+    limit and when to retry."""
+    argv = ["gh", *args] + (["-i"] if headers else [])
+    waited, attempt = 0.0, 0
+    while True:
+        out = subprocess.run(argv, capture_output=True, text=True)
+        hdrs, body = split_headers(out.stdout) if headers else ({}, out.stdout)
+        if out.returncode == 0:
+            return (hdrs, body) if headers else body
+        kind = rate_limit(f"{out.stderr}\n{out.stdout}")
+        if kind is None:
+            raise GhFailed((out.stderr.strip().splitlines() or [f"gh exited {out.returncode}"])[-1])
+        told = wait_for(hdrs, kind)
+        delay = told if told is not None else BACKOFF_BASE * 2 ** attempt
+        if waited + delay > BACKOFF_TOTAL:
+            if told is None:
+                told = primary_reset() if kind == "primary" else 60.0  # GitHub: wait at least a minute
+            at = datetime.now() + timedelta(seconds=told or 0) if told is not None else None
+            when = f"retry after {at:%H:%M:%S} (in {round(told)}s)" if at else "retry once `gh api rate_limit` shows it reset"
+            raise GhFailed(f"GitHub's {kind} rate limit, still hit after {attempt + 1} tries over {round(waited)}s; {when}")
+        print(f"gh: GitHub's {kind} rate limit; waiting {delay:g}s, then retrying", file=sys.stderr)
+        time.sleep(delay)
+        waited += delay
+        attempt += 1
+
+
 def gh(*args):
-    out = subprocess.run(["gh", *args], capture_output=True, text=True)
-    return out.stdout if out.returncode == 0 else None
+    """stdout of `gh <args>`, or None when it fails (after any rate-limit retries)."""
+    try:
+        return gh_call(*args)
+    except GhFailed:
+        return None
 
 
 def parse_time(value):
@@ -54,15 +154,18 @@ SEARCH_CAP = 1000  # the search API returns no result past the 1000th
 def search_all(query, required=True):
     """(items, total, capped): every page of a search, up to the API's cap. capped is True when the
     search found more than it returns (past the cap, or results GitHub marked incomplete). A failed
-    page stops a required search; otherwise it returns None for items."""
+    page (after any rate-limit retries) stops a required search; otherwise it returns (None, 0, why)."""
     items, total, capped = [], 0, False
     for page in range(1, SEARCH_CAP // 100 + 1):
-        raw = gh("api", "-X", "GET", "search/issues", "-f", f"q={query}", "-f", "per_page=100", "-f", f"page={page}")
-        if raw is None:
+        try:
+            _, raw = gh_call("api", "-X", "GET", "search/issues", "-f", f"q={query}", "-f", "per_page=100",
+                             "-f", f"page={page}", headers=True)
+            data = json.loads(raw)
+        except (GhFailed, ValueError) as e:
+            why = str(e) if isinstance(e, GhFailed) else "unreadable response"
             if required:
-                raise SystemExit(f"gh search failed for {query!r}")
-            return None, 0, False
-        data = json.loads(raw)
+                raise SystemExit(f"gh search failed for {query!r}: {why}")
+            return None, 0, why
         got = data.get("items", [])
         items += got
         total = max(total, data.get("total_count") or 0)
@@ -82,11 +185,12 @@ def cap_note(found, total, capped):
 
 
 def merged_counts(repo, login, since, until, day, everyone):
-    """(mine, all) PRs merged into repo in the window; all is None when not everyone's are read."""
+    """(mine, all, cap note) PRs merged into repo in the window; all is None when not everyone's are
+    read. A failed search gives why, a string, instead."""
     query = f"is:pr is:merged repo:{repo} merged:>={day}" + ("" if everyone else f" author:{login}")
     items, found, capped = search_all(query, required=False)
     if items is None:
-        return None
+        return capped
     mine = total = 0
     for pr in items:
         merged_at = (pr.get("pull_request") or {}).get("merged_at")
@@ -140,13 +244,49 @@ def closer(repo, number):
 
 
 def theme(issue):
-    """An issue's group within its repo: its first label, else its title's short `prefix:`, else other."""
+    """An issue's own group within its repo: its first label, else its title's short `prefix:`, else
+    None (themes() then looks at the repo's other issues)."""
     labels = sorted(lbl.get("name", "") for lbl in issue.get("labels") or [] if isinstance(lbl, dict) and lbl.get("name"))
     if labels:
         return f"label: {labels[0]}"
     head, sep, _ = (issue.get("title") or "").partition(":")
     head = head.strip().strip("[]()")
-    return f"theme: {head}" if sep and head and len(head) <= 40 else "theme: other"
+    return f"theme: {head}" if sep and head and len(head) <= 40 else None
+
+
+# Title words too common to name a theme. Words under four letters are never one.
+STOPWORDS = set("""
+    about after again also always another because been before being cannot could does doesn done
+    each even every from have instead into just last like make makes many more most much must never
+    next once only other over same says should since some still such than that their them then
+    there these they this those through under until upon very want when where which while will with
+    without would your issue issues fails failed failing error wrong work works runs
+""".split())
+
+
+def themes(issues):
+    """{number: theme} for one repo's issues. One with neither a label nor a `prefix:` falls back to a
+    `#NNNN` it shares with another such issue (a reference in its title or body, or its own number
+    referenced by another), then to a title word it shares with another, then to `theme: other`."""
+    out = {it["number"]: theme(it) for it in issues}
+    rest = [it for it in issues if out[it["number"]] is None]
+    refs = {}
+    for it in rest:
+        found = {int(n) for n in re.findall(r"#(\d+)\b", f"{it.get('title') or ''}\n{it.get('body') or ''}")}
+        refs[it["number"]] = found | {it["number"]}
+    shared = Counter(n for ns in refs.values() for n in ns)
+    words = {it["number"]: {w for w in re.findall(r"[a-z][a-z0-9-]{3,}", (it.get("title") or "").lower()) if w not in STOPWORDS}
+             for it in rest}
+    for it in rest:
+        best = sorted((n for n in refs[it["number"]] if shared[n] > 1), key=lambda n: (-shared[n], n))
+        if best:
+            out[it["number"]] = f"theme: #{best[0]}"
+    left = [it for it in rest if out[it["number"]] is None]
+    common = Counter(w for it in left for w in words[it["number"]])
+    for it in left:
+        best = sorted((w for w in words[it["number"]] if common[w] > 1), key=lambda w: (-common[w], w))
+        out[it["number"]] = f"theme: {best[0]}" if best else "theme: other"
+    return out
 
 
 def my_reviews(repo, number, login, since, until):
@@ -215,8 +355,11 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         rows = [r for r in pool.map(describe, mine) if r]
 
-    reviewed, found, capped = search_all(f"is:pr reviewed-by:{login} -author:{login} updated:>={day}")
-    if capped:
+    reviewed, found, capped = search_all(f"is:pr reviewed-by:{login} -author:{login} updated:>={day}", required=False)
+    reviews_skipped = capped if reviewed is None else None
+    if reviewed is None:
+        reviewed = []
+    elif capped:
         caps.append(f"PRs you reviewed{cap_note(len(reviewed), found, capped)}")
 
     def describe_review(pr):
@@ -248,8 +391,8 @@ def main():
             skipped.add(note)
         counts = merged_counts(repo, login, since, until, day, everyone)
         label = "" if sc == "this" else f" [{desk_repos.SCOPE_LABELS[sc]}]"
-        if counts is None:
-            return sc, f"- {repo}: not counted (gh search failed){label}"
+        if isinstance(counts, str):
+            return sc, f"- {repo}: skipped, not counted ({counts}){label}"
         mine, total, capped = counts
         rest = f"{total} all" if total is not None else f"all not counted ({note or 'no desk config'})"
         return sc, f"- {repo}: {mine} mine / {rest}{capped}{label}"
@@ -262,7 +405,7 @@ def main():
             (f"issues closed in {r}", f"is:issue repo:{r} -author:{login} closed:>={day}") for r in sorted(names, key=str.lower) if scope(r) is not None]:
         found_items, found, capped = search_all(query, required=False)
         if found_items is None:
-            caps.append(f"{what}: not read (gh search failed)")
+            caps.append(f"{what}: skipped, not read ({capped})")
             continue
         if capped:
             caps.append(f"{what}{cap_note(len(found_items), found, capped)}")
@@ -298,10 +441,14 @@ def main():
             return None  # nothing you did in the window
         when = f"closed {hm(it['closed_at'])}" if it.get("state") == "closed" and it.get("closed_at") else f"created {hm(it['created_at'])}"
         line = f"- #{it['number']} {it['title']} [{it.get('state', '?')}, {when}] — you: {', '.join(events)}"
-        return sc, repo, theme(it), it["number"], line
+        return sc, repo, it, it["number"], line
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         issues = [r for r in pool.map(describe_issue, issue_rows.values()) if r]
+    themed = {}
+    for repo in {r[1] for r in issues}:
+        themed.update({(repo, n): th for n, th in themes([r[2] for r in issues if r[1] == repo]).items()})
+    issues = [(sc, repo, themed[(repo, n)], n, line) for sc, repo, _, n, line in issues]
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         merged = sorted((r for r in pool.map(describe_merged, sorted(names, key=str.lower)) if r), key=lambda r: desk_repos.SCOPE_ORDER[r[0]])
@@ -330,7 +477,7 @@ def main():
     if not issues:
         print("No issues you opened, closed or commented on in the window.\n")
     print(f"## Reviews you gave ({len(reviews)})")
-    print("\n".join(reviews) if reviews else "none")
+    print(f"skipped, not read ({reviews_skipped})" if reviews_skipped else "\n".join(reviews) if reviews else "none")
     print("\n## Merged PRs in the window, by author (yours / everyone's)")
     print("\n".join(line for _, line in merged) if merged else "none")
     if caps:
