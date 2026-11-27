@@ -72,7 +72,7 @@ S=~/.claude/skills/desk-checkout/scripts; D=auto   # or today / yesterday / frid
 python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; python3 $S/claude_activity.py --day $D
 ```
 
-`references/sources.md` covers the newer collectors: `worklog_activity.py`, <!-- prose-ok: #1646 adds it -->
+`references/sources.md` covers the newer collectors: `worklog_activity.py`,
 `claude_activity.py --window-turns`, issues in `github_activity.py`.
 
 `claude_activity.py` cuts off any session at the point where it loads this skill, so the

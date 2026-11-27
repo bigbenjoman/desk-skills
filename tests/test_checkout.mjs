@@ -508,7 +508,7 @@ has('#1471 one no read settled goes under Check before posting', skill, 'each ti
 has('#1647 items are built by outcome, not ticket', skill, 'then build **one item per outcome**, not per ticket or source');
 has('#1647 substantive work is every item that changed something', skill, '**Substantive work**: every item that changed something, biggest first');
 lacks('#1647 no longer the few things that mattered most', skill, 'the few things that mattered most');
-has('#1647 the sources line points at sources.md and names the new collectors', skill, '`references/sources.md` covers the newer collectors: `worklog_activity.py`, <!-- prose-ok: #1646 adds it -->\n`claude_activity.py --window-turns`, issues in `github_activity.py`.');
+has('#1647 the sources line points at sources.md and names the new collectors', skill, '`references/sources.md` covers the newer collectors: `worklog_activity.py`,\n`claude_activity.py --window-turns`, issues in `github_activity.py`.');
 const items = readFileSync(join(REPO, 'skills/desk-checkout/references/items.md'), 'utf8');
 has('#1647 an umbrella ticket is split by outcome', items, '**Split an umbrella.**');
 has('#1647 each item names its ticket', items, '**Each item names its ticket where there is one**');
