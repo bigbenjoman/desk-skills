@@ -81,7 +81,7 @@ import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -2990,12 +2990,15 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 // batch started while this pass waited for the lock holds its files here.
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
+// Each repo's workers weigh config §3b "Worker memory weight (GB)" against the machine profile's memory
+// ceiling, the flat share (the ceiling over the worker cap) where a repo sets none (borrow.mjs).
+const MACHINE_CEILING = machineCeiling();
+const WEIGHT = workerWeight(E.configValue('worker-memory'), { ceiling: MACHINE_CEILING, cap: MACHINE_CAP ?? E.concurrencyLimits().cap });
 // The memory every worker and peer session has reserved from the machine profile's ceiling
-// (mem-lease.mjs); a worker's share is the ceiling over the machine's worker cap, or this repo's
-// where the machine profile sets none, so every repo's workers take the same share. This read only
-// sizes the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and
-// with the kind on one that no longer fits does not start.
-const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, take: !DRY });
+// (mem-lease.mjs); a worker reserves its repo's weight, so the lease pool and the machine budget count
+// the same GB. This read only sizes the pass's slots: each spawn reserves its weight under the store's
+// lock first (memHeld), and with the kind on one that no longer fits does not start.
+const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, weight: WEIGHT.gb, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
@@ -3008,6 +3011,9 @@ const SLOTS_SNAP = {
   auditWanted: auditDue,
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
+  machineCeiling: MACHINE_CEILING, weight: WEIGHT,
+  repoWeights: MACHINE_CAP == null || MACHINE_CEILING == null ? {} : repoWeights(otherRepos.map((o) => o.slug), {
+    ceiling: MACHINE_CEILING, cap: MACHINE_CAP, raw: (slug) => (slug === REPO_SLUG ? E.configValue('worker-memory') : repoWeightRaw(slug)) }),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
   batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
   memPool: MEM_POOL,

@@ -152,6 +152,8 @@ const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
 //   baseWanted    whether a base worker with no ticket to spawn wants its one slot
 //   auditWanted   whether a blind audit due in the repo wants its one slot, within the batch's own number
 //   machineProfiled  whether there is a machine profile; repoCaps each repo's §3b cap, by slug
+//   machineCeiling   the machine profile's memory ceiling, or null; weight this repo's workerWeight and
+//                    repoWeights each other repo's GB per worker, by slug (borrow.mjs)
 //   otherRepos    every other queue (borrow.mjs otherQueues), and repoBatches this repo's other batches
 //   batch, lastStart, maintHold
 //   memPool       the memory reservations (mem-lease.mjs memPool), or null where they are not read
@@ -166,6 +168,7 @@ export function decideSlots(s) {
   const workers = machineBudget({
     running: busy, wanted, machine: s.machineCap, queues: s.otherRepos,
     profiled: s.machineProfiled, capOf: (slug) => s.repoCaps[slug],
+    ceiling: s.machineCeiling ?? null, weight: s.weight ?? null, weightOf: (slug) => s.repoWeights?.[slug] ?? null,
   });
   // The memory reservations sit beside the worker count, and the stricter of the two decides.
   const mem = memBudget(s.memPool, { wanted });
