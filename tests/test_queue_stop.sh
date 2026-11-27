@@ -194,7 +194,8 @@ check "DS-1056 AC1: a usage-paused ticket whose worker is gone is requeued"     
 check "DS-1056 AC1: its worktree work is committed on its branch first"                '[ -z "$(git -C "$T/wt/U-1" status --porcelain)" ] && git -C "$T/wt/U-1" show --stat HEAD | grep -q half.txt && [ "$(git -C "$T/wt/U-1" rev-parse --abbrev-ref HEAD)" = fix/U-1 ] && [[ "$out" == *"committed as ${sha:0:12} on fix/U-1"* ]]'
 # DS-1056 AC4: nothing on it resumes or hands off its old session, so the next pass starts it fresh
 # (pass.mjs startsFresh) on the login that pass picks (repoLogin), not the limited one.
-check "DS-1056 AC4: the next pass starts it fresh, on the login it picks" '[ "$(node --input-type=module -e "import { toResume, toHandoff } from \"$B/pass/shared.mjs\"; import { readFileSync } from \"node:fs\"; const t = JSON.parse(readFileSync(process.argv[1], \"utf8\")).tickets[\"U-1\"]; console.log(JSON.stringify([toResume(t), !!toHandoff(t), t.session_id, t.login_move ?? null, t.resume]))" "$DESK_QUEUE")" = "[false,false,null,null,null]" ]'
+fresh_u1=$(node --input-type=module -e 'import { toResume, toHandoff } from "'"$B"'/pass/shared.mjs"; import { readFileSync } from "node:fs"; const t = JSON.parse(readFileSync(process.argv[1], "utf8")).tickets["U-1"]; console.log(JSON.stringify([toResume(t), !!toHandoff(t), t.session_id, t.login_move ?? null, t.resume]))' "$DESK_QUEUE")
+check "DS-1056 AC4: the next pass starts it fresh, on the login it picks" '[ "$fresh_u1" = "[false,false,null,null,null]" ]'
 # Paused at a limit but its process still runs: refused as any live worker is.
 running U-2; q set U-2 "$PAUSED"; worker U-2
 echo "x" > "$T/wt/U-2/x.txt"
