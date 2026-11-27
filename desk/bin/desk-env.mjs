@@ -257,7 +257,7 @@ export function currentRepo() {
 // An environment for a child run in another repo's checkout: every override that would pin it to
 // this repo (its dir, config, Jira or git directory) removed, so the checkout decides.
 export const otherRepoEnv = (env = process.env) => Object.fromEntries(Object.entries(env)
-  .filter(([k]) => !/^(DESK_REPO|DESK_CONFIG$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
+  .filter(([k]) => !/^(DESK_REPO|DESK_CONFIG(_FILE)?$|JIRA_|GIT_DIR$|GIT_WORK_TREE$|GIT_CONFIG_(COUNT$|KEY_|VALUE_))/.test(k)));
 
 export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskConfigRoot(), 'repos', slug) : null);
 export const credsDir = () => repoConfigDir();
@@ -340,11 +340,42 @@ const { splitRow } = M;
 let pinned = false, snapshot = null;
 function parseConfig() {
   if (snapshot) return snapshot;
-  const parsed = parseConfigFile(configPathOrNull());
+  const parsed = withConfigFileRows(parseConfigFile(configPathOrNull()));
   if (pinned) snapshot = parsed;
   return parsed;
 }
 const pinConfig = () => { pinned = true; };
+
+// DESK_CONFIG_FILE: a JSON object of config row ids to values (a string, or an array for a list row),
+// read before this repo's config, for a session with no ~/.config/desk (a cloud session). Only this
+// repo's config reads it, and only for value rows (get, list): a §3 permission is not taken from it.
+// A row the file lacks, or holds as null, blank or TODO, reads from the config as before; unset, the
+// variable changes nothing. A file that is set but unreadable, or not such an object, fails loudly.
+//   -> Map(id -> [item]) or null
+const configFileCache = new Map();
+function configFileRows() {
+  const path = process.env.DESK_CONFIG_FILE ? expandHome(process.env.DESK_CONFIG_FILE) : null;
+  if (!path) return null;
+  let st, obj;
+  try { st = statSync(path, { bigint: true }); } catch (e) { throw new DeskConfigError(`desk: DESK_CONFIG_FILE names ${path}, which cannot be read (${e.code ?? e.message}). Fix or unset it.`); }
+  const stamp = fileStamp(st);
+  const hit = configFileCache.get(path);
+  if (hit?.stamp === stamp) return hit.rows;
+  try { obj = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { throw new DeskConfigError(`desk: DESK_CONFIG_FILE ${path} is not JSON (${e.message}). Fix or unset it.`); }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new DeskConfigError(`desk: DESK_CONFIG_FILE ${path} is not a JSON object of row ids to values. Fix or unset it.`);
+  const rows = new Map();
+  for (const [id, v] of Object.entries(obj)) {
+    const items = [].concat(v ?? []).filter((x) => x != null && typeof x !== 'object').map((x) => String(x).trim()).filter((x) => !unset(x));
+    if (items.length) rows.set(id, items);
+  }
+  configFileCache.set(path, { stamp, rows });
+  return rows;
+}
+// This repo's parse with the file's rows beside it as `fileRows`; the shared parse itself is not changed.
+function withConfigFileRows(parsed) {
+  const rows = configFileRows();
+  return rows ? { ...parsed, fileRows: rows } : parsed;
+}
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
 // header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
@@ -710,6 +741,8 @@ function configValueFrom(parsed, id, rows = CONFIG_ROWS) {
 // The repo's own row, with no machine fallback. Unset is null.
 function repoValueIn(parsed, id, rows = CONFIG_ROWS) {
   const { section, row, table } = rowFor(id, rows);
+  const file = parsed.fileRows?.get(id);
+  if (file) return table ? file.join('\n') : NO_SLUG_EXPANSION.has(id) ? file[0] : expandSlug(file[0]);
   if (table) return tableItemsIn(parsed, id)?.join('\n') ?? null;
   const e = parsed.sections[section]?.byName[norm(row)];
   if (unset(e?.value)) return null;
@@ -806,6 +839,8 @@ function tableItemsIn(parsed, id) {
 // A row's set items as the file has them, before configValuesIn refuses any: -> [item] or null.
 function rowSpansIn(parsed, id, rows = CONFIG_ROWS) {
   const { section, row, table } = rowFor(id, rows);
+  const file = parsed.fileRows?.get(id);
+  if (file) return table || NO_SLUG_EXPANSION.has(id) ? file : file.map(expandSlug);
   if (table) return tableItemsIn(parsed, id);
   const e = parsed.sections[section]?.byName[norm(row)];
   return !e || unset(e.value) ? null : e.items.filter((x) => !unset(x)).map(expandSlug);
