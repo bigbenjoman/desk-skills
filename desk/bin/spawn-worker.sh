@@ -251,7 +251,7 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
       elif [ "$other" != "$WT" ]; then MASK_ARGS+=(--mask "OTHER_WORKTREE=$other"); fi
     done < <(git -C "$WT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
     FINGERPRINT="$(node "$BIN/preflight-fingerprint.mjs" --file "settings=$SETTINGS" --file "agents=$AGENTS" \
-      --part "tools=${TOOL_ARGS[*]-}" --part "model=$MODEL" --part "finder=${AUTOPILOT_FINDER_MODEL:-}" --part "text=${AUTOPILOT_TEXT_MODEL:-}" \
+      --part "tools=${TOOL_ARGS[*]-}" --part "model=$MODEL" --part "finder=${AUTOPILOT_FINDER_MODEL:-}" --part "finder-drawn=${AUTOPILOT_FINDER_DRAWN:-}" --part "text=${AUTOPILOT_TEXT_MODEL:-}" \
       --part "dirs=${ADD_DIRS[*]}" --part "checks=$CHECKS" \
       --part "gates=$TRACKER $CODEX_PERM jira:$HAVE_JIRA codex:$HAVE_CODEX ${AUTOPILOT_ALLOW_NO_CODEX:-}" \
       "${MASK_ARGS[@]}" </dev/null)" || FINGERPRINT=""
@@ -454,8 +454,12 @@ $CHECKS"
   # §3b Worker models' finder and text models (from pass.mjs; empty when unset) never run in this
   # call. A value the CLI lists for this login (model-list.mjs: no prompt, so no model turn) passes as
   # it is; any other is asked for one word on its own, and a value the CLI rejects fails here, naming it.
+  # The finder model the finder-model lever drew (AUTOPILOT_FINDER_DRAWN, from pass.mjs) is proved on its
+  # own line beside the row's, which the simplicity finder still runs on; a drawn one the CLI rejects is
+  # that lever's (FINDER-DRAWN), and every other failure is the preflight's (CHECKS_FAIL, EXTRA_FAIL).
+  CHECKS_FAIL=$fail; EXTRA_FAIL=0
   LISTED=""; LISTED_READ=0
-  for extra in "finder:${AUTOPILOT_FINDER_MODEL:-}" "text:${AUTOPILOT_TEXT_MODEL:-}"; do
+  for extra in "finder:${AUTOPILOT_FINDER_MODEL:-}" "finder-drawn:${AUTOPILOT_FINDER_DRAWN:-}" "text:${AUTOPILOT_TEXT_MODEL:-}"; do
     key="${extra%%:*}"; val="${extra#*:}"
     [ -n "$val" ] || continue
     if [ "$LISTED_READ" = 0 ]; then LISTED="$(desk_timeout 60 node "$BIN/model-list.mjs" < /dev/null 2>/dev/null || true)"; LISTED_READ=1; fi
@@ -463,7 +467,8 @@ $CHECKS"
     GOT=$(desk_timeout 120 claude -p "Reply with exactly one word: MODEL_OK" --setting-sources "" --strict-mcp-config \
       ${NO_TOOL_ARGS[@]+"${NO_TOOL_ARGS[@]}"} --model "$val" ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
     if printf '%s\n' "$GOT" | grep -q MODEL_OK; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"
-    else echo "  $(printf '%s' "$key" | tr 'a-z' 'A-Z')  FAIL     (config §3b Worker models names $key=\"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
+    elif [ "$key" = finder-drawn ]; then echo "  FINDER-DRAWN  FAIL     (the finder-model lever drew \"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1
+    else echo "  $(printf '%s' "$key" | tr 'a-z' 'A-Z')  FAIL     (config §3b Worker models names $key=\"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1; EXTRA_FAIL=1; fi
   done
 
   # An empty result is not a permissions verdict: the preflight is itself a claude -p call, and
@@ -478,10 +483,15 @@ $CHECKS"
     echo "[preflight] pass"
     exit 0
   fi
-  # With the preflight lever on, its own step failing is the lever's own-step trip (levers-trips.mjs).
-  # A model the worker-model lever drew (AUTOPILOT_MODEL_DRAWN, from pass.mjs) that the CLI rejects is
-  # that lever's, and pass.mjs starts the ticket on its baseline instead: not the preflight's step.
-  [ "${#PRE_EFFORT_ARGS[@]}" -gt 0 ] && ! { [ -n "${AUTOPILOT_MODEL_DRAWN:-}" ] && [ "${MODEL_REJECTED:-0}" = 1 ]; } && node "$BIN/levers-trips.mjs" record-step --state "$STATE" --ticket "$TICKET" --lever preflight --step "the preflight" --exit 1 \
+  # Where every failure is a drawn model the CLI rejects (the worker-model lever's, AUTOPILOT_MODEL_DRAWN
+  # from pass.mjs, or the finder-model lever's drawn finder), the preflight says so, and pass.mjs starts
+  # the ticket on the row's model instead. Anything else failing beside it, a breach included, is not.
+  DRAWN_ONLY=""
+  [ "$EXTRA_FAIL" = 0 ] && { [ "$CHECKS_FAIL" = 0 ] || { [ -n "${AUTOPILOT_MODEL_DRAWN:-}" ] && [ "${MODEL_REJECTED:-0}" = 1 ]; }; } && DRAWN_ONLY=1
+  [ -n "$DRAWN_ONLY" ] && echo "[preflight] drawn-only: every failure is a model a lever drew"
+  # With the preflight lever on, its own step failing is the lever's own-step trip (levers-trips.mjs); a
+  # drawn model's rejection is its own lever's, not the preflight's step.
+  [ "${#PRE_EFFORT_ARGS[@]}" -gt 0 ] && [ -z "$DRAWN_ONLY" ] && node "$BIN/levers-trips.mjs" record-step --state "$STATE" --ticket "$TICKET" --lever preflight --step "the preflight" --exit 1 \
     --error "the preflight failed" </dev/null >/dev/null 2>&1 || true
   echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
   exit 1

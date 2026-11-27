@@ -4024,17 +4024,19 @@ function refusedOf(login) { return refusedIn(HEALTH, login, OWN_LOGIN); }
 // preflight, so a value the CLI rejects stops the ticket before any worker of it runs. `cost` is the
 // preflight call's { usd, turns }, each null when it reported none, and `skipped` when spawn-worker.sh
 // made no call because a pass on the same fingerprint stands.
-function preflight(key, wt, workerEnv, finder = models.finder) {
+// `drawnFinder`, the finder-model lever's drawn alias, is proved on its own line beside the row's.
+// `drawnOnly`: every failure was a model a lever drew (spawn-worker.sh's drawn-only line).
+function preflight(key, wt, workerEnv, drawnFinder = null) {
   const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_FINDER_MODEL: finder ?? '', AUTOPILOT_TEXT_MODEL: models.text ?? '', AUTOPILOT_PREFLIGHT: '1' },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_FINDER_MODEL: models.finder ?? '', AUTOPILOT_FINDER_DRAWN: drawnFinder ?? '', AUTOPILOT_TEXT_MODEL: models.text ?? '', AUTOPILOT_PREFLIGHT: '1' },
   }).out;
   const m = /\[preflight\] cost=(\S+) turns=(\S+)/.exec(pre);
   const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
   const cost = { usd: num(m?.[1]), turns: num(m?.[2]), skipped: /^\[preflight\] skipped/m.test(pre) };
   const failure = /\[preflight\] pass/.test(pre) ? null : `${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}\n${preflightNote(cost)}`;
   // A call refused at the usage limit (spawn-worker.sh says so): nothing about the worker failed.
-  return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre) };
+  return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre), drawnOnly: !!failure && /^\[preflight\] drawn-only/m.test(pre) };
 }
 // The model a ticket's start runs on: the model its pin's worker-model lever drew, other than the
 // baseline, else `base`, §3b Worker models' model for the start. A pin that cannot be read keeps `base`.
@@ -4052,14 +4054,14 @@ function startModel(t, base) {
 function preflightStart(t, wt, workerEnv, base) {
   const drew = workerEnv.AUTOPILOT_MODEL;
   const drawn = drew !== base && drew === startModel(t, base);
-  // The finders' model is proved as drawn too: the alias the finder-model lever drew, else the row's.
+  // The alias the finder-model lever drew is proved too, beside the row's finder.
   let finder = startFinder(t);
   // On a drawn model, AUTOPILOT_MODEL_DRAWN tells spawn-worker.sh that a model the CLI rejects is the
   // worker-model lever's, retried below, so it is not recorded as the preflight lever's own step failing.
-  let pre = preflight(t.key, wt, drawn ? { ...workerEnv, AUTOPILOT_MODEL_DRAWN: '1' } : workerEnv, finder ?? models.finder);
+  let pre = preflight(t.key, wt, drawn ? { ...workerEnv, AUTOPILOT_MODEL_DRAWN: '1' } : workerEnv, finder);
   const sum = (a, b) => (a == null || b == null ? null : a + b);
   const retry = (out) => {
-    const again = preflight(t.key, wt, workerEnv, finder ?? models.finder);
+    const again = preflight(t.key, wt, workerEnv, finder);
     const cost = again.cost.skipped ? out.cost : { usd: sum(out.cost.usd, again.cost.usd), turns: sum(out.cost.turns, again.cost.turns), skipped: false };
     return { ...again, cost, fellBack: out.fellBack, finderFellBack: out.finderFellBack };
   };
@@ -4069,8 +4071,9 @@ function preflightStart(t, wt, workerEnv, base) {
     pre = retry({ ...pre, fellBack: drew });
   }
   // A drawn finder model the CLI cannot start on: the finders run on the row's model, the worker told so
-  // by AUTOPILOT_FINDER_FALLBACK (spawn-worker.sh moves its value back to the baseline).
-  if (pre.failure && !pre.limit && finder && /^\s*FINDER\s+FAIL/m.test(pre.failure)) {
+  // by AUTOPILOT_FINDER_FALLBACK (spawn-worker.sh moves its value back to the baseline). Only where that
+  // was the only failure: a breach or any other check failing beside it stops the start as it stands.
+  if (pre.failure && !pre.limit && pre.drawnOnly && finder && /^\s*FINDER-DRAWN\s+FAIL/m.test(pre.failure)) {
     workerEnv.AUTOPILOT_FINDER_FALLBACK = finder;
     const finderFellBack = finder;
     finder = null;
