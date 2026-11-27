@@ -188,16 +188,17 @@ export function startFollow({ state, slug, repo, bin, t, steps, dirs, cwd, env =
 const line = (s, n = 300) => { const x = String(s ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 const RESULTS = ['pass', 'fail', 'pending', 'broken'];
 
-// #1628: a step naming a line its run's log does not print (a per-check line, where CI logs only each
-// suite's total) is decided by the run and that total, from the checker's `absent` ({ line, conclusion,
-// total }): passed (suite total) where the run concluded success and the total says 0 failed, else
-// failed. -> { result, found }, or null where the checker gave no `absent`, or found the step pending
-// or broken.
+// A step naming a line its run's log does not print (a per-check line, where CI logs only each suite's
+// total) is decided by the run and that total, from the checker's `absent` ({ line, conclusion, total }):
+// passed (suite total) where the run concluded success and the total says 0 failed, else failed.
+// -> { result, found }, or null where the checker gave no `absent` naming a line (an empty one filled
+// in from the template leaves its own result standing), or found the step pending or broken.
 const failedIn = (total) => { const m = /\b(\d+)\s+failed\b/i.exec(total); return m ? Number(m[1]) : NaN; };
 function bySuiteTotal(x) {
   const a = x?.absent;
   if (!a || typeof a !== 'object' || x.result === 'pending' || x.result === 'broken') return null;
-  const named = line(a.line, 120) || 'the line it names';
+  const named = line(a.line, 120);
+  if (!named) return null;
   const total = line(a.total, 200);
   const conclusion = line(a.conclusion, 40).toLowerCase();
   if (conclusion === 'success' && failedIn(total) === 0) return { result: 'pass', found: `passed (suite total): ${named} is not in the log, which prints the suite's total: ${total}` };
