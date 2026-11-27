@@ -2725,12 +2725,13 @@ const suiteBound = (r) => {
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
   return !round ? 'fresh' : SUITE_STAGES.includes(round) ? 'suite' : null;
 };
-// Each lock queue's room left this pass: each suite-bound ticket let through uses one of every queue it
-// would join, and once one has none left the tickets bound for it are held. A fresh session joins only
-// the test lock's queue (its typechecks): its suites are a stage away, so a full light queue holds only
-// the tickets whose next step is a suite. A ticket skipped later in the pass keeps its units used, which
-// errs on the side of starting fewer.
+// Each lock queue's room left this pass: each ticket whose next step is a suite uses one of every queue
+// it would join, and once one has none left the tickets bound for it are held. A ticket skipped later in
+// the pass keeps its units used, which errs on the side of starting fewer. A fresh session uses none:
+// its first suite is a stage or more away and is counted then, through the lock's own queue. It is held
+// only while the test lock's queue, as read, already had no room, as runs wait on it now.
 const lockRoom = Object.fromEntries(['test', 'light'].map((l) => [l, LOCK_QUEUE?.queues.find((q) => q.lock === l)?.room ?? Infinity]));
+const testQueueFull = lockRoom.test <= 0;
 const takeLockRoom = (locks) => {
   if (locks.some((l) => lockRoom[l] <= 0)) return true;
   for (const l of locks) lockRoom[l] -= 1;
@@ -2738,7 +2739,8 @@ const takeLockRoom = (locks) => {
 };
 const lockQueueHolds = (r) => {
   const bound = suiteBound(r);
-  return !!bound && takeLockRoom(bound === 'fresh' ? ['test'] : ['test', 'light']);
+  if (bound === 'fresh') return testQueueFull;
+  return !!bound && takeLockRoom(['test', 'light']);
 };
 const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
@@ -4608,7 +4610,7 @@ function saveUsage() {
   if (queue().benched != null) q('set-batch', 'benched=null');
 }
 saveUsage();
-const borrowLine = borrowedLine(ticketPlan, { share: concurrency, running: ticketWorkers, spawned: report.spawned.length });
+const borrowLine = borrowedLine(ticketPlan, { share: concurrency, running: ticketWorkers, spawned: report.spawned.length, lockHeld: lockQueueHeld.length });
 
 // ---- epics ---------------------------------------------------------------
 // The epic read for triage records written before epics were recorded: pass/promotion-pr.mjs

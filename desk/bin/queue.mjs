@@ -416,7 +416,9 @@ function requeue(q, key, { handedBack = false } = {}) {
     // Done by another's PR no longer, once sent back for work of its own.
     spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null,
     // A red-base repair the pass closed as needless is owed its own work again, so what it commits next is pushed.
-    ...(t.closed_superseded ? { closed_superseded: null } : {}), updated_at: new Date().toISOString() });
+    ...(t.closed_superseded ? { closed_superseded: null } : {}),
+    // When it came back: desk-q's no-progress clock counts this ticket from here, not from added_at.
+    requeued_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
