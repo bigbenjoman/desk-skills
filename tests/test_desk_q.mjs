@@ -2786,6 +2786,18 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
   t('issue-1491 AC4 once a slot frees it is ready again', Q.shownState({ tickets: { H: freed } }, freed), 'ready');
 }
 
+// ---- issue-1571 AC3: a handoff whose worker printed AUTOPILOT_DONE, which no pass respawns, needs the person, naming why.
+{
+  const h = { key: 'H', state: 'triaged', handoff: 'pending', handoff_stage: '7' };
+  const q = { tickets: { H: h } };
+  const ctx = { saidDone: (k) => k === 'H' };
+  const k = Q.shownState(q, h, ctx);
+  t('issue-1571 AC3 desk-q shows a handoff after DONE as needing you, stalled, naming why',
+    `${k} | ${Q.needText({ q, ctx, live: true }, { t: h, k })}`,
+    'needs | stalled: its worker printed AUTOPILOT_DONE, then handed off to Stage 7, and no pass respawns a ticket whose worker printed DONE: requeue it');
+  t('issue-1571 AC3 a handoff whose worker printed no DONE is ready as before', Q.shownState(q, h, { saidDone: () => false }), 'ready');
+}
+
 // ---- DS-1005: a park whose question asks the person for a host-side step, on a file only that step
 // makes, needs them even where the file was recorded without the person flag; a self-clearing one waits.
 const q1005 = 'DS-722\'s desk app needs its npm packages installed to make /w/DS-722/desk/ui/package-lock.json, and npm is refused to workers because §4 Package manager is none. Please run `npm install` in /w/DS-722/desk/ui (the next worker commits the lockfile and runs the tests). Not reached: the push, the draft PR.';
