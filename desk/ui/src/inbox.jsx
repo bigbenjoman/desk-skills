@@ -63,10 +63,11 @@ const MERGE_HOLD = /merge it on GitHub|only a person merges/i;
 const mergeHold = (item) => item.kind === 'pr' && item.pr != null && item.actions.some((a) => a.action === 'done') && MERGE_HOLD.test(item.question);
 const ANSWERS = new Set(['answer', 'resume']);
 // needs-you record's words for an answer it took as an instruction to run elsewhere, recording nothing:
-// admit and plan-first's open ("nothing recorded."), a session item's open ("not requeued (…"), and a
-// noted item's done ("…; done records nothing.").
-const NOTHING_RECORDED = /(^|: )(nothing recorded\.|not requeued \()|records nothing\.$/;
-// A put-off needs-you keeps listing while tickets wait behind it: recorded, and its row stays.
+// admit and plan-first's open ("nothing recorded."), and a session item's open ("not requeued (…").
+const NOTHING_RECORDED = /(^|: )(nothing recorded\.|not requeued \()/;
+// A noted item's done records nothing either: "<repo> <key>: noted: …; done records nothing."
+const NOTED_DONE = /^\S+ \S+: noted: .*; done records nothing\.$/;
+// A put-off needs-you keeps listing while tickets wait behind it: recorded, and still to answer here.
 const STILL_LISTED = /It is still listed while/;
 const UNDO_MS = 10_000;
 const READ_MS = 1000;
@@ -279,13 +280,14 @@ function DetailSkeleton() {
   );
 }
 
-// The note under the action bar for a record that did not go through: exit 10 (nothing changed), exit
-// 11 (needs-you refused it), or any other failure, each with what the command or the server said.
+// The note under the action bar for a record that leaves the question open: exit 10 (nothing changed),
+// a put-off needs-you still lists (kept), exit 11 (needs-you refused it), or any other failure, each
+// with what the command or the server said.
 function Outcome({ result, again }) {
-  if (result.phase === 'nothing') {
+  if (result.phase === 'nothing' || result.phase === 'kept') {
     return (
-      <div role="status" data-outcome="nothing" className="flex flex-col gap-1.5 rounded-lg border border-border bg-subtle px-3.5 py-3 text-[13px] leading-[19px]">
-        <span className="font-semibold">Nothing changed:</span>
+      <div role="status" data-outcome={result.phase} className="flex flex-col gap-1.5 rounded-lg border border-border bg-subtle px-3.5 py-3 text-[13px] leading-[19px]">
+        <span className="font-semibold">{result.phase === 'kept' ? 'Recorded, and still listed:' : 'Nothing changed:'}</span>
         <pre className="m-0 font-mono text-[12.5px] break-words whitespace-pre-wrap">{result.out}</pre>
       </div>
     );
@@ -546,7 +548,7 @@ function Detail({ item, snapshot, compact, step, result, record, go, next, nextP
           {o?.run === 'open' && o.url && <div data-opens="" className="truncate font-mono text-[11.5px] leading-4 text-muted-fg">Opens: {o.url}</div>}
           {o?.run === 'go' && <div data-opens="" className="font-mono text-[11.5px] leading-4 text-muted-fg">Opens: Usage &amp; costs</div>}
           {item.kind === 'usage' && <p className="text-[12.5px] text-muted-fg">Every subscription change happens in Usage &amp; costs, not here.</p>}
-          {result && ['nothing', 'refused', 'failed'].includes(result.phase) && <Outcome result={result} again={again} />}
+          {result && ['nothing', 'kept', 'refused', 'failed'].includes(result.phase) && <Outcome result={result} again={again} />}
         </section></>}
         <div className="flex flex-wrap gap-1.5 text-[12.5px]">
           {item.pr != null && <span className="inline-flex h-7 items-center rounded-md border border-border px-2"><ExternalLink text={`PR #${item.pr}`} url={gh ? `https://github.com/${gh}/pull/${item.pr}` : null} where="GitHub" /></span>}
@@ -649,10 +651,9 @@ export function Inbox({ get, snapshot, go }) {
   const figures = JSON.stringify([snapshot?.needs_you, (snapshot?.repos ?? []).map((r) => [r.slug, r.needs_you, r.production_broken])]);
   useEffect(() => { load(false); }, [load, figures]);
 
-  // An item Desk recorded leaves the list at once, before needs-you's next read drops it, unless
-  // needs-you said it stays listed. Once a read has dropped it (`left`), a later read that lists it
-  // again is a new question, and it shows.
-  const items = useMemo(() => (data?.items ?? []).filter((i) => !(results[i.id]?.phase === 'done' && !results[i.id].left && !results[i.id].stays)), [data, results]);
+  // An item Desk recorded leaves the list at once, before needs-you's next read drops it. Once a read
+  // has dropped it (`left`), a later read that lists it again is a new question, and it shows.
+  const items = useMemo(() => (data?.items ?? []).filter((i) => !(results[i.id]?.phase === 'done' && !results[i.id].left)), [data, results]);
   const shown = useMemo(() => {
     let out = items.filter((i) => (!repoF || i.repo === repoF) && (!kindF || i.kind === kindF));
     if (sort === 'held') out = [...out].sort((a, b) => (b.behind ?? 0) - (a.behind ?? 0));
@@ -740,8 +741,9 @@ export function Inbox({ get, snapshot, go }) {
       });
       res = await resultOf(r);
       // An instruction (admit, a plan-first start) exits 0 having recorded nothing: the item stays.
-      if (res.phase === 'done' && NOTHING_RECORDED.test(res.out.split('\n')[0])) res = { ...res, phase: 'nothing' };
-      if (res.phase === 'done' && STILL_LISTED.test(res.out)) res = { ...res, stays: true };
+      const first = res.out.split('\n')[0];
+      if (res.phase === 'done' && (NOTHING_RECORDED.test(first) || (option.action === 'done' && NOTED_DONE.test(first)))) res = { ...res, phase: 'nothing' };
+      if (res.phase === 'done' && STILL_LISTED.test(res.out)) res = { ...res, phase: 'kept' };
     } catch { res = { phase: 'failed', out: '', message: "Desk couldn't reach its server, so nothing was recorded. Try again once it's back." }; }
     const at = new Date().toISOString();
     setResults((r) => ({ ...r, [item.id]: { ...r[item.id], ...res, at, next } }));
@@ -752,7 +754,7 @@ export function Inbox({ get, snapshot, go }) {
     const o = item.actions.find((a) => a.action === 'not-now');
     if (!o || results[item.id]?.phase === 'busy' || results[item.id]?.phase === 'done') return;
     const res = await record(item, { ...o, id: o.action }, undefined);
-    if (res.phase === 'done') setToast({ id: item.id, key: item.ticket ?? item.key, item, until: Date.now() + UNDO_MS });
+    if (res.phase === 'done' || res.phase === 'kept') setToast({ id: item.id, key: item.ticket ?? item.key, item, until: Date.now() + UNDO_MS });
   };
   const undo = async () => {
     const t = toast;

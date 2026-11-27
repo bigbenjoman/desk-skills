@@ -346,11 +346,22 @@ describe('answering from the Inbox', () => {
   });
 
   it('a noted item\'s done, which ends "done records nothing.", shows Nothing changed and keeps the row', async () => {
-    const s = await open();
-    s.answer = { exit: 0, stdout: 'studia-web SV-3844: noted: this item goes once a pass runs again; done records nothing.\n', stderr: '' };
-    await sendResume(s);
+    const stalled = item('SV-3990', 'studia-web', 3, { kind: 'stalled', actions: [{ action: 'done', recommended: true, why: 'once a pass runs again this item leaves the list; done records nothing', note: null, needs_text: false }, notNow] });
+    const s = await open({ list: listOf([stalled, ...ITEMS.slice(0, 2)]) });
+    s.answer = { exit: 0, stdout: 'studia-web SV-3990: noted: this item goes once a pass runs again; done records nothing.\n', stderr: '' };
+    fireEvent.click(row('SV-3990'));
+    fireEvent.click(radio(/^done/));
+    fireEvent.click(detail().querySelector('[data-actions] button'));
     await waitFor(() => expect(detail().querySelector('[data-outcome="nothing"]')).toBeTruthy());
-    expect(row('SV-3844')).toBeTruthy();
+    expect(row('SV-3990')).toBeTruthy();
+  });
+
+  it('an answer whose reply happens to end "records nothing." is still sent', async () => {
+    const s = await open();
+    s.answer = { exit: 0, stdout: 'studia-web SV-3844: resumed. Copied ~/Desktop/audit records nothing.\n', stderr: '' };
+    await sendResume(s);
+    expect(await within(detail()).findByText('Answer sent to SV-3844 at 10:14.')).toBeTruthy();
+    expect(row('SV-3844')).toBeUndefined();
   });
 
   it('AC5 exit 11 shows "Desk didn\'t record that" with stdout under the action bar, keeps the text, and Choose another answer focuses the options', async () => {
@@ -458,17 +469,21 @@ describe('put off and taken back', () => {
   afterEach(() => { vi.useRealTimers(); });
   const SV3957 = item('SV-3957', 'studia-web', 2, { question: 'SV-3957 needs a lane' });
 
-  it('a put-off needs-you keeps listing while tickets wait behind it keeps its row, through later reads', async () => {
+  it('a put-off needs-you keeps listing while tickets wait behind it keeps its row and its answers, through later reads', async () => {
     const s = await open({ list: listOf([SV3957, ...ITEMS.slice(0, 2)]) });
-    s.answer = { exit: 0, stdout: 'studia-web SV-3957: put off (until its inputs change). It is still listed while 3 or more tickets wait behind it (4 do now).\n', stderr: '' };
+    const reply = 'studia-web SV-3957: put off (until its inputs change). It is still listed while 3 or more tickets wait behind it (4 do now).';
+    s.answer = { exit: 0, stdout: `${reply}\n`, stderr: '' };
     fireEvent.click(row('SV-3957'));
     key('e');
     await waitFor(() => expect(document.querySelector('[data-toast]')).toBeTruthy());
     expect(row('SV-3957')).toBeTruthy();
+    const note = detail().querySelector('[data-outcome="kept"]');
+    expect(note.textContent).toBe(`Recorded, and still listed:${reply}`);
     const reads = s.calls.length;
     key('r');
     await waitFor(() => expect(s.calls.length).toBeGreaterThan(reads));
     expect(row('SV-3957')).toBeTruthy();
+    expect([detail().querySelector('[data-recorded]'), within(detail()).getAllByRole('radio').some((r) => r.matches(':disabled'))]).toEqual([null, false]);
   });
 
   it('AC10 e puts SV-3957 off at once and the toast offers Undo (⌘Z) for 10 s', async () => {
