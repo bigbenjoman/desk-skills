@@ -3520,8 +3520,10 @@ function queueWidths(width, keys, spans, { starts, ships }) {
   const sFit = (short) => fitW('STARTS', short ? starts.map(shortWhen) : starts, STARTS_W);
   // SHIPS ends a row with no TITLE, so it then takes no gap after it.
   const hFit = (short, title) => fitW('SHIPS', short ? ships.map(shortWhen) : ships, SHIPS_W) - (title ? 0 : 2);
-  // STARTS in the room a row with short dates and the shortest key leaves it, never under its heading.
-  const sRoom = Math.max('STARTS'.length + 2, Math.min(sFit(true), width - (POS_W + 10 + STATE_W + NEED_MIN + hFit(true))));
+  // The narrowest TICKET a cut key may take: never under what the keys of up to KEY_KEEP characters need.
+  const keep = keyW(keys.filter((k) => String(k).length <= KEY_KEEP));
+  // STARTS in the room a row with short dates and the narrowest TICKET leaves it, never under its heading.
+  const sRoom = Math.max('STARTS'.length + 2, Math.min(sFit(true), width - (POS_W + keep + STATE_W + NEED_MIN + hFit(true))));
   // Each layout: whether the key may be cut, WAITING, STARTS and SHIPS (0 leaves one out), whether TITLE shows, and `short`.
   const L = (cutKey, ww, sw, hw, title, short = false) => ({ cutKey, ww, sw, hw, title, short });
   const steps = [L(false, wait, STARTS_W, SHIPS_W, true), L(false, wait, sFit(), hFit(false, true), true), L(true, wait, sFit(), hFit(false, true), true),
@@ -3529,7 +3531,6 @@ function queueWidths(width, keys, spans, { starts, ships }) {
     L(true, 0, sRoom, hFit(true), false, true), L(true, 0, 0, hFit(true), false, true), L(true, 0, 0, 0, false, true)];
   // The row's width less TICKET, with WHAT IT NEEDS at NEED_MIN and TITLE at TITLE_MIN.
   const rest = (s) => POS_W + STATE_W + s.ww + NEED_MIN + s.sw + s.hw + (s.title ? TITLE_MIN : 0);
-  const keep = keyW(keys.filter((k) => String(k).length <= KEY_KEEP));
   const keyOf = (s) => (s.cutKey ? Math.max(keep, Math.min(full, width - rest(s))) : full);
   const s = steps.find((x) => rest(x) + keyOf(x) <= width) ?? steps.at(-1);
   const kw = keyOf(s), fixed = rest(s) - NEED_MIN + kw;

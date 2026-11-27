@@ -3391,6 +3391,19 @@ try {
   t('DS-1046 AC2 a dated repo at 140 columns keeps every column and its "today"',
     `${QUEUE_COLS.filter((c) => queueHeadOf(d140).includes(c)).join(',')} ${[...dCells(d140, 'STARTS'), ...dCells(d140, 'SHIPS')].some((s) => /^▲?today \d\d:\d\d$/.test(s))}`,
     'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS,TITLE true');
+  // The same with a 10-character key beside the long one: it is never cut, and STARTS goes only where
+  // the room WHAT IT NEEDS and the long key could give up is narrower than STARTS at its heading.
+  dated('q1046k', 5666, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { [KEY]: { state: 'running', stage: '3/9' }, 'issue-1485': ready, 'D-2': ready } });
+  const rk = Q.loadRepos(FIXED).find((r) => r.name === 'q1046k');
+  const kCut = [], kDropped = [];
+  for (let w = 60; w <= 140; w++) {
+    const ls = lines(Q.repoScreen(rk, { now: FIXED, width: w })), h = queueHeadOf(ls);
+    if (!leadRow(ls, 'issue-1485 ')) kCut.push(w);
+    const slack = (h.indexOf('SHIPS') - h.indexOf('WHAT IT NEEDS') - 36) + (h.indexOf('STATE') - h.indexOf('TICKET') - 11);
+    if (!h.includes('STARTS') && h.includes('SHIPS') && slack >= 'STARTS'.length + 2) kDropped.push(w);
+  }
+  t('DS-1046 a 10-character key beside a long one is whole at every width, and STARTS goes only when it has no room at its heading',
+    `cut at ${kCut.join() || 'none'}; STARTS dropped with room at ${kDropped.join() || 'none'}`, 'cut at none; STARTS dropped with room at none');
   // A slow repo late in December, whose dates fall in the next year ("6 Jan 2026"): at 88 columns a
   // date drops its year so STARTS stays, and wide enough it keeps it. Before the real clock, as FIXED
   // is, so its passes are live.
