@@ -3444,7 +3444,7 @@ if (isMain) {
           break;
         }
         if (sub === 'cloud-trust' && !rest.length) {
-          // issue-1642: the first-run prompts a cloud start of this repo would wait on, under each login
+          // The first-run prompts a cloud start of this repo would wait on, under each login
           // that may start its cloud sessions (its Subscription's, and a default's fallback), from each
           // login's .claude.json, read only. Each is printed with the command that answers it from the
           // checkout. Exit 1 while any is unanswered.

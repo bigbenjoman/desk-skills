@@ -68,15 +68,19 @@ export const FIRST_RUN = Object.freeze({
   env: { name: 'the environment-variables prompt (whether the cloud session may use the environment\'s variables)', seen: /environment variables/i,
     key: null, answer: 'answer it', cloud: true },
 });
-const shellWord = (s) => (/^[\w@%+=:,./~-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
+const SHELL_SAFE = /^[\w@%+=:,./~-]+$/;
+const shellWord = (s) => (SHELL_SAFE.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
+// `p` as a `cd` argument: its `~` form when that needs no quoting, else the absolute path quoted, as a
+// quoted `~` is never expanded.
+const cdWord = (p) => (SHELL_SAFE.test(tilde(p)) ? tilde(p) : shellWord(p));
 // The first-run prompts `ids` named in order, and what a person runs once in a terminal to answer them
 // for `login` in `checkout`: one start answers them all, as each shows after the one before.
 //   -> { names, fix }
 export function firstRunFix(ids, login, checkout) {
   const ps = [ids].flat().map((id) => FIRST_RUN[id]);
-  const cloud = ps.some((p) => p.cloud);
+  const start = ps.some((p) => p.cloud) ? cloudStartCommand(login) : signInParts(login).shell;
   return { names: ps.map((p) => p.name).join(', then '),
-    fix: `cd ${shellWord(tilde(checkout))} && ${signInParts(login).shell}${cloud ? ' --cloud "<any prompt>"' : ''}, then ${ps.map((p) => p.answer).join(', then ')}, and exit` };
+    fix: `cd ${cdWord(checkout)} && ${start}, then ${ps.map((p) => p.answer).join(', then ')}, and exit` };
 }
 // A cloud start's park line for first-run prompts `ids`; `gave` is what a start that timed out said.
 export function firstRunPark(ids, { who, login, checkout, gave = null }) {
@@ -131,9 +135,9 @@ export function firstRunGaps(login, checkout) {
   const root = resolve(checkout);
   const gaps = [];
   let trusted = false;
-  for (let d = root; ; d = dirname(d)) { if (projects[d]?.hasTrustDialogAccepted === true) { trusted = true; break; } if (dirname(d) === d) break; }
+  for (let d = root; ; d = dirname(d)) { if (projects[d]?.[FIRST_RUN.trust.key] === true) { trusted = true; break; } if (dirname(d) === d) break; }
   if (!trusted) gaps.push('trust');
-  if (projects[root]?.hasClaudeMdExternalIncludesApproved !== true && externalImports(login, root).length) gaps.push('imports');
+  if (projects[root]?.[FIRST_RUN.imports.key] !== true && externalImports(login, root).length) gaps.push('imports');
   return { gaps, file };
 }
 

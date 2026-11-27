@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
-import { cloudStartCommand, loginEnv, firstRunGaps, firstRunPark, externalImports } from '../desk/bin/logins.mjs';
+import { cloudStartCommand, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -220,8 +220,17 @@ const lg = { tool: 'claude', name: 'studia', folder: join(S, 'login'), configDir
 mkdirSync(lg.configDir, { recursive: true });
 const parkLine = firstRunPark(['trust'], { who: 'login studia', login: lg, checkout: ck, gave: 'no answer in 120s' });
 t('issue-1642 AC1 its park names the trust dialog', parkLine.includes('it is waiting on the folder-trust dialog ("Is this a project you created or one you trust?")'), true);
-t('issue-1642 AC1 and the exact fix, from the checkout under the login', parkLine.endsWith(`from the checkout: cd ${ck} && CLAUDE_CONFIG_DIR=${lg.folder} claude, then choose "Yes, I trust this folder", and exit`), true);
-t('issue-1642 AC1 the environment-variables prompt is answered from a cloud start', firstRunPark(['env'], { who: 'w', login: lg, checkout: ck }).endsWith(`cd ${ck} && CLAUDE_CONFIG_DIR=${lg.folder} claude --cloud "<any prompt>", then answer it, and exit`), true);
+t('issue-1642 AC1 and the exact fix, from the checkout under the login', parkLine.endsWith(`from the checkout: cd ${tilde(ck)} && CLAUDE_CONFIG_DIR=${lg.folder} claude, then choose "Yes, I trust this folder", and exit`), true);
+t('issue-1642 AC1 the environment-variables prompt is answered from a cloud start', firstRunPark(['env'], { who: 'w', login: lg, checkout: ck }).endsWith(`cd ${tilde(ck)} && CLAUDE_CONFIG_DIR=${lg.folder} claude --cloud "<any prompt>", then answer it, and exit`), true);
+{
+  const was = process.env.HOME;
+  process.env.HOME = S;
+  const spaced = firstRunPark(['trust'], { who: 'w', login: lg, checkout: join(S, 'my code', 'x') });
+  const plain = firstRunPark(['trust'], { who: 'w', login: lg, checkout: ck });
+  process.env.HOME = was;
+  t('issue-1642 a checkout under home with a space is cd-ed to by its quoted absolute path, never a quoted ~', spaced.includes(`cd '${join(S, 'my code', 'x')}' && `), true);
+  t('issue-1642 one with no space keeps its ~ form', plain.includes('cd ~/code/desk-skills && '), true);
+}
 const cj = join(lg.configDir, '.claude.json');
 const gapsWith = (projects) => { if (projects === undefined) rmSync(cj, { force: true }); else writeFileSync(cj, JSON.stringify({ projects })); return firstRunGaps(lg, ck).gaps.join(',') || 'none'; };
 t('issue-1642 AC2 a login with no .claude.json would wait on trust', gapsWith(undefined), 'trust');
