@@ -158,8 +158,9 @@ check "DS-1045 AC2: only the blockers that have not merged are named"     '[ $rc
 q set W-3 state=parked held_by='B-1|B-3' 'park={"question":"held"}'
 qs set W-3 state=triaged park=null held_by=null
 check "DS-1045 AC3: all merged, nothing on stderr, stdout as today"       '[ $rc -eq 0 ] && [ -z "$err" ] && [ "$out" = "W-3: state=triaged park=null held_by=null" ] && [ "$(held W-3)" = "null triaged" ]'
-# AC4: the warned release (W-2) writes what the silent one (W-3) does, bar its key and timestamps.
-strip(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; for (const f of ["key", "added_at", "updated_at"]) delete t[f]; console.log(JSON.stringify(t))' "$DESK_QUEUE" "$1"; }
+# AC4: the warned release (W-2) writes what the silent one (W-3) does, bar what each add stamps
+# (key, added_at and the levers pin, which carries its own time) and updated_at.
+strip(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; for (const f of ["key", "added_at", "levers", "updated_at"]) delete t[f]; console.log(JSON.stringify(t))' "$DESK_QUEUE" "$1"; }
 check "DS-1045 AC4: exit 0, and the queue holds what it would without it" '[ $rc_warned -eq 0 ] && [ "$(strip W-2)" = "$(strip W-3)" ]'
 # The merge driver's release passes --merged: it confirmed each blocker merged on GitHub, which the queue can trail.
 q set W-4 state=parked held_by='B-2|B-4' 'park={"question":"held"}'
