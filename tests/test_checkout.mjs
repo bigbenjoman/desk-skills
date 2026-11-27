@@ -399,6 +399,8 @@ has('#1471 one no read settled goes under Check before posting', skill, 'each ti
 const current = readFileSync(join(REPO, 'skills/desk-checkout/references/current-state.md'), 'utf8');
 has('#1471 each ticket is read again as its bullet is written', current, '**Read each ticket again as you write its bullet, with every PR naming its key.**');
 has('#1471 its status is read from its tracker', current, '`desk-jira get <KEY>` for that ticket\'s repo');
+has('#1471 another repo\'s ticket is read from that repo\'s checkout', current, '`DESK_REPO_DIR=<its main checkout> desk-jira get <KEY>`');
+lacks('#1471 never DESK_SLUG for desk-jira, which ignores it', current, '`DESK_SLUG=<slug>`');
 has('#1471 with every PR naming its key, any author, open or merged', current, 'gh pr list --repo <owner/name> --state all --search "<KEY>" --json number,title,author,state,isDraft,mergedAt');
 has('#1471 the bullet states what those reads show', current, 'The bullet states what those reads show.');
 has('#1471 a teammate\'s fix is named or the ticket left out', current, 'is said as that, naming who and which PR\n("Sam fixed it in #1540 (merged), now in Review"), or left out.');
