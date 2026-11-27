@@ -308,6 +308,7 @@ describe('answering from the Inbox', () => {
     expect(detail().querySelector('[data-question]')).toBeNull();
     expect(row('SV-3844')).toBeUndefined();
     // A reload from the confirmation brings back none of the answer just sent.
+    await act(async () => {});
     window.dispatchEvent(new Event('pagehide'));
     const keptAnswer = Object.keys(sessionStorage).filter((k) => /^desk:kept:inbox:(chosen|draft):/.test(k)).map((k) => sessionStorage.getItem(k)).sort();
     expect(keptAnswer).toEqual(['""', 'null']);

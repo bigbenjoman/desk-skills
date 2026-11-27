@@ -1,5 +1,5 @@
 // suite: desk-ui Settings reads (a repo's desk setup, subscriptions, the install, the app build's `server` event)
-// layer: L1
+// layer: L2
 // covers: desk/bin/desk-ui-settings.mjs desk/bin/desk-ui.mjs desk/bin/desk-ui-events.mjs desk/bin/desk-app.mjs desk/shell/app.mjs
 // The server on a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT and a free port, with stubs for main's
 // tests check, the skill and plugin count and the log opener, so nothing reads GitHub, opens a window or
