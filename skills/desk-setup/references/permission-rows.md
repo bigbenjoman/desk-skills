@@ -125,7 +125,7 @@ a row changes, say which of these applies.
 | `desk-ci.mjs protection` | `ci-protection` (unset is `ask`; `no` refuses every `--apply`) |
 | `desk-jira create`, `create-batch` | `jira-assign-self` (a new ticket with no assignee given is assigned to you) |
 | `clearance-state.mjs` | `pr-merge-green`, `merge-feedback-first` |
-| `/desk-checkout`'s collectors (`github_activity.py`, `jira_activity.py`, `claude_activity.py`) | `read-own-work`, `read-transcripts`, per repo |
+| `/desk-checkout`'s collectors (`github_activity.py`, `jira_activity.py`, `claude_activity.py`) | `read-own-work`, `read-transcripts`, per repo; `read-others` for `github_activity.py`'s count of everyone's merged PRs (`ask` needs `--include-others <slug>`, not `--include`) |
 
 Every other row is read by no script. It decides harness rules (most `read-*` rows, `git-commit`,
 `slack-draft`) or is enforced by the skills' own written rules (`autopilot-worker-mode`,
