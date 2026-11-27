@@ -81,6 +81,7 @@ t('a failed build is tried again on the next install', /failed/.test(run(['insta
 edit(`${original}// changed\n`);
 const reverted = run(['install-ui', '--src', SRC]);
 t('a source back at the served build is not rebuilt, and no failed build is left marked', [reverted.code, /unchanged/.test(reverted.out), readdirSync(UI).sort()], [0, true, ['dist', 'source-hash']]);
+edit(`${original}// BREAK\n`);
 
 // install.sh's own step, taken from install.sh with stand-ins for its output helpers: a failed build
 // is a warning naming the log, and the install goes on.
