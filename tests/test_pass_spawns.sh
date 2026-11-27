@@ -273,7 +273,7 @@ check "issue-1569 AC2 each rewritten commit is the repo identity's, its trailers
 check "issue-1569 AC2 it strips the footer from the PR body as it reads after the push, keeping what CI added since" 'grep -qx "pr view 63 --repo acme/widgets --json body,comments" "$T/gh-calls" && grep -qF "pr edit 63 --repo acme/widgets --body-file " "$T/gh-calls" && [ "$(cat "$T/state-cl/cloud/CW-8-pr-63-body.md")" = "$(printf "Done.\n\nPreview: https://preview.example/63")" ]'
 check "issue-1569 AC2 it edits a comment down to what is left, and deletes one that was nothing but attribution" 'grep -qx "api -X PATCH repos/acme/widgets/issues/comments/77 -f body=Fixed it." "$T/gh-calls" && grep -qx "api -X DELETE repos/acme/widgets/issues/comments/78" "$T/gh-calls"'
 check "issue-1569 AC2 it says what it did, records the one scrub, and leaves no fetch refs behind" 'echo "$out" | grep -q "CW-8: cloud PR #63 broke this repo.s commit and PR rules .*: the pass rewrote its 2 commit(s) as t <t@example.com> with the same tree" && [ "$(field CW-8 cloud.scrubbed)" = 1 ] && [ "$(field CW-8 cloud.pr_at)" = null ] && [ -z "$(git -C "$T/repo" for-each-ref refs/desk/cloud)" ]'
-check "issue-1610 AC2 the pass records the head its rewrite produced, for recovery never to push over" '[ "$(field CW-8 pass_rewrite.sha)" = "\"$CW8_NEW\"" ] && [ "$(field CW-8 pass_rewrite.branch)" = "\"claude/cw-8-abc\"" ]'
+check "issue-1610 AC2 the pass records the head its rewrite produced and the rules it enforced, for recovery to keep" '[ "$(field CW-8 pass_rewrite.sha)" = "\"$CW8_NEW\"" ] && [ "$(field CW-8 pass_rewrite.branch)" = "\"claude/cw-8-abc\"" ] && [ "$(field CW-8 pass_rewrite.author.email)" = "\"t@example.com\"" ] && [ "$(field CW-8 pass_rewrite.strip)" = true ]'
 printf '%s\n' '{"baseRefName":"main","headRefName":"claude/cw-8-abc","body":"Done.","commits":[{"oid":"bbbbbbb222","messageHeadline":"feat: CW-8 one","messageBody":"Why it is.","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
 out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC2 once the PR reads clean, the next pass records the ticket done" '[ "$(field CW-8 state)" = "\"done\"" ] && [ "$(field CW-8 result.pr)" = 63 ]'
@@ -779,11 +779,12 @@ rm -rf "$T/leases-pv"; out=$(pv node "$B/pass.mjs" 2>&1)
 check "once the slot is free the pass pushes, keeping the slot for that push's build under its PR's or branch's label" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e "(.leases[0].label | test(\"(@fix/W-21|#[0-9]+)\$\")) and .leases[0].ttl == 1200" "$T/leases-pv/leases.json" >/dev/null'
 q set W-21 state=done
-# issue-1610: W-22's last worker left c, with a trailer, pushed; someone then rewrote c on origin with its
-# message and author only (same tree). W-23's c was rewritten on origin by the pass's own attribution
-# rewrite, which recorded its head, after its worker rebased c under a commit d of its own (trees differ).
-# Real lost work, trees differing, is still lease-pushed (W-14 above).
-for k in 22 23; do
+# issue-1610: each last worker left c, with a trailer, pushed; c was then rewritten on origin with its
+# message and author only (same tree). W-22's worker did nothing more. W-23's and W-24's branches were
+# cleaned by the pass's own attribution rewrite, which recorded the rules it enforced; their next worker
+# started from that clean head and rebased it under a commit d of its own (trees differ): W-23's d
+# carries a trailer, W-24's does not. Real lost work, trees differing, is still lease-pushed (W-14 above).
+for k in 22 23 24; do
   wb_clone "W-$k"; q add "W-$k"
   echo c > "$T/wt/W-$k/c.txt"; git -C "$T/wt/W-$k" add c.txt; git -C "$T/wt/W-$k" commit -q -m c -m 'Co-Authored-By: Claude <noreply@anthropic.com>'
   git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
@@ -791,18 +792,25 @@ for k in 22 23; do
   GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/other-W-$k" commit -q --amend --reset-author -m c
   git -C "$T/other-W-$k" push -q -f origin "fix/W-$k" 2>/dev/null
 done
-C23=$(git -C "$T/wt/W-23" rev-parse HEAD); git -C "$T/wt/W-23" reset -q --hard HEAD~1
-echo d > "$T/wt/W-23/d.txt"; git -C "$T/wt/W-23" add d.txt; git -C "$T/wt/W-23" commit -q -m d; git -C "$T/wt/W-23" cherry-pick "$C23" >/dev/null
+for k in 23 24; do
+  git -C "$T/wt/W-$k" fetch -q origin "fix/W-$k"; git -C "$T/wt/W-$k" reset -q --hard FETCH_HEAD~1
+  echo d > "$T/wt/W-$k/d.txt"; git -C "$T/wt/W-$k" add d.txt
+  trailer=(); [ "$k" = 23 ] && trailer=(-m 'Co-Authored-By: Claude <noreply@anthropic.com>')
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" commit -q -m d "${trailer[@]}"
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com git -C "$T/wt/W-$k" cherry-pick FETCH_HEAD >/dev/null
+  q set "W-$k" "pass_rewrite={\"sha\":\"$(git --git-dir="$T/wb-origin.git" rev-parse "refs/heads/fix/W-$k")\",\"branch\":\"fix/W-$k\",\"author\":{\"name\":\"t\",\"email\":\"t@example.com\"},\"strip\":true}"
+done
 W22_HEAD=$(git -C "$T/wt/W-22" rev-parse HEAD); W22_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-22)
-W23_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-23)
-for k in 22 23; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; wb_fix "W-$k"; done
-q set W-23 "pass_rewrite={\"sha\":\"$W23_ORIGIN\",\"branch\":\"fix/W-23\"}"
+W23_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-23); W24_HEAD=$(git -C "$T/wt/W-24" rev-parse HEAD)
+for k in 22 23 24; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; wb_fix "W-$k"; done
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "issue-1610 AC1 an origin head with the worker's tree is adopted as the ticket's head, not pushed over, and said" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-22)" = "$W22_ORIGIN" ] && [ "$(git -C "$T/wt/W-22" rev-parse HEAD)" = "$W22_ORIGIN" ] && [ "$(field W-22 worker_head.sha)" = "\"$W22_ORIGIN\"" ] && grep -q "^W-22 " "$T/wb-spawns" && echo "$out" | grep -qF "W-22: adopted origin'"'"'s fix/W-22 at ${W22_ORIGIN:0:9} as its head, not pushing ${W22_HEAD:0:9}"'
-check "issue-1610 AC2 an origin head the pass's own attribution rewrite produced is never pushed over: held, naming it" \
-  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-23)" = "$W23_ORIGIN" ] && ! grep -q "^W-23 " "$T/wb-spawns" && field W-23 worktree_busy.why | grep -qF "origin/fix/W-23 holds ${W23_ORIGIN:0:9}, the pass'"'"'s own attribution rewrite, which a push would undo"'
-q set W-22 state=done; q set W-23 state=done
+check "issue-1610 AC2 a push that would put back what the pass's own attribution rewrite removed is never made: held, naming it" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-23)" = "$W23_ORIGIN" ] && ! grep -q "^W-23 " "$T/wb-spawns" && field W-23 worktree_busy.why | grep -qF "a push would put back what the pass'"'"'s own attribution rewrite of fix/W-23 removed (a Co-Authored-By trailer naming Claude or Anthropic in commit"'
+check "issue-1610 AC2 a worker's rebase of the pass's rewritten commits that keeps to its rules is still lease-pushed" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-24)" = "$W24_HEAD" ] && grep -q "^W-24 " "$T/wb-spawns" && echo "$out" | grep -qF "W-24: pushed fix/W-24 to ${W24_HEAD:0:9}, the head its last worker rebased it to"'
+q set W-22 state=done; q set W-23 state=done; q set W-24 state=done
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \

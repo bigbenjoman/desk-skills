@@ -1223,8 +1223,9 @@ function rewriteCloudCommits(t, head, base, author, strip) {
       const pushed = shOut('git', ['-C', MAIN, 'push', `--force-with-lease=refs/heads/${head}:${old.out}`, 'origin', `${r.head}:refs/heads/${head}`]);
       if (pushed.ok) {
         keepSlot(slot);
-        // Recorded so a later recovery of the branch (busyWorktree) never pushes back over this head.
-        q('set', t.key, `pass_rewrite=${JSON.stringify({ sha: r.head, branch: head, at: PASS_AT })}`);
+        // Recorded with the rules it enforced, so a later recovery of the branch (busyWorktree) never pushes
+        // back commits that break them.
+        q('set', t.key, `pass_rewrite=${JSON.stringify({ sha: r.head, branch: head, at: PASS_AT, author: { name: author.name, email: author.email }, strip: Boolean(strip) })}`);
         return { did: `rewrote its ${r.n} commit(s) as ${author.name} <${author.email}> with the same tree (${head} ${old.out.slice(0, 9)} → ${r.head.slice(0, 9)})` };
       }
       freeSlot(slot);
@@ -4236,9 +4237,10 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // the branch is retried with a lease on the origin tip just fetched, only when every commit origin has
 // that the head lacks is in the head by its patch (git cherry) and none is a merge (git cherry skips
 // merges, whose resolutions it cannot compare), so nothing on origin is lost; else it holds, naming the
-// exact lease push. Two origin heads are never pushed over (issue-1610): one with the head's own tree, a
-// rewrite of messages or authors only, which the ticket adopts as its head instead; and one holding a
-// head the pass's own attribution rewrite produced (pass_rewrite), which holds. Uncommitted changes at that head are its interrupted worker's:
+// exact lease push. An origin head with the head's own tree, a rewrite of messages or authors only, is
+// never pushed over: the ticket adopts it as its head instead. Nor is a branch the pass's own attribution
+// rewrite cleaned (pass_rewrite) pushed with commits that break the rules it enforced: that holds.
+// Uncommitted changes at that head are its interrupted worker's:
 // the fix try spawns over them (fix.left_dirty names them) and its worker tests and commits them.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
@@ -4298,12 +4300,16 @@ function busyWorktree(t, { push = false } = {}) {
       report.recovered.push(`${t.key}: adopted origin's ${branch} at ${tip.slice(0, 9)} as its head, not pushing ${adopted.adopted.slice(0, 9)}, the head its last worker left, over it: the two have the same tree, so origin's is a rewrite of its messages or authors only`);
       return null;
     }
-    // A head the pass's own attribution rewrite produced (rewriteCloudCommits records it), still on origin's
-    // branch: a push over it would bring back what that rewrite removed, whatever git cherry says.
-    const rw = t.pass_rewrite?.sha;
-    if (rw && /^[0-9a-f]{40}$/.test(rw) && git(['merge-base', '--is-ancestor', rw, tip]) != null) {
-      freeSlot(slot);
-      return `${why}: its last worker rebased it, but origin/${branch} holds ${rw.slice(0, 9)}, the pass's own attribution rewrite, which a push would undo, so the pass does not overwrite it. Rebase the head onto origin/${branch}, or check it, then push with git push ${lease} origin ${branch} from ${wt}`;
+    // A branch the pass's own attribution rewrite cleaned (rewriteCloudCommits records it): a push that puts
+    // back a commit breaking the rules it enforced undoes it, whatever git cherry says. A head whose commits
+    // keep to them (a worker's rebase of the rewritten commits) goes on to the rule below.
+    if (t.pass_rewrite?.branch === branch) {
+      const broken = rewriteUndone(git, tip, t.pass_rewrite);
+      if (broken == null || broken.length) {
+        freeSlot(slot);
+        const what = broken == null ? 'the pass could not read the commits a push would add' : broken.slice(0, 3).join('; ');
+        return `${why}: its last worker rebased it, but a push would put back what the pass's own attribution rewrite of ${branch} removed (${what}), so the pass does not overwrite it. Fix those commits, then push with git push ${lease} origin ${branch} from ${wt}`;
+      }
     }
     const merges = git(['rev-list', '--merges', `HEAD..origin/${branch}`]);
     const missing = merges ? null : git(['cherry', 'HEAD', `origin/${branch}`]);
@@ -4327,6 +4333,18 @@ function busyWorktree(t, { push = false } = {}) {
   }
   freeSlot(slot);
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
+}
+// The commits a push of HEAD over `tip` would add that break the rules the pass's attribution rewrite
+// `rw` (pass_rewrite) enforced: an attribution mark where it stripped them, or an author other than its
+// own. -> one line per break, [] for none, or null where git could not list them.
+function rewriteUndone(git, tip, rw) {
+  const log = git(['log', '--format=%H%x1f%an%x1f%ae%x1f%B%x1e', 'HEAD', `^${tip}`]);
+  if (log == null) return null;
+  const commits = log.split('\x1e').map((s) => s.replace(/^\n+/, '')).filter(Boolean).map((s) => {
+    const [oid, name, email, body] = s.split('\x1f');
+    return { oid, messageHeadline: body ?? '', messageBody: '', authors: [{ name, email }] };
+  });
+  return [...(rw.strip ? attributionFound({ commits }) : []), ...authorMismatches({ commits }, rw.author)];
 }
 // Origin's commits on `branch` (up to `tip`, none a merge) that git cherry finds no patch for (`lost`,
 // its '+ <sha>' lines) are still the head's when either holds, and the reason, else null:
