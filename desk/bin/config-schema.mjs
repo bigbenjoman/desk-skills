@@ -663,6 +663,7 @@ export const ROWS = Object.freeze([
   v('dev-port', '3b', 'Preferred dev-server port', 'port', '3000', dflt('3000')),
   v('concurrency', '3b', 'Autopilot worker concurrency', 'concurrency', '2 / 3', dflt('2 / 3', { machine: 'autopilot-concurrency' })),
   v('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)', 'gb', '16', { machine: 'memory-ceiling-gb' }),
+  v('worker-memory', '3b', 'Worker memory weight (GB)', 'whole-or-none', '2', dflt('none')),
   v('spawn-gate', '3b', 'Spawn gate (available memory)', 'spawn-gate', 'start work > 8 GiB · hold 4–8 · drop to 1 below 4', dflt('start work > 8 GiB · hold 4–8 · drop to 1 below 4')),
   v('harm-swap-growth', '3b', 'Swap growth that holds spawns (GB)', 'gb', '2', dflt('2')),
   v('harm-tmpfs', '3b', 'tmpfs /tmp size that holds spawns (GB)', 'gb', '2', dflt('2')),

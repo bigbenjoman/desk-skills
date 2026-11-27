@@ -51,6 +51,7 @@ running R-1 session_id=s-dead
 q requeue R-1
 check "AC1: a dead worker whose log ends on a park is requeued"            '[ $rc -eq 0 ] && [ "$(f R-1 state)" = "\"triaged\"" ] && [[ "$out" == *"R-1 requeued"*"exited on a park"* ]]'
 check "AC1: its park is kept as prev_park"                                 '[ "$(f R-1 prev_park.question)" = "\"need the review posted\"" ] && [ "$(f R-1 prev_park.round)" = 1 ] && [ "$(f R-1 park)" = null ]'
+check "a requeue records when it came back, for desk-q's no-progress clock" '[[ "$(f R-1 requeued_at)" =~ ^\"[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]'
 check "AC1: the round it parked at is kept for the next spawn"            '[ "$(f R-1 last_round.stage)" = "\"7/9\"" ] && [ "$(f R-1 session_id)" = null ]'
 check "AC1: the decision it printed reaches the decision log"             'grep -q "\"question\":\"Which helper?\"" "$T/state/decisions.jsonl"'
 check "AC1: its log is moved aside"                                        '[ ! -f "$T/state/logs/R-1.log" ]'

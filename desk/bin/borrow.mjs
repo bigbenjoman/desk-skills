@@ -4,7 +4,8 @@
 // between passes and turning it off takes effect on the next one.
 //
 // Free machine slots = the machine profile's cap (autopilot-concurrency) less the workers running in
-// every queue (a quiet batch's running workers still hold memory). A batch takes them for its own
+// every queue (a quiet batch's running workers still hold memory), and, under a memory ceiling, the
+// slots its running workers' weights leave room for (machineBudget). A batch takes them for its own
 // number first; it borrows only what is left after each other live batch's first claim (the part of
 // its own number it has not filled, as far as it has ready tickets to fill it with). Running work is
 // never stopped, so a lender that comes back to a full machine waits for slots to free. Counting and
@@ -16,6 +17,7 @@ import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { batchConcurrency, describeCrash, isHeld, readJsonOrRefuse } from './batch-state.mjs';
 import { namedBatches } from './batches.mjs';
+import { whole } from './leases.mjs';
 import { runningHere, startsInCloud } from './pass/shared.mjs';
 
 // A heartbeat fresher than this is a live batch: queue.mjs init, desk-q and borrowing all use it,
@@ -36,6 +38,32 @@ export function borrowSetting(raw = E.configValue('borrow-idle')) {
 export function machineCap(value = E.machineValue('autopilot-concurrency')) {
   return value ? E.concurrencyLimits(value).cap : null;
 }
+
+// The machine's memory ceiling for workers: the machine profile's memory-ceiling-gb, or null. Read as the
+// lease pool reads it (leases.mjs capacities), so the budget and the leases share one ceiling.
+export const machineCeiling = (value = E.machineValue('memory-ceiling-gb')) => whole(value);
+
+// The GB one worker takes when its repo sets no weight: the ceiling shared flat over the worker cap, at
+// least 1, so `cap` unweighted workers fit under the ceiling. Null with no ceiling.
+export const flatShare = (ceiling, cap) => (ceiling > 0 ? Math.max(1, Math.floor(ceiling / Math.max(1, cap || 1))) : null);
+
+// The GB each of a repo's workers counts for against the machine's memory ceiling: config §3b "Worker
+// memory weight (GB)" (`raw`), a whole number from 1, at most the ceiling; unset or unreadable, the flat
+// share. -> { gb, set }   gb null with no ceiling; set whether the repo's row gave it.
+export function workerWeight(raw, { ceiling, cap }) {
+  if (ceiling == null) return { gb: null, set: false };
+  const s = String(raw ?? '').trim();
+  return /^\d+$/.test(s) && Number(s) >= 1 ? { gb: Math.min(Number(s), ceiling), set: true } : { gb: flatShare(ceiling, cap), set: false };
+}
+// Repo `slug`'s weight row as written, or null: a config that cannot be read sets none.
+export const repoWeightRaw = (slug) => { try { return E.repoConfigValue(slug, 'worker-memory'); } catch { return null; } };
+// Each of `slugs`' GB per worker (workerWeight's gb), by slug; `raw` reads a repo's row by its slug.
+export const repoWeights = (slugs, { ceiling, cap, raw = repoWeightRaw }) =>
+  Object.fromEntries([...new Set(slugs)].map((s) => [s, workerWeight(raw(s), { ceiling, cap }).gb]));
+// The GB `counts`, [slug, workers] pairs, hold with each slug's workers at `gbOf(slug)`.
+export const weighedGB = (counts, gbOf) => counts.reduce((a, [slug, n]) => a + n * gbOf(slug), 0);
+// How many workers of `gb` each fit in what `used` GB leaves of `ceiling`.
+export const memoryRoom = (ceiling, used, gb) => Math.max(0, Math.floor((ceiling - used) / gb));
 
 // How long past its recorded next pass a batch still counts as live: a wake-up runs late, and a pass
 // takes time to write its heartbeat.
@@ -170,31 +198,42 @@ const runningIn = (q) => Object.values(q.tickets ?? {}).filter(runningHere).leng
 // The machine-wide worker budget, borrowing on or off: the machine profile's cap is a hard limit on
 // the workers running in every repo together, so a pass starts at most the cap less every queue's
 // running workers. A queue that cannot be read counts at its repo's own §3b cap, the most it could
-// be running. With no machine total there is no budget and each repo uses its own rows.
+// be running. With no machine total there is no budget and each repo uses its own rows. Where the
+// profile also sets a memory ceiling, the running workers' weights (each its repo's config §3b "Worker
+// memory weight (GB)", the flat share where unset) must leave room under it for one of this repo's.
 //   running   this batch's running workers
 //   wanted    the slots this pass would otherwise fill
 //   queues    otherQueues()
 //   profiled  whether there is a machine profile, and capOf a repo's §3b cap by its slug: each read
 //             from the config unless given
+//   ceiling   the machine's memory ceiling (machineCeiling), or null: with one, each running worker
+//             counts its repo's weight against it as well as one against the cap, and both must hold
+//   weight    this repo's workerWeight; weightOf another repo's GB per worker by its slug
 // -> { room, line }   room is Infinity with no machine total
 export const repoCap = (slug) => E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency')).cap;
-export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [], profiled, capOf = repoCap }) {
+export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [], profiled, capOf = repoCap, ceiling = null, weight = null, weightOf = null }) {
   if (machine == null) {
     const why = (profiled ?? E.machineProfile() != null) ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
     return { room: Infinity, line: `machine budget: none — ${why}, so this repo uses its own §3b rows` };
   }
-  let all = running;
+  const weighed = ceiling != null && weight?.gb != null;
+  const each = (slug) => (weightOf ? weightOf(slug) : null) ?? flatShare(ceiling, machine);
+  const counts = [];
   let why = '';
   for (const o of queues) {
-    if (o.error) {
-      const counted = capOf(o.slug);
-      why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
-      all += counted;
-    } else all += runningIn(o.q);
+    const n = o.error ? capOf(o.slug) : runningIn(o.q);
+    if (o.error) why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(n)}`;
+    counts.push([o.slug, n]);
   }
-  const room = Math.max(0, machine - all);
-  const head = `machine budget: ${all} of the machine's ${machine} worker(s) running across every repo${why}`;
-  const tail = room === 0 && wanted > 0 ? ': the machine is at its cap, so nothing starts this pass'
+  const all = running + counts.reduce((a, [, n]) => a + n, 0);
+  const used = weighed ? running * weight.gb + weighedGB(counts, each) : 0;
+  const byCount = Math.max(0, machine - all);
+  const byMemory = weighed ? memoryRoom(ceiling, used, weight.gb) : Infinity;
+  const room = Math.min(byCount, byMemory);
+  const gbPart = weighed ? `, ${used}G of the ${ceiling}G memory ceiling by worker weight (this repo's ${weight.gb}G each${weight.set ? '' : ', the flat share'})` : '';
+  const head = `machine budget: ${all} of the machine's ${machine} worker(s) running across every repo${gbPart}${why}`;
+  const full = byMemory < byCount ? `the memory ceiling has no room for another ${weight.gb}G worker` : 'the machine is at its cap';
+  const tail = room === 0 && wanted > 0 ? `: ${full}, so nothing starts this pass`
     : room < wanted ? `: starting at most ${room}` : '';
   return { room, line: head + tail };
 }
@@ -330,13 +369,16 @@ export function borrowPlan({ on, share, cap, running, wanted, others = [], machi
   return plan(`borrowing: ${where}: no free machine slot (${count})`);
 }
 
-// The report line once the pass has spawned: how many of its new workers were borrowed.
-export function borrowedLine(plan, { share, running, spawned }) {
+// The report line once the pass has spawned: how many of its new workers were borrowed. `lockHeld` is
+// how many tickets the pass's lock-queue gate held: with borrowed slots left unused, the line names it.
+export function borrowedLine(plan, { share, running, spawned, lockHeld = 0 }) {
   if (plan.line != null || !plan.borrow) return plan.line;
   const borrowed = Math.max(0, spawned - plan.own);
   const total = Math.max(0, running + spawned - share);
-  if (!borrowed) return `borrowing: ${plan.borrow} may be borrowed, none started (${plan.count})`;
-  return `borrowing: ${workers(borrowed)} borrowed this pass, ${total} above the batch's own number of ${share} (${plan.count})`;
+  const gate = lockHeld > 0 ? `: the lock gate held ${lockHeld}` : '';
+  if (!borrowed) return `borrowing: ${plan.borrow} may be borrowed, none started${gate} (${plan.count})`;
+  const unused = borrowed < plan.borrow && gate ? `, ${plan.borrow - borrowed} left unused${gate}` : '';
+  return `borrowing: ${workers(borrowed)} borrowed this pass, ${total} above the batch's own number of ${share}${unused} (${plan.count})`;
 }
 
 // One lock shared by every repo, around counting the free slots and starting workers into them: a

@@ -45,7 +45,12 @@ Source: <one of: the user, in this conversation · GitHub issue <owner/name>#<n>
   pick.
 
 Never write a ticket file for a tracker key (Jira is the source), and never edit one after triage:
-answers go through `answer.mjs` into the ticket's briefing.
+answers go through `answer.mjs` into the ticket's briefing. A GitHub issue's file the pass keeps
+current itself: before it spawns or resumes the worker it reads the issue's updated time, and when
+the issue changed since the file was last read it rewrites the file from the issue, records the read
+as the queue's `issue_read`, and says so on the spawn line. A criterion added, changed or removed, or
+a new comment, while a PR is open adds a dated `## Decisions` entry naming it, so the worker restarts
+at Stage 3 for it (*A requeue after the ticket file's Decisions change*, `stalls-and-spend.md`).
 
 Everything Jira-shaped drops out for a non-tracker key: the Jira rows of the §3 table below do not
 apply, workers skip `desk-ticket`'s Jira stages, and "unassigned or yours" means a GitHub issue with no

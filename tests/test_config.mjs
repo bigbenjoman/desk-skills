@@ -771,6 +771,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'light-lock-slots|3b|Light lock slots',
     'test-signin-permissions|4|Test sign-in permissions', // DS-1026
     'cloud-sessions|3b|Cloud sessions at once', // #1564
+    'worker-memory|3b|Worker memory weight (GB)', // issue-1523
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');

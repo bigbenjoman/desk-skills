@@ -163,6 +163,8 @@ For each item, settle:
   posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
   `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
   state stays as its source gave it.
+  **Read each ticket again as you write its bullet, with every PR naming its key, and the latest
+  deploy before any deploy claim**: `references/current-state.md` says how.
   **A setting, config row or other change that is not a PR is read from its source too**, before
   its line says when it was made, starts or takes effect: the config file (`desk-env get <id>`,
   and its git log for when it changed), the settings file, or the tracker. A session's narration of
@@ -258,7 +260,7 @@ says, and give the path. Under it, briefly:
   was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
   narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
   read again when its line was written ("#1534's state is from the collectors, read earlier in the
-  run"). Each count or figure in the post, with the query and window behind it, so the user can
+  run"), each ticket or deploy claim no read settled. Each count or figure in the post, with the query and window behind it, so the user can
   check it ("27 merged: merged PRs since yesterday 19:02, from the GitHub collector"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".
