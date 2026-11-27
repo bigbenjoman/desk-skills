@@ -535,14 +535,15 @@ let ON_FALLBACK = FALLBACK.on === 'fallback';
 // worker alone.
 let REPO_LOGIN = ON_FALLBACK ? FALLBACK_LOGIN : DEFAULT_LOGIN;
 const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
-// A limit this pass meets on the default after choosing it, at a refused preflight or a worker found
-// paused there, moves new work to the fallback for the rest of the pass, as the next pass would; tried
-// once a pass. -> true when new work moved there.
+// A limit this pass meets on the default after choosing it, at a refused preflight, a ticket's or the
+// base fix's worker found paused there, or a pacing probe's new reading, moves new work to the fallback
+// for the rest of the pass, as the next pass would; tried once a pass. `full` is defaultFull's answer,
+// read from the limit unless given. -> true when new work moved there.
 let midPassTried = false;
-function fallBackMidPass(limit) {
+function fallBackMidPass(limit, full = defaultFull({ hold: limit })) {
   if (!FALLBACK_LOGIN || ON_FALLBACK || FALLBACK.held || midPassTried) return false;
   midPassTried = true;
-  const call = fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full: defaultFull({ hold: limit }), usable: fallbackUsable(), record: queue().login_fallback ?? null });
+  const call = fallbackCall({ def: DEFAULT_LOGIN, fallback: FALLBACK_LOGIN, full, usable: fallbackUsable(), record: queue().login_fallback ?? null });
   recordFallback(call);
   if (call.on !== 'fallback') return false;
   ON_FALLBACK = true;
@@ -2317,8 +2318,8 @@ if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { 
 // blind: at most once per PROBE_EVERY_MS on that login, so a probe whose output carries no reading
 // is not repeated every pass, but joining one started under a minute ago that is still running
 // (noReadingProbeDue). A probe that succeeds leaves a reading that lasts the recent window.
-const PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
-const PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
+let PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
+let PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
 const paceReading = () => loginReading(PACE_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
@@ -2337,6 +2338,17 @@ if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, 
     paceProbeFailed = p.why;
     paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
   }
+}
+// A reading past the pacing headroom on the default, found here rather than at the start of the pass,
+// moves new work to the fallback as the start-of-pass check would have (fallBackMidPass); pacing then
+// reads the fallback, the login those spawns would spend.
+if (PACE.hold && !PACE.bad && !ON_FALLBACK && fallBackMidPass(null, defaultFull({ pace: PACE }))) {
+  PACE_LOGIN = REPO_LOGIN;
+  PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
+  READING = paceReading();
+  PACE = usagePace({ usage: READING.seven_day });
+  paceProbe = '';
+  paceProbeFailed = null;
 }
 // "No recent data" names the login it read, so a reading kept under another login is not mistaken for
 // none, and why a probe for one failed: with no reading nothing holds, so no stall line would say it.
@@ -2876,7 +2888,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       'end-try': (a) => { endTry(a.outcome, a.path, a.extra); return bf; },
       'fix-login': (a) => loginOf(loginDirOf({ key: BASE_FIX_KEY, login: a.login })),
       lifted: (a) => lifted(a.limit, a.login),
-      'usage-hold': (a) => { USAGE_HOLD = a.hold; },
+      // A fix worker paused on the default, with a fallback that takes new work over: nothing holds.
+      'usage-hold': (a) => { if (fallBackMidPass(a.hold)) return true; USAGE_HOLD = a.hold; return false; },
       'usage-stop': () => { usageStop = true; },
       'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
       // A base push moves its PRs' merge state and the base's refs, and syncBase runs git without sh or shOut.
@@ -4143,16 +4156,19 @@ for (const t of spawnable) {
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   let pre = preflight(t.key, wt, workerEnv);
-  // Refused on the default, with new work moved to the fallback: this ticket starts there instead.
-  if (pre.limit && preflightHitLimit(t, pre.cost, pick.login)) {
+  // Refused at the usage limit: preflightHitLimit runs once per refused preflight. Refused on the
+  // default, with new work moved to the fallback, this ticket starts there instead; otherwise the batch
+  // holds.
+  if (pre.limit) {
+    if (!preflightHitLimit(t, pre.cost, pick.login)) break;
     pick = repoLogin();
     if (!pick) continue;
     workerEnv = { ...baseEnv, ...pick.vars };
     pre = preflight(t.key, wt, workerEnv);
-  }
-  if (pre.limit) {
-    preflightHitLimit(t, pre.cost, pick.login);
-    break;
+    if (pre.limit) {
+      preflightHitLimit(t, pre.cost, pick.login);
+      break;
+    }
   }
   if (pre.failure) {
     logPreflight(t.key, pre.cost);

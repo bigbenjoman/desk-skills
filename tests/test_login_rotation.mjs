@@ -206,6 +206,7 @@ t('AC7 the refused ticket keeps its place, and nothing else spawns or preflights
 t('AC7 the hold is recorded with the reset time', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at]), JSON.stringify(['Y-1', RESET]));
 t('AC7 nothing went to the other subscription', readFileSync(CALLS, 'utf8').includes(dirOf('c')), false);
 t('AC7 the report says the batch holds', out.includes('Y-1: its preflight was refused at the 5-hour usage limit — not failed, and nothing else spawns until the limit lifts'), true);
+t('issue-1490 AC4 with no fallback the refused preflight is reported once', out.split('Y-1: its preflight was refused at the 5-hour usage limit').length - 1, 1);
 out = pass(env);
 t('AC7 a pass later it starts and preflights nothing', `${calls('Y-1').length} ${calls('Y-2').length} ${row('Y-1').state} ${row('Y-2').state}`, '1 0 triaged triaged');
 t('AC7 and the hold reads with its reset', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
