@@ -107,12 +107,26 @@ of tickets. There, compare each lowered start with that all-`medium` stretch ins
 
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
 `cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
-and `budget:` lines say how many tickets run in a cloud session and that a cloud session takes no
-per-worker budget, and each admitted ticket's `runs:` line says where it runs. A ticket stays local,
+and `budget:` lines say how many tickets can run in a cloud session and that a cloud session takes no
+per-worker budget, and each admitted ticket's `runs:` line says where it can run. A ticket stays local,
 with the reason, when its triage record says it renders (the browser lock and a dev server), needs a
 database, or names in `needs_local` anything else only this computer has (stub binaries, a local
-service), and when the record predates `needs_local`. A cloud ticket (`location: cloud` on the queue)
-gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
+service), and when the record predates `needs_local`. Admission records only that a ticket can run in
+the cloud (`cloud_ok: true` on the queue); the pass places it when it starts. Cloud first: a cloud-able
+ticket goes to a cloud session while "Cloud sessions at once" has room. Local slots go first to
+local-only tickets: a cloud-able one takes a local slot only with the cloud full, a local slot left free
+for the whole last pass, and one free now beyond those the local-only tickets behind it want. The
+ticket records where it started and why (`start_place`), which desk-q's ticket screen shows as Place.
+**While you use this computer** (processes that are not desk workers, their dev servers or test runs,
+or desk itself, hold more memory or CPU than the machine profile's `person-baseline-gb` and
+`person-baseline-cpu` by `person-use-gb` or `person-use-cpu`), the local cap drops to
+`person-use-floor` (1 unset), for local-only tickets, and cloud-able tickets go only to the cloud. No
+running worker is stopped. The cap comes back once your use has stayed under the threshold for
+`person-use-calm-min` minutes (10 unset). Unset, the baseline is 15% of `memory-gb` and 5% of
+`cpu-cores`, and the threshold 10% of `memory-gb` and 25% of `cpu-cores`; `person-use=off` turns it
+off, and no machine profile means it never reads. Set any of them with `desk-env machine set`. desk-q
+and the pass say "you're using this computer: local cap 1, cloud first" while it is on.
+A ticket started in the cloud (`location: cloud` on the queue) gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
 prompt carrying the ticket's text, and the session pushes a branch and opens a draft PR. The pass
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are

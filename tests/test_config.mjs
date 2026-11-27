@@ -796,6 +796,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'preview-db|4|Preview database', // DS-550
     'plan-first-wait|3b|Plan-first wait before needs-you (hours)', // issue-1384
     'slot-candidates|3b|Propose candidates for a free slot', // #1394
+    'checkout-worklogs|3b|Check-out work logs', // #1646
     'light-lock-slots|3b|Light lock slots',
     'test-signin-permissions|4|Test sign-in permissions', // DS-1026
     'cloud-sessions|3b|Cloud sessions at once', // #1564

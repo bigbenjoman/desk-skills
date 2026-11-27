@@ -711,7 +711,8 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     const x = cli('plan-batch.mjs', ['--json', ...flags, ...keys], env);
     let msg = x.out;
     try { msg = String(JSON.parse(x.out).message); } catch { /* the raw output, to show what failed */ }
-    return { seeded: Object.keys(JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets ?? {}).join(' '), msg };
+    const tickets = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets ?? {};
+    return { seeded: Object.keys(tickets).join(' '), placed: Object.keys(tickets).filter((k) => tickets[k].placed === true).join(' '), msg };
   };
   // SO-3 gates SO-4 and SO-6 directly and SO-5 through SO-4; SO-1 and SO-2 gate none.
   rec('SO-1'); rec('SO-2'); rec('SO-3'); rec('SO-4', 1, ['SO-3']); rec('SO-5', 1, ['SO-4']); rec('SO-6', 1, ['SO-3']);
@@ -737,6 +738,8 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-847 AC5 --keep-order keeps a larger ticket named first ahead', seed(['SO-11', 'SO-12'], ['--keep-order']).seeded, 'SO-11 SO-12');
   t('DS-847 AC5 --keep-order still puts a blocker first', seed(['SO-31', 'SO-32'], ['--keep-order']).seeded, 'SO-32 SO-31');
   t('DS-847 AC5 and the plan says the order named is kept', kept.msg.includes(`\nSPAWN ORDER — ${KEEP_ORDER_RULE}\n  1. SO-1`), true);
+  t('#1623 --keep-order places each seeded ticket, so the pass\'s re-sort keeps the order named', kept.placed, 'SO-1 SO-2 SO-3 SO-4 SO-5 SO-6');
+  t('#1623 a plain seed places none', hub.placed, '');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
