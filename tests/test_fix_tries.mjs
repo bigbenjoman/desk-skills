@@ -1236,7 +1236,7 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   const J = (s) => `shard 6/6\tRun tests\t2026-11-20T16:29:00.000Z ${s}`;
   const LOG = [J('##[group]Run bash tests/ci_shard.sh 6 6'), J('failed=$(grep -c FAIL tests/out.txt)'), J('##[endgroup]'),
     ...['a', 'b', 'c', 'd', 'e', 'f'].map((x) => J(`== suite ${x} errors ==`)), J('ok   ./desk/bin/queue.mjs loads.'), J('FAIL tests/test_new_holds.mjs: holds a PR')].join('\n');
-  t('#1640 AC1 the fix try\'s error lines lead with the one naming the failing file, past six headings', errorLinesIn(LOG)[0], 'FAIL tests/test_new_holds.mjs: holds a PR');
+  t('#1640 AC1 the fix try\'s error lines lead with the one naming the failing file, past six headings', errorLinesIn(LOG)[0] === 'FAIL tests/test_new_holds.mjs: holds a PR', true);
   t('#1640 and leave out the echoed step script', errorLinesIn(LOG).some((l) => l.includes('grep -c FAIL')), false);
   t('#1640 the headings fill the rest, five lines at most', errorLinesIn(LOG).slice(1).join('|'), '== suite a errors ==|== suite b errors ==|== suite c errors ==|== suite d errors ==');
   t('#1640 pathsIn reads it, the error lines\' paths first, less ./ and a trailing dot', pathsIn(LOG).join(' '), 'tests/test_new_holds.mjs desk/bin/queue.mjs');
