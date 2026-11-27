@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (124 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (127 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -328,6 +328,29 @@ out=$(env -u CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS="$T/subs-cl.md" node "$B/pass.
 check "issue-1553 a cloud session's retry follow-up is sent on the login it started on" '[ "$(field CW-12 cloud.retried_at)" != null ] && [ "$(cat "$T/cloud-send-login" 2>/dev/null)" = "$HOME/.claude-logins/b" ]'
 rm -f "$T/cloud-sent" "$T/cloud-send-login" "$T/state-cl/eta.jsonl"
 q set CW-12 state=done; rm -rf "$HOME/.claude-logins/b"
+# #1564: a cloud session takes none of the batch's local slots, only one of §3b "Cloud sessions at once".
+# The whole pass, so its loop goes on past a local ticket with no slot to the cloud one behind it.
+export DESK_QUEUE="$T/queue-cs.json"
+rm -f "$T/cloud-prompt" "$T/cloud-prs.json"
+q init cs; q set-batch concurrency=1
+q add LS-1; q set LS-1 state=running branch=fix/LS-1 session_id=live-1
+q add LS-2; q set LS-2 state=triaged branch=fix/LS-2
+cloud_ticket CS-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1564 AC5 with the local slots full, a ready cloud ticket still starts in a cloud session" '[ "$(field CS-1 state)" = "\"running\"" ] && [ "$(field CS-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
+check "#1564 AC1 and the local ticket ahead of it still waits for the one local slot" '[ "$(field LS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/wt/LS-2" ]'
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Cloud sessions at once | `4` | `1` |\n'; } > "$T/config-cs.md"
+cloud_ticket CS-2; rm -f "$T/cloud-prompt"
+out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
+check "#1564 AC5 at the cloud limit a ready cloud ticket does not start, and the pass names the limit" \
+  '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "CS-2: waits for a cloud session (1 of 1 running"'
+# A sibling batch whose queue does not read may be running cloud sessions the count cannot see.
+cp "$X1Q" "$T/x1q.bak"; echo 'not json' > "$X1Q"
+out=$(node "$B/pass.mjs" 2>&1)
+cp "$T/x1q.bak" "$X1Q"
+check "#1564 AC2 a sibling batch whose queue does not read holds cloud starts under the limit, and the pass says why" \
+  '[ "$(field CS-2 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -qF "cloud sessions: none starts this pass, a sibling batch" && echo "$out" | grep -qF "queue does not read ("'
+q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
 # queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked

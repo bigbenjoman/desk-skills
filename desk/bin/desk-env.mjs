@@ -1087,6 +1087,15 @@ export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABE
 // §3b Worker models, Worker location and Phase 0 levers, each read by its grammar in config-schema.mjs.
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: rowDefault('worker-models') }));
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: rowDefault('worker-location') }));
+// §3b "Cloud sessions at once": how many of a batch's tickets may run in a cloud session together, apart
+// from its local worker slots. A value that is not a whole number starts none, rather than lifting the limit.
+//   -> { n, bad }   bad says why n is 0 for an unreadable row, else null
+export function cloudSessions(raw = configValue('cloud-sessions')) {
+  const s = String(raw ?? '').trim();
+  if (!s || /^todo$/i.test(s)) return { n: Number(rowDefault('cloud-sessions')), bad: null };
+  if (/^\d+$/.test(s)) return { n: Number(s), bad: null };
+  return { n: 0, bad: `config §3b "${CONFIG_ROWS['cloud-sessions'].row}" is "${s}": want a whole number, so no cloud session starts until it is fixed` };
+}
 // The levers row's items, or null with no row or no config.
 const leverItems = () => {
   try { return configValues('levers'); } catch (e) { if (e instanceof NoRepoConfigError) return null; throw e; }
