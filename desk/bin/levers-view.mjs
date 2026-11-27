@@ -12,7 +12,8 @@
 // under ~/.desk-autopilot/<slug>/ its levers.jsonl, lever-evals.jsonl, audit.jsonl, levers-evidence/
 // (the per-ticket outcome rows each evaluation used), the newest phase0-baseline-*.txt, and in the
 // repo's state folder and each named batch's its supervisor.json, health.json and post-merge.jsonl;
-// plus the machine-wide ~/.desk-autopilot/levers/pooled-evals.jsonl. A line that does not parse makes
+// plus the machine-wide ~/.desk-autopilot/levers/pooled-evals.jsonl, and each repo's change log
+// (desk-changes.mjs: git on its primary checkout, its config backups). A line that does not parse makes
 // the panels that read its file `error`, naming the file and line, and the rest build.
 //
 // The honesty rules: no verdict below the minimum sample in the smaller arm; every effect carries its

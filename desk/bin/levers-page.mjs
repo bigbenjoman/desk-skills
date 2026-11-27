@@ -71,7 +71,6 @@ const WHAT = Object.freeze({
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
-const lowerFirst = (s) => (s ? s[0].toLowerCase() + s.slice(1) : '');
 const DASH = '—';
 const MINUS = '−';
 const trim = (s) => (s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s);
@@ -210,14 +209,53 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
 const weekEnd = (k) => new Date(Date.parse(`${k}T00:00:00Z`) + 6 * 86_400_000).toISOString().slice(0, 10);
 const monthEnd = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10);
 
-function chart(key, metric, view, shown) {
+// Where each change log entry lands on a panel: `keys` are the panel's day keys (a day's, or a week's
+// first day with `span` 7), x0..x1 its plot. A change before the first is left off; one after the last
+// sits on the right edge. -> [{ e, x }]
+const DAY_MS = 86_400_000;
+function markXs(entries, keys, span, x0, x1) {
+  if (!keys.length) return [];
+  const dx = (x1 - x0) / keys.length;
+  const start = Date.parse(`${keys[0]}T00:00:00Z`);
+  return entries.flatMap((e) => {
+    const at = ((Date.parse(`${e.day}T00:00:00Z`) - start) / DAY_MS + (e.day_frac ?? 0)) / span;
+    if (!(at >= 0)) return [];
+    return [{ e, x: Math.min(x0 + dx * at, x1 - 1) }];
+  });
+}
+
+// The numbered dashed lines over a chart, each with its tooltip: the number, when and what kind, the
+// title, the cost either side (or Too early) and that it is no test. Numbers within ~2.4% of the one
+// before go a row lower, so they never sit on each other.
+function marksHtml(placed, tz, px) {
+  const rowEnd = [];
+  return placed.sort((a, b) => a.x - b.x).map(({ e, x }) => {
+    const pct = (x / W) * 100;
+    let row = rowEnd.findIndex((end) => pct - end >= 2.4);
+    if (row < 0) row = rowEnd.length;
+    rowEnd[row] = pct;
+    const kind = LOG_KIND[e.kind]?.label ?? 'Change';
+    const cost = tooEarly(e) ?? `${sideCost(e.before) ?? 'not recorded'} before · ${sideCost(e.after) ?? 'not recorded'} after`;
+    const title = logHead(e).title;
+    const head = `${e.n} · ${when(e.at, tz)} · ${kind}`;
+    return `<span class="mark${pct > 50 ? ' mark-r' : ''}"${repoAttr(e.repo)} tabindex="0" style="left:${px(x)}" aria-label="${esc(`Change ${head}. ${title}. ${cost}. Before and after, not a test.`)}">`
+      + `<span class="mark-n num" style="top:${row * 18}px">${e.n}</span>`
+      + `<span class="mark-tip" role="tooltip"><span class="tiny">${esc(head)}</span><span class="b">${esc(title)}</span><span class="small">${esc(cost)}</span><span class="tiny mark-note">Before and after, not a test</span></span></span>`;
+  }).join('');
+}
+
+function chart(key, metric, view, shown, { changeLog = [], tz = 'UTC' } = {}) {
   const m = METRICS[key];
   const base = scaled(m, metric.baseline.value);
   const o = { grid: [], axes: [], ticks: [], labels: [], bases: [], bdots: [], segs: [], dots: [] };
   const first = metric.first_recorded;
+  let placed;
   if (view === 'days') {
     panel(o, { labels: metric.daily.map((p) => dayLabel(p.date)), vals: metric.daily.map((p) => scaled(m, p.value)), ends: metric.daily.map((p) => p.date), base, m, x0: W * 0.08, x1: W * 0.95, side: 'left', every: 5, first });
+    placed = markXs(changeLog, metric.daily.map((p) => p.date), 1, W * 0.08, W * 0.95);
   } else {
+    // On the 6 weeks, by the week it fell in and how far through that week.
+    placed = markXs(changeLog, metric.weekly.map((p) => p.week), 7, W * 0.08, W * 0.48);
     panel(o, { labels: metric.weekly.map((p) => `WK ${isoWeek(p.week)}`), vals: metric.weekly.map((p) => scaled(m, p.value)), ends: metric.weekly.map((p) => weekEnd(p.week)), base, m, x0: W * 0.08, x1: W * 0.48, side: 'left', every: 1, first });
     panel(o, { labels: metric.monthly.map((p) => MONTHS[Number(p.month.slice(5, 7)) - 1]), vals: metric.monthly.map((p) => scaled(m, p.value)), ends: metric.monthly.map((p) => monthEnd(p.month)), base, m, x0: W * 0.54, x1: W * 0.91, side: 'right', every: 2, first });
   }
@@ -236,12 +274,13 @@ ${o.segs.map((p) => `<polyline class="now" points="${p}" fill="none" stroke="${C
 ${o.dots.map((d) => `<circle class="pt" cx="${f1(d.x)}" cy="${f1(d.y)}" r="3" fill="${C.ink}"></circle>`).join('')}
 </svg>
 <div class="chart-labels" aria-hidden="true">${o.labels.map((b) => `<span${b.note ? ' class="gap-note"' : ''} style="left:${px(b.x)};top:${py(b.y)};transform:${b.tf};color:${b.c}">${esc(b.s)}</span>`).join('')}</div>
-<div class="legend"><span><span class="swatch" style="background:${C.ink}"></span>${esc(m.title)}</span>${base == null ? '' : `<span><span class="swatch" style="background:${C.grey}"></span>Before levers</span>`}</div>
+${placed.length ? `<div class="marks">${marksHtml(placed, tz, px)}</div>` : ''}
+<div class="legend"><span><span class="swatch" style="background:${C.ink}"></span>${esc(m.title)}</span>${base == null ? '' : `<span><span class="swatch" style="background:${C.grey}"></span>Before levers</span>`}${placed.length ? '<span><span class="swatch swatch-dash"></span>A change, numbered as in the list</span>' : ''}</div>
 </div>`;
 }
 
 const CALLOUTS = [['Yesterday', 'yesterday', false], ['DoD%', 'dod_pct', true], ['Last Wk', 'last_week', false], ['WoW%', 'wow_pct', true], ['vs before', 'last_week_vs_before_pct', true], ['MTD', 'mtd', false], ['MoM%', 'mom_pct', true], ['To date', 'to_date', false], ['vs before', 'to_date_vs_before_pct', true]];
-function wbrCard(key, metric, shown) {
+function wbrCard(key, metric, shown, marks) {
   const m = METRICS[key];
   const r = rag(key, metric);
   const cells = CALLOUTS.map(([l, k, pct]) => {
@@ -253,8 +292,8 @@ function wbrCard(key, metric, shown) {
   return `<article class="card wbr" data-metric="${key}">
 <div class="wbr-head"><div></div><h3>${esc(m.title)}</h3><div class="wbr-rag"><span class="rag" role="img" aria-label="${esc(r.label)}" title="${esc(r.label)}" style="background:${r.c}"></span></div></div>
 <p class="muted wbr-sub">${esc(m.sub(metric.baseline.value, metric.keyed_by === 'merged_at'))}</p>
-${chart(key, metric, 'wbr', shown)}
-${chart(key, metric, 'days', shown)}
+${chart(key, metric, 'wbr', shown, marks)}
+${chart(key, metric, 'days', shown, marks)}
 <div class="callouts">${cells.map((k) => `<div class="callout"><span class="callout-l">${esc(k.l)}</span><span class="callout-v mono" style="color:${k.c}">${esc(k.v)}</span></div>`).join('')}</div>
 </article>`;
 }
@@ -377,9 +416,11 @@ function trends(v) {
   const pressed = (k) => `aria-pressed="${k === shown}"`;
   const hide = (k) => (k === shown ? '' : ' hidden');
   const toggle = `<div role="group" aria-label="Chart view" class="toggle"><button type="button" data-show="wbr" ${pressed('wbr')}>6 weeks &amp; 12 months</button><button type="button" data-show="days" ${pressed('days')}>Last 30 days</button></div>`;
-  const head = `<div class="sec-head"><div class="stack4"><h2 id="tr-h">Trends</h2><p class="muted small" data-view="wbr"${hide('wbr')}>Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p><p class="muted small" data-view="days"${hide('days')}>Black is now, grey is before levers. One point a day, so a lever shows within days.</p></div>${toggle}</div>`;
+  const changeLog = v.panels.change_log?.entries ?? [];
+  const lines = has && changeLog.length ? ' Numbered lines are changes from the list below.' : '';
+  const head = `<div class="sec-head"><div class="stack4"><h2 id="tr-h">Trends</h2><p class="muted small" data-view="wbr"${hide('wbr')}>Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.${lines}</p><p class="muted small" data-view="days"${hide('days')}>Black is now, grey is before levers. One point a day, so a lever shows within days.${lines}</p></div>${toggle}</div>`;
   const body = has
-    ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k], shown)).join('')}</div>`
+    ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k], shown, { changeLog, tz: v.tz })).join('')}</div>`
     : `<div class="cards">${Object.values(METRICS).map((m) => `<article class="card awaiting"><div class="awaiting-head"><h3>${esc(m.title)}</h3><span class="rag rag-sm" role="img" aria-label="Grey: no data yet" style="background:${C.grey}"></span></div><div class="awaiting-body"><span class="muted">Awaiting data</span><span class="muted small">This fills in once desk has evaluated its first tickets.</span></div></article>`).join('')}</div>`;
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }
@@ -406,7 +447,7 @@ function dataSection({ id, title, intro, cols, groups, fold = null }) {
     return `<section aria-labelledby="${id}" class="card levers"><div class="levers-head"><div class="stack4"><h2 id="${id}">${esc(title)}</h2><p class="muted small">${esc(intro)}</p></div></div>${table}</section>`;
   }
   const lines = fold.map((f) => `<span class="fold-line"${repoAttr(f.repo)}>${esc(f.text)}</span>`).join('');
-  return `<section aria-labelledby="${id}" class="card levers"><details class="fold"><summary class="levers-head fold-sum"><span class="stack4"><h2 id="${id}">${esc(title)}</h2><span class="muted small stack3">${lines}</span></span><span class="fold-cue small"><span class="fold-show">Show table</span><span class="fold-hide">Hide table</span></span></summary>`
+  return `<section aria-labelledby="${id}" class="card levers"><details class="fold"><summary class="levers-head fold-sum"><h2 id="${id}">${esc(title)}</h2><span class="muted small fold-lines">${lines}</span><span class="fold-cue small"><span class="fold-show">Show table</span><span class="fold-hide">Hide table</span></span></summary>`
     + `<p class="muted small fold-intro">${esc(intro)}</p>${table}</details></section>`;
 }
 const repoAttr = (repo) => (repo && repo !== '*' ? ` data-repo="${esc(repo)}"` : '');
@@ -710,7 +751,7 @@ function leverTable(v, today) {
       return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' class="needs"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
         + `<td class="td num"><div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div></td>`
         + `<td class="td num"><div class="stack6"><div class="bar${pr.wait ? ' bar-wait' : ''}" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="${pr.wait ? 'wait' : 'muted'} tiny">${esc(pr.text)}</span></div></td>`
-        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c, v.tz); return `<span class="repo"${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`
+        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c, v.tz); return `<span class="repo"${repoAttr(c.repo)}${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`
         + (asks.length ? `<tr class="decide-row"><td colspan="5" class="decide-cell"><div class="stack12">${asks.map((a) => decisionPanel(r, a)).join('')}</div></td></tr>` : '');
     }).join('');
   }
@@ -773,22 +814,76 @@ function changeDetails(e) {
 const MACHINE_REASONS = Object.freeze(['evidence_incomplete', 'fp_reset']);
 const shownReason = (e) => (MACHINE_REASONS.includes(e.kind) || e.missing ? e.wording ?? e.reason : e.reason ?? e.wording);
 
-function changes(v, today) {
+// ---- the change log: changes no test can split, with the tickets either side ------------------------------------
+const LOG_KIND = Object.freeze({ pr: { label: 'Merged PR', word: 'PR' }, config: { label: 'Settings', word: 'setting' }, claude: { label: 'Claude version', word: 'version' } });
+const MIN_SIDE = 5;
+const rowItems = (x) => (x == null ? 'none' : (Array.isArray(x) ? x : [x]).join(' ') || 'none');
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+// A change log entry's title and the muted line under it.
+function logHead(e) {
+  const where = e.repo ? ` · ${e.repo}` : '';
+  if (e.kind === 'pr') {
+    const what = e.pr != null ? `PR #${e.pr}` : `Commit ${String(e.sha ?? '').slice(0, 7) || 'with no PR'}`;
+    return { title: e.title ?? 'Untitled commit', meta: `${what}${e.ticket ? ` · ${e.ticket}` : ''}${where}` };
+  }
+  // `row` is "§<section> <label>": the label titles it, the whole row names it under the title.
+  if (e.kind === 'config') {
+    const label = cap(String(e.row ?? 'A config').replace(/^§\S+\s*/, ''));
+    return { title: `${label} row${e.repo ? ` in ${e.repo}` : ''}: ${rowItems(e.from)} to ${rowItems(e.to)}`, meta: `Config ${e.row ?? ''}${where}` };
+  }
+  return { title: e.from ? `Claude Code ${e.from} to ${e.to}` : `Claude Code ${e.to}`, meta: `First worker start on the new version${where}` };
+}
+
+// "Too early" with the count while either side has fewer than MIN_SIDE tickets; null once both have.
+function tooEarly(e) {
+  const b = e.before?.accepted ?? 0;
+  const a = e.after?.accepted ?? 0;
+  if (b >= MIN_SIDE && a >= MIN_SIDE) return null;
+  const count = b >= MIN_SIDE ? `${plural(a, 'ticket')} since` : a >= MIN_SIDE ? `${plural(b, 'ticket')} before it` : `${b} before and ${a} since`;
+  return `Too early: ${count}. Figures show once there are ${MIN_SIDE} on each side.`;
+}
+
+// One side's cost and blind review figures, as the before-and-after table and the chart tooltips word them.
+const sideCost = (s) => (s?.median_usd == null ? null : `$${s.median_usd.toFixed(2)}`);
+const sideCostCell = (s) => (sideCost(s) == null ? notRecorded : `${sideCost(s)} · ${plural(s.costed, 'ticket')}`);
+const sideAuditCell = (s) => (!s?.audited ? notRecorded : `P0 ${s.p0} · P1 ${s.p1} · P2 ${s.p2} · ${plural(s.audited, 'review')}`);
+
+function beforeAfter(e) {
+  const days = e.window_days;
+  const col = (side) => (days ? `${days} day${days === 1 ? '' : 's'} ${side}` : cap(side));
+  const row = (label, f) => `<tr><th scope="row">${label}</th><td class="mono">${f(e.before)}</td><td class="mono">${f(e.after)}</td></tr>`;
+  return `<div class="ba"><table class="ba-t"><thead><tr><td></td><th scope="col">${col('before')}</th><th scope="col">${col('after')}</th></tr></thead><tbody>`
+    + `${row('Cost per ticket', sideCostCell)}${row('Blind review findings per PR', sideAuditCell)}</tbody></table>`
+    + `<p class="muted tiny">Before and after, not a test. Other changes landed in the same days, so this can’t show the ${LOG_KIND[e.kind]?.word ?? 'change'} caused the difference.</p></div>`;
+}
+
+function logEntry(e, tz) {
+  const h = logHead(e);
+  const early = tooEarly(e);
+  return `<div class="change-log" data-kind="other"${repoAttr(e.repo)} id="change-${e.n}"><span class="muted num small when">${esc(when(e.at, tz))}</span><div class="stack6">`
+    + `<div class="change-title"><span class="n-badge num" aria-label="Change ${e.n}">${e.n}</span><span class="kind">${esc(LOG_KIND[e.kind]?.label ?? 'Change')}</span><span class="b">${esc(h.title)}</span></div>`
+    + `<span class="muted small">${esc(h.meta)}</span>${early ? `<p class="small too-early">${esc(early)}</p>` : beforeAfter(e)}</div></div>`;
+}
+
+const leverEntry = (e, tz) => `<details class="change" data-kind="lever"${repoAttr(e.repo)}><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="change-title"><span class="kind kind-lever">Lever</span><span class="b">${esc(changeWhat(e))}</span></span>${shownReason(e) ? `<span class="muted small">${esc(cap(shownReason(e)))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`;
+
+// Every change, newest first: what desk changed in its lever tests, and the merged PRs, settings and
+// Claude versions from the change log, each numbered as its line on the trend charts.
+function changes(v) {
   const p = v.panels.changes;
+  const log = v.panels.change_log;
   const tz = v.tz;
-  const every = p.all ?? p.events ?? [];
-  const list = today ? p.events ?? [] : every;
-  const started = every.filter((e) => e.kind === 'transition' && e.to === 'trial').map((e) => e.at).sort()[0];
-  const title = today ? 'What changed this week' : 'Every change desk made';
-  const sub = today ? '' : `<p class="muted small sub">${started ? `Newest first, since testing started on ${esc(dayMonth(started, tz))}.` : 'Newest first.'}</p>`;
-  let body;
-  if (list.length) {
-    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${shownReason(e) ? `<span class="muted small">${esc(cap(shownReason(e)))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
-  } else if (today) {
-    const last = p.last_change;
-    body = `<p class="empty">No lever changed this week.${last ? ` Last change: ${esc(dayMonth(last.at, tz))}, ${esc(lowerFirst(changeWhat(last)))}.` : ''}</p>`;
-  } else body = '<p class="empty">desk hasn’t changed anything yet.</p>';
-  return `<section aria-labelledby="ch-h" class="card changes"><h2 id="ch-h">${title}</h2>${sub}${notes(p)}${body}</section>`;
+  const list = [
+    ...(p.all ?? p.events ?? []).map((e) => ({ at: e.at, html: () => leverEntry(e, tz) })),
+    ...(log?.entries ?? []).map((e) => ({ at: e.at, html: () => logEntry(e, tz) })),
+  ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const pick = `<div role="group" aria-label="Kind of change" class="toggle"><button type="button" data-pick-kind="" aria-pressed="true">All</button><button type="button" data-pick-kind="lever" aria-pressed="false">Lever changes</button><button type="button" data-pick-kind="other" aria-pressed="false">Other changes</button></div>`;
+  const head = `<div class="sec-head"><div class="stack4"><h2 id="ch-h">Every change</h2><p class="muted small sub">Newest first. Lever changes come from tests. Other changes can’t be tested, so each shows the tickets before and after it. Numbers match the lines on the charts.</p></div>${list.length ? pick : ''}</div>`;
+  const body = list.length
+    ? `${list.map((x) => x.html()).join('')}<p class="empty ch-none" hidden>No change of this kind${(v.repos?.length ?? 0) > 1 ? ' in this repo' : ''}. Pick All to see every change.</p>`
+    : '<p class="empty">Nothing has changed how desk works yet.</p>';
+  return `<section aria-labelledby="ch-h" class="card changes">${head}${notes(p)}${notes(log)}${body}</section>`;
 }
 
 const howDesk = () => `<section aria-labelledby="how-h" class="how"><h2 id="how-h">How desk decides</h2><p class="muted small">A lever being tested is on for half of new tickets and off for the other half. Once ${DECISION_RULE.min_per_arm['low-risk']} tickets on each side have finished, desk keeps the lever if those tickets cost less and nothing got worse: tickets accepted, fix tries, failed checks and reverts. Otherwise it turns the lever off. Riskier levers are tried on fewer tickets first, and each of their changes gets a blind review after merge. A lever turned off twice is paused until you decide.</p></section>`;
@@ -821,8 +916,24 @@ body[data-age=old] #page-body{filter:grayscale(1);opacity:.55}
 .banner-stale{background:#FFFBEB;border:1px solid #FCD34D}.banner-stale .banner-title,.banner-stale .banner-body{color:#92400E}
 .banner-old{background:#111827}.banner-old .banner-title{color:#F9FAFB}.banner-old .banner-body{color:#E5E7EB}
 #age-banner:empty{display:none}
-.summary{padding:18px 20px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px}
-.summary p{font-size:18px;line-height:1.45;max-width:820px}.summary b{font-weight:600}
+[hidden]{display:none!important}
+[id]{scroll-margin-top:16px}
+.shell{max-width:1420px;margin:0 auto;display:grid;grid-template-columns:200px minmax(0,1fr);gap:32px;align-items:start}
+.side{position:sticky;top:24px;display:flex;flex-direction:column;gap:8px}
+.side-h{padding:0 10px}
+.side ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.side a{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:0 10px;border-radius:6px;font-size:14px;color:#374151;text-decoration:none}
+.side a:hover{background:#F3F4F6;color:#111827}
+.nav-n{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:999px;font-size:12px;font-weight:600}
+.nav-amber{background:#FEF3C7;color:#92400E}.nav-blue{background:#DBEAFE;color:#1E40AF}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chips button{min-height:36px;padding:0 14px;border:1px solid #D1D5DB;border-radius:999px;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer}
+.chips button[aria-pressed=true]{background:#111827;border-color:#111827;color:#F9FAFB}
+.needs-box{padding:16px 18px;background:#FFFBEB;border-color:#FCD34D;display:flex;flex-direction:column;gap:12px}
+.needs-label{font-size:13px;font-weight:600;color:#92400E}
+.needs-item{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.needs-q{font-size:16px;line-height:1.45;max-width:760px}
+.lede{font-size:15px;line-height:1.5;color:#374151;max-width:820px}.lede b{font-weight:600}
 .cta{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border-radius:6px;background:#111827;color:#F9FAFB;font-size:14px;font-weight:500;text-decoration:none}
 .cta:hover{color:#F9FAFB;background:#374151}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:16px}
@@ -852,6 +963,18 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .chart-labels span{position:absolute;white-space:nowrap}
 .legend{position:absolute;left:0;right:0;bottom:2px;display:flex;justify-content:center;gap:20px;font-size:10px;color:#6B7280}
 .legend>span{display:flex;align-items:center;gap:5px}.swatch{width:20px;height:2px;display:inline-block}
+.swatch-dash{height:0;border-top:1px dashed #6B7280}
+.marks{position:absolute;inset:0;pointer-events:none}
+.mark{position:absolute;top:0;bottom:0;width:0}
+.mark::before{content:'';position:absolute;left:0;top:12%;bottom:16%;border-left:1px dashed #6B7280}
+.mark:focus{outline:none}
+.mark-n{position:absolute;left:0;transform:translateX(-50%);width:16px;height:16px;border:1px solid #6B7280;border-radius:50%;background:#FFFFFF;color:#374151;font-size:10px;font-weight:600;line-height:14px;text-align:center;pointer-events:auto;cursor:default}
+.mark:hover .mark-n,.mark:focus .mark-n{background:#111827;border-color:#111827;color:#F9FAFB}
+.mark:focus-visible .mark-n{outline:2px solid #111827;outline-offset:2px}
+.mark-tip{display:none;position:absolute;top:24px;left:6px;width:max-content;max-width:240px;padding:10px 12px;border-radius:6px;background:#111827;color:#F9FAFB;flex-direction:column;gap:4px;white-space:normal;z-index:2}
+.mark-r .mark-tip{left:auto;right:6px}
+.mark:hover .mark-tip,.mark:focus .mark-tip{display:flex}
+.mark-note{color:#D1D5DB}
 .callouts{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));border-top:1px solid #E5E7EB;margin:4px -16px 0}
 .callout{display:flex;flex-direction:column;text-align:center;border-right:1px solid #E5E7EB}
 .callout:last-child{border-right:0}
@@ -899,12 +1022,40 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .change-dl{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px 14px;margin:0 0 14px 124px;font-size:13px}
 .change-dl dt{font-size:12px;font-weight:500;color:#6B7280;padding-top:1px}.change-dl dd{margin:0}
 .guards{margin:0;padding-left:18px}
+.change-title{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.kind{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;background:#F3F4F6;color:#374151;font-size:11px;font-weight:500;white-space:nowrap}
+.kind-lever{background:#DBEAFE;color:#1E40AF}
+.n-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #111827;border-radius:50%;font-size:11px;font-weight:600}
+.change-log{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px;padding:12px 0;border-top:1px solid #F0F1F3}
+.change-log .when{padding-top:2px}
+.too-early{color:#374151}
+.ba{display:flex;flex-direction:column;gap:6px;max-width:720px;padding:12px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px;overflow-x:auto}
+.ba-t{border-collapse:collapse;font-size:13px}
+.ba-t th,.ba-t td{padding:3px 24px 3px 0;text-align:left;vertical-align:top;font-weight:400}
+.ba-t thead th{font-size:12px;font-weight:500;color:#6B7280}
+.ba-t tbody th{color:#374151}.ba-t td.mono{font-size:12px}
+.fold-sum{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:4px;align-items:center;cursor:pointer;list-style:none}
+.fold-sum::-webkit-details-marker{display:none}
+.fold:not([open])>.fold-sum{border-bottom:0}
+.fold-lines{grid-column:1}
+.fold-line{display:block}
+.fold-cue{grid-column:2;grid-row:1/span 2;font-weight:500;color:#374151;white-space:nowrap}
+.fold-hide,.fold[open] .fold-show{display:none}.fold[open] .fold-hide{display:inline}
+.fold-intro{padding:12px 16px 4px}
 .empty{padding:12px 0;border-top:1px solid #F0F1F3;font-size:14px}
 .how{display:flex;flex-direction:column;gap:6px;padding:0 4px}.how h2{font-size:14px}.how p{max-width:820px;line-height:1.55}
 @media (max-width:640px){
 .page{padding:24px 16px 48px}.wrap,#page-body{gap:24px}
 .top{flex-direction:column;align-items:flex-start;gap:6px}.top p{font-size:14px;line-height:1.45}
-.summary{padding:16px}.summary p{font-size:16px;line-height:1.5}
+[id]{scroll-margin-top:76px}
+.shell{display:block}
+.side{position:sticky;top:0;z-index:5;margin:-24px -16px 20px;padding:12px 16px;background:#F9FAFB;border-bottom:1px solid #E5E7EB;overflow-x:auto}
+.side-h{display:none}
+.side ul{flex-direction:row;flex-wrap:nowrap;gap:8px}
+.side a{min-height:44px;padding:0 14px;border:1px solid #D1D5DB;border-radius:999px;background:#FFFFFF;white-space:nowrap}
+.chips{flex-wrap:nowrap;overflow-x:auto}.chips button{min-height:44px;white-space:nowrap}
+.needs-box{padding:14px 16px}.needs-q{font-size:15px}
+.change-log{grid-template-columns:1fr;gap:3px}
 .tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .tile{padding:14px 12px;gap:8px;min-height:0}.tile h3{font-size:13px}.tile-v{font-size:26px}.tile-s{font-size:12px;gap:6px}
 .toggle{display:grid;grid-template-columns:1fr 1fr;width:100%}.toggle button{min-height:44px;padding:0 12px}
@@ -967,12 +1118,61 @@ Array.prototype.forEach.call(copies, function (b) {
     else select();
   });
 });
+// The repo filter and the change list's kind filter: an element carrying a repo or a kind other than the
+// one picked is hidden; one carrying neither always shows. The change list says so when nothing is left.
+var pick = { repo: '', kind: '' };
+function apply() {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-repo],[data-kind]'), function (el) {
+    var r = el.getAttribute('data-repo');
+    var k = el.getAttribute('data-kind');
+    el.hidden = !!((pick.repo && r !== null && r !== pick.repo) || (pick.kind && k !== null && k !== pick.kind));
+  });
+  var none = document.querySelector && document.querySelector('.ch-none');
+  if (none) none.hidden = Array.prototype.some.call(document.querySelectorAll('.change,.change-log'), function (el) { return !el.hidden; });
+}
+[['repo', '[data-pick-repo]', 'data-pick-repo'], ['kind', '[data-pick-kind]', 'data-pick-kind']].forEach(function (f) {
+  var group = document.querySelectorAll(f[1]);
+  Array.prototype.forEach.call(group, function (b) {
+    b.addEventListener('click', function () {
+      pick[f[0]] = b.getAttribute(f[2]);
+      Array.prototype.forEach.call(group, function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+      apply();
+    });
+  });
+});
+// A link into a closed section opens it, on load and whenever the address's section changes.
+function reveal() {
+  var id = decodeURIComponent(window.location.hash.slice(1));
+  for (var el = id && document.getElementById(id); el; el = el.parentElement) if (el.tagName === 'DETAILS') el.open = true;
+}
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('hashchange', reveal);
+  reveal();
+}
 })();`;
 
 // view.json as inline JSON that cannot close its script element: `<` and the two JavaScript line
 // separators become \u escapes.
 const UNSAFE = new RegExp(`[<${String.fromCharCode(0x2028, 0x2029)}]`, 'g');
 const inlineJson = (v) => JSON.stringify(v).replace(UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
+// The side menu: a link to each section, with how many levers need you and how many are on. At phone
+// width it is a row of buttons along the top that scrolls sideways.
+function sideMenu(v) {
+  const needs = leverItems(v).length;
+  const on = leverRows(v).filter((r) => !['off', 'error'].includes(r.status)).length;
+  const link = (id, label, n, tone) => `<li><a href="#${id}">${label}${n ? ` <span class="nav-n nav-${tone} num">${n}</span>` : ''}</a></li>`;
+  return `<nav class="side" aria-label="On this page"><p class="muted tiny side-h">On this page</p><ul>`
+    + link('ny-h', 'Needs you', needs, 'amber') + link('ov-h', 'Overview') + link('tr-h', 'Trends') + link('lev-h', 'Levers', on, 'blue')
+    + link('ch-h', 'Changes') + link('mp-h', 'Merge time and parking') + link('how-h', 'How desk decides') + '</ul></nav>';
+}
+
+// The repo filter, once there are two repos to pick between.
+function repoChips(v) {
+  const names = (v.repos ?? []).map((r) => r.name).filter(Boolean);
+  if (names.length < 2) return '';
+  return `<div role="group" aria-label="Repo" class="chips"><button type="button" data-pick-repo="" aria-pressed="true">All repos</button>${names.map((n) => `<button type="button" data-pick-repo="${esc(n)}" aria-pressed="false">${esc(n)}</button>`).join('')}</div>`;
+}
 
 // The whole page for a view model, aged as of `now` (the build's own time unless given); the page
 // re-ages itself in the browser when opened.
@@ -992,27 +1192,29 @@ export function renderPage(view, { now = Date.parse(view.generated_at) } = {}) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
-<title>Levers</title>
+<title>Changes</title>
 <style>${CSS}</style>
 </head>
 <body data-age="${age.state}">
-<div class="page"><div class="wrap">
-<header class="top"><div class="stack4"><h1>Levers</h1><p class="muted">desk tests ways to make tickets cheaper, keeps the ones that work, and turns off the rest.</p></div>
+<div class="page"><div class="shell">
+${sideMenu(view)}
+<div class="wrap">
+<header class="top"><div class="stack4"><h1>Changes</h1><p class="muted">Everything that changed how desk works, and what happened after.</p></div>
 <span class="muted num updated">Updated ${okDate ? esc(clock(view.generated_at, tz)) : DASH} · <span id="age-words">${esc(age.words)}</span>${esc(reporting)}</span></header>
+${repoChips(view)}
 <div id="age-banner" data-since="${esc(sinceText)}">${bannerHtml(age, esc(sinceText))}</div>
 <main id="page-body">
-${summary(view)}
-${tiles(view, today)}
+${needsYou(view)}
+${overview(view, today)}
 ${trends(view)}
-${mergeStages(view)}
-${stuckTime(view)}
+${leverTable(view, today)}
 ${asksByArm(view)}
 ${handoffsByArm(view)}
-${leverTable(view, today)}
-${changes(view, today)}
-${today ? '' : howDesk()}
+${changes(view)}
+${mergeAndParking(view)}
+${howDesk()}
 </main>
-</div></div>
+</div></div></div>
 <script type="application/json" id="levers-view">${inlineJson(view)}</script>
 <script>${SCRIPT}</script>
 </body>
