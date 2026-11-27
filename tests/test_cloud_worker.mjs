@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
-import { cloudStartCommand, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
+import { cloudStartCommand, cloudStartPark, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -221,6 +221,12 @@ mkdirSync(lg.configDir, { recursive: true });
 const parkLine = firstRunPark(['trust'], { who: 'login studia', login: lg, checkout: ck, gave: 'no answer in 120s' });
 t('issue-1642 AC1 its park names the trust dialog', parkLine.includes('it is waiting on the folder-trust dialog ("Is this a project you created or one you trust?")'), true);
 t('issue-1642 AC1 and the exact fix, from the checkout under the login', parkLine.endsWith(`from the checkout: cd ${tilde(ck)} && CLAUDE_CONFIG_DIR=${lg.folder} claude, then choose "Yes, I trust this folder", and exit`), true);
+// The pass's step between them (spawnCloud): the captured trust-dialog start becomes the park.
+const startPark = cloudStartPark(waited, { who: 'login studia', login: lg, checkout: ck });
+t('issue-1642 AC4 a captured trust-dialog start parks naming trust', startPark.includes('gave no answer in 1.5s: it is waiting on the folder-trust dialog'), true);
+t('issue-1642 AC4 and the checkout the fix runs from', startPark.includes(`from the checkout: cd ${tilde(ck)} && `), true);
+t('issue-1642 AC4 a timeout showing no prompt parks on the one-time cloud start', cloudStartPark(hung, { who: 'w', login: lg, checkout: ck }).endsWith(`answer it: ${cloudStartCommand(lg)}`), true);
+t('issue-1642 AC4 a refused start parks on what it said', cloudStartPark({ error: 'refused: x' }, { who: 'w', login: lg, checkout: ck }), 'refused: x');
 t('issue-1642 AC1 the environment-variables prompt is answered from a cloud start', firstRunPark(['env'], { who: 'w', login: lg, checkout: ck }).endsWith(`cd ${tilde(ck)} && CLAUDE_CONFIG_DIR=${lg.folder} claude --cloud "<any prompt>", then answer it, and exit`), true);
 {
   const was = process.env.HOME;

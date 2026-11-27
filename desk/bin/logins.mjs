@@ -87,6 +87,13 @@ export function firstRunPark(ids, { who, login, checkout, gave = null }) {
   const { names, fix } = firstRunFix(ids, login, checkout);
   return `claude --cloud on ${who} ${gave ? `gave ${gave}: it is waiting on` : 'would wait on'} ${names}, which nothing answers in the background. Run this once in a terminal, from the checkout: ${fix}`;
 }
+// The park line for a cloud start `s` (cloud-worker.mjs startCloud) that failed: the first-run prompt
+// a timed-out start waits on, else a timeout's one-time cloud start, else what it said.
+export function cloudStartPark(s, { who, login, checkout }) {
+  if (s.waits) return firstRunPark(s.waits, { who, login, checkout, gave: s.error });
+  if (s.timedOut) return `claude --cloud on ${who} gave ${s.error}. A first cloud start on a login asks whether the session may use the environment's variables, and nothing answers that in the background: run this once in a terminal and answer it: ${cloudStartCommand(login)}`;
+  return s.error;
+}
 
 // The files `@path` imports in a CLAUDE.md, outside code, that exist, followed up to 5 deep as Claude
 // Code follows them.   -> absolute paths
