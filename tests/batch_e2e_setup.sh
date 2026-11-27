@@ -77,6 +77,7 @@ cat > "$T/config.md" <<EOF
 |---|---|---|
 | Autopilot worker concurrency | \`2 / 3\` | \`3 / 3\` |
 | Autopilot per-worker budget (USD) | \`25\` | \`none\` |
+| Per-file collision budget | \`3 over 1000 lines, else 2; serial: none\` | \`3 over 1000 lines, else 1; serial: none\` |
 | Preferred dev-server port | \`3000\` | \`$DEV_PORT\` |
 $models
 

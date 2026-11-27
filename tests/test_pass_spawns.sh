@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
 # layer: L3
-# budget: 205 DS-943 (122 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
+# budget: 205 DS-943 (123 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
 # read-only repo clones, issue links, post-merge steps, fix tries on a moved head, and per-file
@@ -730,6 +730,19 @@ check "DS-496 AC2 a 5xx on the pass's own push records the push as what clears t
   '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"fix/P-3\"}" ] && echo "$first" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it" && echo "$out" | grep -qF "P-3: waiting on \"git push origin fix/P-3 succeeds\" (GitHub still answers 5xx): left parked"'
 rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 AC2 and the next pass pushes it and requeues it for the steps its park named" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" != "\"parked\"" ] && [ "$(field P-3 state)" != "\"done\"" ] && echo "$out" | grep -qF "P-3: \"git push origin fix/P-3 succeeds\" holds: requeued"'
+# #1532 AC4: the live red spell's repair, its worker failed with the fix committed and not pushed while main
+# is still red, has its branch pushed and its draft opened by the pass (pushRepairFix), not asked about.
+RK="base-red-main-20261126175511"; MS=$(git -C "$T/repo" rev-parse main)
+git -C "$T/repo" worktree add -q -b "fix/$RK" "$T/wt/$RK" main
+echo g > "$T/wt/$RK/guard.txt"; git -C "$T/wt/$RK" add guard.txt; git -C "$T/wt/$RK" commit -q -m "fix(guards): $RK add the missing guard"
+printf '{"branch":"main","sha":"%s","checks":[{"name":"tests","sha":"%s","url":null}],"merges":[],"repair_key":"%s","since":"2026-11-26T17:55:11Z","at":"%s"}\n' "$MS" "$MS" "$RK" "$(node -e 'console.log(new Date().toISOString())')" > "$T/state-rc/base-red.json"
+q add "$RK"; q set "$RK" state=failed lane=A "branch=fix/$RK" "worktree=$T/wt/$RK"
+: > "$T/rc-gh.log"; out=$(node "$B/pass.mjs" 2>&1)
+check "#1532 AC4 a red spell's repair left with an unpushed fix is pushed and opened as its draft, titled by its commit" \
+  '[ "$(git -C "$T/rc-origin.git" rev-parse "refs/heads/fix/$RK")" = "$(git -C "$T/wt/$RK" rev-parse HEAD)" ] && grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/$RK --title fix\(guards\): $RK add the missing guard --body-file .*/state-rc/pr-bodies/$RK.md$" "$T/rc-gh.log" && grep -qF "Repairs the red main: \"tests\" failed on its latest run there." "$T/state-rc/pr-bodies/$RK.md"'
+check "#1532 AC4 and it is recorded done on that draft, and the pass says so" \
+  '[ "$(field "$RK" state)" = "\"done\"" ] && [ "$(field "$RK" result.pr)" = 91 ] && [ "$(field "$RK" draft_pr)" = 91 ] && echo "$out" | grep -qF "$RK: its worker left an unpushed fix while main is still red: pushed fix/$RK and opened draft PR #91"'
+rm -f "$T/state-rc/base-red.json"
 
 # ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
 # acme/web's default branch is not main, and this repo's origin says where its neighbours are. Each
@@ -1145,7 +1158,7 @@ check "DS-796 an owner the pass does not read for itself is given its criteria b
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
-{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n'; } > "$T/config-mx.md"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n| Per-file collision budget | x | `1` |\n'; } > "$T/config-mx.md"
 export DESK_CONFIG="$T/config-mx.md" DESK_QUEUE="$T/queue-mx.json" DESK_AUTOPILOT_STATE="$T/state-mx"; mkdir -p "$T/state-mx/logs" "$T/state-mx/triage"
 printf '{"files_in_scope":["src/a.ts","src/b.ts"]}\n' > "$T/state-mx/triage/MX-1.json"
 printf '{"files_in_scope":["src/a.ts"]}\n' > "$T/state-mx/triage/MX-2.json"
@@ -1420,15 +1433,15 @@ spawned(){ grep -qx "$1" "$T/fb-spawns"; }
 
 fbq fba ''
 fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
-fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts
+fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts; fbt FB-9 triaged src/edge.ts
 fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC1 with no budget row, three ready tickets naming a file over 1,000 lines on the base all start" \
   'spawned FB-1 && spawned FB-2 && spawned FB-3'
 check "DS-755 AC2 a fourth naming it does not start, and the report names the file and the three running" \
   '! spawned FB-4 && [ "$(field FB-4 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-4 (src/big.ts has 3 running of its 3: FB-1, FB-2, FB-3)"'
-check "DS-755 AC3 AC9 of two naming a 1,000-line file, the first in queue order starts and the other waits" \
-  'spawned FB-5 && ! spawned FB-6 && echo "$out" | grep -qF "FB-6 (src/edge.ts has 1 running of its 1: FB-5)"'
+check "DS-755 AC3 AC9 DS-1032 AC3 of three naming a 1,000-line file, the first two in queue order start and the third waits" \
+  'spawned FB-5 && spawned FB-6 && ! spawned FB-9 && echo "$out" | grep -qF "FB-9 (src/edge.ts has 2 running of its 2: FB-5, FB-6)"'
 check "DS-755 AC5 a ticket naming two files, one at its budget, does not start" '! spawned FB-7 && [ "$(field FB-7 state)" = "\"triaged\"" ]'
 check "DS-755 AC7 an admission-time collides_with naming a running ticket that shares no file in the triage records holds nothing" 'spawned FB-8'
 check "DS-755 the metrics line names each held ticket's files at their budget and the running tickets filling them" \
@@ -1443,6 +1456,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC2 with three already running that name the file, a fourth does not start, and the report names them" \
   '! spawned FB-14 && echo "$out" | grep -qF "FB-14 (src/big.ts has 3 running of its 3: FB-11, FB-12, FB-13)"'
 check "DS-755 AC3 AC7 once the first has stopped running, the other starts: a done ticket its collides_with names holds nothing" 'spawned FB-16'
+
+# A test file takes no place, under a row of 1 too; a shared non-test file still holds.
+fbq fbt '1'
+fbt FB-61 triaged tests/test_prompts.py src/c.test.ts; fbt FB-62 triaged tests/test_prompts.py src/c.test.ts; fbt FB-63 triaged tests/test_prompts.py src/c.test.ts
+fbt FB-64 triaged tests/test_prompts.py src/solo.ts; fbt FB-65 triaged tests/test_prompts.py src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1032 AC2 a test file takes no place: three ready tickets whose only shared files are test files all start" \
+  'spawned FB-61 && spawned FB-62 && spawned FB-63 && ! echo "$out" | grep "^held back by a collision:" | grep -qE "FB-6[123] \("'
+check "DS-1032 AC2 negative control: tickets also sharing a non-test file are held on that file alone" \
+  'spawned FB-64 && ! spawned FB-65 && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-65 (src/solo.ts has 1 running of its 1: FB-64)"'
 
 fbq fbc '3 over 1000 lines, else 1; serial: src/hot.ts, docs/*.md'
 fbt FB-21 triaged src/hot.ts; fbt FB-22 triaged src/hot.ts; fbt FB-23 triaged src/big.ts; fbt FB-24 triaged src/big.ts
