@@ -126,6 +126,7 @@ import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, lat
 import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
+import { START_TRIES_MAX } from './base-fix.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
@@ -829,10 +830,14 @@ const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITE
 // one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
 const BASE_SYNC_ITEM = 'base-sync';
 const baseSyncRow = (r) => (r.q?.base_sync_stuck?.base ? { t: { key: BASE_SYNC_ITEM }, baseSync: true } : null);
-const batchRows = (r) => [baseSyncRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
-// The base-sync, base-push and subscription-off items desk-q counts, one per batch of a repo row (each
-// keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
-const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
+// A batch whose base conflict fix worker could not be started in START_TRIES_MAX tries (base-fix.mjs
+// notStarted, base_fix.start) is one item, named by this: the conflict is the person's to resolve.
+const BASE_FIX_START_ITEM = 'base-fix-start';
+const baseFixStartRow = (r) => ((r.q?.base_fix?.start?.failed ?? 0) >= START_TRIES_MAX ? { t: { key: BASE_FIX_START_ITEM }, baseFixStart: true } : null);
+const batchRows = (r) => [baseSyncRow(r), baseFixStartRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
+// The base-sync, base-fix-start, base-push and subscription-off items desk-q counts, one per batch of a
+// repo row (each keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), baseFixStartRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -1827,6 +1832,13 @@ function itemOf(r, x, reads = null, finds = reads) {
         : `the base sync of ${b.base} failed, so ${frozen}. It clears once a pass syncs ${b.base}: fix what stopped it (a base missing on origin is restored or recreated there)`,
       actions: [['done', `once the base is ${b.cmd ? 'pushed' : 'fixed'}, the next pass finds it current, spawns again and drops this item`], ['not-now']] };
   }
+  if (x.baseFixStart) {
+    const s = r.q.base_fix.start;
+    const base = r.q.base ?? 'the batch base';
+    const files = s.files?.length ? s.files.join(', ') : 'files not listed';
+    return { kind: 'base-fix-start', need: `the conflict fix worker for ${base} in ${r.name ?? r.slug} could not be started in ${s.failed} tries, so ${base} stays in conflict with ${defaultOf(r)} (${files}). The last try: ${s.why}. Resolve the conflict by hand in the base worktree and push ${base}`,
+      actions: [['done', `once ${base} is pushed, the next pass finds it current and drops this item`], ['not-now']] };
+  }
   if (x.basePush) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
@@ -2188,7 +2200,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if (l.status === 'dismissed') continue;
       // A put-off batch-wide hold is no ticket row, so a drop finds it in `off` as a repo-level item.
       if (l.status === 'put_off') { putOff++; if (!r.q.tickets?.[x.t.key]) off.push({ r, t: x.t, ...item, putOffKey: putOffKey(r, x.t, item), putOffDir: r.stateDir }); continue; }
-      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
+      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.baseFixStart ? timeOf(r.q.base_fix.start.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -2694,6 +2706,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (item.kind === 'session') return sessionDone();
     if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
     if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
+    if (item.kind === 'base-fix-start') return say(true, 'noted: the next pass syncs the base again, and drops this item once it is current.');
     if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
     if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
     return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');

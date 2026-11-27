@@ -170,9 +170,12 @@ export function decideSlots(s) {
   // The memory reservations sit beside the worker count, and the stricter of the two decides.
   const mem = memBudget(s.memPool, { wanted });
   const machine = mem.room < workers.room ? mem : workers;
-  const repo = repoBudget({
-    batch: s.batch, running: busy, wanted, last: s.lastStart, cap: s.cap, batches: s.repoBatches,
+  const repoOf = (n) => repoBudget({
+    batch: s.batch, running: busy, wanted: n, last: s.lastStart, cap: s.cap, batches: s.repoBatches,
   });
+  const repo = repoOf(wanted);
+  // A base conflict fix the sync meets later in the pass wants one slot whether or not a ticket does.
+  const baseRepo = wanted > 0 ? repo : repoOf(1);
   // A repo's batches share its cap only under the lock: without it two passes could each count the same
   // free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)
   // starts nothing this pass rather than counting unlocked. An idle sibling shares nothing, so it does not.
@@ -180,7 +183,7 @@ export function decideSlots(s) {
   const slots = s.maintHold || repoUnlocked ? 0 : Math.min(plan.slots, machine.room, repo.room);
   const machineLine = workers.line + (s.machineCap != null && s.lockWhy ? ` (counted without the lock: ${s.lockWhy})` : '');
   const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${s.lockWhy}` : repo.line;
-  return [{ type: 'slots', plan, machine, repo, repoUnlocked, slots, machineLine, repoLine, memLine: mem.line }];
+  return [{ type: 'slots', plan, machine, repo, baseRepo, repoUnlocked, slots, machineLine, repoLine, memLine: mem.line }];
 }
 
 // The slots a ticket worker may take: a base conflict fix worker still at it holds one of the batch's

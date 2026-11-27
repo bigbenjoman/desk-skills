@@ -221,6 +221,13 @@ function slots(s) {
   t('under the lock, the repo\'s cap is shared with its sibling', j([shared.slots, shared.repo.room]), j([2, 2]));
   const base = slots(slotsSnap(eligibility(snap({})), { machineCap: 1, machineProfiled: true, baseWanted: true, otherRepos: [{ slug: 'x', batch: null, q: { tickets: { Z: { state: 'running' } } } }] }));
   t('a base worker with no ticket still wants its one slot', base.machineLine.endsWith(': the machine is at its cap, so nothing starts this pass'), true);
+  // DS-1034 AC1: a conflict the sync meets later in the pass wants its slot under the shared repo cap,
+  // though no ticket is spawnable and the gate has not failed.
+  const idle = slots(slotsSnap(eligibility(snap({})), { repoBatches: [sibling] }));
+  t('DS-1034 AC1 with a live sibling and nothing spawnable, the base conflict fix still has room', j([idle.repo.room, idle.baseRepo.room, idle.slots]), j([0, 1, 0]));
+  const full = slots(slotsSnap(eligibility(snap({})), { cap: 1, repoBatches: [sibling] }));
+  t('DS-1034 and none where the sibling fills the repo cap', full.baseRepo.room, 0);
+  t('DS-1034 with a ticket wanting a slot, the base fix reads the same budget', shared.baseRepo, shared.repo);
 }
 {
   const e = eligibility(snap(byKey(triaged('A'), triaged('B'))));

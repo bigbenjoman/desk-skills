@@ -161,6 +161,26 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('a merged-tree check that fails is a merged-tree fix, with no conflict record', j([types(check).includes('note-conflict'), lines(check).at(-1).startsWith('base sync: merging main into feat/x fails §4 Merged-tree check (make check), nothing pushed. Its output: a / b. Merged-tree fix try 1 of 2 starts this pass')]), '[false,true]');
 }
 
+// DS-1034: a conflict fix try that waits for room is recorded on base_fix.start, pass by pass, and a
+// sync that lands drops it.
+{
+  const conflict = { ok: false, reason: 'conflict', files: ['src/a.ts'] };
+  const why = 'repo workers: 1 of the §3b cap of 1 running';
+  const first = sync(snap({}, { fixRoom: false, noFixRoom: why }), { sync: conflict });
+  const start1 = { try: 1, files: ['src/a.ts'], since: '2026-11-18T12:00:00.000Z', passes: 1, failed: 0, why };
+  t('DS-1034 AC3 a try with no room is kept as a start, with why', j(batchWrites(first)), j([`base_fix=${j({ tries: [], running: null, port: null, start: start1 })}`]));
+  const again = sync(snap({ base_fix: { tries: [], running: null, port: null, start: { ...start1, since: 'earlier', passes: 2 } } }, { fixRoom: false, noFixRoom: why }), { sync: conflict });
+  t('DS-1034 AC3 each pass it waits adds one, keeping its first time', j(batchWrites(again)), j([`base_fix=${j({ tries: [], running: null, port: null, start: { ...start1, since: 'earlier', passes: 3 } })}`]));
+  t('DS-1034 a dry run writes nothing', batchWrites(sync(snap({}, { fixRoom: false, dry: true }), { sync: conflict })).length, 0);
+  const landed = sync(snap({ base_fix: { tries: [], running: null, port: null, start: start1 } }));
+  t('DS-1034 a sync that lands drops the start', j(batchWrites(landed)), j(['base_fix=null']));
+  const failedOut = { tries: [], running: null, port: null, start: { ...start1, passes: 3, failed: 3, why: 'failed its spawn: no seat' } };
+  const person = sync(snap({ feature: true, base_fix: failedOut }), { sync: conflict });
+  t('DS-1034 AC2 three failed starts are the person\'s, naming the files and why', waiting(person)[0],
+    `base sync: merging main into feat/x conflicts, nothing pushed. Conflicting files: src/a.ts. Its fix worker could not be started in 3 tries; the last: failed its spawn: no seat: resolve it by hand in ${WT} and push — feature mode, so nothing spawns this pass`);
+  t('DS-1034 and no worker is started for it', state(person).baseFix, null);
+}
+
 // The base push grant.
 {
   const ask = { perm: 'ask', key: 'batch-base-push', ok: false };

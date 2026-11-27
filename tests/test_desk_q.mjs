@@ -3421,5 +3421,20 @@ try {
     'TICKET,STATE,WHAT IT NEEDS,STARTS,SHIPS,TITLE true');
 }
 
+// ---- DS-1034 AC3: a base conflict fix that has not started for 3 passes in a row is a note on its
+// batch, saying why; under 3, or with a fix worker running, there is none.
+{
+  const why = 'repo workers: 1 of the §3b cap of 1 running';
+  const fixOf = (passes, running = null) => ({ tries: [], running, port: null, start: { try: 1, files: ['a.txt'], since: minsAgo(15), passes, failed: 0, why } });
+  const tickets = { 'BF-1': { state: 'triaged', open_questions: 0 } };
+  put(I.T, I.env, 'bfix3', { port: 5934, conc: '2 / 3', beat: 1, queue: { batch: 'bfix3', base: 'feat/x', concurrency: 2, base_fix: fixOf(3), tickets } });
+  put(I.T, I.env, 'bfix2', { port: 5935, conc: '2 / 3', beat: 1, queue: { batch: 'bfix2', base: 'feat/x', concurrency: 2, base_fix: fixOf(2), tickets } });
+  put(I.T, I.env, 'bfixr', { port: 5936, conc: '2 / 3', beat: 1, queue: { batch: 'bfixr', base: 'feat/x', concurrency: 2, base_fix: fixOf(5, 'sid-1'), tickets } });
+  const ov1034 = Q.overview(Q.loadRepos(NOW).filter((r) => ['bfix3', 'bfix2', 'bfixr'].includes(r.repo)), { now: NOW, avail: 30 });
+  t('DS-1034 AC3 three passes waiting: the batch shows its conflict fix has not started, and why', notesIn(lines(ov1034), 'bfix3').join(' / '),
+    `feat/x's conflict fix has not started for 3 passes: ${why}.`);
+  t('DS-1034 AC3 two passes, or a fix worker running: no note', `${notesIn(lines(ov1034), 'bfix2').length} ${notesIn(lines(ov1034), 'bfixr').length}`, '0 0');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

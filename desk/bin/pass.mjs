@@ -67,7 +67,7 @@ import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
-import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, notStarted, FIX_TRIES_MAX, START_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, readBaseRed, readGreen, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
 import { decideSupersededRepairs } from './pass/repair-superseded.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges, holdersText } from './suite-wait.mjs';
@@ -2673,9 +2673,11 @@ const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve
 let borrowLock = null;
 let others = [];
 let lockWhy = null;
-// A base gate that failed on a conflict can start a base conflict fix worker with no ticket to spawn,
-// so it counts under the lock as a ticket's spawn does. Pacing holds no fix try (below).
-const gateFixDue = E.batchBase() != null && fresh.gate?.state === 'failed' && Array.isArray(fresh.gate.conflict) && !fresh.base_fix?.running;
+// A base gate that failed on a conflict, or a conflict fix try an earlier pass could not start, can
+// start a base conflict fix worker with no ticket to spawn, so it counts under the lock as a ticket's
+// spawn does. Pacing holds no fix try (below).
+const gateFixDue = E.batchBase() != null && !fresh.base_fix?.running
+  && ((fresh.gate?.state === 'failed' && Array.isArray(fresh.gate.conflict)) || (fresh.base_fix?.start != null && fresh.base_fix.start.failed < START_TRIES_MAX));
 const BASE = E.batchBase();
 const SOURCE = E.configValue('default-branch');
 const baseLines = [];
@@ -2745,7 +2747,7 @@ const SLOTS_SNAP = {
 };
 let SLOTS = null;
 runPhase({ name: 'slots', snapshot: () => SLOTS_SNAP, decide: decideSlots, handlers: { slots: (a) => { SLOTS = a; } }, report });
-const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine, memLine } = SLOTS;
+const { machine: MACHINE, repo: REPO, baseRepo: BASE_REPO, repoUnlocked, slots, machineLine, repoLine, memLine } = SLOTS;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -2827,8 +2829,9 @@ let baseFixLive = false;
 let baseFixResume = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
-// machine budget and the repo's shared §3b cap bind it as they bind every worker.
-const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
+// machine budget and the repo's shared §3b cap bind it as they bind every worker, counted as wanting
+// its one slot even where no ticket wants one.
+const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && BASE_REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
@@ -2836,7 +2839,7 @@ const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
   : repoUnlocked ? repoLine
-  : REPO.line);
+  : BASE_REPO.line);
 if (BASE && SOURCE && BASE !== SOURCE) {
   const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
   const fetchBase = (opts) => sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], opts);
@@ -3597,21 +3600,28 @@ async function spawnHandoff(t, pick) {
 }
 
 // A base conflict fix try: a task worker in the base worktree, on the base, under BASE_FIX_KEY, which
-// reads its ticket file. The try is recorded however the spawn goes, so a try that could not start
-// counts as one made at this head, and the next pass at the same head puts it to the person.
+// reads its ticket file. A review or check try is recorded however the spawn goes, so one that could
+// not start counts as one made at this head, and the next pass at the same head puts it to the person.
+// A merge try that does not start spends no try: it goes on base_fix.start (base-fix.mjs notStarted),
+// and the next pass tries again until START_TRIES_MAX spawns have failed or been refused.
 async function spawnBaseFix({ wt, fix: asked }) {
   let fix = asked;
   const review = !mergeTry(fix);
   const texts = fix.kind === 'checks' ? { ticket: promotionChecksTicket, brief: promotionChecksBrief, task: promotionChecksTask }
     : review ? { ticket: epicReviewTicket, brief: epicReviewBrief, task: epicReviewTask }
       : { ticket: baseFixTicket, brief: baseFixBrief, task: baseFixTask };
+  const waited = (why, failed = false) => {
+    if (review || DRY) return;
+    bf = notStarted(bf, asked, why, { failed, at: PASS_AT });
+    q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  };
   // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
   // first: with room for one, a pass starts the base try or a ticket, not both.
-  if (takeLockRoom(['test', 'light'])) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
+  if (takeLockRoom(['test', 'light'])) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); waited(LOCK_QUEUE.line); return; }
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();
-  if (!pick) return;
+  if (!pick) { waited('no Claude login this repo may start a worker on'); return; }
   const key = BASE_FIX_KEY;
   // The last merge try's kept merge is where this one starts, while origin's base and source are still
   // what it holds; otherwise it starts from the base, and the try says why the kept merge was not used.
@@ -3639,6 +3649,12 @@ async function spawnBaseFix({ wt, fix: asked }) {
     : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, ...start, at: PASS_AT }];
   const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
   const failed = (outcome, line) => {
+    if (!review) {
+      unstart();
+      waited(`${outcome}: ${String(line).split('\n').map((l) => l.trim()).filter(Boolean).slice(-1)[0] ?? 'no reason given'}`, true);
+      report.failed.push(`${key}: ${line}; ${bf.start.failed} of ${START_TRIES_MAX} failed starts, so ${bf.start.failed < START_TRIES_MAX ? 'the next pass tries again' : 'it goes to the person'}`);
+      return;
+    }
     made[made.length - 1].outcome = outcome;
     if (fix.from) made[made.length - 1].kept = { ref: fix.from.ref, sha: fix.from.sha };
     unstart();
@@ -3655,7 +3671,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   // No room under the memory ceiling: no try is spent, as at the usage limit, and the next pass looks again.
   const memWhy = memHeld(key);
-  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
+  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waits.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); waited(memWhy); return; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
