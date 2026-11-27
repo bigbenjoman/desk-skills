@@ -236,6 +236,21 @@ describe('app updated', () => {
     expect(keptNow()).toEqual(['/', null, '', '', '']);
   });
 
+  it('a kept value no screen takes after a reload is gone by the reload after', () => {
+    function Draft({ id }) {
+      const [draft, setDraft] = useKept(`inbox:draft:${id}`, '');
+      return <div data-draft={draft}><button type="button" onClick={() => setDraft('use approach A')}>type</button></div>;
+    }
+    render(<Draft id="DS-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'type' }));
+    window.dispatchEvent(new Event('pagehide')); // a reload, and DS-1 is no longer listed
+    cleanup();
+    render(<Draft id="DS-2" />);
+    window.dispatchEvent(new Event('pagehide')); // a second reload
+    cleanup();
+    expect(sessionStorage.getItem('desk:kept:inbox:draft:DS-1')).toBeNull();
+  });
+
   it('a 401 before Desk.app signs in again keeps an unsent answer, though the card unmounts its screen', async () => {
     function Draft() {
       const [draft, setDraft] = useKept('inbox:draft:SV-3844', '');

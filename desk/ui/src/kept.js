@@ -30,12 +30,23 @@ function arm() {
   armed = true;
   window.addEventListener('pagehide', saveKept);
 }
-// What the last page left under `key`, read from storage once; React may call an initialiser twice.
-function take(key) {
+// Everything saved, moved out of storage at a read, so a value survives one reload only: one no screen
+// mounted for (an item gone from the list) is not written again, and the reload after drops it.
+function drain() {
   const s = session();
-  let raw = null;
-  try { raw = s?.getItem(PREFIX + key) ?? null; s?.removeItem(PREFIX + key); } catch { raw = null; }
-  if (raw != null) { try { restored.set(key, JSON.parse(raw)); } catch { restored.set(key, undefined); } }
+  try {
+    const keys = [];
+    for (let i = 0; i < (s?.length ?? 0); i++) { const k = s.key(i); if (k?.startsWith(PREFIX)) keys.push(k); }
+    for (const k of keys) {
+      const raw = s.getItem(k);
+      s.removeItem(k);
+      try { restored.set(k.slice(PREFIX.length), JSON.parse(raw)); } catch { /* unreadable: starts fresh */ }
+    }
+  } catch { /* storage refused: nothing is restored */ }
+}
+// What the last page left under `key`; React may call an initialiser twice.
+function take(key) {
+  drain();
   return restored.get(key);
 }
 

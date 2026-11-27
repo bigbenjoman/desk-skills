@@ -380,9 +380,16 @@ function Gone({ gone, next, step }) {
   );
 }
 
+// A question's own key for its kept answer: an item parked again with a new question starts empty.
+const questionKey = (item) => {
+  let h = 0;
+  for (const c of String(item.question ?? '')) h = (Math.imul(h, 31) + c.codePointAt(0)) | 0;
+  return `${item.id}:${(h >>> 0).toString(36)}`;
+};
+
 function Detail({ item, snapshot, compact, step, result, record, go, next, nextPass, nextCheckin }) {
-  const [chosen, setChosen] = useKept(`inbox:chosen:${item.id}`, null);
-  const [text, setText] = useKept(`inbox:draft:${item.id}`, '');
+  const [chosen, setChosen] = useKept(`inbox:chosen:${questionKey(item)}`, null);
+  const [text, setText] = useKept(`inbox:draft:${questionKey(item)}`, '');
   const [hint, setHint] = useState(null);
   const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined');
   const field = useRef(null);
@@ -398,6 +405,8 @@ function Detail({ item, snapshot, compact, step, result, record, go, next, nextP
   const o = options.find((x) => x.id === chosen) ?? null;
   const busy = result?.phase === 'busy';
   const done = result?.phase === 'done';
+  // A recorded answer is sent: a reload from the confirmation brings none of it back.
+  useEffect(() => { if (done) { setChosen(null); setText(''); } }, [done, setChosen, setText]);
 
   // The question counts as read once any of it has been on screen.
   useEffect(() => {
