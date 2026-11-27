@@ -187,6 +187,20 @@ const STEPS = [CI, { step: 'read audit.jsonl for the cost', row: null }];
     j(readFollow(p, STEPS).results.map((x) => [x.result, x.source, x.issue])), j([['broken', 'E2E (advisory) › a11y scan', 812], ['broken', 'the step that makes its evidence', null]]));
   t('only a broken step carries them', 'source' in readFollow(output('two-b', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'fail', source: 'x', issue: 3 }] })}`), STEPS).results[0], false);
 }
+// #1628: CI logs each suite's total, never its checks, so a named per-check line is decided by the run and the total.
+{
+  const absent = (n, conclusion, total, result = 'fail') => ({ n, result, found: 'no ok DS-763 AC4 line', evidence: 'https://x/runs/46010533952', absent: { line: 'ok DS-763 AC4', conclusion, total } });
+  const p = output('absent', `${FOLLOW_RESULT_MARK} ${j({ steps: [absent(0, 'success', 'test_release.sh … 52 checks passed, 0 failed'), absent(1, 'failure', 'test_release.sh … 50 checks passed, 2 failed', 'pass')] })}`);
+  const [green, red] = readFollow(p, STEPS).results;
+  t('#1628 AC2 AC3 a per-check line absent with a green run and a suite total of 0 failed passes, by the suite total',
+    j([green.result, green.found]), j(['pass', 'passed (suite total): ok DS-763 AC4 is not in the log, which prints the suite\'s total: test_release.sh … 52 checks passed, 0 failed']));
+  t('#1628 AC3 a suite total with failures fails, whatever the checker said', j([red.result, red.found]),
+    j(['fail', 'ok DS-763 AC4 is not in the log, and the suite\'s total reads test_release.sh … 50 checks passed, 2 failed (run failure)']));
+  const q = output('absent-none', `${FOLLOW_RESULT_MARK} ${j({ steps: [absent(0, 'success', ''), { ...absent(1, 'in_progress', ''), result: 'pending' }] })}`);
+  t('#1628 a green run with no suite total fails; a pending step stays pending', j(readFollow(q, STEPS).results.map((x) => x.result)), '["fail","pending"]');
+}
+t('#1628 the prompt asks for the absent line, the run\'s conclusion and the suite total',
+  /does not print \(a per-check line[\s\S]*give `absent`/.test(followPrompt({ slug: 's', repo: 'a/b', t: { key: 'DS-1', result: { pr: 7 } }, steps: [CI], bin: '/b', dirs: ['/s'] })), true);
 t('a checker that left no result line is an error', readFollow(output('none', 'I could not finish.'), STEPS).error, `gave no ${FOLLOW_RESULT_MARK} line`);
 t('a checker with no output is an error', readFollow(join(T, 'missing.json'), STEPS).error, 'gave no output');
 t('an error fails every step of the run, naming why and where', j(failedRun({ out: '/o', steps: [CI] }, 'left no output')),
