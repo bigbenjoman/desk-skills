@@ -205,6 +205,16 @@ fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(
 cmp "$T/stamp1" "$T/stamp3"
 check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
+# The free memory a memory hold read, as a pass record's hold keeps it (DS-1047): a raw reading on each
+# tree, as two runs on one machine read it; and the gate's floor, which is config, differing.
+fieldtree mem1 'hold: { cause: "memory", numbers: { availGB: 13.427597045898438, minAvailGB: 2 } }' 'A-1 running'
+fieldtree mem2 'hold: { cause: "memory", numbers: { availGB: 13.51816177368164, minAvailGB: 2 } }' 'A-1 running'
+cmp "$T/mem1" "$T/mem2"
+check "issue-1598 a memory hold's free-memory reading that differs between runs is not reported" "$same0"
+fieldtree mem3 'hold: { cause: "memory", numbers: { availGB: 13.51816177368164, minAvailGB: 4 } }' 'A-1 running'
+cmp "$T/mem1" "$T/mem3"
+check "issue-1598 a memory hold's floor that differs is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 hold.numbers.minAvailGB: base 2, head 4" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'
 mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
