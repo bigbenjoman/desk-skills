@@ -119,23 +119,21 @@ const git = (dir, ...a) => {
   return r.status === 0 ? String(r.stdout ?? '').trim() : null;
 };
 
-// main's own commits after `from` up to `to` (first parent only), as the release counts them, or null.
-function commitsBetween(dir, from, to) {
-  if (!dir || !from || !to || from === to) return from && from === to ? 0 : null;
-  return mainCommitsBetween(gitIn(dir), from, to);
-}
-
 // The state line (§9.6): { glyph, text } from what the last pass recorded and main's check on its head.
-// `check` is maintenance.mjs releaseCheck's answer for `head`.
-export function stateLine({ installed, head, check, release = {} }) {
+// `check` is maintenance.mjs releaseCheck's answer for `head`; `windowOpen`, the maintenance window open,
+// which holds the release until it closes.
+export function stateLine({ installed, head, check, release = {}, windowOpen = false }) {
   const at = short(installed), to = short(head);
   if (!head) return { glyph: '◌', text: "◌ Can't tell where GitHub main is: this checkout has never fetched it. desk tries again at the next pass." };
   if (head === installed) return { glyph: '✓', text: `✓ Up to date. Installed ${at} is GitHub main.` };
+  if (windowOpen) return { glyph: '·', text: '· Waiting: the maintenance window is open. desk checks GitHub main again when it closes.' };
   if (release.blocked?.sha === head && release.blocked.why) return { glyph: '✕', text: `✕ Not installing ${to}: ${release.blocked.why}.` };
   if (check?.state === 'failure') return { glyph: '✕', text: `✕ main's tests check failed on ${to}, not installing. You stay on ${at} until a newer commit passes.` };
   // A check it could not read, or has no answer for yet, is waited on, as the release itself waits on
   // it (maintenance.mjs): only a check that passed says so.
   if (check?.state !== 'success') return { glyph: '·', text: `· Waiting for main's tests check on ${to}. desk installs it once the check passes.` };
+  // The last pass held a passed commit for a worker opening its PR (maintenance.mjs autoRelease, stage7Wait).
+  if (release.waiting && release.waiting.base === installed) return { glyph: '·', text: `· Waiting: a worker is opening its PR. ${to} passed its tests check. desk installs it once no worker is opening a PR.` };
   return { glyph: '·', text: `· ${to} passed its tests check. desk installs it at the next pass.` };
 }
 
@@ -149,14 +147,14 @@ export async function installView({ check = null, release = null, updates = null
   const rel = release ?? M.readRelease(M.maintDir());
   const head = src && existsSync(src) ? git(src, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/main') : null;
   const installed = inst?.commit ?? null;
-  const ahead = head && installed && head !== installed ? commitsBetween(src, installed, head) : 0;
+  const ahead = head && installed && head !== installed ? mainCommitsBetween(gitIn(src), installed, head) : 0;
   const c = head && installed && head !== installed ? await (check ?? M.releaseCheckAsync)(src, head, M.releaseCheckAsync) : null;
   return {
     checkout: src ? tilde(src) : null,
     checked_at: rel.fetched_at ?? null,
     installed: installed && { commit: installed, at: inst.at ?? null },
     main: head && { commit: head, ahead, check: head === installed ? 'success' : c?.state ?? 'pending' },
-    state: stateLine({ installed, head, check: c, release: rel }),
+    state: stateLine({ installed, head, check: c, release: rel, windowOpen: M.windowOpen() }),
     updates,
   };
 }

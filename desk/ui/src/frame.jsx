@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './icons.jsx';
 import { SCREENS, ticketPath } from './routes.js';
+import { plural } from './words.js';
 
 export const SERVER = '127.0.0.1:4823';
 // Below this width the window is Compact: Standard's sidebar, list and detail pane need 1192 px.
@@ -147,7 +148,7 @@ function Pill({ needs, broken, onClick }) {
 // "● 7 workers · cap 30 · room for 7 more · 27.5 GiB free"
 export function machineLine(m) {
   if (!m) return null;
-  return [`● ${m.running} worker${m.running === 1 ? '' : 's'}`, m.cap != null ? `cap ${m.cap}` : null,
+  return [`● ${plural(m.running, 'worker')}`, m.cap != null ? `cap ${m.cap}` : null,
     m.room != null ? `room for ${m.room} more` : null, m.avail_gib != null ? `${Number(m.avail_gib).toFixed(1)} GiB free` : null]
     .filter(Boolean).join(' · ');
 }

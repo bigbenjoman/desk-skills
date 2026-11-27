@@ -147,12 +147,23 @@ t('the other state lines', [
   S.stateLine({ installed, head, check: { state: 'failure' } }).text,
   S.stateLine({ installed, head, check: { error: 'gh: HTTP 502' } }).text,
   S.stateLine({ installed, head, check: { state: 'pending' }, release: { blocked: { sha: head, why: '~/studia/desk-skills has uncommitted changes, so nothing was pulled or installed' } } }).text,
+  S.stateLine({ installed, head, check: { state: 'success' }, release: { waiting: { base: installed, passes: { a: 1 } } } }).text,
+  S.stateLine({ installed, head, check: { state: 'success' }, release: { waiting: { base: head, passes: { a: 1 } } } }).text,
+  S.stateLine({ installed, head, check: { state: 'success' }, windowOpen: true }).text,
 ], [
   `✓ Up to date. Installed ${head.slice(0, 8)} is GitHub main.`,
   `✕ main's tests check failed on ${head.slice(0, 8)}, not installing. You stay on ${installed.slice(0, 8)} until a newer commit passes.`,
   `· Waiting for main's tests check on ${head.slice(0, 8)}. desk installs it once the check passes.`,
   `✕ Not installing ${head.slice(0, 8)}: ~/studia/desk-skills has uncommitted changes, so nothing was pulled or installed.`,
+  `· Waiting: a worker is opening its PR. ${head.slice(0, 8)} passed its tests check. desk installs it once no worker is opening a PR.`,
+  `· ${head.slice(0, 8)} passed its tests check. desk installs it at the next pass.`,
+  '· Waiting: the maintenance window is open. desk checks GitHub main again when it closes.',
 ]);
+mkdirSync(join(T, 'maint'), { recursive: true });
+writeFileSync(join(T, 'maint', 'maintenance.json'), JSON.stringify({ phase: 'draining' }));
+t('an open maintenance window holds the install view\'s state line', (await S.installView({ check: async () => ({ state: 'success' }), release: {} })).state.text,
+  '· Waiting: the maintenance window is open. desk checks GitHub main again when it closes.');
+writeFileSync(join(T, 'maint', 'maintenance.json'), JSON.stringify({ phase: 'done' }));
 
 const unread = await S.installView({ check: async () => ({ error: 'gh: HTTP 502' }), release: {} });
 t('a check it couldn\'t read is waited on, as the release waits on it', [unread.main.check, unread.state.glyph], ['pending', '·']);

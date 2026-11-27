@@ -76,8 +76,11 @@ const broken = run(['install-ui', '--src', SRC]);
 t('AC2 a failed build exits 1 and names its log', [broken.code, broken.out.includes('~/.desk-autopilot/ui/desk-ui-build.log'), /previous build is still served/.test(broken.out)], [1, true, true]);
 t('AC2 the log holds the build\'s own error', readFileSync(LOG, 'utf8').includes('vite: build failed'), true);
 t('AC2 the previous build is still served, as it was', served()?.endsWith('// changed\n'), true);
-t('AC2 no half-built folder is left', readdirSync(UI).sort(), ['dist', 'source-hash']);
+t('AC2 no half-built folder is left, and the failed build is marked for an open window', readdirSync(UI).sort(), ['build-failed', 'dist', 'source-hash']);
 t('a failed build is tried again on the next install', /failed/.test(run(['install-ui', '--src', SRC]).out), true);
+edit(`${original}// changed\n`);
+const reverted = run(['install-ui', '--src', SRC]);
+t('a source back at the served build is not rebuilt, and no failed build is left marked', [reverted.code, /unchanged/.test(reverted.out), readdirSync(UI).sort()], [0, true, ['dist', 'source-hash']]);
 
 // install.sh's own step, taken from install.sh with stand-ins for its output helpers: a failed build
 // is a warning naming the log, and the install goes on.

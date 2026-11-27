@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, tryBorrowLock, otherQueues } from './borrow.mjs';
-import { readInstalled } from './installed.mjs';
+import { gitIn, mainCommitsBetween, readInstalled } from './installed.mjs';
 import { bootTime, runsInCloud, runningHere } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
@@ -47,6 +47,8 @@ const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 // Phases that hold every new spawn, resumes included.
 const HOLDING = ['draining', 'updating', 'checking', 'reboot', 'rebooting'];
+// Whether the window is open now, which holds the auto-release (Settings · Desk install says so).
+export const windowOpen = (dir = maintDir()) => HOLDING.includes(readState(dir)?.phase);
 
 export const maintDir = () => E.expandHome(process.env.DESK_MAINT_DIR ?? join(E.HOME, '.desk-autopilot', 'maintenance'));
 const now = () => (process.env.DESK_MAINT_NOW ? new Date(process.env.DESK_MAINT_NOW) : new Date());
@@ -182,8 +184,9 @@ function incomingBlock(git, dir, to) {
 // commit where the new head is past it and else the old head (first parent only), so a PR merged with a
 // merge commit is one however many commits its branch held.
 // -> {ok, old, from, new, merges, restarted} | {ok: false, why, old}
-// main's own commits after `from`, up to `to` (first parent only).
-const pendingMerges = (git, from, to) => Number(git('rev-list', '--first-parent', '--count', `${from}..${to}`).out) || 0;
+// main's own commits after `from`, up to `to` in checkout `dir`, as installed.mjs counts them; 0 when git
+// could not count them.
+const pendingMerges = (dir, from, to, timeout) => mainCommitsBetween(gitIn(dir, timeout), from, to) ?? 0;
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -199,7 +202,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   // the release watch's row (installed.mjs), so the log and the row give the same figure.
   const inst = readInstalled()?.commit;
   const from = inst && inst !== head && git('merge-base', '--is-ancestor', inst, head).ok ? inst : old;
-  const merges = from === head ? 0 : pendingMerges(git, from, head);
+  const merges = from === head ? 0 : pendingMerges(dir, from, head);
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const done = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!done.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(done)}` };
@@ -414,7 +417,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     const pushing = [...o.running, ...o.unreadable];
     let past = '';
     if (pushing.length) {
-      const w = stage7Wait(s.waiting, { base, merges: pendingMerges(git, base, to), at });
+      const w = stage7Wait(s.waiting, { base, merges: pendingMerges(src, base, to, FETCH_TIMEOUT_MS), at });
       if (!w.over) {
         s.waiting = w.next;
         save();
