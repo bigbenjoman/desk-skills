@@ -94,7 +94,9 @@
 //                                             (harmStep) SWAP-GROWING, OOM-KILL, WORKER-OOM, TMPFS-HIGH, TMPFS-INODES
 //                                             and VMMEM-HIGH on the harm signals, and OOM-UNKNOWN once when dmesg
 //                                             cannot be read; each harm line goes to $DESK_STATE/mem-harm.json,
-//                                             which the pass reads to hold spawns
+//                                             which the pass reads to hold spawns. A worker's exit 137 within 5m
+//                                             of a queue.mjs stop of it ($DESK_STATE/worker-stops.json) is not
+//                                             harm unless memory was under pressure then
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -1087,6 +1089,15 @@ export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABE
 // §3b Worker models, Worker location and Phase 0 levers, each read by its grammar in config-schema.mjs.
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: rowDefault('worker-models') }));
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: rowDefault('worker-location') }));
+// §3b "Cloud sessions at once": how many of a batch's tickets may run in a cloud session together, apart
+// from its local worker slots. A value that is not a whole number starts none, rather than lifting the limit.
+//   -> { n, bad }   bad says why n is 0 for an unreadable row, else null
+export function cloudSessions(raw = configValue('cloud-sessions')) {
+  const s = String(raw ?? '').trim();
+  if (!s || /^todo$/i.test(s)) return { n: Number(rowDefault('cloud-sessions')), bad: null };
+  if (/^\d+$/.test(s)) return { n: Number(s), bad: null };
+  return { n: 0, bad: `config §3b "${CONFIG_ROWS['cloud-sessions'].row}" is "${s}": want a whole number, so no cloud session starts until it is fixed` };
+}
 // The levers row's items, or null with no row or no config.
 const leverItems = () => {
   try { return configValues('levers'); } catch (e) { if (e instanceof NoRepoConfigError) return null; throw e; }
@@ -1757,10 +1768,17 @@ export function harmThresholds(read = configValue) {
 // `vmmemShare` or more of its .wslconfig grant (`vmmem`: { usedGiB, grantGiB }), past which it can
 // only swap. Each line is said once, and again only after the signal has cleared. `standing` names
 // the signals still past their threshold, said or not.
-//   sample { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem }  ->  { state, lines, standing }
-export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem }, { swapGrowGiB = 2, windowMs = HARM_WINDOW_MS, tmpfsGiB = 2, inodeShare = 0.8, vmmemShare = 0.9 } = {}) {
+// A worker's exit 137 is not harm when `stops` (readStops) records queue.mjs stop ending that worker
+// within STOP_EXPLAINS_MS, since its SIGKILL leaves the same exit, unless memory was under pressure at
+// the time: a fresh kernel OOM kill, swap growing, or `availGiB` under `lowAvailGiB`. A heap OOM always
+// is. Where the sample can tell, each OOM line ends naming its evidence: the kernel's OOM line, or
+// the memory available at the time.
+//   sample { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem, availGiB, stops }  ->  { state, lines, standing }
+export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem, availGiB = null, stops = null }, { swapGrowGiB = 2, windowMs = HARM_WINDOW_MS, tmpfsGiB = 2, inodeShare = 0.8, vmmemShare = 0.9, lowAvailGiB = 2 } = {}) {
   const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, inodesFired: false, vmmemFired: false, oomUnread: false, ...state };
   const lines = [];
+  // The kernel OOM kills new on this sample.
+  let fresh = [];
   // Past its threshold on this sample, whatever the latch that keeps a line from repeating says.
   const standing = [];
   if (swapGiB != null) {
@@ -1780,17 +1798,27 @@ export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes,
     // A kill is new when its line was not in the last reading: the ring buffer dropping old kill
     // lines, even while a new kill writes them out, hides nothing. Each line is keyed by its
     // timestamp, or its whole text in a log with none (printk.time off).
-    const kills = oom.map((k) => (k != null && typeof k === 'object' ? { key: String(k.key), proc: k.proc ?? null } : { key: String(k), proc: null }));
+    const kills = oom.map((k) => (k != null && typeof k === 'object' ? { key: String(k.key), proc: k.proc ?? null, line: k.line ?? null } : { key: String(k), proc: null, line: null }));
     if (st.oomKeys != null) {
       const was = new Set(st.oomKeys);
-      const fresh = kills.filter((k) => !was.has(k.key));
+      fresh = kills.filter((k) => !was.has(k.key));
       const procs = fresh.map((k) => k.proc).filter(Boolean);
-      if (fresh.length) lines.push(`OOM-KILL: the kernel killed ${fresh.length} process(es) for memory${procs.length ? ` (${procs.join(', ')})` : ''}: drop to the ladder's lowest count`);
+      const dmesg = fresh.find((k) => k.line)?.line;
+      if (fresh.length) lines.push(`OOM-KILL: the kernel killed ${fresh.length} process(es) for memory${procs.length ? ` (${procs.join(', ')})` : ''}: drop to the ladder's lowest count${dmesg ? ` (dmesg: ${clip(dmesg)})` : ''}`);
     }
     st.oomKeys = kills.map((k) => k.key);
   }
+  const lowAvail = Number.isFinite(availGiB) && availGiB < lowAvailGiB;
+  const pressure = fresh.length > 0 || standing.includes('SWAP-GROWING') || lowAvail;
+  const dmesg = fresh.find((k) => k.line)?.line;
+  const evidence = dmesg ? ` (dmesg: ${clip(dmesg)})` : Number.isFinite(availGiB) ? ` (${availGiB.toFixed(1)}G available at the time${lowAvail ? `, under ${lowAvailGiB}G` : ''})` : '';
   for (const { key, text } of workers ?? []) {
-    for (const sig of workerMemSignals(text)) lines.push(`WORKER-OOM: ${key}'s log shows ${sig}: drop to the ladder's lowest count`);
+    const stop = stops?.[key];
+    const stopped = Number.isFinite(stop?.at) && stop.at <= now + 60_000 && now - stop.at <= STOP_EXPLAINS_MS;
+    for (const sig of workerMemSignals(text)) {
+      if (sig === KILLED_137 && stopped && !pressure) continue;
+      lines.push(`WORKER-OOM: ${key}'s log shows ${sig}: drop to the ladder's lowest count${evidence}`);
+    }
   }
   if (tmpGiB != null) {
     if (tmpGiB >= tmpfsGiB) standing.push('TMPFS-HIGH');
@@ -1820,12 +1848,33 @@ export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes,
 // error opening a line of a failed tool call's output, or a failed call the Bash tool reports as
 // killed by SIGKILL (exit 137, what the OOM killer sends). Only failed tool results are read, decoded,
 // so a file read, a grep or the worker's own prose that quotes either is not one.
+const KILLED_137 = 'a command killed with exit 137 (SIGKILL)';
 export function workerMemSignals(text) {
   const failed = toolResults(text).filter((r) => r.failed).map((r) => r.text);
   return [
     ...(failed.some((t) => /^FATAL ERROR:.*JavaScript heap out of memory/m.test(t)) ? ['JavaScript heap out of memory'] : []),
-    ...(failed.some((t) => /^Exit code 137\b/.test(t)) ? ['a command killed with exit 137 (SIGKILL)'] : []),
+    ...(failed.some((t) => /^Exit code 137\b/.test(t)) ? [KILLED_137] : []),
   ];
+}
+// A kernel line quoted as evidence, cut to a length a hold line can carry.
+const clip = (s, n = 200) => { const t = String(s).trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+
+// The worker stops queue.mjs stop records, $DESK_STATE/worker-stops.json: { <key>: { at, pids } }, `at`
+// the time (ms) it began ending the worker and `pids` every process of the worker it signalled. Each
+// ticket keeps its latest stop; one older than a day is dropped. The memory watch reads it so the exit
+// 137 the stop's SIGKILL leaves in the worker's log is not taken for an OOM kill.
+export const STOPS_FILE = 'worker-stops.json';
+// How long after a stop an exit 137 in that worker's log is put down to it: well past the watch's
+// default 30s sample, and the stop's own grace and kill waits.
+export const STOP_EXPLAINS_MS = 300_000;
+export function readStops(state) {
+  try { const rec = JSON.parse(readFileSync(join(state, STOPS_FILE), 'utf8')); return rec && typeof rec === 'object' && !Array.isArray(rec) ? rec : {}; } catch { return {}; }
+}
+export function recordStop(state, { key, at, pids }, now = Date.now()) {
+  const rec = Object.fromEntries(Object.entries(readStops(state)).filter(([, s]) => Number.isFinite(s?.at) && now - s.at <= 86_400_000));
+  rec[key] = { at, pids: [...pids] };
+  writeJsonAtomic(join(state, STOPS_FILE), rec);
+  return rec;
 }
 
 // What each worker log in `dir` gained since `seen` ({ <file>: bytes read }), in whole lines, as
@@ -1884,12 +1933,13 @@ export function harmHold(state, now = Date.now(), windowMs = HARM_WINDOW_MS) {
 // The OOM kills in a kernel log, each keyed by its timestamp in seconds since boot, or by its whole
 // line where it has none: one `Out of memory: Killed process` line per kill, global or a cgroup's
 // (`Memory cgroup out of memory: …`); the `oom-kill:` summary beside a global one is not counted.
-// `proc` names the killed process, `<name> (pid <pid>)`, or null where the line does not.
+// `proc` names the killed process, `<name> (pid <pid>)`, or null where the line does not; `line` is the
+// kernel's line itself, the evidence a hold names.
 export const oomKills = (dmesg) => String(dmesg).split('\n').filter((l) => /out of memory: Killed process/i.test(l))
   .map((l) => {
     const m = /^\[\s*(\d+(?:\.\d+)?)\]/.exec(l);
     const p = /Killed process (\d+) \(([^)]*)\)/i.exec(l);
-    return { key: m ? Number(m[1]) : l.trim(), proc: p ? `${p[2]} (pid ${p[1]})` : null };
+    return { key: m ? Number(m[1]) : l.trim(), proc: p ? `${p[2]} (pid ${p[1]})` : null, line: l.trim() };
   });
 
 // What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, /tmp
@@ -2935,14 +2985,17 @@ if (isMain) {
               if (unread !== e.message) console.log(`HEAVY-UNKNOWN: ${e.message}`);
               unread = e.message;
             }
-            const r = heavy === null ? { state } : sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy }, cfg);
+            const avail = availableGiB();
+            const r = heavy === null ? { state } : sustainedStep(state, { now: Date.now(), avail, heavy }, cfg);
             state = r.state;
             if (r.line) console.log(r.line);
             // --window is the avail watch's; the harm signals keep their own ten-minute window.
             const tail = stateFolder ? workerLogTail(join(stateFolder, 'logs'), logsSeen) : { seen: null, chunks: [] };
             logsSeen = tail.seen;
             const now = Date.now();
-            const h = harmStep(harm, { now, ...harmSample(), workers: tail.chunks }, thresholds);
+            // A worker queue.mjs stop ended leaves exit 137 that is no OOM; the avail band is the pressure line.
+            const stops = stateFolder ? readStops(stateFolder) : null;
+            const h = harmStep(harm, { now, ...harmSample(), workers: tail.chunks, availGiB: avail, stops }, { ...thresholds, lowAvailGiB: cfg.band });
             harm = h.state;
             for (const l of h.lines) console.log(l);
             if (stateFolder && (h.lines.length || h.standing.length)) {
