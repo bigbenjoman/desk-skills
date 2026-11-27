@@ -3659,6 +3659,10 @@ async function resumeKilled(t) {
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
   leaseToWorker(t.key, port, spawned.out);
+  refreshDelivered(t, refreshed);
+  // Its prompt told it of the refresh's Decisions entry, so a handoff before the next review does not
+  // restart it at Stage 3 for that entry again.
+  if (refreshed.seen && !DRY) q('set', t.key, `decisions_seen=${refreshed.seen}`);
   report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot'
     : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}${refreshed.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
@@ -3768,30 +3772,46 @@ function resumeRound(t, { wt, kept, branch }) {
 // A GitHub issue's ticket file refreshed from the issue before its worker spawns or resumes, when the
 // issue's updatedAt (the one read made otherwise) is after its last read (`issue_read`) or the file's
 // write. A criterion change with a PR open adds a dated Decisions entry, which decisionsRestart then
-// restarts the worker at Stage 3 for. Returns { line, changed, brief }: `line` for the spawn report,
-// empty when nothing was refreshed, `changed` what the refresh added or changed, or '', and `brief` a
-// briefing section saying so, for a session past Stage 0 that no restart tells.
+// restarts the worker at Stage 3 for. Returns { line, changed, brief, seen }: `line` for the spawn
+// report, empty when nothing was refreshed, `changed` what the refresh added or changed, or '', `brief`
+// a briefing section saying so, for a session past Stage 0 that no restart tells, and `seen` the time
+// to record as `decisions_seen` where the session is told of a Decisions entry with no restart, or null.
+// What a refresh changed stays in the queue's `issue_refresh` until a spawn delivers it
+// (refreshDelivered): a spawn that does not start after the refresh leaves the next one to tell it,
+// since the issue then reads as unchanged. An unfinished fix try keeps its own task, so its issue is
+// not read and the next spawn refreshes the file.
 function refreshTicketFile(t) {
-  const none = { line: '', changed: '', brief: '' };
+  const none = { line: '', changed: '', brief: '', seen: null };
   if (E.ticketKind(t.key).kind !== 'issue') return none;
   const file = join(STATE, 'tickets', `${t.key}.md`);
   if (!existsSync(file)) return none;
   const n = t.key.slice('issue-'.length);
+  if (t.fix && !t.fix.finished) return { ...none, line: `; its ticket file was not checked against issue #${n}: an unfinished fix try keeps its own task, and the next spawn checks it` };
+  const pending = typeof t.issue_refresh?.what === 'string' ? t.issue_refresh.what : '';
+  const pr = t.result?.pr ?? t.draft_pr ?? null;
+  const told = (what, line) => ({ line, changed: what, brief: what ? refreshBrief({ key: t.key, n, file, what }) : '',
+    seen: what && pr != null ? new Date().toISOString() : null });
+  const before = pending ? `; ticket file refreshed from issue #${n} before a spawn that did not start: ${pending}` : '';
   const last = (r) => r.out.split('\n').filter(Boolean).pop() ?? 'no output';
   const stamp = shOut('gh', ['issue', 'view', n, '--repo', GH_REPO, '--json', 'updatedAt', '--jq', '.updatedAt']);
-  if (!stamp.ok) return { ...none, line: `; its ticket file was not checked against issue #${n} (${last(stamp)})` };
-  if (!issueChanged({ updatedAt: stamp.out.trim(), readAt: t.issue_read, fileAt: statSync(file).mtime.toISOString() })) return none;
+  if (!stamp.ok) return told(pending, `${before}; its ticket file was not checked against issue #${n} (${last(stamp)})`);
+  if (!issueChanged({ updatedAt: stamp.out.trim(), readAt: t.issue_read, fileAt: statSync(file).mtime.toISOString() })) return told(pending, before);
   const got = shOut('gh', ['issue', 'view', n, '--repo', GH_REPO, '--json', 'title,body,comments,updatedAt']);
   let issue = null;
   try { issue = got.ok ? JSON.parse(got.out) : null; } catch { issue = null; }
-  if (!issue) return { ...none, line: `; issue #${n} changed since its ticket file was written, and could not be read (${got.ok ? 'not JSON' : last(got)}), so the file was not refreshed` };
+  if (!issue) return told(pending, `${before}; issue #${n} changed since its ticket file was written, and could not be read (${got.ok ? 'not JSON' : last(got)}), so the file was not refreshed`);
   const old = readFileSync(file, 'utf8');
-  const r = refreshTicket({ old, key: t.key, repo: GH_REPO, n, issue, today: new Date().toISOString().slice(0, 10), pr: t.result?.pr ?? t.draft_pr ?? null });
+  const r = refreshTicket({ old, key: t.key, repo: GH_REPO, n, issue, today: new Date().toISOString().slice(0, 10), pr });
   if (DRY) return { ...none, line: `; issue #${n} changed (dry run: its ticket file was not refreshed)` };
   if (r.text !== old) writeFileSync(file, r.text);
-  q('set', t.key, `issue_read=${issue.updatedAt ?? stamp.out.trim()}`);
-  return { line: `; ticket file ${r.text === old ? 'checked against' : 'refreshed from'} issue #${n}, updated ${issue.updatedAt ?? stamp.out.trim()}${r.what ? `: ${r.what}` : ''}`, changed: r.what,
-    brief: r.what ? refreshBrief({ key: t.key, n, file, what: r.what }) : '' };
+  const what = [pending, r.what].filter(Boolean).join('; ');
+  q('set', t.key, `issue_read=${issue.updatedAt ?? stamp.out.trim()}`, ...(what ? [`issue_refresh=${JSON.stringify({ what })}`] : []));
+  return told(what, `; ticket file ${r.text === old ? 'checked against' : 'refreshed from'} issue #${n}, updated ${issue.updatedAt ?? stamp.out.trim()}${what ? `: ${what}` : ''}`);
+}
+
+// A spawn that started has told its session what the refresh changed: clear what was kept for it.
+function refreshDelivered(t, refreshed) {
+  if (refreshed.changed && !DRY) q('set', t.key, 'issue_refresh=null');
 }
 
 // A ticket with a PR whose ticket file ($STATE/tickets/<key>.md) gained Decisions entries dated after
@@ -3896,6 +3916,7 @@ function spawnCloud(t) {
   }
   q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
+  refreshDelivered(t, refreshed);
   report.spawned.push(`${t.key} in a cloud session: ${s.url}${refreshed.line}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
@@ -3951,6 +3972,7 @@ async function spawnHandoff(t, pick) {
   if (spawnRefused) return fail(spawnRefused);
   leaseToWorker(t.key, port, spawned.out);
   if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
+  refreshDelivered(t, refreshed);
   report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off${restart ? ` at Stage ${handedTo};${restart.line}` : ''}) port=${port} model=${model || 'default'}${pick.line}${refreshed.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
@@ -4604,6 +4626,7 @@ for (const t of spawnable) {
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
   // So the restart's own handoffs and later requeues compare the entries with this spawn, not the review.
   if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
+  refreshDelivered(t, refreshed);
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${refreshed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);

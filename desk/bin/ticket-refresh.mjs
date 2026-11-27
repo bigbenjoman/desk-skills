@@ -13,22 +13,25 @@ export function issueChanged({ updatedAt, readAt, fileAt }) {
   return !seen.length || u > Math.max(...seen);
 }
 
-const HEADING = /^\s*#{1,6}\s+(.*?)\s*$/;
-const isDecisions = (line) => /^decisions$/i.test((HEADING.exec(line)?.[1] ?? '').replace(/[*_]/g, '').trim());
-
 // The issue as a ticket file, in the layout desk-autopilot's batch-arguments gives it: key, source,
 // title, body, then every comment in order with its author and date. `extra` are Decisions entries
-// to keep, added to the body's own Decisions section, or under a new one at the body's end.
+// to keep, added to the body's own Decisions section, or under a new one at the body's end. The
+// section is found as ticketDecisions reads it (desk-design.mjs `sections`), so the entries land
+// where the restart looks for them.
 export function issueText({ key, repo, n, issue, extra = [] }) {
-  const body = String(issue.body ?? '').replace(/\r\n/g, '\n').trimEnd().split('\n');
+  const text = String(issue.body ?? '').replace(/\r\n/g, '\n').trimEnd();
+  const body = text.split('\n');
   if (extra.length) {
-    const at = body.findIndex(isDecisions);
-    if (at < 0) body.push('', '## Decisions', ...extra);
+    const secs = sections(text);
+    const at = secs.findIndex((s) => /^decisions$/i.test(s.name));
+    // A body in Jira wiki headings is read in that form alone (`sections`), so the new heading matches it.
+    if (at < 0) body.push('', body.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? 'h2. Decisions' : '## Decisions', ...extra);
     else {
-      let end = body.findIndex((l, i) => i > at && HEADING.test(l));
-      if (end < 0) end = body.length;
-      while (end > at + 1 && !body[end - 1].trim()) end -= 1;
-      body.splice(end, 0, ...extra);
+      // Each section after the first opens with its heading line, so the Decisions heading's index is
+      // the lines of every section before it plus their headings.
+      const heading = secs.slice(0, at).reduce((sum, s) => sum + s.lines.length, 0) + at - 1;
+      const filled = secs[at].lines.filter((l) => l.text.trim()).pop();
+      body.splice(filled ? filled.n : heading + 1, 0, ...extra);
     }
   }
   const comments = (issue.comments ?? []).map((c) => `**${c.author?.login ?? 'unknown'}**, ${c.createdAt ?? 'undated'}:\n\n${String(c.body ?? '').replace(/\r\n/g, '\n').trim()}`);
@@ -43,6 +46,9 @@ export function criteria(text) {
 }
 
 const squash = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+
+// Who a refresh's own Decisions entry names, which tells it apart from the issue's entries.
+const ENTRY_BY = 'desk pass:';
 
 // The briefing section for a session that starts past Stage 0 after a refresh changed what its
 // ticket asks, with no Decisions restart to carry it (no PR open yet).
@@ -60,8 +66,9 @@ export function refreshBrief({ key, n, file, what }) {
 // `removed` are the Acceptance criteria lines the refresh adds or drops (a changed line is both), and
 // `comments` the issue's comments whose text the old file does not hold. Where any of them is set and
 // `pr` names an open PR, `entry` is a Decisions entry dated `today` naming them, which the file gains,
-// so the requeue restarts the worker at Stage 3 for it (decisions-change.mjs). Dated Decisions entries
-// in the old file that the issue does not hold are kept.
+// so the requeue restarts the worker at Stage 3 for it (decisions-change.mjs). The entries an earlier
+// refresh wrote are kept; every other Decisions entry follows the issue as it is now, so one edited or
+// deleted on the issue is edited or gone here too.
 export function refreshTicket({ old, key, repo, n, issue, today, pr = null }) {
   const plain = issueText({ key, repo, n, issue });
   const before = criteria(old), after = criteria(plain);
@@ -70,14 +77,15 @@ export function refreshTicket({ old, key, repo, n, issue, today, pr = null }) {
   const flatOld = squash(old);
   const comments = (issue.comments ?? []).filter((c) => squash(c.body) && !flatOld.includes(squash(c.body)));
   const freshDecisions = new Set(ticketDecisions(plain).map((d) => d.line));
-  const kept = ticketDecisions(old).filter((d) => !freshDecisions.has(d.line)).map((d) => `* ${d.line}`);
+  const ours = new RegExp(`^\\d{4}-\\d{2}-\\d{2} ${ENTRY_BY} issue #${n} changed after PR #`);
+  const kept = ticketDecisions(old).filter((d) => ours.test(d.line) && !freshDecisions.has(d.line)).map((d) => `* ${d.line}`);
   const changed = added.length || removed.length || comments.length;
   const what = [
     added.length ? `acceptance criteria added or changed: ${added.map((l) => `"${l}"`).join('; ')}` : '',
     removed.length ? `acceptance criteria removed or replaced: ${removed.map((l) => `"${l}"`).join('; ')}` : '',
     comments.length ? `new or edited comments: ${comments.map((c) => `${c.author?.login ?? 'unknown'} at ${c.createdAt ?? 'undated'}`).join(', ')} (under Comments: a comment can add or rule out a criterion)` : '',
   ].filter(Boolean).join('; ');
-  const entry = changed && pr != null ? `* ${today} desk pass: issue #${n} changed after PR #${pr} was opened, and this file was refreshed from it: ${what}. Build and re-review it before taking the PR as done` : null;
+  const entry = changed && pr != null ? `* ${today} ${ENTRY_BY} issue #${n} changed after PR #${pr} was opened, and this file was refreshed from it: ${what}. Build and re-review it before taking the PR as done` : null;
   const text = issueText({ key, repo, n, issue, extra: [...kept, ...(entry ? [entry] : [])] });
   return { text, added, removed, comments, what, entry };
 }
