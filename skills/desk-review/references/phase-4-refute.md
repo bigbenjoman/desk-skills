@@ -28,8 +28,12 @@ The verdict's heading counts the anchor rejections.
 and the mechanism stated flat. Codex reads the file itself; never paste a diff or ask it to run git.
 Independent calls may run in parallel.
 
+`<desk bin>` is the desk scripts folder, resolved before you run it: `$CLAUDE_PLUGIN_ROOT/desk/bin`
+when `echo "$CLAUDE_PLUGIN_ROOT"` prints a path, else `desk/bin` under `~/.claude`. Write the path
+out: a command holding `${…}` is refused by the permission matcher whatever the allow rules say.
+
 ```bash
-node ~/.claude/desk/bin/codex-exec.mjs review 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
+node <desk bin>/codex-exec.mjs review 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
 ```
 
 - **It is `codex exec --sandbox read-only --skip-git-repo-check`, ended at a timeout.** Stdin is
