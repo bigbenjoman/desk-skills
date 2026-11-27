@@ -55,7 +55,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn, isBot } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
@@ -1085,15 +1085,16 @@ function scrubCloudPr(t, pr, view, { forbidden, author }) {
   // session's too, unless a person other than desk's login opened it.
   const head = view.headRefName || pr.headRefName;
   const opener = String(view.author?.login ?? '');
-  const bot = !opener || view.author?.is_bot === true || /\[bot\]$/i.test(opener);
+  // gh pr view gives an app's PR `author.is_bot` where GraphQL gives the `__typename` isBot reads.
+  const bot = isBot({ login: opener, __typename: view.author?.is_bot === true ? 'Bot' : undefined });
   if (!loginIn(opener, conflictHandle) && !(head === t.branch && (bot || !conflictHandle))) {
     const logins = conflictHandle ? String(conflictHandle).split(',').map((x) => x.trim()).join(' or ') : 'the §1 GitHub handle, which is unset';
     return { foreign: true, park: `the pass will not rewrite or edit it: it is on ${head}${head === t.branch ? '' : `, not ${t.branch ?? 'the branch the session was given'}`}, and was opened by ${opener || 'an account not read'}, not ${logins}` };
   }
   const marked = (o) => forbidden && attributionFound(o).length > 0;
   const commits = marked({ commits: view.commits }) || authorMismatches(view, author).length > 0;
-  const body = marked({ body: view.body });
-  const comments = (view.comments ?? []).filter((x) => marked({ body: x?.body }));
+  let body = marked({ body: view.body });
+  let comments = (view.comments ?? []).filter((x) => marked({ body: x?.body }));
   const rows = [...(commits ? ['git-force-with-lease'] : []), ...(body || comments.length ? ['pr-edit'] : [])].filter((k) => E.permission(k) !== 'yes');
   if (rows.length) return { park: `the pass may not remove it: config §3 ${rows.map((k) => `${E.permissionKey(k)} is "${E.permission(k)}"`).join(' and ')}` };
   if (commits && !author) return { park: 'its commits need rewriting as the repo identity, and neither §1 Git author nor the repo\'s git user.name and user.email is set' };
@@ -1104,9 +1105,20 @@ function scrubCloudPr(t, pr, view, { forbidden, author }) {
     if (!r.did) return r;
     did.push(r.did);
   }
+  // The body and comments are edited from a copy read now, after the push, which sets CI and bots
+  // adding their own sections: gh pr edit has no compare-and-swap, so an edit from the first read
+  // would delete what they added since.
+  let live = view;
+  if (body || comments.length) {
+    const got = shOut('gh', ['pr', 'view', String(pr.number), '--repo', GH_REPO, '--json', 'body,comments'], { fresh: true });
+    try { live = got.ok ? JSON.parse(got.out) : null; } catch { live = null; }
+    if (!live) return { wait: `${did.length ? `the pass ${did.join(', ')}, and then ` : ''}could not read its body and comments again before editing them (${got.ok ? 'not JSON' : lastLine(got.out)})` };
+    body = marked({ body: live.body });
+    comments = (live.comments ?? []).filter((x) => marked({ body: x?.body }));
+  }
   if (body) {
     const file = join(STATE, 'cloud', `${t.key.replace(/[^\w.-]/g, '-')}-pr-${pr.number}-body.md`);
-    try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${stripAttribution(view.body)}\n`); }
+    try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${stripAttribution(live.body)}\n`); }
     catch (e) { return { park: `the pass could not write the PR body to ${file} (${lastLine(e.message)})`, did }; }
     const r = shOut('gh', ['pr', 'edit', String(pr.number), '--repo', GH_REPO, '--body-file', file]);
     if (!r.ok) return { park: `the pass's gh pr edit ${pr.number} --body-file ${file} was refused (${lastLine(r.out)})`, did };

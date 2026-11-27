@@ -149,6 +149,8 @@ echo "\$*" >> "$T/gh-calls"
 [ "\$1 \$2" = "pr list" ] && [ -e "$T/cloud-prs.json" ] && cat "$T/cloud-prs.json"
 # A cloud PR's commits, body and comments: none of them, unless a test writes its own.
 case "\$*" in "pr view "*body,commits,comments*) if [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; else echo '{"body":"","commits":[],"comments":[]}'; fi ;; esac
+# Its body and comments read again just before they are edited: as first read, unless a test changes them.
+case "\$*" in "pr view "*"--json body,comments") if [ -e "$T/cloud-live.json" ]; then cat "$T/cloud-live.json"; elif [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; fi ;; esac
 exit 0
 EOF
 chmod +x "$T/stub/claude" "$T/stub/gh"
@@ -229,12 +231,15 @@ rm -f "$T/cloud-prompt"; cloud_ticket CW-8
 out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
 node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.stringify([{ number: 63, title: "feat(w): CW-8 save", url: "u", headRefName: "claude/cw-8-abc", createdAt: new Date(s + 600e3).toISOString() }]))' "$(field CW-8 cloud.started)" > "$T/cloud-prs.json"
 printf '%s\n' '{"baseRefName":"main","headRefName":"claude/cw-8-abc","author":{"login":"me"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[{"oid":"aaaaaaa111","messageHeadline":"feat: CW-8 one","messageBody":"Why it is.\n\nCo-Authored-By: Claude <noreply@anthropic.com>","authors":[{"name":"Claude","email":"noreply@anthropic.com"}]}],"comments":[{"url":"https://github.com/acme/widgets/pull/63#issuecomment-77","body":"Fixed it.\n\nGenerated with Claude Code","author":{"login":"t"}},{"url":"https://github.com/acme/widgets/pull/63#issuecomment-78","body":"https://claude.ai/code/session_01X","author":{"login":"t"}}]}' > "$T/cloud-view.json"
+# By the time the body is edited, CI has added a section to it, which the edit keeps.
+jq -c '.body = "Done.\n\nPreview: https://preview.example/63\n\n🤖 Generated with [Claude Code](https://claude.ai/code)"' "$T/cloud-view.json" > "$T/cloud-live.json"
 : > "$T/gh-calls"
 out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
+rm -f "$T/cloud-live.json"
 CW8_NEW=$(git -C "$T/origin.git" rev-parse claude/cw-8-abc)
 check "issue-1569 AC2 the pass rewrites the cloud commits on origin, with the same tree, and does not park" '[ "$(field CW-8 state)" = "\"running\"" ] && [ "$CW8_NEW" != "$CW8_OLD" ] && [ "$(git -C "$T/origin.git" rev-parse "claude/cw-8-abc^{tree}")" = "$CW8_TREE" ] && [ "$(git -C "$T/origin.git" rev-parse "claude/cw-8-abc~2")" = "$(git -C "$T/origin.git" rev-parse main)" ]'
 check "issue-1569 AC2 each rewritten commit is the repo identity's, its trailers gone and the rest kept" '[ "$(git -C "$T/origin.git" log --format="%an <%ae>|%cn <%ce>" main..claude/cw-8-abc | grep -cvx "t <t@example.com>|t <t@example.com>")" = 0 ] && ! git -C "$T/origin.git" log --format=%B main..claude/cw-8-abc | grep -qiE "co-authored-by|claude-session" && git -C "$T/origin.git" log --format=%B main..claude/cw-8-abc | grep -qx "Why it is."'
-check "issue-1569 AC2 it strips the footer from the PR body" 'grep -qF "pr edit 63 --repo acme/widgets --body-file " "$T/gh-calls" && [ "$(cat "$T/state-cl/cloud/CW-8-pr-63-body.md")" = "Done." ]'
+check "issue-1569 AC2 it strips the footer from the PR body as it reads after the push, keeping what CI added since" 'grep -qx "pr view 63 --repo acme/widgets --json body,comments" "$T/gh-calls" && grep -qF "pr edit 63 --repo acme/widgets --body-file " "$T/gh-calls" && [ "$(cat "$T/state-cl/cloud/CW-8-pr-63-body.md")" = "$(printf "Done.\n\nPreview: https://preview.example/63")" ]'
 check "issue-1569 AC2 it edits a comment down to what is left, and deletes one that was nothing but attribution" 'grep -qx "api -X PATCH repos/acme/widgets/issues/comments/77 -f body=Fixed it." "$T/gh-calls" && grep -qx "api -X DELETE repos/acme/widgets/issues/comments/78" "$T/gh-calls"'
 check "issue-1569 AC2 it says what it did, records the one scrub, and leaves no fetch refs behind" 'echo "$out" | grep -q "CW-8: cloud PR #63 broke this repo.s commit and PR rules .*: the pass rewrote its 2 commit(s) as t <t@example.com> with the same tree" && [ "$(field CW-8 cloud.scrubbed)" = 1 ] && [ "$(field CW-8 cloud.pr_at)" = null ] && [ -z "$(git -C "$T/repo" for-each-ref refs/desk/cloud)" ]'
 printf '%s\n' '{"baseRefName":"main","headRefName":"claude/cw-8-abc","body":"Done.","commits":[{"oid":"bbbbbbb222","messageHeadline":"feat: CW-8 one","messageBody":"Why it is.","authors":[{"name":"t","email":"t@example.com"}]}],"comments":[]}' > "$T/cloud-view.json"
