@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 import { repoStateOf } from './desk-env.mjs';
+import { FAILED } from './gate.mjs';
 
 export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
@@ -347,7 +348,7 @@ export function cloudIdle({ prior = null, pr, head, pushedAt, checks = [], now =
 
 // The follow-up an unfinished PR's session is sent, with the check results on its head.
 export function cloudFollowUpMsg({ pr, head, mark, checks = [] }) {
-  const failed = checks.filter((c) => c.conclusion && !['success', 'skipped', 'neutral'].includes(c.conclusion));
+  const failed = checks.filter((c) => FAILED.has(c.conclusion));
   const ran = checks.length
     ? `CI on ${String(head ?? '').slice(0, 7)} has finished: ${failed.length ? `${failed.map((c) => `${c.name} ${c.conclusion}`).join(', ')}; ` : ''}${checks.length - failed.length} of ${checks.length} passed.`
     : `No checks ran on ${String(head ?? '').slice(0, 7)}.`;
