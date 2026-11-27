@@ -1258,7 +1258,8 @@ t('a fix try held back by a collision waits for the running ticket, not the next
   `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, `#131 · 1 check failed · ${phiWait}, then a worker repairs it, try 1 of 2 true`);
 t('a ticket held back by a collision names the running holder, the file and its places', `${phiText('F-3')} ${/F-3 +○ ready +waits for F-1 \(collides/.test(phi)}`, `${phiWait} true`);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
-t('its ticket page says the same', strip(ticketScreen(phr, 'F-2', { width: 200 })).includes(`${phiWait}, then a worker repairs it`), true);
+// The page wraps its "Moves without you" text onto ▌-led lines, so join them before matching.
+t('its ticket page says the same', strip(ticketScreen(phr, 'F-2', { width: 200 })).replace(/\n▌ /g, ' ').includes(`${phiWait}, then a worker repairs it`), true);
 t('DS-1033 AC2 a ready ticket whose collides_with names a running one, but which the file budget would spawn, starts at the next pass',
   `${phiText('F-5')} ${/F-5 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
 t('DS-1033 AC1 a ready ticket the file budget holds says so with every file at its budget, whatever its collides_with',
