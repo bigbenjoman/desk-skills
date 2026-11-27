@@ -107,7 +107,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -2350,10 +2350,8 @@ const all = Object.values(fresh.tickets);
 // session holds no local slot, so only `running` counts toward the batch's number, the repo and machine
 // caps and the memory pool, while the cloud ones count toward §3b "Cloud sessions at once".
 const runningAll = all.filter((r) => r.state === 'running');
-const running = runningAll.filter((r) => !runsInCloud(r));
+const running = all.filter(runningHere);
 const runningCloud = runningAll.filter(runsInCloud);
-// A ticket the spawn loop would start in a cloud session: a resume or handoff of one runs here.
-const startsInCloud = (t) => runsInCloud(t) && !toResume(t) && !toHandoff(t);
 
 // Batch budget: the queue's `budget_usd`, else $AUTOPILOT_BATCH_BUDGET_USD, else config §3b, else none
 // (pass/eligibility.mjs decides what it holds).
@@ -2792,7 +2790,8 @@ runSteps({
   },
   report,
 });
-const { eligible, spawnable, held, spawnHeld } = ELIGIBILITY;
+// ELIG_CLOUD_HELD: what holds every cloud start, or null; memory harm, this computer's, is not among them.
+const { eligible, spawnable, held, spawnHeld, cloudHeld: ELIG_CLOUD_HELD } = ELIGIBILITY;
 
 // ---- slots, and borrowing ----------------------------------------------------
 // The batch's own number, borrowing, and the machine and repo budgets (pass/eligibility.mjs
@@ -2843,7 +2842,11 @@ const auditDue = !DRY && REPO_SLUG != null && !lowMemory && !MAINT.hold && !PACE
 // The tickets that would take a local slot: one starting in a cloud session wants none (CLOUD below).
 const spawnableLocal = spawnable.filter((t) => !startsInCloud(t));
 const lockWanted = (spawnableLocal.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue || auditDue;
-if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
+// A cloud start counts its sibling batches' cloud sessions against §3b "Cloud sessions at once", so it
+// takes the lock too, whatever the local slots, memory or the batch's number say: else two batches'
+// passes could each read the count unlocked and together start past the limit.
+const cloudLockWanted = SIBLINGS && !ELIG_CLOUD_HELD && spawnable.length > spawnableLocal.length;
+if (((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) || cloudLockWanted) {
   const l = await takeBorrowLock();
   if (l.ok) {
     borrowLock = l;
@@ -2891,7 +2894,7 @@ const CLOUD = E.cloudSessions();
 if (CLOUD.bad && spawnable.length > spawnableLocal.length) report.stalled.push(CLOUD.bad);
 const cloudRunning = runningCloud.length + otherRepos.filter((o) => o.slug === REPO_SLUG && o.q)
   .reduce((n, o) => n + Object.values(o.q.tickets ?? {}).filter((r) => r?.state === 'running' && runsInCloud(r)).length, 0);
-const cloudHeld = !!((spawnHeld && spawnHeld !== harmWhy) || MAINT.hold || CLOUD.bad);
+const cloudHeld = !!(ELIG_CLOUD_HELD || MAINT.hold || CLOUD.bad);
 const cloudSlots = cloudHeld ? 0 : Math.max(0, CLOUD.n - cloudRunning);
 let cloudAttempts = 0;
 // The cloud sessions this pass started: in report.spawned, but holding none of the local room counted above.
@@ -3873,7 +3876,7 @@ const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 const stateRow = parseStateChecks(E.configValues('state-checks'));
 // §4 Known flaky checks, for the fix tries and the draft path (waivedAt).
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
-const spawnedBefore = report.spawned.length;
+const spawnedBefore = localSpawned();
 if (baseFix) await spawnBaseFix(baseFix);
 
 // A try's worker that exited at a usage limit since lifted, or was stopped for the maintenance window,
@@ -4466,8 +4469,9 @@ if (!DRY) {
   }
 }
 // Every worker started under the lock is recorded running in this queue, so other passes count it,
-// and so is when, so the repo's batches take the shared cap's free slots in turn (repoBudget).
-if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
+// and so is when, so the repo's batches take the shared cap's free slots in turn (repoBudget): a cloud
+// session took none of them, so it moves no turn.
+if (!DRY && localSpawned() > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
 // An epic review or promotion check try starts in decideEpicPr or promotionChecksStep, after which the lock
 // is released once the slot it counted is taken.
 // So does a due blind audit, which starts after the levers trips, until runAudits has started it.
@@ -6554,7 +6558,7 @@ let collisionRec = {};
 if (!DRY) {
   const prevPass = (() => { try { return readQueue(QUEUE_FILE).pass ?? {}; } catch { return {}; } })();
   // The local workers, beside the batch's number: a cloud session holds no slot.
-  const runningEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'running' && !runsInCloud(t));
+  const runningEnd = Object.values(qEnd.tickets).filter(runningHere);
   const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
   // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
   // A harm signal holds through `held` and is a memory hold all the same.

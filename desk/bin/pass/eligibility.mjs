@@ -14,7 +14,8 @@
 //   collides {key}     -> whether a file the ticket names is at its per-file budget
 //   finished {key}     -> whether the ticket's worker already printed AUTOPILOT_DONE
 //   reboot-wait {key}  -> why a worker stopped for a planned reboot still waits, or null once it may resume
-//   eligibility {eligible, spawnable, held, spawnHeld}   what decideEligibility decided
+//   eligibility {eligible, spawnable, held, spawnHeld, cloudHeld}   what decideEligibility decided;
+//                      cloudHeld what holds every cloud start: spawnHeld but for memory harm
 //   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine, memLine}
 //                      what decideSlots decided; machine is the stricter of the worker count
 //                      (machineLine) and the memory reservations (memLine, null where none are read)
@@ -22,16 +23,15 @@ import { parseBudget } from '../desk-env.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { borrowPlan, machineBudget, repoBudget } from '../borrow.mjs';
 import { memBudget } from '../mem-lease.mjs';
-import { say, usageHeldText } from './shared.mjs';
+import { say, usageHeldText, toResume, toHandoff } from './shared.mjs';
 
 const stall = (line) => ({ type: 'stall', line });
 
 export const PACE_HELD = '7-day usage ahead of pace holds every spawn';
 
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every new
-// ticket.
-export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
-export const toHandoff = (r) => r.handoff === 'pending';
+// ticket (pass/shared.mjs, where desk-q reads them too).
+export { toResume, toHandoff };
 const goesFirst = (r) => toResume(r) || toHandoff(r);
 // A ticket linked in Jira as blocked by one held behind it (cycle_link) waits until the person says which
 // comes first, so neither of the two starts while the triage item asks.
@@ -123,18 +123,25 @@ export function* decideEligibility(s) {
     yield say(null, 'stalled', `waiting on the batch budget ($${spent.toFixed(2)} of $${cap}) to resume after a per-worker budget stop: ${budgetWaits.map((r) => r.key).join(', ')}`);
   }
   if (s.usageHold) yield say(null, 'stalled', `${usageHeldText(s.usageHold)} (probe: ${s.probes.filter(Boolean).join('; ') || 'not run'})`);
-  const held = s.maintHold ? 'the maintenance window holds every spawn' : s.usageHold ? usageHeldText(s.usageHold) : overBudget ? 'the batch budget holds every spawn' : s.modelsBad ? 'config §3b "Worker models" holds every spawn'
+  // What holds every spawn, the first that applies. `harm` false leaves out memory harm, which is this
+  // computer's and so holds no cloud session: what is left holds those too (cloudHeld).
+  const holdOf = (harm) => s.maintHold ? 'the maintenance window holds every spawn' : s.usageHold ? usageHeldText(s.usageHold) : overBudget ? 'the batch budget holds every spawn' : s.modelsBad ? 'config §3b "Worker models" holds every spawn'
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'
     : s.health.holding.length ? `a failing health check (${s.health.holding.join(', ')}) holds every spawn`
     : !g.may ? `config §3 ${g.key} is "${g.perm}"`
-    : s.memory.harm ? s.memory.harm
+    : harm && s.memory.harm ? s.memory.harm
     : s.pace.bad ? `config §3b "${s.pacingRow}" holds every spawn`
     : s.pace.hold ? PACE_HELD : null;
+  const held = holdOf(true);
+  const cloudHold = holdOf(false);
   // Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
-  // it starts within the worker count as any spawn does.
-  const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
+  // it starts within the worker count as any spawn does. Memory harm hides a pacing hold from `held`,
+  // never from a cloud start, so pacing filters the candidates whichever of the two names it.
+  const paced = held === PACE_HELD || cloudHold === PACE_HELD;
+  const spawnable = paced ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
   const spawnHeld = held === PACE_HELD && spawnable.length ? null : held;
-  yield { type: 'eligibility', eligible, spawnable, held, spawnHeld };
+  const cloudHeld = cloudHold === PACE_HELD && spawnable.length ? null : cloudHold;
+  yield { type: 'eligibility', eligible, spawnable, held, spawnHeld, cloudHeld };
 }
 
 // The borrow plan (borrow.mjs borrowPlan) for `workers` running, under decideSlots's snapshot `s`.
