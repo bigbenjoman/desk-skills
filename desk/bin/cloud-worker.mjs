@@ -133,29 +133,39 @@ export function findCloudPr(prs, { key, branch, since }) {
 export const cloudName = (ghRepo, key) => `${String(ghRepo ?? '').split('/').pop()}-ticket-${key}`;
 
 // A cloud ticket's cost, wherever it is shown: Claude Code reports no tokens or cost for a cloud
-// session, and no OpenTelemetry collector is set up to read them (issue-1553, decided 2026-11-26), so
-// it is named unknown with its session URL beside it, never left out and never $0.
+// session, and no OpenTelemetry collector is set up to read them, so it is named unknown with its
+// session URL beside it, never left out and never $0.
 export const CLOUD_COST_UNKNOWN = 'cost unknown (cloud)';
 export const CLOUD_COST_WHY = 'Claude Code reports no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one, so its cost is unknown: its session URL is beside it.';
 
-// A cloud session that may be stuck: no PR yet, past its ETA plus CLOUD_STALL_MARGIN_MS, and no push
-// to its branch within that margin. `ships` is the ticket's saved first estimate (desk-q-eta.mjs
-// eta.jsonl), or null with none, when the ETA is CLOUD_ETA_FALLBACK_MS from its start. `lastPush` is
-// when its branch's head commit was made, or null with no branch on origin (or none read yet: a
-// caller reads it only once this says stuck without it, as a push can only make it less so).
-//   -> null, or { due, last, from } with `due` the ETA plus margin (ms), `last` the later of the start
-//      and the push (ms), `from` 'estimate' or 'fallback'
-export const CLOUD_STALL_MARGIN_MS = 2 * 3_600_000;
-export const CLOUD_ETA_FALLBACK_MS = 24 * 3_600_000;
-export function cloudStall({ started, ships = null, lastPush = null, now = Date.now(), margin = CLOUD_STALL_MARGIN_MS, fallback = CLOUD_ETA_FALLBACK_MS }) {
+// A cloud ticket's ETA, as time from its session's start: its saved first estimate's span from start
+// to ship (desk-q-eta.mjs eta.jsonl), or with none, `typicalH`, the forecast's typical slot time for
+// its size (desk-q-eta.mjs typicalSlotHours). The estimate's span is used, not its `ships` time, so a
+// ticket that waited in the queue or under pacing before its session started is not due already.
+//   -> { ms, from: 'estimate' | 'typical' }, or null with neither
+export function cloudEta({ estimate = null, typicalH = null }) {
+  const span = Date.parse(estimate?.ships ?? '') - Date.parse(estimate?.starts ?? '');
+  if (span > 0) return { ms: span, from: 'estimate' };
+  return typicalH > 0 ? { ms: typicalH * 3_600_000, from: 'typical' } : null;
+}
+
+// A cloud session that may be stuck: no PR yet, past its start plus its ETA (cloudEta) plus a margin of
+// CLOUD_STALL_SHARE of that ETA, and no push to its branch within that margin. `lastPush` is when its
+// branch's head commit was made, or null with no branch on origin (or none read yet: a caller reads it
+// only once this says stuck without it, as a push can only make it less so). With no ETA it is never
+// called stuck.
+//   -> null, or { due, last, margin } with `due` the start plus ETA plus margin (ms), `last` the later
+//      of the start and the push (ms), `margin` in ms
+export const CLOUD_STALL_SHARE = 0.5;
+export function cloudStall({ started, eta, lastPush = null, now = Date.now() }) {
   const from = Date.parse(started ?? '');
-  if (!Number.isFinite(from)) return null;
-  const eta = Date.parse(ships ?? '');
-  const due = (Number.isFinite(eta) ? eta : from + fallback) + margin;
+  if (!Number.isFinite(from) || !(eta?.ms > 0)) return null;
+  const margin = eta.ms * CLOUD_STALL_SHARE;
+  const due = from + eta.ms + margin;
   const pushed = Date.parse(lastPush ?? '');
   const last = Number.isFinite(pushed) && pushed > from ? pushed : from;
   if (now <= due || now - last <= margin) return null;
-  return { due, last, from: Number.isFinite(eta) ? 'estimate' : 'fallback' };
+  return { due, last, margin };
 }
 
 // Session start to PR, in ms, or null while there is no PR.

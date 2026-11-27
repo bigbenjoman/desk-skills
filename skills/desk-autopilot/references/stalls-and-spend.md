@@ -124,9 +124,10 @@ PR, and its tokens as "unknown (cloud)" and its cost as "cost unknown (cloud)". 
 no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one. desk-q's
 Costs view (and `--json costs`) lists each queued cloud ticket the same way, with its session URL.
 Its Timeline and By-day views date a cloud ticket with the local ones and put `cloud ·` before its
-title. A cloud session with no PR, past the ticket's ETA plus 2 hours with no push to its branch in
-those 2 hours, is reported **possibly stuck** with its session URL. Its ETA is its saved first
-estimate (`eta.jsonl`), or 24 hours from its start when it has none. A cloud spawn is held by weekly
+title. A cloud session with no PR, past its start plus the ticket's ETA plus half that again, with no
+push to its branch in that margin, is reported **possibly stuck** with its session URL. Its ETA is
+its saved first estimate's span from start to ship (`eta.jsonl`), or with none the forecast's
+typical slot time for its size; with no history either, it is not called stuck. A cloud spawn is held by weekly
 usage pacing like a local one. Since a cloud session writes no usage reading here, a held pass
 still makes its probe call while only cloud workers run.
 The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR

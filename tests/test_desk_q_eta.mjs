@@ -807,6 +807,9 @@ t('#1487 AC7: a size with its own five uses them alone, and no size uses all uns
 const fewM = [...range(6, () => ({ size: 'S', h: 2, w: 1 })), ...range(2, () => ({ size: 'M', h: 4, w: 1 }))];
 t('#1487 AC7: two merges of a size are enough to measure its ratio, so M borrows S doubled', [E.sizeStep(fewM), [...new Set(E.poolFor(fewM, 'M').v.map((l) => l.h))], E.poolFor(fewM, 'M').scaled], [2, [4], true]);
 t('#1487 AC7: with one size alone there is no ratio, and the pool says its borrowed times are unscaled', E.poolFor(range(6, () => ({ size: 'S', h: 2, w: 1 })), 'M').scaled, false);
+// issue-1553 AC2: a cloud ticket with no saved estimate is judged by the typical slot time for its size.
+t('issue-1553 AC2 the typical slot time for a size is its pool\'s median, borrowed and scaled as the forecast does',
+  [E.typicalSlotHours({ history: [...histOf(6, 'S', 2), ...histOf(6, 'M', 4)], size: 'M', now: FIXED }), E.typicalSlotHours({ history: [...histOf(6, 'S', 2), ...histOf(6, 'M', 4)], size: 'L', now: FIXED }), E.typicalSlotHours({ history: [], size: 'M', now: FIXED })], [4, 8, null]);
 
 // ---- AC4 and AC6: the error figures, and the calibration fitted to the last 10
 // Ten merged estimates, merged an hour apart, each `late` hours after its ships time and its could-run-to `span` hours after ships.

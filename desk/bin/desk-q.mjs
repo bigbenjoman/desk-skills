@@ -1090,7 +1090,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   // Each merged PR's undraft and merge (merge-stages.mjs), the outside reviewer's open outage, and the
   // saved estimates the forecast calibrates from and marks a passed first estimate by.
   let stages = [];
-  try { stages = MS.readStages(repoStateOf(r.stateDir)).flatMap((e) => { const ready = MS.readyAt(e); return ready == null ? [] : [{ key: e.key, ready, merged: Date.parse(e.merged), outage: !!e.external?.outage }]; }); } catch { /* none read */ }
+  try { stages = MS.forecastStages(repoStateOf(r.stateDir)); } catch { /* none read */ }
   const reviewers = new Set((r.ctx?.stateChecks ?? []).map((c) => c.login).filter(Boolean));
   const outageFrom = Math.min(...(r.ctx?.outages ?? []).filter((o) => o?.to == null && reviewers.has(o.login)).map((o) => Date.parse(o.from)).filter(Number.isFinite));
   let est = new Map();

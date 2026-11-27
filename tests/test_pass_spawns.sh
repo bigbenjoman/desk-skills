@@ -161,13 +161,13 @@ check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q 
 check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 with no PR yet it stays running, and the pass says so" '[ "$(field CW-1 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0, no PR yet"'
-# issue-1553 AC2: a session with no PR and no push past its ETA (its saved first estimate) plus the
-# margin is reported possibly stuck, with its session URL; a push inside the margin keeps it quiet.
+# issue-1553 AC2: a session with no PR and no push past its start plus its ETA (its saved first
+# estimate's 3h span) plus half that is reported possibly stuck, with its session URL; a push inside the margin keeps it quiet.
 cl_was=$(field CW-1 cloud)
 q set CW-1 "cloud=$(node -e 'const c = JSON.parse(process.argv[1]); c.started = new Date(Date.now() - 6 * 3600e3).toISOString(); console.log(JSON.stringify(c))' "$cl_was")"
 node -e 'const h = 3600e3, n = Date.now(), i = (t) => new Date(t).toISOString(); console.log(JSON.stringify({ key: "CW-1", at: i(n - 6 * h), starts: i(n - 6 * h), ships: i(n - 3 * h), could_run_to: i(n - 2 * h), model: 2 }))' > "$T/state-cl/eta.jsonl"
 out=$(node "$B/pass.mjs" 2>&1)
-check "issue-1553 AC2 no push past its ETA plus margin: reported possibly stuck, with its session URL" 'echo "$out" | grep -F "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" | grep -F "possibly stuck" | grep -qF "nothing pushed to feat/CW-1, past its ETA (" && [ "$(field CW-1 state)" = "\"running\"" ]'
+check "issue-1553 AC2 no push past its ETA plus margin: reported possibly stuck, with its session URL" 'echo "$out" | grep -F "CW-1: cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" | grep -F "possibly stuck" | grep -F "nothing pushed to feat/CW-1, past its ETA of " | grep -qF " from its start (its saved estimate) plus " &&[ "$(field CW-1 state)" = "\"running\"" ]'
 node -e 'console.log(new Date(Date.now() - 30 * 60e3).toISOString())' > "$T/cloud-push"
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1553 AC2 a push to its branch inside the margin keeps it from possibly stuck" '! echo "$out" | grep -q "CW-1: .*possibly stuck" && echo "$out" | grep -q "CW-1: cloud session .*, no PR yet"'

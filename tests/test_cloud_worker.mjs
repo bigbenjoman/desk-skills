@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, CLOUD_NO_EFFORT, CLOUD_STALL_MARGIN_MS, CLOUD_ETA_FALLBACK_MS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { scratch } from './scratch.mjs';
@@ -140,16 +140,23 @@ rmSync(S, { recursive: true, force: true });
 
 // ---- a stalled cloud session (issue-1553 AC2) --------------------------------
 const H = 3_600_000, st0 = Date.parse('2026-11-01T00:00:00Z'), iso = (ms) => new Date(ms).toISOString();
-const ships = iso(st0 + 5 * H);
-t('issue-1553 AC2 before its ETA plus margin it is not stuck', cloudStall({ started: iso(st0), ships, now: st0 + 5 * H + CLOUD_STALL_MARGIN_MS }), null);
-const s1 = cloudStall({ started: iso(st0), ships, now: st0 + 8 * H });
-t('issue-1553 AC2 no push past its ETA plus margin: possibly stuck, dated from its estimate', `${s1?.from} ${s1?.due === st0 + 5 * H + CLOUD_STALL_MARGIN_MS} ${s1?.last === st0}`, 'estimate true true');
-t('issue-1553 AC2 a push inside the margin keeps it from stuck', cloudStall({ started: iso(st0), ships, lastPush: iso(st0 + 7 * H), now: st0 + 8 * H }), null);
-t('issue-1553 AC2 a push older than the margin does not', cloudStall({ started: iso(st0), ships, lastPush: iso(st0 + 3 * H), now: st0 + 8 * H })?.last, st0 + 3 * H);
-t('issue-1553 AC2 a commit from before the session started is not its push', cloudStall({ started: iso(st0), ships, lastPush: iso(st0 - H), now: st0 + 8 * H })?.last, st0);
-t('issue-1553 AC2 with no estimate its ETA is the fallback from its start', cloudStall({ started: iso(st0), now: st0 + CLOUD_ETA_FALLBACK_MS + 1 * H }), null);
-t('issue-1553 AC2 ... and past that plus the margin it is possibly stuck', cloudStall({ started: iso(st0), now: st0 + CLOUD_ETA_FALLBACK_MS + 3 * H })?.from, 'fallback');
-t('issue-1553 AC2 a session with no start recorded is never called stuck', cloudStall({ started: null, now: st0 }), null);
+// The estimate was made a day before the session started: its 4h span counts from the session's start.
+const estimate = { starts: iso(st0 - 24 * H), ships: iso(st0 - 20 * H) };
+const eta = cloudEta({ estimate, typicalH: 9 });
+t('issue-1553 AC2 the ETA is the saved estimate\'s span, ahead of the typical slot time', JSON.stringify(eta), JSON.stringify({ ms: 4 * H, from: 'estimate' }));
+t('issue-1553 AC2 with no estimate it is the typical slot time for its size', JSON.stringify(cloudEta({ estimate: null, typicalH: 9 })), JSON.stringify({ ms: 9 * H, from: 'typical' }));
+t('issue-1553 AC2 an estimate with no span falls back to it too', cloudEta({ estimate: { starts: iso(st0), ships: iso(st0) }, typicalH: 9 })?.from, 'typical');
+t('issue-1553 AC2 with neither there is no ETA', cloudEta({ estimate: null, typicalH: null }), null);
+t('issue-1553 AC2 a session that started after its estimate\'s ship time is not due at once', cloudStall({ started: iso(st0), eta, now: st0 + H }), null);
+t('issue-1553 AC2 before its start plus ETA plus half that it is not stuck', cloudStall({ started: iso(st0), eta, now: st0 + 6 * H }), null);
+const s1 = cloudStall({ started: iso(st0), eta, now: st0 + 6 * H + 1 });
+t('issue-1553 AC2 no push past its start plus ETA plus half that: possibly stuck, with that margin', `${s1?.due === st0 + 6 * H} ${s1?.margin === 2 * H} ${s1?.last === st0}`, 'true true true');
+t('issue-1553 AC2 a push inside the margin keeps it from stuck', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 5 * H), now: st0 + 7 * H }), null);
+t('issue-1553 AC2 a push older than the margin does not', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 + 3 * H), now: st0 + 7 * H })?.last, st0 + 3 * H);
+t('issue-1553 AC2 a commit from before the session started is not its push', cloudStall({ started: iso(st0), eta, lastPush: iso(st0 - H), now: st0 + 7 * H })?.last, st0);
+t('issue-1553 AC2 the margin is half the typical slot time when that is the ETA', cloudStall({ started: iso(st0), eta: cloudEta({ typicalH: 10 }), now: st0 + 16 * H })?.margin, 5 * H);
+t('issue-1553 AC2 with no ETA a session is never called stuck', cloudStall({ started: iso(st0), eta: null, now: st0 + 1000 * H }), null);
+t('issue-1553 AC2 a session with no start recorded is never called stuck', cloudStall({ started: null, eta, now: st0 }), null);
 
 // ---- finished sessions to archive -------------------------------------------
 const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });
