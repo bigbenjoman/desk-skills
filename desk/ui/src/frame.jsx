@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './icons.jsx';
 import { SCREENS } from './routes.js';
+import { andList, dayTime, defaultSub, paceOf, step, useNow, usageBadge } from './usage-figures.js';
 
 export const SERVER = '127.0.0.1:4823';
 // Below this width the window is Compact: Standard's sidebar, list and detail pane need 1192 px.
@@ -72,10 +73,50 @@ export function ExternalLink({ text, url, where }) {
   );
 }
 
-// The banners due now, highest first in §2.5's priority order. Each is { id, tone, glyph, body, action }.
-// A production-broken park and being offline cannot be dismissed; the other banners belong to the
-// Usage and Settings screens.
-export function bannersFor({ snapshot, online, routes, go }) {
+// The pace banner's dismissal, kept across reloads: the 5% step it was dismissed at, for the window
+// that resets at `resets_at`. It shows again once the window passes the next step, or a new window starts.
+const PACE_KEY = 'desk.usage-pace-dismissed';
+const readDismissed = () => { try { return JSON.parse(window.localStorage.getItem(PACE_KEY) ?? 'null'); } catch { return null; } };
+const writeDismissed = (v) => { try { window.localStorage.setItem(PACE_KEY, JSON.stringify(v)); } catch { /* private mode: for this load only */ } };
+
+// The usage banners (screen-spec §2.5, DS-731): one per subscription at its limit with repos waiting
+// for it, which cannot be dismissed, then the Claude default's 7-day window from 85%, until dismissed.
+function usageBanners({ subs, routes, go, now, dismissed, dismiss }) {
+  const out = [];
+  const usage = (to) => (routes.usage ? () => go(to) : null);
+  for (const w of subs?.waiting ?? []) {
+    const names = w.repos.map((r) => r.name);
+    const one = names.length === 1;
+    const until = w.at != null ? `until ${dayTime(w.at)}` : 'until its limit lifts';
+    const run = usage('/usage/subscriptions');
+    out.push({
+      id: `limit ${w.name}`, tone: 'warn', glyph: <Icon name="gauge" />,
+      body: `${w.email} has reached its ${w.type === 'five_hour' ? '5-hour' : '7-day'} limit. ${andList(names)} wait${one ? 's' : ''} ${until}. desk doesn't move ${one ? 'it' : 'them'} to another subscription.`,
+      action: run ? { label: 'See subscriptions', run } : null,
+    });
+  }
+  const def = defaultSub(subs);
+  const week = def?.reading?.seven_day;
+  if (week && week.pct >= 85 && !def.limit && week.resets_at > now) {
+    const off = dismissed && dismissed.resets_at === week.resets_at && step(week.pct) <= dismissed.step;
+    if (!off) {
+      const pace = paceOf(week, now);
+      const run = usage('/usage');
+      out.push({
+        id: 'usage pace', tone: 'warn', glyph: <Icon name="gauge" />,
+        body: `Claude's 7-day window is at ${week.pct}% and resets ${dayTime(week.resets_at)}.${pace ? ` At this pace it fills ${dayTime(pace.at)}.` : ''}`,
+        action: run ? { label: 'See usage', run } : null,
+        dismiss: () => dismiss({ step: step(week.pct), resets_at: week.resets_at }),
+      });
+    }
+  }
+  return out;
+}
+
+// The banners due now, highest first in §2.5's priority order. Each is { id, tone, glyph, body, action,
+// dismiss? }. A production-broken park, a subscription at its limit and being offline cannot be
+// dismissed; the pace banner can, until the window's next 5%.
+export function bannersFor({ snapshot, online, routes, go, now = Date.now(), dismissed = null, dismiss = () => {} }) {
   const out = [];
   for (const r of snapshot?.repos ?? []) {
     for (const key of r.production_broken ?? []) {
@@ -86,6 +127,7 @@ export function bannersFor({ snapshot, online, routes, go }) {
       });
     }
   }
+  out.push(...usageBanners({ subs: snapshot?.subscriptions, routes, go, now, dismissed, dismiss }));
   if (!online) out.push({ id: 'offline', tone: 'info', glyph: null, body: OFFLINE, action: null });
   return out;
 }
@@ -103,6 +145,10 @@ function Banner({ b, more = null }) {
         {b.action && (
           <button type="button" onClick={b.action.run}
             className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2.5 text-[12.5px] font-medium">{b.action.label}</button>
+        )}
+        {b.dismiss && (
+          <button type="button" onClick={b.dismiss} aria-label="Dismiss" title="Dismiss"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted-fg hover:bg-muted"><Icon name="x" size={14} /></button>
         )}
         {more}
       </span>
@@ -197,9 +243,25 @@ const navOf = (snapshot, routes) => ({
   screens: SCREENS.filter((s) => routes[s.id] && s.id !== 'settings'),
   settings: routes.settings ? SCREENS.find((s) => s.id === 'settings') : null,
   badge: { inbox: snapshot?.needs_you?.count, workers: snapshot?.machine?.running },
+  usage: usageBadge(snapshot?.subscriptions),
 });
 
-function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge } }) {
+// Usage & costs' figure: the fullest window a repo runs on, amber from 85%.
+function UsageFigure({ u, rail = false }) {
+  if (!u) return null;
+  const tip = `Fullest usage window: ${u.pct}%`;
+  if (rail) {
+    return (
+      <span data-badge="usage" title={tip}
+        className={`absolute top-[3px] right-px h-4 min-w-4 rounded-lg px-1 text-center text-[10px] leading-4 font-semibold ${u.hot ? 'bg-needs-solid text-[#1c1917]' : 'bg-muted text-foreground ring-1 ring-inset ring-border'}`}>
+        {u.pct}
+      </span>
+    );
+  }
+  return <span className={`ml-auto text-xs font-medium tabular-nums ${u.hot ? 'text-needs' : 'text-muted-fg'}`} data-badge="usage" data-hot={u.hot ? '' : undefined} title={tip}>{u.pct}%</span>;
+}
+
+function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge, usage } }) {
   const repos = (snapshot?.repos ?? []).filter((r) => !r.error);
   // A repo set up with no batch yet: home lists it by name in no_batch, with nothing to count.
   const idle = (snapshot?.no_batch ?? []).filter((name) => !repos.some((r) => r.name === name));
@@ -217,6 +279,7 @@ function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge }
             <span className={s.id === 'inbox' ? 'text-needs' : 'text-muted-fg'} data-badge={s.id}>{badge[s.id]}</span>
           </span>
         )}
+        {s.id === 'usage' && <UsageFigure u={usage} />}
       </button>
     </li>
   );
@@ -241,7 +304,7 @@ function Sidebar({ snapshot, path, routes, go, nav: { screens, settings, badge }
   );
 }
 
-function Rail({ path, go, nav: { screens, settings, badge } }) {
+function Rail({ path, go, nav: { screens, settings, badge, usage } }) {
   const item = (s) => (
     <li key={s.id}>
       <button type="button" onClick={() => go(s.path)} aria-label={s.label} title={`${s.label} ⌘${s.key}`} aria-current={path.startsWith(s.path) ? 'page' : undefined}
@@ -253,6 +316,7 @@ function Rail({ path, go, nav: { screens, settings, badge } }) {
             {countText(badge[s.id])}
           </span>
         )}
+        {s.id === 'usage' && <UsageFigure u={usage} rail />}
       </button>
     </li>
   );
@@ -280,6 +344,9 @@ export function Frame({ snapshot, live, path, go, routes, title, children }) {
   const width = useWidth();
   const online = useOnline();
   const [hidden, setHidden] = useState(false);
+  const now = useNow();
+  const [dismissed, setDismissed] = useState(readDismissed);
+  const dismiss = (v) => { writeDismissed(v); setDismissed(v); };
   const compact = width < COMPACT_BELOW;
 
   useEffect(() => {
@@ -300,7 +367,7 @@ export function Frame({ snapshot, live, path, go, routes, title, children }) {
       <div className="flex min-h-0 flex-1">
         {!hidden && (compact ? <Rail {...side} /> : <Sidebar {...side} />)}
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <Banners list={bannersFor({ snapshot, online, routes, go })} />
+          <Banners list={bannersFor({ snapshot, online, routes, go, now, dismissed, dismiss })} />
           <div className="min-h-0 flex-1 overflow-auto">{children}</div>
         </div>
       </div>

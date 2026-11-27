@@ -2,6 +2,7 @@
 // A screen's sidebar item, shortcut and any button that opens it are drawn only once ROUTES holds it:
 // each screen's story adds its `id: Component` there. A screen is given { path, go, snapshot, get }.
 import { Inbox } from './inbox.jsx';
+import { Usage } from './usage.jsx';
 
 export const SCREENS = [
   { id: 'inbox', path: '/inbox', label: 'Inbox', key: '1', icon: 'inbox' },
@@ -15,7 +16,7 @@ export const SCREENS = [
   { id: 'settings', path: '/settings', label: 'Settings', key: ',' },
 ];
 
-export const ROUTES = { inbox: Inbox };
+export const ROUTES = { inbox: Inbox, usage: Usage };
 
 // The screen `path` opens, among those `routes` holds, or null.
 export const screenAt = (path, routes) =>

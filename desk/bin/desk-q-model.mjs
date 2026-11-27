@@ -4460,6 +4460,34 @@ export function usageViewJson(repos, { now = Date.now() } = {}) {
     { logins: [...u.claude, ...u.codex].map(login), following: u.following }, usageParts(repos, { now }));
 }
 
+// The subscriptions desk-ui's Usage & costs screen draws (DS-731), as figures and no clock text: each
+// Claude and Codex subscription with its rule, the repos pinned to it and both windows; each repo with the
+// account it runs on and whether a subscription here is signed in to it; each subscription at its limit
+// with the repos waiting for it. A window is { pct, resets_at } (epoch ms; pct 0 once it has reset), null
+// with no reading of it. Nothing here names a standby, a rotation or the most room: desk never switches.
+const homeShort = (d) => { const h = process.env.HOME; return d && h && (d === h || d.startsWith(`${h}/`)) ? `~${d.slice(h.length)}` : d ?? null; };
+const windowJson = (w, now) => (w ? ((u) => ({ pct: u.pct, resets_at: w.resetsAt * 1000 }))(windowUse(w, now)) : null);
+const readingJson = (r, now) => (r?.at == null ? null : { five_hour: windowJson(r.five_hour, now), seven_day: windowJson(r.seven_day, now), at: r.at, none: r.none ?? [] });
+const subState = (x) => (x.use?.isDefault ? 'default' : x.login.rule === 'off' ? 'off' : x.use?.pinned?.length ? 'pinned' : 'unused');
+export function subscriptionsJson(repos, { now = Date.now() } = {}) {
+  const u = usageTable(repos, now);
+  const email = (x) => accountOf(x.login).email ?? x.login.account ?? null;
+  const sub = (x) => ({ name: x.login.name, email: email(x), label: loginLabel(x.login), plan: x.plan ?? null, folder: homeShort(x.login.dir), state: subState(x),
+    pinned: x.use?.pinned ?? [], workers: x.workers ?? null, reading: readingJson(x.reading, now), limit: x.limit ?? (x.tool === 'codex' ? x.out : null) ?? null });
+  const def = u.claude.find((x) => x.use?.isDefault) ?? null;
+  const known = (s) => !!s && (s.source === 'default' || !!s.login);
+  return {
+    claude: u.claude.map(sub),
+    codex: u.codex.map(sub),
+    default_email: def ? email(def) ?? loginLabel(def.login) : null,
+    repos: u.repos.map((r) => ({ slug: r.slug, name: r.name, email: subLabel(r.sub), source: r.sub?.source ?? null, known: known(r.sub),
+      on: r.sub?.login?.name ?? null, workers: r.workers, ready: r.ready })),
+    waiting: waitingFor(u, u.repos).map((w) => ({ email: email(w.x) ?? loginLabel(w.x.login), name: w.x.login.name, type: w.limit.type, at: w.limit.at == null ? null : w.limit.at * 1000,
+      repos: w.repos.map((r) => ({ name: r.name, ready: r.ready })) })),
+    probe_every_ms: PROBE_EVERY_MS,
+  };
+}
+
 // This month's charges by name, or one name's by supplier, from the cost cache.
 /** @returns {CostsView} */
 export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {

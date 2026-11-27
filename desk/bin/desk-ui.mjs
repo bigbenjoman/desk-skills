@@ -24,6 +24,12 @@
 // (~/.claude/desk/ui/dist, desk-app.mjs install-ui); / is its index.html.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 //
+// Usage probes: serve runs the usage probe loop (desk-ui-probes.mjs) for as long as it runs, whether or
+// not a window is open, writing its heartbeat to ~/.desk-autopilot/ui/scheduler.json. A desk-q screen
+// open beside it sees the heartbeat fresh and leaves the probes to the server; stopped, desk-q probes as
+// it always has. Each probe's end rebuilds the change stream's model, whose home event carries the
+// Usage & costs screen's figures (desk-q-model subscriptionsJson).
+//
 // Writes: every POST below runs one of desk's own commands, from WRITES, through execFile with no
 // shell and an argv built here; the server never writes desk's files itself. Writes for one repo run
 // one at a time, in the order they arrived; another repo's do not wait. Each command's exit maps to
@@ -66,6 +72,7 @@ import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
+import { serverScheduler } from './desk-ui-probes.mjs';
 import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
 import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
@@ -669,7 +676,10 @@ async function serve() {
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
   // Open change streams never end by themselves, so they are ended (each closes its connection), while
   // a write in flight is let finish, so its command's result is answered and audited.
-  const stop = () => { server.feed.stop(); server.sessions.stop(); server.close(() => process.exit(0)); };
+  // The usage probe loop runs for as long as the server does, a window open or not (desk-ui-probes.mjs).
+  const probes = await serverScheduler({ changed: () => server.feed.changed() });
+  probes.start();
+  const stop = () => { probes.stop(); server.feed.stop(); server.sessions.stop(); server.close(() => process.exit(0)); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }
