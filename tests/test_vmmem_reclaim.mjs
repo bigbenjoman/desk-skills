@@ -1,7 +1,7 @@
-// suite: WSL page-cache reclaim (the gap and interval decision, the run log, reclaim before VMMEM-HIGH holds)
-// layer: L1
+// suite: WSL page-cache reclaim (the gap and interval decision, the run log, reclaim before VMMEM-HIGH holds, mem status and machine wslconfig)
+// layer: L2
 // covers: desk/bin/vmmem-reclaim.mjs desk/bin/machine.mjs
-// Stubbed vmmem readings and a stubbed drop; nothing reads or reclaims this computer's memory.
+// Stubbed vmmem readings and a stubbed drop; the CLI cases start desk-env against a scratch config. Nothing reads or reclaims this computer's memory.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
