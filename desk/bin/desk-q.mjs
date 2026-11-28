@@ -3135,10 +3135,15 @@ function stallNotes(r, quiet, old, drivers, allOut = false, now = Date.now()) {
   const q = quiet.notes.get(r);
   if (q) out.push({ ...(q.grey ? greyNote(r.repo, q.text) : note(q.text, q.fix)), ...(q.hide ? { hide: q.hide } : {}) });
   // A base conflict fix that has waited BASE_FIX_WAIT_PASSES passes in a row to start (base-fix.mjs
-  // notStarted), with no fix worker running, and why the last pass did not start it.
+  // notStarted), with no fix worker running, and why the last pass did not start it, in plain words.
   const bs = r.q?.base_fix?.start;
   if (bs && (bs.passes ?? 0) >= BASE_FIX_WAIT_PASSES && !r.q.base_fix.running) {
-    out.push(note(`${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s ${bs.check ? 'merged-tree' : 'conflict'} fix has not started for ${bs.passes} passes: ${String(bs.why ?? 'no reason recorded').replace(/\.$/, '')}.`));
+    const what = `${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s ${bs.check ? 'failing check' : 'conflict'} fix has waited to start${bs.since ? ` since ${clock(bs.since)}` : ''}`;
+    const why = String(bs.why ?? '');
+    if ((bs.failed ?? 0) > 0) out.push(note(`${what}: its worker failed to start. `, 'Run /desk-needs-you in a Claude session.'));
+    else if (/^no Claude login/.test(why)) out.push(note(`${what}: no signed-in Claude login may start it. `, 'Press 6 to switch subscription.'));
+    else if (/^memory:/.test(why)) out.push(greyNote(r.repo, `${what}: the computer is low on memory. Nothing to do: it starts once memory frees up.`));
+    else out.push(greyNote(r.repo, `${what}: every worker it may use is busy. Nothing to do: it starts once one is free.`));
   }
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {

@@ -3738,16 +3738,27 @@ try {
 // ---- DS-1034 AC3: a base conflict fix that has not started for 3 passes in a row is a note on its
 // batch, saying why; under 3, or with a fix worker running, there is none.
 {
-  const why = 'repo workers: 1 of the §3b cap of 1 running';
-  const fixOf = (passes, running = null) => ({ tries: [], running, port: null, start: { try: 1, files: ['a.txt'], since: minsAgo(15), passes, failed: 0, why } });
+  const since = minsAgo(15), at = new Date(since).toTimeString().slice(0, 5);
+  const fixOf = (passes, running = null, { why = 'repo workers: 1 of the §3b cap of 1 running', failed = 0 } = {}) =>
+    ({ tries: [], running, port: null, start: { try: 1, files: ['a.txt'], since, passes, failed, why } });
   const tickets = { 'BF-1': { state: 'triaged', open_questions: 0 } };
   put(I.T, I.env, 'bfix3', { port: 5934, conc: '2 / 3', beat: 1, queue: { batch: 'bfix3', base: 'feat/x', concurrency: 2, base_fix: fixOf(3), tickets } });
   put(I.T, I.env, 'bfix2', { port: 5935, conc: '2 / 3', beat: 1, queue: { batch: 'bfix2', base: 'feat/x', concurrency: 2, base_fix: fixOf(2), tickets } });
   put(I.T, I.env, 'bfixr', { port: 5936, conc: '2 / 3', beat: 1, queue: { batch: 'bfixr', base: 'feat/x', concurrency: 2, base_fix: fixOf(5, 'sid-1'), tickets } });
-  const ov1034 = Q.overview(Q.loadRepos(NOW).filter((r) => ['bfix3', 'bfix2', 'bfixr'].includes(r.repo)), { now: NOW, avail: 30 });
-  t('DS-1034 AC3 three passes waiting: the batch shows its conflict fix has not started, and why', notesIn(lines(ov1034), 'bfix3').join(' / '),
-    `feat/x's conflict fix has not started for 3 passes: ${why}.`);
-  t('DS-1034 AC3 two passes, or a fix worker running: no note', `${notesIn(lines(ov1034), 'bfix2').length} ${notesIn(lines(ov1034), 'bfixr').length}`, '0 0');
+  put(I.T, I.env, 'bfixf', { port: 5937, conc: '2 / 3', beat: 1, queue: { batch: 'bfixf', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'failed its preflight: preflight failed, not spawned', failed: 1 }), tickets } });
+  put(I.T, I.env, 'bfixl', { port: 5938, conc: '2 / 3', beat: 1, queue: { batch: 'bfixl', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'no Claude login this repo may start a worker on' }), tickets } });
+  put(I.T, I.env, 'bfixm', { port: 5939, conc: '2 / 3', beat: 1, queue: { batch: 'bfixm', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'memory: BASE-FIX not started, its 6G share no longer fits under the 40G ceiling: 3G free' }), tickets } });
+  const bfix = ['bfix3', 'bfix2', 'bfixr', 'bfixf', 'bfixl', 'bfixm'];
+  const ov1034 = lines(Q.overview(Q.loadRepos(NOW).filter((r) => bfix.includes(r.repo)), { now: NOW, avail: 30 }));
+  t('DS-1034 AC3 DS-1049 AC1 three passes waiting for a worker: a grey note says the conflict fix waits, why, and that nothing is to do', greyIn(ov1034, 'bfix3').join(' / '),
+    `feat/x's conflict fix has waited to start since ${at}: every worker it may use is busy. Nothing to do: it starts once one is free.`);
+  t('DS-1034 AC3 two passes, or a fix worker running: no note', `${notesIn(ov1034, 'bfix2').length + greyIn(ov1034, 'bfix2').length} ${notesIn(ov1034, 'bfixr').length + greyIn(ov1034, 'bfixr').length}`, '0 0');
+  t('DS-1049 AC2 a base fix whose worker failed to start, or that no login may start, is amber and ends with its fix',
+    `${notesIn(ov1034, 'bfixf').join(' / ')} // ${notesIn(ov1034, 'bfixl').join(' / ')}`,
+    `feat/x's conflict fix has waited to start since ${at}: its worker failed to start. Run /desk-needs-you in a Claude session. // feat/x's conflict fix has waited to start since ${at}: no signed-in Claude login may start it. Press 6 to switch subscription.`);
+  t('DS-1049 AC1 a base fix waiting on memory is grey', greyIn(ov1034, 'bfixm').join(' / '),
+    `feat/x's conflict fix has waited to start since ${at}: the computer is low on memory. Nothing to do: it starts once memory frees up.`);
+  t('DS-1049 AC5 no base-fix note shows the pass\'s own reason', noteBlock(ov1034).filter((l) => banned1049.test(l) || /preflight|ceiling|§3b/.test(l)).join(' // '), '');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
