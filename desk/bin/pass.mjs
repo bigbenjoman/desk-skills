@@ -1428,6 +1428,7 @@ const ADVANCE_HANDLERS = {
   approval: (a) => parkApproval(STATE, a.key, a.question),
   'park-file': (a) => parkFileFault(STATE, a.key, a.question),
   'keep-links': (a, s) => keepLinks(s.t, a.needs, a.pr),
+  'early-answer': (a) => replayEarlyAnswer(a.key),
   decisions: (a, s) => logDecisions(s.t, s.log.path, a.pr),
   'refuse-lease': (a, s) => refuseUnnamedLease(s.t, a.question),
   handoff: (a, s) => { handedOff(s.t, a.said, { log: s.log.path, h: s.log.h, imgs: a.imgs, stopped: a.stopped }); },
@@ -2089,6 +2090,16 @@ const checkinTimesNow = () => { try { return checkinTimes(checkinRow()).times ??
 // When a check-in digest listed each ask of this batch (question-arms.mjs digestPresented), read once.
 let digestListed = null;
 const listedByDigest = () => (digestListed ??= digestPresented(QUEUE_FILE));
+// The answer given after a worker parked and before this pass recorded the park (answer.mjs
+// early_answer), applied to that park: answer.mjs --replay, once the park and its inputs are written.
+function replayEarlyAnswer(key) {
+  if (DRY) return;
+  flushQueue();
+  const r = shOut('node', [join(BIN, 'answer.mjs'), '--replay', key]);
+  if (!r.ok) report.failed.push(`${key}: the answer given before this pass saw its park was not applied to it (${lastLine(r.out)}): answer it again`);
+  else if (r.out) report.recovered.push(...r.out.split('\n').filter(Boolean));
+}
+
 // A take call parked with a recommended option: answer it with that option, requeue, log the call. One
 // the pass may not take applies by default at the first check-in pass after a digest listed it, where
 // the ticket's question-handling arm says so (question-arms.mjs defaultsAtCheckin): logged so the

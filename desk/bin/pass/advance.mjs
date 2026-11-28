@@ -327,10 +327,13 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
-    // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
-    // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
-    // answer given before this pass saw the park still counts as its answer.
-    yield set(t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question, at: new Date(log.mtimeMs).toISOString() })}`);
+    // The park and the round a requeue's fresh spawn may resume (resumeRound) are both dated by the
+    // log's last write, when the worker parked, not by this pass: an answer given after the worker
+    // exited and before this pass saw the park is its answer (answer.mjs saves it to the briefing,
+    // and the decider and the resume read answers since these times). Only a worker's own park
+    // records a round: a stalled or failed worker starts again at Stage 0.
+    const parkedAt = new Date(log.mtimeMs).toISOString();
+    yield set(t.key, `park.since=${parkedAt}`, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question, at: parkedAt })}`);
     // A park asking only for §4 Live reads waits on the pass, which starts them in its "live reads"
     // section and settles it there.
     const read = wedged ? null : yield { type: 'live-read', key: t.key, question };
@@ -350,6 +353,12 @@ export function* decideAdvance(s) {
     yield set(t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(approve ? [`park.approve=${JSON.stringify(approve)}`] : []),
       ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
+    // An answer given in that window found no park to act on (answer.mjs early_answer): applied to this
+    // park now that it is recorded with its date and inputs, so its ask is answered and its grant or
+    // session step recorded, as for an answer given once the ticket read parked. Asked for on every park,
+    // not only where `t` holds one: `t` was read at the start of the pass, and an answer given since
+    // reaches the queue file only, where the replay reads it.
+    yield { type: 'early-answer', key: t.key };
     yield { type: 'keep-links', key: t.key, needs: linkNeeds.map((n) => n.why), pr: t.result?.pr };
     // Before the requeue, which moves this round's log aside.
     yield { type: 'decisions', key: t.key, pr: null };
