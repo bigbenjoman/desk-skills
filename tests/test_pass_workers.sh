@@ -1143,6 +1143,15 @@ out=$(node "$B/pass.mjs" 2>&1)
 midhand H-21 7; midhand H-21 7
 check "#1680 AC3 two empty Stage 7 handoffs with no PR park, naming why, and spawn no third session" '[ "$(field H-21 state)" = "\"parked\"" ] && field H-21 park.question | grep -qF "handed off partway through Stage 7 2 times in a row with no new commit and no review verdict posted, and it has no open PR" && [ "$(spawned_for H-21 | wc -l | tr -d " ")" = 2 ]'
 q set H-21 state=done
+# A PR that could not be read is not one with no PR: Stage 7 resumes, rather than parking as if none.
+handing H-22; hfile H-22 7 "typecheck: pass"; hlog H-22 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7')"
+out=$(node "$B/pass.mjs" 2>&1)
+printf '#!/bin/sh\ncase "$*" in *"pr view 78 "*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;; esac\nexit 0\n' > "$T/stub/gh"
+q set H-22 draft_pr=78
+midhand H-22 7; midhand H-22 7
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+check "#1680 AC3 two empty Stage 7 handoffs whose PR could not be read resume Stage 7, saying so, and do not park as if it had none" '[ "$(field H-22 state)" != "\"parked\"" ] && echo "$out" | grep -qF "but PR #78 could not be read" && [ "$(spawned_for H-22 | wc -l | tr -d " ")" = 3 ] && [ "$(spawned_for H-22 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ]'
+q set H-22 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"

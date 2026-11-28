@@ -63,7 +63,7 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, pathsIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumesAtSeven, prInConflict, stageSevenConflictPark, emptySevenTry } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumesAtSeven, prInConflict, stageSevenConflictPark, emptySevenTry, EMPTY_SEVEN_MAX } from './fix-tries.mjs';
 import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
@@ -882,7 +882,10 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   const stuck = stageless && !posted ? (Number(t.handoff_stuck) || 0) + 1 : 0;
   // Stage 7 stops resuming in a session after EMPTY_SEVEN_MAX empty handoffs: its PR's head goes to a
   // review try, then a tracker ticket to a Stage 8 session (fix-tries.mjs emptySevenTry, thenStage).
-  const instead = stage === '7' && mid ? emptySevenTry(t, { empties: stuck, s: seven, head, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
+  // A PR that could not be read is not one with no PR: Stage 7 resumes this pass, and the next empty
+  // handoff reads it again.
+  const instead = stage === '7' && mid && !seven?.unread ? emptySevenTry(t, { empties: stuck, s: seven, head, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
+  if (seven?.unread && stuck >= EMPTY_SEVEN_MAX) report.waiting.push(`${t.key}: handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted, but PR #${seven.pr} could not be read (${seven.unread}), so Stage 7 resumes in a session this pass and the next empty handoff reads it again`);
   const empty = `handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted`;
   if (instead?.call === 'park') return parkIt(`${empty}, and ${instead.why}: there is no PR head for a review try to read. ${FROM_ZERO(t)}`);
   if (instead?.call === 'stuck') return parkIt(`${empty}, and PR #${seven.pr} has ${instead.why}. ${FROM_ZERO(t)}`);
@@ -1450,13 +1453,14 @@ function prVerdict(pr) {
   } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
 }
 // PR #pr as a Stage 7 handoff reads it: { pr, state, head, verdict }, `verdict` the latest one the
-// verdict logins posted (latestReview), or null. Null with no PR, or unread.
+// verdict logins posted (latestReview), or null. Null with no PR; { pr, unread: why } where it could not
+// be read, which is not the same as no PR.
 function prAtHandoff(pr) {
   if (pr == null) return null;
   try {
     const v = JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'state,headRefOid,reviews'], { fresh: true }));
-    return v?.state ? { pr: Number(pr), state: v.state, head: v.headRefOid ?? null, verdict: conflictHandle ? latestReview(v.reviews, conflictHandle)?.verdict ?? null : null } : null;
-  } catch { return null; }
+    return v?.state ? { pr: Number(pr), state: v.state, head: v.headRefOid ?? null, verdict: conflictHandle ? latestReview(v.reviews, conflictHandle)?.verdict ?? null : null } : { pr: Number(pr), unread: 'gh gave no state for it' };
+  } catch (e) { return { pr: Number(pr), unread: String(e?.message ?? e) }; }
 }
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
