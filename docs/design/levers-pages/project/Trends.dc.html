@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Levers: trends</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e6e6e9;color:#09090b;font-family:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#09090b}a:hover{color:#3f3f46}
+*{box-sizing:border-box}
+:root{--font-sans:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;--radius:6px;--background:#ffffff;--foreground:#09090b;--card:#ffffff;--popover:#ffffff;--muted:#f4f4f5;--muted-fg:#6b6b73;--subtle:#fafafa;--faint:#f4f4f5;--border:#e4e4e7;--input:#e4e4e7;--ring:#a1a1aa;--focus:#52525b;--primary:#18181b;--primary-fg:#fafafa;--secondary:#f4f4f5;--secondary-fg:#18181b;--sidebar:#fafafa;--sidebar-accent:#ececef;--sh-sm:0 1px 2px rgba(9,9,11,.06);--sh-md:0 4px 12px -2px rgba(9,9,11,.10),0 2px 4px -2px rgba(9,9,11,.06);--sh-lg:0 20px 48px -12px rgba(9,9,11,.28),0 6px 14px -6px rgba(9,9,11,.12);--win-edge:rgba(9,9,11,.14);--run:#2563eb;--run-bg:#eff6ff;--run-bd:#bfdbfe;--ready:#475569;--ready-bg:#f1f5f9;--ready-bd:#cbd5e1;--wait:#71717a;--needs:#b45309;--needs-solid:#f59e0b;--needs-bg:#fffbeb;--needs-bd:#fcd34d;--done:#15803d;--done-bg:#f0fdf4;--done-bd:#bbf7d0;--fail:#b91c1c;--fail-bg:#fef2f2;--fail-bd:#fecaca;--chart-now:#18181b;--chart-before:#a1a1aa;--chart-grid:#ececef;--chart-axis:#a1a1aa;--tl-red:#ff5f57;--tl-yel:#febc2e;--tl-grn:#28c840}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--background:#09090b;--foreground:#fafafa;--card:#0e0e10;--popover:#131316;--muted:#1d1d21;--muted-fg:#a1a1aa;--subtle:#0e0e10;--faint:#151518;--border:#27272a;--input:#34343a;--ring:#71717a;--focus:#a1a1aa;--primary:#fafafa;--primary-fg:#18181b;--secondary:#27272a;--secondary-fg:#fafafa;--sidebar:#0e0e10;--sidebar-accent:#1f1f23;--win-edge:rgba(255,255,255,.12);--run:#60a5fa;--run-bg:rgba(59,130,246,.12);--run-bd:rgba(96,165,250,.35);--ready:#94a3b8;--ready-bg:rgba(148,163,184,.10);--ready-bd:rgba(148,163,184,.3);--wait:#a1a1aa;--needs:#fbbf24;--needs-bg:rgba(245,158,11,.09);--needs-bd:rgba(251,191,36,.38);--done:#4ade80;--done-bg:rgba(34,197,94,.10);--done-bd:rgba(74,222,128,.32);--fail:#f87171;--fail-bg:rgba(239,68,68,.10);--fail-bd:rgba(248,113,113,.38);--chart-now:#fafafa;--chart-before:#71717a;--chart-grid:#1f1f23;--chart-axis:#71717a}}
+.board{width:100%;display:flex;flex-direction:column;gap:12px;padding:0 0 24px}
+.ann{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;padding:14px 4px 0;font:400 12px/18px var(--font-mono);color:#52525b}
+.ann b{font:600 15px/20px var(--font-sans);color:#18181b;letter-spacing:-.01em}
+.ann i{font-style:normal;color:#18181b}
+.win{width:100%;background:var(--background);color:var(--foreground);border-radius:10px;overflow:hidden;box-shadow:0 0 0 1px var(--win-edge),var(--sh-lg);display:flex;flex-direction:column;font:400 14px/20px var(--font-sans)}
+.tb{height:40px;flex:none;display:grid;grid-template-columns:1fr 360px 1fr;align-items:center;gap:12px;padding:0 12px 0 16px;background:var(--sidebar);border-bottom:1px solid var(--border)}
+.compact .tb{grid-template-columns:1fr auto 1fr}
+.tbxl,.tbxr{display:flex;align-items:center;gap:10px;min-width:0}
+.tbxr{justify-content:flex-end}
+.lights{display:flex;gap:8px;margin-right:10px}
+.lights i{width:12px;height:12px;border-radius:50%;display:block;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18)}
+.l1{background:var(--tl-red)}.l2{background:var(--tl-yel)}.l3{background:var(--tl-grn)}
+.wm{display:flex;align-items:center;gap:7px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+.mark{width:16px;height:16px;border-radius:4px;background:var(--primary);position:relative;flex:none;display:inline-block}
+.mark i{position:absolute;width:6px;height:6px;background:var(--needs-solid);transform:rotate(45deg);left:5px;top:5px}
+.pgname{color:var(--muted-fg);font-size:13px;white-space:nowrap;border-left:1px solid var(--border);padding-left:10px}
+.srch{height:28px;border:1px solid var(--border);border-radius:6px;background:var(--background);display:flex;align-items:center;gap:8px;padding:0 4px 0 10px;color:var(--muted-fg);font-size:13px;box-shadow:var(--sh-sm)}
+.srch span{flex:1;white-space:nowrap}
+.srch.icon{width:28px;padding:0;justify-content:center}
+.pill{height:24px;display:inline-flex;align-items:center;gap:5px;padding:0 8px;border-radius:999px;font:600 12px/1 var(--font-sans);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill.needs{background:var(--needs-bg);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs-bd)}
+.pill.ok{color:var(--muted-fg);font-weight:500}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--done);display:inline-block;flex:none}
+.dot.run{background:var(--run)}.dot.fail{background:var(--fail)}.dot.needs{background:var(--needs-solid)}.dot.off{background:var(--ring)}
+.ib{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--muted-fg);flex:none;border:0;background:transparent}
+.wmain{display:flex;min-height:0}
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.sbar{height:28px;flex:none;border-top:1px solid var(--border);background:var(--sidebar);display:flex;align-items:center;gap:6px;padding:0 12px;font-size:12px;color:var(--muted-fg);white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden}
+.sbar .seg{display:inline-flex;align-items:center;gap:6px;padding:0 6px;height:20px;border-radius:4px}
+.sbar .sep{width:1px;height:12px;background:var(--border);flex:none}
+.warn{color:var(--needs)}
+.side{width:232px;flex:none;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:10px 8px 8px;gap:1px;font-size:14px}
+.side.rail{width:56px;align-items:center;padding:10px 6px}
+.sbi{height:32px;display:flex;align-items:center;gap:9px;padding:0 8px;border-radius:6px;color:var(--foreground);position:relative;white-space:nowrap;text-decoration:none}
+.sbi:hover{background:var(--sidebar-accent);color:var(--foreground)}
+.sbi.on{background:var(--sidebar-accent);font-weight:500}
+.sbi.on::before{content:"";position:absolute;left:-8px;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--foreground)}
+.sbi .ic{color:var(--muted-fg)}
+.sbi.on .ic{color:var(--foreground)}
+.sbi .tr{margin-left:auto;font:500 12px/1 var(--font-sans);color:var(--muted-fg);display:flex;gap:6px;font-variant-numeric:tabular-nums}
+.sbi.sub{padding-left:16px;height:28px;font-size:13px}
+.slab{font-size:12px;font-weight:500;color:var(--muted-fg);padding:12px 8px 4px;display:flex;align-items:center;gap:4px}
+.foot{margin-top:auto;display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);padding-top:8px}
+.meter{display:grid;grid-template-columns:62px 1fr 34px;align-items:center;gap:8px;font-size:12px;color:var(--muted-fg);padding:3px 8px;font-variant-numeric:tabular-nums}
+.meter b{font-weight:500;text-align:right;color:var(--foreground)}
+.meter b.warn{color:var(--needs)}
+.bar{height:6px;border-radius:999px;background:var(--muted);overflow:hidden;position:relative;display:block}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:inherit;background:var(--foreground);display:block}
+.bar i.warn{background:var(--needs-solid)}.bar i.run{background:var(--run)}.bar i.ok{background:var(--done)}.bar i.bad{background:var(--fail)}.bar i.grey{background:var(--ring)}
+.rail .sbi{width:40px;height:36px;justify-content:center;padding:0}
+.rail .sbi.on::before{left:-6px}
+.rb{position:absolute;top:3px;right:1px;min-width:16px;height:16px;border-radius:8px;font:600 10px/16px var(--font-sans);text-align:center;padding:0 4px;background:var(--needs-solid);color:#1c1917}
+.rb.n{background:var(--muted);color:var(--foreground);box-shadow:inset 0 0 0 1px var(--border)}
+.rsep{width:24px;height:1px;background:var(--border);margin:6px 0}
+.ic{width:16px;height:16px;flex:none}
+.ic.sm{width:14px;height:14px}.ic.xs{width:12px;height:12px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--muted-fg)}
+.num{font-variant-numeric:tabular-nums}
+.ph{min-height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 24px;flex-wrap:wrap}
+.ph h1{font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.015em;margin:0;white-space:nowrap}
+.ph .sub{font-size:13px;color:var(--muted-fg)}
+.ph .end{margin-left:auto;display:flex;align-items:center;gap:8px}
+.crumb{font-size:13px;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
+.crumb a{color:var(--muted-fg);text-decoration:none}
+.crumb a:hover{color:var(--foreground);text-decoration:underline;text-underline-offset:3px}
+.stamp{font-size:12px;color:var(--muted-fg);display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sel{height:32px;display:inline-flex;align-items:center;gap:8px;padding:0 10px 0 12px;border:1px solid var(--border);border-radius:6px;background:var(--background);font:400 13px/1 var(--font-sans);color:var(--foreground);white-space:nowrap;box-shadow:var(--sh-sm)}
+.sel .ic{color:var(--muted-fg)}
+.utabs{display:flex;gap:20px;border-bottom:1px solid var(--border);padding:0 24px;flex:none}
+.utabs a{height:40px;display:inline-flex;align-items:center;gap:6px;font-size:13.5px;font-weight:500;color:var(--muted-fg);position:relative;white-space:nowrap;text-decoration:none}
+.utabs a:hover{color:var(--foreground)}
+.utabs a.on{color:var(--foreground)}
+.utabs a.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--foreground);border-radius:2px}
+.utabs .c{font-size:11.5px;color:var(--muted-fg);font-variant-numeric:tabular-nums;font-weight:500}
+.utabs .cn{height:18px;min-width:18px;padding:0 5px;border-radius:9px;background:var(--needs-bg);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs-bd);font:600 11px/18px var(--font-sans);text-align:center}
+.pb{padding:24px;display:flex;flex-direction:column;gap:24px;max-width:1048px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin:0 0 12px}
+.sec-h h2{font-size:15px;line-height:22px;font-weight:600;margin:0;letter-spacing:-.005em}
+.sec-h .sub{font-size:13px;color:var(--muted-fg)}
+.sec-h .end{margin-left:auto}
+.btn{height:36px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 14px;border-radius:var(--radius);font:500 14px/1 var(--font-sans);white-space:nowrap;flex:none;border:1px solid transparent;cursor:pointer;text-decoration:none}
+.btn.sm{height:32px;padding:0 12px;font-size:13px;gap:6px}
+.btn.xs{height:28px;padding:0 10px;font-size:12.5px;gap:6px}
+.btn.pri{background:var(--primary);color:var(--primary-fg);box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:#27272a;color:var(--primary-fg)}
+.btn.out{background:var(--background);border-color:var(--border);color:var(--foreground);box-shadow:var(--sh-sm)}
+.btn.out:hover{background:var(--muted)}
+.btn.ghost{background:transparent;color:var(--foreground)}
+.btn.ghost:hover{background:var(--muted)}
+.btn:focus-visible,.sbi:focus-visible,.utabs a:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.lnk{color:var(--foreground);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--ring);font-weight:500}
+.lnk:hover{text-decoration-color:var(--foreground)}
+kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font:500 11px/1 var(--font-mono);color:var(--muted-fg)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:var(--radius);font:500 12px/1 var(--font-sans);white-space:nowrap;border:1px solid transparent;font-variant-numeric:tabular-nums;flex:none}
+.b-out{border-color:var(--border);color:var(--foreground)}
+.b-grey{background:var(--muted);color:var(--muted-fg);border-color:var(--border)}
+.b-needs{background:var(--needs-bg);color:var(--needs);border-color:var(--needs-bd)}
+.b-run{background:var(--run-bg);color:var(--run);border-color:var(--run-bd)}
+.b-done{background:var(--done-bg);color:var(--done);border-color:var(--done-bd)}
+.b-fail{background:var(--fail-bg);color:var(--fail);border-color:var(--fail-bd)}
+.b-ready{background:var(--ready-bg);color:var(--ready);border-color:var(--ready-bd)}
+.g{font-family:var(--font-mono);font-weight:600}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px}
+.verdict{display:flex;flex-direction:column;gap:10px;padding:20px 20px 18px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.verdict .top{display:flex;align-items:center;gap:8px}
+.verdict h2{margin:0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.015em;max-width:62ch;text-wrap:pretty}
+.verdict p{margin:0;font-size:14px;line-height:21px;color:var(--muted-fg);max-width:72ch}
+.verdict .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.tile{padding:16px;display:flex;flex-direction:column;gap:6px;min-height:136px}
+.tile .lb{font-size:13px;font-weight:500;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
+.tile .v{font-size:30px;line-height:36px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.tile .v small{font-size:14px;font-weight:500;color:var(--muted-fg);letter-spacing:0;margin-left:4px}
+.tile .st{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500}
+.tile .cmp{font-size:12.5px;line-height:18px;color:var(--muted-fg);font-variant-numeric:tabular-nums}
+.tile.bad{border-color:var(--fail-bd);box-shadow:inset 3px 0 0 var(--fail)}
+.s-done{color:var(--done)}.s-fail{color:var(--fail)}.s-needs{color:var(--needs)}.s-grey{color:var(--muted-fg)}.s-run{color:var(--run)}
+.chart{padding:16px 16px 12px;display:flex;flex-direction:column;gap:8px}
+.chart .ch{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.chart .ch h3{margin:0;font-size:14px;line-height:20px;font-weight:600}
+.chart .ch .sub{font-size:12.5px;color:var(--muted-fg)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted-fg);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:18px;height:0;border-top:2px solid var(--chart-now);display:inline-block}
+.sw.before{border-top:1.5px solid var(--chart-before)}
+.sw.lim{border-top:1.5px dashed var(--fail)}
+.mk{min-width:20px;height:20px;padding:0 6px;border-radius:10px;border:1px solid #71717a;background:var(--background);display:inline-flex;align-items:center;justify-content:center;font:600 11px/1 var(--font-sans);color:#3f3f46;font-variant-numeric:tabular-nums;flex:none}
+.mk.lev{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+.mkl{display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);margin:4px -16px 0;padding:10px 16px 0}
+.mkl a{display:flex;align-items:center;gap:10px;font-size:13px;line-height:18px;padding:5px 6px;border-radius:6px;color:var(--foreground);text-decoration:none}
+.mkl a:hover{background:var(--muted)}
+.mkl .when{margin-left:auto;font-size:12px;color:var(--muted-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.list{display:flex;flex-direction:column}
+.li{display:grid;grid-template-columns:88px 96px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:44px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:13px;color:var(--foreground);text-decoration:none}
+.li:last-child{border-bottom:0}
+.li:hover{background:color-mix(in srgb,var(--muted) 60%,transparent);color:var(--foreground)}
+.li .t{font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li .w{font-size:12px;color:var(--muted-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.li .ef{font-size:12.5px;color:var(--muted-fg);white-space:nowrap;font-variant-numeric:tabular-nums}
+.kind{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font:500 11.5px/1 var(--font-sans);color:var(--muted-fg);background:var(--muted);justify-self:start}
+.fold{border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.fold summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:48px;padding:12px 16px;cursor:pointer;font-size:14px}
+.fold summary::-webkit-details-marker{display:none}
+.fold summary:hover{background:var(--subtle)}
+.fold summary .t{font-weight:600}
+.fold summary .hd{color:var(--muted-fg);font-size:13px}
+.fold summary .cue{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--muted-fg)}
+.fold .fb{padding:4px 16px 16px;font-size:13.5px;line-height:21px;color:var(--foreground);border-top:1px solid var(--border)}
+.banner{min-height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:8px 12px 8px 24px;font-size:13px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.banner.warn{background:var(--needs-bg);border-bottom-color:var(--needs-bd);color:var(--foreground)}
+.banner.warn .ic{color:var(--needs)}
+.banner.crit{background:var(--fail-bg);border-bottom-color:var(--fail-bd)}
+.banner.crit .ic{color:var(--fail)}
+.banner.info{background:var(--subtle)}
+.banner.info .ic{color:var(--muted-fg)}
+.banner .ba{margin-left:auto;display:flex;gap:6px;align-items:center}
+.skel{background:var(--muted);border-radius:4px;height:12px;display:block}
+.tt{background:var(--primary);color:var(--primary-fg);font-size:12px;line-height:17px;padding:8px 10px;border-radius:6px;box-shadow:var(--sh-md);display:flex;flex-direction:column;gap:3px;width:260px}
+.tt .k{color:#a1a1aa;font-size:11.5px}
+.tt b{font-weight:600;font-size:13px}
+.note{font-size:12.5px;line-height:18px;color:var(--muted-fg)}
+.fr{box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--focus)!important}
+.rng{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;height:28px;box-shadow:var(--sh-sm);flex:none}
+.rng button{border:0;background:var(--background);padding:0 10px;font:500 12.5px/1 var(--font-sans);color:var(--muted-fg);cursor:pointer;white-space:nowrap}
+.rng button+button{border-left:1px solid var(--border)}
+.rng button[aria-checked="true"]{background:var(--muted);color:var(--foreground)}
+.rng button:hover{color:var(--foreground)}
+.rng button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.rng.lg{height:32px}.rng.lg button{padding:0 12px;font-size:13px}
+.sw.sofar{width:9px;height:9px;border:2px solid var(--chart-now);border-radius:50%;background:var(--background)}
+.sw.nodata{width:18px;height:10px;border:0;background:repeating-linear-gradient(45deg,var(--chart-grid) 0 2px,transparent 2px 4.2px);outline:1px solid var(--border)}
+</style>
+</helmet>
+<div class="board">
+  <div class="ann"><b>5 · /levers/trends</b><span>route <i>/levers/trends?range=wbr</i> (default <i>range=30d</i>, kept per viewer)</span><span>reads <i>GET /api/levers/trends?range=wbr</i> = trends.metrics.{cost,time,tokens,fixes,prompts}.weekly (last 6) + .monthly (last 12); <i>range=30d</i> reads .daily</span><span>drawn in <i>6 weeks · 12 months</i>; board 1 shows <i>Last 30 days</i></span><span>markers in this range: lever events only, one per week or month, "n +k" when several</span><span><i>sample</i>: every Time per ticket figure (desk doesn't record it yet)</span></div>
+  <div class="win">
+    <div class="tb">
+      <div class="tbxl"><div class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></div><div class="wm"><span class="mark"><i></i></span>Desk</div><span class="pgname">Levers</span></div>
+      <div class="srch"><svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><span>Search tickets, PRs, commands</span><kbd>⌘K</kbd></div>
+      <div class="tbxr"><span class="pill needs"><span class="g">◆</span>25</span><span class="pill ok"><span class="dot"></span>Healthy</span><button class="ib" aria-label="Settings"><svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
+    </div>
+    <div class="wmain">
+      <nav class="side" aria-label="Desk">
+        <a class="sbi" href="Inbox.dc.html"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>Inbox<span class="tr warn">25</span></a>
+        <div class="slab"><svg class="ic xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>Repos</div>
+        <a class="sbi sub" href="Repos.dc.html">desk-skills<span class="tr s-run">● 4</span></a>
+        <a class="sbi sub" href="Repos.dc.html">ai-agents<span class="tr s-needs">◆ 6</span></a>
+        <a class="sbi sub" href="Repos.dc.html">studia-web<span class="tr s-needs">◆ 14</span></a>
+        <a class="sbi sub" href="Repos.dc.html">studia-zendesk<span class="tr s-needs">◆ 5</span></a>
+        <div style="height: 8px"></div>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"></rect><rect width="6" height="6" x="9" y="9" rx="1"></rect><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"></path></svg>Workers<span class="tr">7</span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"></path><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"></path></svg>Conversations<span class="tr"><span class="dot"></span>1 live</span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg>Usage &amp; costs<span class="tr warn">88%</span></a>
+        <a class="sbi on" href="Main.dc.html" aria-current="page"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"></path></svg>Levers<span class="tr warn"><span class="g">◆</span>1</span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>Health<span class="tr"></span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8"></path></svg>Decisions<span class="tr">12 new</span></a>
+        <div class="foot">
+          <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>Settings<span class="tr"><kbd>⌘,</kbd></span></a>
+          <div class="meter"><span>Claude 5h</span><span class="bar"><i style="width: 32%"></i></span><b>32%</b></div>
+          <div class="meter"><span>7d</span><span class="bar"><i class="warn" style="width: 88%"></i></span><b class="warn">88%</b></div>
+        </div>
+      </nav>
+      <main class="content">
+        <header class="ph">
+          <h1>Levers</h1>
+          <span class="sub">Ways desk tries to make tickets cheaper, and whether they work.</span>
+          <div class="end"><span class="stamp">Built 06:55 · 3 min ago</span><span class="sel">desk-skills<span class="muted">· 1 of 4 repos</span><svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span><button class="btn out sm">Rebuild</button></div>
+        </header>
+        <nav class="utabs" aria-label="Levers pages">
+          <a href="Main.dc.html">Overview</a>
+          <a href="Levers.dc.html">Levers <span class="c">12</span></a>
+          <a class="on" href="Trends.dc.html" aria-current="page">Trends</a>
+          <a href="Changes.dc.html">Changes <span class="c">7 days</span></a>
+        </nav>
+        <div class="pb" style="gap: 16px">
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+            <div class="rng lg" role="radiogroup" aria-label="Time range"><button role="radio" aria-checked="false">Last 30 days</button><button role="radio" aria-checked="true">6 weeks · 12 months</button></div>
+            <span class="note">One choice drives every chart. desk started recording on 21 Nov, so earlier weeks and months are empty.</span>
+            <div class="legend" style="margin-left: auto"><span><i class="sw"></i>Now</span><span><i class="sw before"></i>Before levers</span><span><span class="mk lev">1</span>A lever changed</span><span><span class="mk lev">2 +1</span>Several in one week or month</span><span><i class="sw sofar"></i>So far</span><span><i class="sw nodata"></i>No data</span></div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+<section class="card chart" aria-labelledby="t1" style="position: relative">
+              <div class="ch"><h3 id="t1">Cost per ticket</h3><span class="st s-done" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="dot"></span>6% less than before levers</span></div>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Cost per ticket by week for the last 6 weeks and by month for the last 12 months. Week 47 $15.60, week 48 so far $13.00, November so far $16.47, against $17.52 before levers. No data before 21 November." style="display: block">
+<defs><pattern id="hatch-cost" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-cost)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-cost)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">$0</text><text x="40" y="157">$6</text><text x="40" y="118">$12</text><text x="40" y="79">$18</text><text x="40" y="40">$24</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="78.1" x2="234.0" y2="78.1" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="78.1" x2="444" y2="78.1" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,90.6 218.5,107.5" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="90.6" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="107.5" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="84.9" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b" stroke="#52525b" stroke-width="2"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <div class="tt" role="tooltip" style="position: absolute; left: 196px; top: 70px"><span class="k">Week 48 · 24 to 30 Nov, so far · 2 lever changes</span><b>desk turned preflight off · 26 Nov</b><b>desk turned failure-class off · 27 Nov</b><span>$13.00 a ticket this week so far · $15.60 the week before</span><span class="k">Before and after, not a test</span></div><dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">$20.57</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">$14.13</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">$16.47</dd></div>
+                <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">$17.52</dd></div>
+              </dl>
+            </section>
+<section class="card chart" aria-labelledby="tt">
+              <div class="ch"><h3 id="tt">Time per ticket</h3><span class="st s-done" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="dot"></span>19% faster than before levers</span><span class="sub">median, first start to merge</span></div>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Median time per ticket from first start to merge, by week and by month. Week 47 6.9 hours, week 48 so far 5.6 hours, November so far 6.4 hours, against 7.9 hours before levers. Sample figures." style="display: block">
+<defs><pattern id="hatch-time" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-time)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-time)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0h</text><text x="40" y="157">3h</text><text x="40" y="118">6h</text><text x="40" y="79">9h</text><text x="40" y="40">12h</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="89.3" x2="234.0" y2="89.3" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="89.3" x2="444" y2="89.3" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,102.3 218.5,119.2" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="102.3" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="119.2" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="108.8" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">6.1h</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">5.8h</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">6.4h</dd></div>
+                <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">7.9h</dd></div>
+              </dl>
+            </section>
+<section class="card chart" aria-labelledby="t2">
+              <div class="ch"><h3 id="t2">Tokens per ticket</h3><span class="st s-done" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="dot"></span>23% fewer than before levers</span></div>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Input tokens per ticket by week and by month. Week 47 29.6 million, week 48 so far 22.4 million, November so far 29.8 million, against 38.9 million before levers." style="display: block">
+<defs><pattern id="hatch-tok" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-tok)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-tok)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">10M</text><text x="40" y="118">20M</text><text x="40" y="79">30M</text><text x="40" y="40">40M</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="40.3" x2="234.0" y2="40.3" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="40.3" x2="444" y2="40.3" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,76.6 218.5,104.6" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="76.6" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="104.6" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="75.8" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">35.7M</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">26.5M</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">29.8M</dd></div>
+                <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">38.9M</dd></div>
+              </dl>
+            </section>
+<section class="card chart" aria-labelledby="t3" style="border-color: var(--fail-bd)">
+              <div class="ch"><h3 id="t3">Fix tries per ticket</h3><span class="st s-fail" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="g">✕</span>Over the 0.16 limit</span></div>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Fix tries per ticket by week and by month. Week 47 0.20, week 48 so far 0.24, November so far 0.30, all over the 0.16 limit, against 0.13 before levers." style="display: block">
+<defs><pattern id="hatch-fix" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-fix)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-fix)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">0.2</text><text x="40" y="118">0.4</text><text x="40" y="79">0.6</text><text x="40" y="40">0.8</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="166.7" x2="234.0" y2="166.7" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="166.7" x2="444" y2="166.7" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<line x1="48" y1="160.8" x2="234.0" y2="160.8" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="5 4"></line><line x1="250.0" y1="160.8" x2="444" y2="160.8" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="5 4"></line>
+<text x="440" y="154.8" font-family="Geist, Inter, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="end">limit 0.16</text>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,153.0 218.5,146.2" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="153.0" r="3.5" fill="#b91c1c"></circle><circle cx="218.5" cy="146.2" r="4.0" fill="var(--background)" stroke="#b91c1c" stroke-width="2"></circle><circle cx="435.9" cy="133.5" r="4.0" fill="var(--background)" stroke="#b91c1c" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num s-fail" style="margin: 2px 0 0; font-weight: 600">0.33</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num s-fail" style="margin: 2px 0 0; font-weight: 600">0.20</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num s-fail" style="margin: 2px 0 0; font-weight: 600">0.30</dd></div>
+                <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">0.13</dd></div>
+              </dl>
+            </section>
+<section class="card chart" aria-labelledby="t4">
+              <div class="ch"><h3 id="t4">Permission prompts per start</h3><span class="st s-fail" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="g">✕</span>39% more than before levers</span></div>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Permission prompts per worker start by week and by month. Week 47 3.77, week 48 so far 2.98, November so far 3.76, against 2.71 before levers." style="display: block">
+<defs><pattern id="hatch-pr" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-pr)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-pr)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">1.5</text><text x="40" y="118">3</text><text x="40" y="79">4.5</text><text x="40" y="40">6</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="121.5" x2="234.0" y2="121.5" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="121.5" x2="444" y2="121.5" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,94.0 218.5,114.5" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="94.0" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="114.5" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="94.2" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">3.70</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">3.55</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">3.76</dd></div>
+                <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">2.71</dd></div>
+              </dl>
+            </section>
+<section class="card" aria-labelledby="t5" style="padding: 16px; display: flex; flex-direction: column; gap: 10px">
+              <h3 id="t5" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600">Reading 6 weeks · 12 months</h3>
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--muted-fg)">Each chart is two charts side by side. On the left, one point for each of the last 6 weeks, Monday to Sunday. On the right, one point for each of the last 12 months. A hollow point is a week or month that hasn't finished.</p>
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--muted-fg)">Only lever changes are marked here, one marker per week or month. A marker like 2 +1 means change 2 and one more in that week; hover it to see both. Claude Code updates, PRs and settings are marked in Last 30 days and listed on Changes.</p>
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--muted-fg)">Weeks and months before 21 Nov are hatched: desk has no tickets from then, so they are left empty, never drawn as 0.</p>
+            </section>
+          </div>
+          <div class="card" style="padding: 4px 16px">
+            <div class="mkl" style="border-top: 0; margin: 0; padding: 6px 0">
+              <a href="Changes.dc.html"><span class="mk lev">1</span><span>desk turned memory off: failed CI runs per ticket went over the limit</span><span class="when">W47 · 23 Nov, 00:00</span></a>
+              <a href="Changes.dc.html"><span class="mk lev">2</span><span>desk turned preflight off: a worker that skipped the check failed on something it looks for</span><span class="when">W48 · 26 Nov, 00:01</span></a>
+              <a href="Changes.dc.html"><span class="mk lev">3</span><span>desk turned failure-class off: serious review findings went over the limit</span><span class="when">W48 · 27 Nov, 00:02</span></a>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <div class="sbar"><span class="seg"><span class="dot run"></span>7 workers · cap 30 · room for 7 more by memory · 27.5 GiB free</span><span class="sep"></span><span class="seg">Claude default <span class="warn">7d 88%</span> · 2 repos pinned</span><span class="sep"></span><span class="seg">Codex 7d 46%</span><span style="flex: 1"></span><span class="seg">Server 127.0.0.1:4823 <span class="dot"></span></span><span class="sep"></span><span class="seg num">09:58</span></div>
+  </div>
+  <div class="note" style="padding: 0 4px">Marker "2 +1" on Cost per ticket is shown hovered: ring 2px #52525b, tooltip 260px on --primary listing every change it holds. Points over a limit draw 3.5px in --fail. The "2 +1" marker is the grouped form: 20px tall, 10px radius, 30px wide (widens to fit), 10.5px text; its tooltip lists every change it holds. Marker numbers are per range, 1 at the oldest. The week/month divider is 1px --border, 16px gap; week labels W43 to W48 (ISO weeks), month labels are initials, Dec 2025 to Nov 2026.</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1750}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
 // its arguments, whether it had any stdin and its working folder, writes a session log in the shape
 // Codex writes one (session_meta, turn_context, a tool call the sandbox refused, a token_count with
 // rate_limits), writes its final message, and fixes src.txt when the prompt says FIX.
-import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -297,11 +297,13 @@ t('AC5 Fable beside the other sides', fableReport.includes('| Figure | Phase 0 b
 t('AC5 with the same columns', fableRow.split(' | ').length, 7);
 
 const overOut = join(dir, 'out-over');
-const overStart = Date.now();
 r = run(['--tasks', join(setDir, 'over.json'), '--max-budget-usd', '1', '--total-budget-usd', '20', '--out', overOut, '--seed', '4', '--timeout', '60', '--fable'], fableEnv('over'));
-const overElapsed = Date.now() - overStart;
 const overRes = results(overOut);
-t('AC4 the stub that never exits is ended by the watch, not the 60s timeout', overElapsed < 50000, true);
+// The Fable run alone, from its stderr.log (opened as claude starts; the stub writes none) to its
+// result.json: the whole bench's wall time also counts the other sides and a slow runner's load.
+const fableDir = overRes['over.fable']?.dir;
+const fableSecs = fableDir ? (statSync(join(fableDir, 'result.json')).mtimeMs - statSync(join(fableDir, 'stderr.log')).mtimeMs) / 1000 : null;
+t('AC4 the stub that never exits is ended by the watch, not the 60s timeout', fableSecs !== null && fableSecs < 50, true);
 const runJson = JSON.parse(readFileSync(join(overOut, 'run.json'), 'utf8'));
 const overStops = runJson.arm_stops?.[0]?.why ?? '';
 t('AC4 the run using overage is ended, well before its timeout', `${overRes['over.fable']?.status} ${/recorded a request using overage/.test(overRes['over.fable']?.why ?? '')}`, 'failed true');

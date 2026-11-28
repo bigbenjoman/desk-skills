@@ -61,7 +61,7 @@
 import { workerMarkers, endedNormally } from '../harvest.mjs';
 import { usageLimit, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
-import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, countedTry, FIX_TRIES_MAX } from '../base-fix.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, countedTry, notStarted, FIX_TRIES_MAX } from '../base-fix.mjs';
 import { tries } from '../fix-tries.mjs';
 import { behindPrs } from '../desk-q-model.mjs';
 import { summary } from '../baseline.mjs';
@@ -101,7 +101,9 @@ export function* decideBaseSync(s) {
   // null when the count cannot be read (a ref never fetched): unknown, never reported as 0.
   const behindBy = yield { type: 'behind' };
   const behindNow = behindBy > 0;
-  const wantSync = s.willSpawn || staleCI.length > 0 || s.epicOpen || behindNow;
+  // So does one whose conflict fix has not started (base_fix.start): the sync is what finds the conflict
+  // resolved by hand, and drops the record.
+  const wantSync = s.willSpawn || staleCI.length > 0 || s.epicOpen || behindNow || (bf?.start != null && !bf.running);
   // A sync that does not land holds spawns in feature mode, and otherwise once the base lags too far.
   // A lag that cannot be read holds nothing outside feature mode, and the note says it was not read.
   const lag = behindBy === null ? `how far ${BASE} is behind ${SOURCE} could not be read` : `${BASE} is ${behindBy} commit(s) behind ${SOURCE}`;
@@ -234,7 +236,11 @@ export function* decideBaseSync(s) {
     const Try = `${what[0].toUpperCase()}${what.slice(1)}`;
     if (c.call === 'person' || c.call === 'stuck') return { person: `${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push` };
     if (c.call === 'wait') return { line: `${said}. ${Try} try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes` };
-    if (!s.fixRoom) return { line: `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass: ${s.noFixRoom})` };
+    if (!s.fixRoom) {
+      bf = notStarted(bf, c.fix, s.noFixRoom, { at: s.passAt });
+      if (!s.dry) yield setBatch(`base_fix=${JSON.stringify(bf)}`);
+      return { line: `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass: ${s.noFixRoom})` };
+    }
     baseFix = { wt: wt.path, fix: c.fix };
     return { line: `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts this pass in ${wt.path}` };
   }
@@ -272,11 +278,15 @@ export function* decideBaseSync(s) {
     // A base that syncs is no longer in conflict, so a later conflict starts its tries afresh. The epic
     // PR's review tries and the promotion PR's check tries are kept: they count per head.
     const conflictTries = (bf?.tries ?? []).filter(mergeTry);
-    if (sync.ok && !sync.dry && conflictTries.length && !s.dry) {
-      yield baseLine(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter(countedTry).length)}`);
+    // A start the base gate's conflict at the base's head left stays, as a sync that moved nothing does
+    // not settle it: the gate meets it again below and counts the pass.
+    const keepStart = sync.ok && bf?.start != null && !sync.merged && !sync.recreated && q.gate?.state === 'failed'
+      && Array.isArray(q.gate.conflict) && q.gate.sha != null && q.gate.sha === (yield originSha(BASE));
+    if (sync.ok && !sync.dry && (conflictTries.length || (bf?.start && !keepStart)) && !s.dry) {
+      if (conflictTries.length) yield baseLine(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter(countedTry).length)}`);
       for (const x of conflictTries) if (x.kept?.ref) yield { type: 'drop-ref', ref: x.kept.ref };
       const kept = bf.tries.filter((x) => !mergeTry(x));
-      bf = kept.length ? { tries: kept, running: null, port: null } : null;
+      bf = kept.length || keepStart ? { tries: kept, running: null, port: null, ...(keepStart ? { start: bf.start } : {}) } : null;
       yield setBatch(`base_fix=${bf ? JSON.stringify(bf) : 'null'}`);
     }
     // Merged into the default branch and then deleted on origin (delete-branch-on-merge): put back at the

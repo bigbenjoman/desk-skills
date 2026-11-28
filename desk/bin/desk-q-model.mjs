@@ -3073,6 +3073,7 @@ function oldCodeNotes(shown) {
 // oldCodeNotes's, which batch carries the old desk code notes, and `drivers` which batch carries its
 // repo's stopped merge driver note: the driver is the repo's, so it is one note. With `allOut`, Home's note on the
 // Claude default's limit stands for the batch's hold on it.
+const BASE_FIX_WAIT_PASSES = 3;
 function stallNotes(r, quiet, old, drivers, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
@@ -3082,6 +3083,12 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
   const q = quiet.notes.get(r);
   if (q) out.push({ ...note(q.text), ...(q.hide ? { hide: q.hide } : {}) });
+  // A base conflict fix that has waited BASE_FIX_WAIT_PASSES passes in a row to start (base-fix.mjs
+  // notStarted), with no fix worker running, and why the last pass did not start it.
+  const bs = r.q?.base_fix?.start;
+  if (bs && (bs.passes ?? 0) >= BASE_FIX_WAIT_PASSES && !r.q.base_fix.running) {
+    out.push(note(`${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s ${bs.check ? 'merged-tree' : 'conflict'} fix has not started for ${bs.passes} passes: ${String(bs.why ?? 'no reason recorded').replace(/\.$/, '')}.`));
+  }
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {
     const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;

@@ -9,6 +9,10 @@
 // started from, `kept_stale` why the kept merge could not be, and `lock_wait` a try that parked only
 // on the busy test lock, which counts against no try, as `usage_moved` does: one ended at a usage limit
 // on a login new work had moved off.
+// A merge try that is due and does not start is kept as `start` (notStarted), never as a try:
+//   { try, files, check, since, passes, failed, why }   (check: the §4 Merged-tree check's command, for a merged-tree fix)
+// `passes` counts the passes it waited, `failed` the spawns that failed or were refused, and `why` the
+// last reason. A sync that lands drops it, and so does a try that starts.
 // and asks baseFixCall what to do whenever the sync, or the base gate, meets the conflict:
 //
 //   spawn   start try `fix.try` in the base worktree
@@ -51,7 +55,20 @@ export function baseFixCall(rec, c) {
   if (triesSpent(counted, c.head)) {
     return { call: 'stuck', why: `still ${c.check ? 'failing the check' : 'in conflict'} after ${tries(counted.length)}${last?.outcome ? `; the last try ${last.outcome}` : ''}` };
   }
+  if ((rec?.start?.failed ?? 0) >= START_TRIES_MAX) {
+    return { call: 'stuck', why: `its fix worker could not be started in ${rec.start.failed} tries; the last: ${rec.start.why}` };
+  }
   return { call: 'spawn', fix: { try: counted.length + 1, of: FIX_TRIES_MAX, head: c.head, source: c.source, files: c.files ?? null, ...(c.check ? { check: c.check } : {}) } };
+}
+
+// How many times a due merge try's spawn may fail or be refused before the conflict is the person's.
+export const START_TRIES_MAX = 3;
+// base_fix `rec` once merge try `fix` was due this pass and did not start, for `why`; `failed` where
+// its spawn failed or was refused rather than waited. `at` is when the pass began.
+export function notStarted(rec, fix, why, { failed = false, at }) {
+  const was = rec?.start ?? null;
+  const start = { try: fix.try, files: fix.files ?? null, ...(fix.check ? { check: fix.check.command } : {}), since: was?.since ?? at, passes: (was?.passes ?? 0) + 1, failed: (was?.failed ?? 0) + (failed ? 1 : 0), why };
+  return { ...(rec ?? { tries: [], running: null, port: null }), start };
 }
 
 // What a finished try's worker left, from its log's markers (harvest.mjs workerMarkers): whichever of

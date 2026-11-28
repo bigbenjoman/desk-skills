@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, levers, ghRepo,
-  repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
+  cloudEnvironment, repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
@@ -460,7 +460,8 @@ const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' }
 // stays local, before any worker starts. Where a cloud-able one runs is decided when it starts. A cloud session takes no budget flag.
 let location;
 let budget;
-try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
+let cloudEnv = null;
+try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; cloudEnv = location === 'cloud' ? cloudEnvironment() : null; } catch (e) { refuse(e.message); }
 const featureBatch = feature?.on ? { spine: feature.spine, owners: feature.plan?.owners } : null;
 // The effort lever is read per ticket: from the pin of one already in the queue (an epic's child,
 // seeded before its plan), else from the row, which `queue.mjs add` pins it with.
@@ -468,12 +469,12 @@ let pinned = {};
 try { pinned = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue yet: every ticket reads the row */ }
 const rowLevers = levers();
 const effortFor = (k) => { try { return location === 'cloud' && leverOnFor('effort', pinned[k], rowLevers); } catch (e) { return refuse(e.message); } };
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort: effortFor(r.ticket) })]));
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort: effortFor(r.ticket), env: cloudEnv })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {
   const n = admitted.filter((r) => placed[r.ticket].where === 'cloud').length;
-  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) can run in a cloud session, placed when each starts; the rest local (config §3b "Worker location")`);
+  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) can run in a cloud session, placed when each starts; the rest local (config §3b "Worker location")${cloudEnv ? `, in cloud environment ${cloudEnv.name} (config §3b "Cloud environment")` : ''}`);
   say(`budget: ${budget.off ? 'no cap' : `$${budget.usd}`} per local worker (config §3b "Autopilot per-worker budget (USD)"); a cloud session takes no budget, and its tokens and cost are not reported`);
 } else say('workers: local');
 if (notOurs.length) {
@@ -496,7 +497,7 @@ for (const r of order) {
   say(`  branch: ${r.branch}`);
   if (elsewhere(r) && !elsewhere(r).unknown) say(`  ~ ${awayWhy(r)}: admitted there, not here, when the queue is seeded`);
   if (location === 'cloud' && admitted.includes(r)) say(`  ${runsText(placed[r.ticket])}`);
-  if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
+  if (r.needs_db) say(`  ! needs a database — ${location === 'cloud' && placed[r.ticket].where === 'cloud' ? `its session starts cloud environment ${cloudEnv.name}'s PostgreSQL` : DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
   // A step only the person can take is its own blocker ticket, not the ticket's lane.

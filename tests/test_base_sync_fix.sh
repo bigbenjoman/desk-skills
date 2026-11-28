@@ -185,4 +185,29 @@ check "DS-958 with room for one on the test lock, the base fix starts and the su
 check "#1544 AC1 beside them a fresh Stage 0 start takes no lock-queue room and starts" \
   'grep -q "^T-2 " "$T/spawns" && [[ "$out" != *"Stage 4 (T-1, T-2)"* ]]'
 
+# DS-1034 AC1: the sync meets the conflict with no ticket to spawn and no failed gate, beside a sibling
+# batch with a worker running: the fix takes the lock nothing else wanted, counts again under it, finds
+# room under the repo's cap and starts.
+: > "$T/spawns"; fresh broom; feature; fixrow yes; conflict; node "$B/queue.mjs" set T-1 state=done >/dev/null
+SIB="$DESK_HOME/repos/acme__widgets/queue.json"; mkdir -p "$(dirname "$SIB")" "$T/locks-room"
+echo '{"tickets":{"S-1":{"key":"S-1","state":"running"}}}' > "$SIB"; age_probes
+out=$(DESK_REPO_OVERRIDE=acme/widgets DESK_LOCK_DIR="$T/locks-room" node "$B/pass.mjs" 2>&1); rc=$?
+check "DS-1034 AC1 a sync conflict with nothing to spawn and a live sibling batch starts its fix worker that pass" \
+  'grep -q "^base-feat-x .*conflict fix try 1 of 2 on feat/x" "$T/spawns" && [[ "$out" != *"starts once a worker may"* ]]'
+rm -f "$SIB"
+
+# DS-1034 AC2: a spawn of the fix worker that is refused spends no try, and the next pass tries again;
+# after 3 refused starts the conflict is the person's, naming the file and why.
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1" >> "$T/refused"; echo "spawn-worker: no seat for \$1"; exit 1; fi
+EOF
+: > "$T/spawns"; : > "$T/refused"; fresh brefuse; feature; fixrow yes; conflict; pass
+check "DS-1034 AC2 a refused spawn spends no try, and counts one failed start" \
+  '[ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 0 ] && [ "$(jq -r .base_fix.start.failed "$DESK_QUEUE")" = 1 ] && [[ "$(jq -r .base_fix.start.why "$DESK_QUEUE")" == "could not be spawned: spawn refused — "*"no seat for base-feat-x"* ]] && [[ "$out" != *"by hand"* ]]'
+pass
+check "DS-1034 AC2 the next pass tries again" '[ "$(grep -c "^base-feat-x$" "$T/refused")" = 2 ] && [ "$(jq -r .base_fix.start.failed "$DESK_QUEUE")" = 2 ] && [[ "$out" != *"by hand"* ]]'
+pass; pass
+check "DS-1034 AC2 after 3 refused starts no fourth is tried, and it is the person's, naming the file and why" \
+  '[ "$(grep -c "^base-feat-x$" "$T/refused")" = 3 ] && [ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"Conflicting files: a.txt. Its fix worker could not be started in 3 tries; the last: could not be spawned: spawn refused"*"resolve it by hand"* ]]'
+
 finish fix

@@ -73,6 +73,21 @@ place of that §4 Unit tests or Typecheck item. A `NODEV` line is offered as a
 §4 Dev server item for its directory (step 1, *Dev server*), and each app a Dev server item names
 is asked for its §4 Test sign-in item where it has none (step 1, *Test sign-in*).
 
+**Where §3b Cloud environment names an environment** (the core's §3b calls ask it as the template
+row reads; Recommended `none` keeps every ticket that renders, needs a database or names a local
+service on this computer), take the person through step 1's *Cloud environment* flow
+(`step-1-cloud-env.md`) for that environment: `cloud-env.mjs script` is its setup script, which
+need not be shown again if they have just pasted it. **Run `cloud-env.mjs hosts` again now, always**,
+even when step 1's flow has just run: it reads §3b Cloud environment from the config just written,
+so only this run prints the `SET` line (`DESK_CLOUD_ENV` with the environment's name, the one value
+desk gives) and the §4 Database URL variable names the environment's `db` adds. Before the write,
+a new config has no row to read, and a changed one still holds the old name. Show the `SET` line for
+the person to set as printed. Every `VARS` name is printed without a value, and the person fills those
+in: never write or ask for a value yourself. Then say two things. First, `claude --cloud` cannot name
+a hosted environment, so they should set the environment selector in claude.ai/code to Auto, which
+picks by repository. Second, each session first checks `DESK_CLOUD_ENV` and stops with
+`wrong cloud environment: <name>` if it started anywhere else.
+
 **Then offer the instruction-file audit**, `/desk-cleanup instructions`: it measures everything a
 session in this repo loads at launch (the `CLAUDE.md` and `AGENTS.md` chain, rules, `MEMORY.md`,
 skill and agent descriptions) and proposes where each oversized part could move. It writes nothing

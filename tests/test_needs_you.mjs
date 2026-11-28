@@ -2232,6 +2232,23 @@ t('DS-965 AC1 it names the base, the fetch failure and what clears it', bs965[0]
 t('DS-965 AC1 the list prints it', here('list', 'rho808').out.split('\n').some((l) => l.startsWith('rho808 base-sync base-sync')), true);
 put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-965 AC2 once a pass clears the record the item is gone', N.collect({ word: 'rho808' }).items.length, 0);
+// ---- DS-1034: a base conflict fix whose worker could not be started in 3 tries is one item for the
+// batch, naming it, the files and the last reason.
+const start1034 = (failed) => ({ tries: [], running: null, port: null, start: { try: 1, files: ['a.txt', 'b.txt'], since: minsAgo(30), passes: 4, failed, why: 'failed its spawn: spawn refused: no seat' } });
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: start1034(3) }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const bf1034 = N.collect({ word: 'rho1034' }).items;
+t('DS-1034 AC2 one base-fix-start item for the batch', bf1034.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-fix-start base-fix-start');
+t('DS-1034 AC2 it names the batch, the base, the files and the reason', bf1034[0]?.need,
+  'the conflict fix worker for feat/x in rho1034 could not be started in 3 tries, so feat/x stays in conflict with main (a.txt, b.txt). The last try: failed its spawn: spawn refused: no seat. Resolve the conflict by hand in the base worktree and push feat/x');
+t('DS-1034 AC2 its age is the first wait\'s', Math.round((NOW - bf1034[0]?.since) / 60000), 30);
+t('DS-1034 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.name === 'rho1034')).shown, 1);
+t('DS-1034 done records nothing', N.record({ word: 'rho1034', ticket: 'base-fix-start', action: 'done' }).line.includes('drops this item once it is current'), true);
+const check1034 = start1034(3); check1034.start = { ...check1034.start, files: [], check: 'make check' };
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: check1034 }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-1034 a merged-tree fix that could not start names its check, not a conflict', N.collect({ word: 'rho1034' }).items[0]?.need,
+  'the merged-tree fix worker for feat/x in rho1034 could not be started in 3 tries, so merging main into feat/x still fails §4 Merged-tree check (make check). The last try: failed its spawn: spawn refused: no seat. Merge it by hand in the base worktree, fix what the check fails and push feat/x');
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: start1034(2) }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-1034 under 3 failed starts there is no item', N.collect({ word: 'rho1034' }).items.length, 0);
 
 // ---- DS-416: a child PR whose required check only the default branch's workflow runs on the base is
 // no item of its own under ask: the base-push item says syncing the base starts its CI.

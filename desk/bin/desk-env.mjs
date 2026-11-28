@@ -211,7 +211,7 @@ import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import { quantile } from './quantile.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
-  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
+  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, parseCloudEnv, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
   signinPermissionsOf,
@@ -1108,6 +1108,8 @@ export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABE
 // §3b Worker models, Worker location and Phase 0 levers, each read by its grammar in config-schema.mjs.
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: rowDefault('worker-models') }));
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: rowDefault('worker-location') }));
+// §3b "Cloud environment" (config-schema.mjs parseCloudEnv): null where unset or `none`.
+export const cloudEnvironment = () => parseCloudEnv(resolve({ id: 'cloud-env', fallback: rowDefault('cloud-env') }));
 // §3b "Cloud sessions at once": how many of a batch's tickets may run in a cloud session together, apart
 // from its local worker slots. A value that is not a whole number starts none, rather than lifting the limit.
 //   -> { n, bad }   bad says why n is 0 for an unreadable row, else null
