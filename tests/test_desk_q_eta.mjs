@@ -138,8 +138,10 @@ const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
 const HOUR = 3_600_000;
 const Z = scratch('desk-q-ships-');
 const zenv = { HOME: join(Z, 'home'), DESK_HOME: join(Z, 'deskhome'), DESK_CONFIG_ROOT: join(Z, 'config'), DESK_MACHINE: join(Z, 'machine.md') };
-// A machine cap the fixture repos' workers together never fill, so each batch's own slots decide.
-writeFileSync(zenv.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 100` | x |\n');
+// A machine cap the fixture repos' workers together never fill, so each batch's own slots decide;
+// person-use on, so desk-q shows the mode a batch recorded (it never does on a machine that has not opted in).
+const SIZING = '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 100` | x |\n';
+writeFileSync(zenv.DESK_MACHINE, `${SIZING}| person-use | \`on\` | x |\n`);
 const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
@@ -462,6 +464,19 @@ repo('inuse', 4680, { tickets: { 'P-1': { state: 'running', stage: '3/9', start_
 const inUse = Q.repoScreen(repoAt('inuse'), { now: FIXED, width: 200 });
 t('issue-1587 AC4 desk-q says the person is using this computer: local cap 1, cloud first', inUse.split('\n').some((l) => l.startsWith('you\'re using this computer: local cap 1, cloud first · since 09:05')), true);
 t('issue-1587 AC4 and says nothing of it with the mode off', cloudy.includes('using this computer'), false);
+{
+  // A batch still holding an "on" record from before its machine's row went off (its pass has not
+  // run since) shows nothing on a machine with no person-use row, or with it off.
+  let n = 0;
+  const screen = (rows) => {
+    const machine = join(Z, `machine-person-${++n}.md`);
+    writeFileSync(machine, `${SIZING}${rows}`);
+    return spawnSync(process.execPath, [DESK_Q, 'inuse'], { encoding: 'utf8', env: { ...zenv, DESK_MACHINE: machine, PATH: process.env.PATH } }).stdout;
+  };
+  t('DS-1058 AC2 desk-q shows the recorded mode on a machine with person-use on', screen('| person-use | `on` | x |\n').includes('using this computer'), true);
+  t('DS-1058 AC2 desk-q shows no mode line on a machine with no person-use row, whatever a batch recorded', screen('').includes('using this computer'), false);
+  t('DS-1058 AC4 nor with person-use off', screen('| person-use | `off` | x |\n').includes('using this computer'), false);
+}
 t('issue-1587 AC4 a started ticket\'s screen gives its place at start, and why', field(Q.ticketScreen(repoAt('inuse'), 'P-1', { now: FIXED }).split('\n'), 'Place'), 'Place     this computer · it must run on this computer');
 t('issue-1587 AC4 a cloud-able one not yet started is placed when it starts', field(Q.ticketScreen(repoAt('inuse'), 'P-2', { now: FIXED }).split('\n'), 'Place'), 'Place     cloud-able · placed when it starts: the cloud while it has room');
 const shipsW = Q.run(['ships', 'waiting', '--plain'], { now: FIXED });

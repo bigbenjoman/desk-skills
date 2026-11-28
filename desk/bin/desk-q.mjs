@@ -48,7 +48,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
 import { runsInCloud, startsInCloud, toHandoff, placedFront, keysOf, cloudAble } from './pass/shared.mjs';
-import { modeLine as personModeLine } from './person-use.mjs';
+import { modeLine as personModeLine, personUseRows } from './person-use.mjs';
 import { isHeld, stoppedHold, bareHold, bareHoldText, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
@@ -3995,8 +3995,10 @@ export function stateKey(ks, width) {
 }
 
 // The person is using this computer (person-use.mjs), as the last pass of any of the repo's batches
-// recorded it: the local cap it dropped to, and cloud first.
+// recorded it: the local cap it dropped to, and cloud first. Only where this machine's profile has
+// `person-use` on: a batch whose pass has not run since the row went off still holds its old record.
 const personHead = (r) => {
+  if (!personUseRows((k) => machineValue(k)).on) return [];
   const p = (r.batches ?? [r]).map((b) => b.q?.person_use).find((x) => x?.on);
   return p ? [`${personModeLine(p.floor ?? 1)}${p.since ? ` · since ${p.since.slice(11, 16)}` : ''}`] : [];
 };

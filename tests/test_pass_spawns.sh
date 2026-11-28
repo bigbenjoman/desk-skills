@@ -737,7 +737,7 @@ pu_machine 0; pu_pass
 check "issue-1587 AC3 once it has, the mode switches off and the pass says the local cap is back" \
   '[ "$(bfield person_use.on)" = false ] && echo "$out" | grep -qF "person in use: off, under the threshold for 0 min; the local cap is back"'
 for k in PU-1 PU-2 PU-3; do q set "$k" state=done session_id=null; done
-# DS-1058: the mode is opt-in per machine. With no person-use row, or `off`, the pass reads nothing,
+# The mode is opt-in per machine. With no person-use row, or `off`, the pass reads nothing,
 # keeps no person_use record (clearing one an earlier pass left) and says nothing of it.
 printf '  100     1 4194304 10.0 /Applications/IDE.app/ide\n' > "$T/ps-pu.out"
 pu_off(){ # pu_off <row value, or - for none> <ticket prefix>

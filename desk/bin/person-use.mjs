@@ -26,7 +26,8 @@ const round1 = (n) => Math.round(n * 10) / 10;
 // The rows through `get(key)` (a profile value or null), each with its default where unset:
 // -> { on, baselineGb, baselineCpu, overGb, overCpu, floor, calmMin, problems }. A row set but
 // unreadable reads as its default and is a problem naming it. The mode is on only where `person-use`
-// is exactly `on`; while it is off the other rows are not read, so only that row can be a problem.
+// is exactly `on`; while it is off the other rows still read as values, but only that row's problem
+// is reported, since nothing acts on the rest.
 export function personUseRows(get) {
   const raw = get('person-use');
   const mode = raw == null ? 'off' : String(raw).trim();
