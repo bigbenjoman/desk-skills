@@ -331,7 +331,7 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
   const runWith = (S, offered, { admitted = () => true, own = false, assignSelf = 'yes', at = now, dry = false, landed = {}, away = {}, on = true } = {}) => {
     const calls = { admit: [], assign: [], list: 0 };
     const lines = admitRun({ state: S, base: 'main', now: at, dry, assignSelf, on, checks: checks(landed, away),
-      list: () => { calls.list++; return { result: { ok: true, offered: offered.map((c) => ({ own, ...c })) } }; },
+      list: () => { calls.list++; return { result: { ok: true, offered: offered.map((c) => ({ ...c, own: own || c.own })) } }; },
       admit: (k) => { calls.admit.push(k); return admitted(k) ? { admitted: true } : { admitted: false, why: `not admitted ${k}: open questions` }; },
       assign: (k) => { calls.assign.push(k); return { ok: true }; } });
     return { lines, calls, kept: (() => { try { return JSON.parse(readFileSync(join(S, 'candidate-admit.json'), 'utf8')); } catch { return null; } })() };
