@@ -216,6 +216,15 @@ const { threw, calls } = withNoIo(() => {
     t('#1564 AC5 at the cloud limit, the next cloud ticket does not start, and a local one still does', brief(atLimit.verdicts), 'C:start(cloud) D:skip(full) A:start(local)');
     t('#1564 AC4 its wait names the cloud limit, not the worker count', atLimit.said.at(-1),
       'D: waits for a cloud session (1 of 1 running, §3b "Cloud sessions at once"); local slots go first to tickets that must run here. The next pass looks again');
+    // #1626 AC3: each kind takes its own slot, and a file shared across the two is still held.
+    const localWaits = loop([ticket('A'), ticket('B'), cloud('C')], { slots: 1, cloudSlots: 1 });
+    t('#1626 AC3 a cloud ticket starts while a local ticket ahead of it waits for a local slot', brief(localWaits.verdicts), 'A:start(local) B:skip(full) C:start(cloud)');
+    const cloudWaits = loop([cloud('C'), cloud('D'), ticket('A')], { slots: 1, cloudSlots: 1 });
+    t('#1626 AC3 and a local ticket starts while a cloud ticket ahead of it waits for a cloud session', brief(cloudWaits.verdicts), 'C:start(cloud) D:skip(full) A:start(local)');
+    const cross = loop([cloud('C'), ticket('A'), ticket('B')], { slots: 2, cloudSlots: 1, files: { C: ['skills/desk-checkout/SKILL.md'], A: ['skills/desk-checkout/SKILL.md'], B: ['b'] } });
+    t('#1626 AC3 a local ticket sharing a file with a cloud ticket started this pass is held, and the next local one starts', brief(cross.verdicts), 'C:start(cloud) A:skip B:start(local)');
+    const crossBack = loop([ticket('A'), cloud('C'), cloud('D')], { slots: 1, cloudSlots: 2, files: { A: ['f'], C: ['f'], D: ['d'] } });
+    t('#1626 AC3 and a cloud ticket sharing a file with a local one started this pass is held too', brief(crossBack.verdicts), 'A:start(local) C:skip D:start(cloud)');
     const held = step(snap(cloud('C'), { cloudSlots: 0, cloudHeld: true }));
     t('#1564 held by a hold on every spawn, it is skipped without the limit line', j([held.verdict, lines(held.actions)]), j([{ type: 'skip', key: 'C', full: true, cloud: true }, []]));
     t('#1564 AC3 a stopped loop (the usage limit) holds a cloud start too', j(step(snap(cloud('C'), { stop: true })).verdict), j({ type: 'skip', key: 'C', stop: true }));

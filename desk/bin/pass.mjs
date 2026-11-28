@@ -36,7 +36,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -60,7 +60,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
-import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, pathsIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumesAtSeven, prInConflict, stageSevenConflictPark } from './fix-tries.mjs';
@@ -2939,10 +2939,12 @@ const budgetFiles = (key) => {
 };
 // The unstarted tickets nobody placed, re-sorted for throughput on every pass (spawn-order.mjs
 // resortQueue), before the candidates are read in queue order. Each ticket it moved ahead keeps why
-// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it.
+// (`resort_why`, which desk-q shows) until a later re-sort changes the order without moving it. The
+// cloud-able tickets and the local-only ones are sorted apart, as each kind has its own slots first.
 const RESORT = resortQueue(Object.values(fresh.tickets), {
   scope: budgetFiles,
   fileCount: (k) => plannedFiles(triageRec(k)),
+  cloud: startsInCloud,
 });
 const orderLines = [];
 if (RESORT.changed) {
@@ -3061,32 +3063,6 @@ const reviewKeys = new Set(runningAll.filter(reviewOnlyTry).map((r) => r.key));
 // handoffs among themselves count the running alone, and start in queue order, so none holds another
 // forever. Read from the queue as the pass found it; a handoff the loop starts is running from then.
 const handedOffKeys = new Set(all.filter((t) => t.state === 'triaged' && toHandoff(t) && !reviewOnlyTry(t)).map((t) => t.key));
-// Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
-// them (`by`), its handoffs waiting for their next session (`handoff`; for a ticket not itself handed
-// off) and the repo's other batches' (`elsewhere`, { key, batch, handoff? }).
-const budgetHolds = (r) => {
-  const holds = [];
-  if (reviewOnlyTry(r)) return holds;
-  const newTicket = !toHandoff(r);
-  for (const f of budgetFiles(r.key)) {
-    const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    const handoff = newTicket ? [...handedOffKeys].filter((k) => k !== r.key && !runningKeys.has(k) && budgetFiles(k).includes(f)) : [];
-    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && (newTicket || !o.handoff) && o.files.includes(f))
-      .map(({ key, batch, handoff: h }) => ({ key, batch, ...(h ? { handoff: true } : {}) }));
-    if (!by.length && !handoff.length && !elsewhere.length) continue;
-    const k = placesFor(f);
-    if (by.length + handoff.length + elsewhere.length >= k) holds.push({ file: f, k, by, handoff, elsewhere });
-  }
-  return holds;
-};
-// The files and tickets that hold a pending handoff back, as its handoff wait records them
-// (pass/deadlines.mjs): [{ file, with: [key, or "key in batch <label>"] }], or null where none does.
-const collisionHolds = (r) => {
-  const holds = budgetHolds(r);
-  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
-};
-const collidesWithRunning = (r) => budgetHolds(r).length > 0;
-
 // A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
 // un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
@@ -3103,6 +3079,56 @@ const alreadyFinished = (r) => {
   // quotes the marker (a grep for it, say) is not the worker finishing.
   try { return saidDone(readFileSync(log, 'utf8')); } catch { return false; }
 };
+
+// A ticket at the front: one a person placed (`--front`, or queue.mjs move or order --placed), not yet
+// started, and ready but for its files: eligibility would admit it (not finished, no reboot wait, as a
+// resume is never at the front). Above a pending handoff in the spawn order, it goes first for a file
+// they both need at its budget, and the handoff waits with its briefing kept (#1667); below it, or
+// unplaced, it does not, and the handoff keeps its place as above. That wait is no collision hold: the
+// front ticket fills no place until it starts, and the spawn loop can still skip it (a busy worktree, no
+// login), so the handoff's deadline keeps running and a front ticket that never starts escalates it.
+const spawnPos = new Map(Object.keys(fresh.tickets).map((k, i) => [k, i]));
+const above = (a, b) => (spawnPos.get(a) ?? Infinity) < (spawnPos.get(b) ?? Infinity);
+const atFront = (t) => !!t?.placed && t.state === 'triaged' && !toHandoff(t) && !toResume(t) && !reviewOnlyTry(t)
+  && !runningKeys.has(t.key) && (t.open_questions ?? 0) === 0 && keysOf(t.cycle_link).length === 0 && !alreadyFinished(t);
+// Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
+// them (`by`), its handoffs waiting for their next session (`handoff`; for a ticket not itself handed
+// off, leaving out those below it where it is at the front), the tickets at the front above it that
+// take the file first (`front`; for a handoff, each not itself held) and the repo's other batches'
+// (`elsewhere`, { key, batch, handoff? }). A front ticket counts handoffs above it alone, and a handoff
+// front tickets above it alone, so the two never hold each other.
+const budgetHolds = (r) => {
+  const holds = [];
+  if (reviewOnlyTry(r)) return holds;
+  const newTicket = !toHandoff(r);
+  const placedNew = newTicket && atFront(r);
+  for (const f of budgetFiles(r.key)) {
+    const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
+    const handoff = newTicket ? [...handedOffKeys].filter((k) => k !== r.key && !runningKeys.has(k) && budgetFiles(k).includes(f) && !(placedNew && above(r.key, k))) : [];
+    const front = newTicket ? [] : all.filter((t) => t.key !== r.key && atFront(t) && above(t.key, r.key) && budgetFiles(t.key).includes(f) && budgetHolds(t).length === 0).map((t) => t.key);
+    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && (newTicket || !o.handoff) && o.files.includes(f))
+      .map(({ key, batch, handoff: h }) => ({ key, batch, ...(h ? { handoff: true } : {}) }));
+    if (!by.length && !handoff.length && !front.length && !elsewhere.length) continue;
+    const k = placesFor(f);
+    if (by.length + handoff.length + front.length + elsewhere.length >= k) holds.push({ file: f, k, by, handoff, front, elsewhere });
+  }
+  return holds;
+};
+// The files and tickets that hold a pending handoff back, as its handoff wait records them
+// (pass/deadlines.mjs): [{ file, with: [key, or "key in batch <label>"] }], or null where none does.
+// Only what fills a place counts: a file at its budget only with the front tickets above it (`front`),
+// none of them started yet, is no collision hold, so the handoff's deadline keeps running (#1667).
+const collisionHolds = (r) => {
+  const holds = budgetHolds(r).filter((h) => h.by.length + h.handoff.length + h.elsewhere.length >= h.k);
+  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
+};
+// Which ticket goes first for a file a pending handoff and a front ticket above it both need, and why
+// (#1667): one line each, said once the candidates are read and before the spawn loop, which can still
+// skip the front ticket, so the line says the handoff waits for it to start, not that it has.
+const frontWins = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key)).flatMap((t) =>
+  budgetHolds(t).filter((h) => h.front.length).map((h) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'goes' : 'go'} first for it, ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
+    `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept, and its handoff deadline keeps running until ${h.front.length === 1 ? 'that ticket starts' : 'they start'}`));
+const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The
 // tickets are this section's own, so a candidate is the same object the rest of the pass reads.
@@ -3129,6 +3155,8 @@ runSteps({
 });
 // ELIG_CLOUD_HELD: what holds every cloud start, or null; memory harm, this computer's, is not among them.
 const { eligible, spawnable, held, spawnHeld, cloudHeld: ELIG_CLOUD_HELD } = ELIGIBILITY;
+// A front ticket that takes a file ahead of a pending handoff is said by name, with why (#1667).
+for (const line of frontWins()) report.waits.push(line);
 
 // ---- slots, and borrowing ----------------------------------------------------
 // The batch's own number, borrowing, and the machine and repo budgets (pass/eligibility.mjs
@@ -4173,6 +4201,31 @@ function cloudRules() {
     noAttribution: E.attributionForbidden(E.configValue('ai-attribution')),
   };
 }
+// The review rows a cloud session's desk-review reads from DESK_CONFIG_FILE (desk-review's own
+// `desk-env get` and `list` calls), each as this repo's config holds it; a row unset or unreadable is
+// left out, and reads as unset there. The review account is not passed: it names a login on this
+// computer, and the session posts as its own.
+const CLOUD_REVIEW_VALUES = ['review-bar', 'review-asks', 'clean-verdict', 'tracker', 'ticket-pattern'];
+const CLOUD_REVIEW_LISTS = ['review-experts', 'required-checks', 'work-id-patterns'];
+function cloudReviewRows() {
+  const out = {};
+  const read = (id, f) => { try { const v = f(id); if (v != null && !(Array.isArray(v) && !v.length)) out[id] = v; } catch { /* unread */ } };
+  for (const id of CLOUD_REVIEW_VALUES) read(id, E.configValue);
+  for (const id of CLOUD_REVIEW_LISTS) read(id, E.configValues);
+  return out;
+}
+// The review a cloud session runs at its pushed head (cloud-worker.mjs cloudPrompt's `review`):
+// set where the base branch the session clones enables the desk plugin in `.claude/settings.json`,
+// else null, and the brief is as before. `post` is this repo's §3 `pr-self-review-comment` read as
+// `yes`: DESK_CONFIG_FILE carries no §3 row, so the brief tells the session whether to post. `ask` reads
+// as no, since nobody answers a cloud session.
+function cloudReview() {
+  const settings = sh('git', ['-C', MAIN, 'show', `origin/${DEFAULT_BRANCH}:.claude/settings.json`], { tolerant: true });
+  if (!deskReviewEnabled(settings)) return null;
+  let post = false;
+  try { post = E.permission('pr-self-review-comment') === 'yes'; } catch { /* unread: no */ }
+  return { config: cloudReviewRows(), post };
+}
 function spawnCloud(t, pick) {
   const park = (why) => {
     const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
@@ -4206,7 +4259,7 @@ function spawnCloud(t, pick) {
   const name = cloudName(GH_REPO, t.key);
   // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
   const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
-  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules() }), { name, env, cwd: MAIN });
+  const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview() }), { name, env, cwd: MAIN });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
     park(cloudStartPark(s, { who, login, checkout: MAIN }));
@@ -5477,14 +5530,17 @@ function withHistory(s, was) {
 // annotations could not be read, so the next pass reads them again. `error_notes` keeps each failure's
 // path and title beside its line, for a §4 Known flaky checks test item. A job with no annotated error keeps
 // what its failed log names as `log_errors` instead, read the same way: only a test reporter that
-// annotates puts a failing test's line in `errors`.
+// annotates puts a failing test's line in `errors`. Every failed job also keeps each path its failed log
+// names (`log_paths`) and those on its error lines (`log_fail_paths`), for the rerun a failure naming none
+// of the PR's files gets: the error lines are only the first few, and a runner's headings can fill them.
 function withErrors(s, was) {
   if (s.state !== 'OPEN') return s;
-  const logErrors = (c, old) => {
-    if (old?.log_errors) return { log_errors: old.log_errors };
+  const logReads = (c, old, needErrors) => {
+    const kept = Array.isArray(old?.log_paths) && Array.isArray(old?.log_fail_paths);
+    if (kept && (!needErrors || old.log_errors)) return { log_paths: old.log_paths, log_fail_paths: old.log_fail_paths, ...(needErrors ? { log_errors: old.log_errors } : {}) };
     if (!c.runId) return {};
     const r = shOut('gh', ['run', 'view', String(c.runId), '--repo', GH_REPO, '--job', String(c.jobId), '--log-failed'], { maxBuffer: 64 * 1024 * 1024 });
-    return r.ok ? { log_errors: errorLinesIn(r.out) } : {};
+    return r.ok ? { log_paths: pathsIn(r.out), log_fail_paths: pathsIn(r.out, { failing: true }), ...(needErrors ? { log_errors: errorLinesIn(r.out) } : {}) } : {};
   };
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
@@ -5497,7 +5553,7 @@ function withErrors(s, was) {
     if (errors === undefined) return c;
     // The files its failure annotations point at, for the rerun a failure naming none of the PR's files gets.
     const paths = notes ? [...new Set(notes.filter((x) => x?.annotation_level === 'failure' && x.path).map((x) => String(x.path)))] : old?.error_paths ?? [];
-    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, found)) };
+    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...logReads(c, found, !errors.length) };
   });
   return { ...s, checks };
 }
@@ -7180,7 +7236,7 @@ if (!DRY) {
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held && held !== harmWhy ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.handoff, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.handoff, ...h.front, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
