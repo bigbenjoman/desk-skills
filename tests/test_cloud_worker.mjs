@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
@@ -55,6 +55,39 @@ t('AC2 and the branch to push and the PR to open', prompt.includes('branch named
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
 t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
   ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
+
+// ---- issue-1555: a session with desk-review reviews its own head and posts the verdict ----
+const base1555 = { key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] };
+const reviewed = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default', 'required-checks': ['Tests', 'Lint'] }, post: true } });
+const unposted = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default' }, post: false } });
+t('issue-1555 fix try 1: with §3 pr-self-review-comment yes, the brief grants the post DESK_CONFIG_FILE cannot carry',
+  reviewed.includes('§3 `pr-self-review-comment` to `yes`, which that file cannot carry: so desk-review\'s post step is to post on your own PR'), true);
+t('issue-1555 fix try 1: without it, the brief posts nothing and puts the report in the PR body',
+  [unposted.includes('post no review on the PR'), unposted.includes('Put the final report in the PR body'), unposted.includes('Post the final verdict'), unposted.includes('put that round\'s report in the PR body')].join(), 'true,true,false,true');
+t('issue-1555 fix try 1: a review with no post given reads as no', cloudPrompt({ ...base1555, review: { config: {} } }).includes('post no review on the PR'), true);
+const pluginRef = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-review', 'references', 'plugin.md'), 'utf8');
+t('issue-1555 fix try 1: desk-review\'s plugin.md takes the brief\'s word for pr-self-review-comment',
+  ['carries no §3 permission', 'stands in for §3 `pr-self-review-comment`', 'reads as `no`: report only'].every((x) => pluginRef.includes(x)), true);
+t('issue-1555 AC1 with desk-review available, the brief runs it at the pushed head, from the plugin',
+  ['/desk:desk-review', CLOUD_REVIEW_PLUGIN, 'at your pushed head'].every((x) => reviewed.includes(x)), true);
+t('issue-1555 AC1 it fixes P0 and P1 findings within the session and reviews the new head',
+  reviewed.includes('Fix every P0 and P1 it confirms in this session, push, and review the new head again'), true);
+t('issue-1555 AC1 it posts the final verdict on the PR in desk\'s format, with the head SHA',
+  ['Post the final verdict on the PR in desk\'s format', 'full SHA of the head it reviewed'].every((x) => reviewed.includes(x)), true);
+t('issue-1555 AC1 it carries the review rows as DESK_CONFIG_FILE takes them',
+  reviewed.includes('set DESK_CONFIG_FILE') && reviewed.includes('`{"review-bar":"default","required-checks":["Tests","Lint"]}`'), true);
+t('issue-1555 AC1 the review comes after the draft PR, before the rules and the ticket',
+  reviewed.indexOf('4. Open a draft pull request') < reviewed.indexOf('7. Once your draft PR is open') && reviewed.indexOf('7. Once your draft PR is open') < reviewed.indexOf('## The ticket'), true);
+t('issue-1555 AC3 it limits its rounds to desk\'s three, then stops and posts',
+  CLOUD_REVIEW_ROUNDS === 3 && reviewed.includes('at most 3 review rounds') && reviewed.includes('when round 3 still finds a P0 or P1, stop fixing, post that round\'s verdict'), true);
+t('issue-1555 AC2 without desk-review, the brief is as today (main\'s brief, recorded before this change)', cloudPrompt({ ...base1555, review: null }), fixture('prompt-no-review.txt'));
+t('issue-1555 AC2 and as the brief with no review given', cloudPrompt(base1555).includes('desk-review'), false);
+t('issue-1555 AC2 the brief with the review is today\'s with one step added',
+  reviewed.split('\n').filter((l) => !l.startsWith('7. ')).join('\n'), prompt);
+const settings = (o) => JSON.stringify({ enabledPlugins: o });
+t('issue-1555 the repo\'s settings enabling the desk plugin make desk-review available', deskReviewEnabled(settings({ [CLOUD_REVIEW_PLUGIN]: true })), true);
+t('issue-1555 disabled, missing, another value, another plugin, no file or bad JSON: not available',
+  [settings({ [CLOUD_REVIEW_PLUGIN]: false }), settings({}), settings({ [CLOUD_REVIEW_PLUGIN]: 'true' }), settings({ 'other@x': true }), '{}', '', '{nope', null, '[]'].map(deskReviewEnabled).some(Boolean), false);
 
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
 const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
