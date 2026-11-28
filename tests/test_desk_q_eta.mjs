@@ -954,6 +954,20 @@ const cloudyJson = JSON.parse(JSON.stringify(Q.costsJson(Q.loadRepos(FIXED), {},
 t('issue-1553 AC3 desk-q --json costs carries it too', JSON.stringify((cloudyJson.data?.cloud ?? cloudyJson.cloud ?? []).find((x) => x.key === 'CL-1')),
   JSON.stringify({ repo: 'cloudy', key: 'CL-1', cost: null, why: 'cost unknown (cloud)', url: 'https://claude.ai/code/session_9' }));
 
+// ---- issue-1621 AC2: the cloud sessions the pass ended are listed on Costs, not on needs-you ----------
+const endRec = (key, ago, more = {}) => ({ key, session: `session_${key}`, url: `https://claude.ai/code/session_${key}`, branch: `feat/${key}`, head: 'a', at: iso(FIXED - ago), via: 'follow-up', ...more });
+writeFileSync(join(stateOf('cloudy'), 'cloud-archived.json'), JSON.stringify({ sessions: [], pending: [], ended: [
+  endRec('CL-5', 3 * HOUR), endRec('CL-6', 2 * HOUR, { pushed_at: iso(FIXED - HOUR), pushed_head: 'b' }), endRec('CL-7', HOUR, { error: 'no answer in 60s' }), endRec('CL-4', 8 * 24 * HOUR),
+] }));
+const endedCosts = Q.costsScreen(Q.loadRepos(FIXED), { now: FIXED, costs: { exists: false, entries: [] }, cache: {}, use: null, subs: { logins: [] }, pinUsage: true }).split('\n');
+const endedRow = (k) => endedCosts.find((l) => l.includes(`cloudy ${k} `)) ?? '';
+t('issue-1621 AC2 Costs lists each session the pass ended this week, newest first, with its state and URL',
+  [endedCosts.some((l) => /CLOUD SESSION\s+STATE\s+ENDED \(UTC\)\s+SESSION/.test(l)), /cloudy CL-7\s+end failed\s+\d{4}-\d\d-\d\d \d\d:\d\d\s+https:\/\/claude\.ai\/code\/session_CL-7$/.test(endedRow('CL-7')),
+    /cloudy CL-6\s+pushed after\s/.test(endedRow('CL-6')), /cloudy CL-5\s+ended\s/.test(endedRow('CL-5')),
+    endedCosts.indexOf(endedRow('CL-7')) < endedCosts.indexOf(endedRow('CL-5')), endedRow('CL-4')], [true, true, true, true, true, '']);
+const endedJson = JSON.parse(JSON.stringify(Q.costsJson(Q.loadRepos(FIXED), {}, { now: FIXED, costs: { exists: false, entries: [] }, cache: {} })));
+t('issue-1621 AC2 desk-q --json costs carries them too', (endedJson.data?.cloudEnded ?? endedJson.cloudEnded ?? []).map((x) => `${x.key}:${x.state}`).join(), 'CL-7:end failed,CL-6:pushed after,CL-5:ended');
+
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');

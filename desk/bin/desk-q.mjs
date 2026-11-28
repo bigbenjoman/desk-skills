@@ -1934,7 +1934,7 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, use: useRead = readUseFile(), subs = readSubscriptions(subscriptionsPath()) } = {}) {
   const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const use = useThisMonth(useRead, now);
-  const subsBlock = [...subscriptionLines(repos, { use, subs, width }), ...cloudCostLines(repos, width), ...cloudEndedLines(repos, width)];
+  const subsBlock = [...subscriptionLines(repos, { use, subs, width }), ...cloudCostLines(repos, width), ...cloudEndedLines(repos, width, now)];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot: [...useOnlyLines(repos, use, width), ...subsBlock, ...foot] };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
@@ -2029,8 +2029,8 @@ const cloudEnded = (repos, now = Date.now()) => {
       .map((e) => ({ repo: r.repo ?? r.name, key: e.key, url: e.url ?? null, at: e.at, via: e.via ?? null, state: e.error ? 'end failed' : e.pushed_at ? 'pushed after' : 'ended' })))
     .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
 };
-function cloudEndedLines(repos, width) {
-  const rows = cloudEnded(repos).map((x) => ({ ...x, name: `${x.repo} ${x.key}`, when: String(x.at ?? '').slice(0, 16).replace('T', ' ') }));
+function cloudEndedLines(repos, width, now = Date.now()) {
+  const rows = cloudEnded(repos, now).map((x) => ({ ...x, name: `${x.repo} ${x.key}`, when: String(x.at ?? '').slice(0, 16).replace('T', ' ') }));
   if (!rows.length) return [];
   const nw = Math.max(14, ...rows.map((x) => x.name.length + 1));
   const sw = Math.max(...CLOUD_END_STATES.map((s) => s.length)) + 2;
@@ -4731,7 +4731,7 @@ export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsP
     : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
   const use = v.name !== undefined ? null : useThisMonth(readUseFile(), now);
   const fees = v.name !== undefined ? null : readSubscriptions(subscriptionsPath()).logins.map((l) => ({ tool: l.tool, name: l.name, plan: l.fee?.plan ?? null, usd: l.fee?.usd ?? null }));
-  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees, cloud: cloudCosts(repos), cloudEnded: cloudEnded(repos) }) }, parts);
+  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees, cloud: cloudCosts(repos), cloudEnded: cloudEnded(repos, now) }) }, parts);
 }
 
 const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';

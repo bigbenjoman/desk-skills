@@ -184,9 +184,17 @@ stopped. A cloud spawn is held by weekly
 usage pacing like a local one. Since a cloud session writes no usage reading here, a held pass
 still makes its probe call while only cloud workers run.
 The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR
-merges: nothing here can archive it. So the batch's finished cloud sessions are one desk-needs-you
-item, naming each with its URL, which the person archives by hand; its done records them so none is
-asked about twice.
+merges, since the CLI has no archive command. So once its PR merges (or the queue archives the
+ticket) the pass ends it: it sends the closing follow-up (`claude -p "The ticket is finished: stop,
+make no more commits or pushes" --cloud <id>`), or runs `claude archive <id>` where `claude --help`
+lists one, and records it as ended in the repo's `cloud-archived.json` with its branch's head on
+origin then. desk-q's Costs view lists the sessions ended in the last week, each `ended`, `end
+failed` or `pushed after`. A pass that sees the branch move past that head within the week records
+the push. The batch's desk-needs-you item lists only the sessions the person must archive by hand:
+one whose end failed (it is not retried), one that pushed after it, a done one no pass has ended 6
+hours on, and one recorded abandoned (`queue.mjs stop`, a fix try's restart), which the pass leaves
+alone because a new session may be working the same branch. Its done records them so none is asked
+about twice.
 
 **A ticket admitted mid-batch is placed the same way.** `queue.mjs admit`, which every mid-batch
 route admits through (intake, `/desk-admit`, an approved epic plan's children, a ticket handed over

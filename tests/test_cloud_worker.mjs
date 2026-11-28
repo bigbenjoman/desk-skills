@@ -17,6 +17,7 @@ import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { ranInCloud } from '../desk/bin/cloud-worker.mjs';
+import { readEnded, recordEnded, endCloud, archiveListed, claudeHelp, cloudPushedAfter, cloudArchiveAsks, CLOUD_END_MSG } from '../desk/bin/cloud-worker.mjs';
 import { cloudStartCommand, cloudStartPark, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -492,6 +493,67 @@ mkdirSync(dir, { recursive: true });
 t('archived: none recorded reads as none', readArchived(dir).size, 0);
 recordArchived(dir, ['session_a']); recordArchived(dir, ['session_a', 'session_e']);
 t('archived: records add up, once each', [...readArchived(dir)].sort().join(), 'session_a,session_e');
+
+// ---- issue-1621: the pass ends a finished session itself ----------------------
+{
+  const rows = finishedCloud({ A: { ...live.A, branch: 'feat/a', cloud: cs('a', { name: 'w-ticket-A', login: { name: 'w', config_dir: '/x' } }) } }, archived);
+  t('issue-1621 AC1 a finished row carries its branch and login, and is marked done',
+    rows.map((d) => `${d.key}:${d.done}:${d.branch}:${d.login?.name ?? '-'}`).join(), 'E:true:null:-,A:true:feat/a:w');
+  const help = '  -p, --print    Print the response\nCommands:\n  mcp            Configure MCP servers\n  doctor         Check health\n';
+  t('issue-1621 AC3 claude --help with no archive command is read as none', archiveListed(help), false);
+  t('issue-1621 AC3 one listing archive is read as one', archiveListed(`${help}  archive [id]   Archive a cloud session\n`), true);
+  t('issue-1621 AC3 a word archive in a description is not a command', archiveListed('  rm   Remove; does not archive it\n'), false);
+  t('issue-1621 AC3 a --help that does not run reads as none', archiveListed(claudeHelp({ claude: join(S, 'no-such-claude') })), false);
+  const d = scratch('cloud-end');
+  const fake = join(d, 'claude');
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > "${d}/args"\n[ "$1" = archive ] && exit 0\ncat "${join(FIX, 'send-json.json')}"\n`);
+  chmodSync(fake, 0o755);
+  const sid = 'session_01Vy49H7Z4T3CSgAhSxsuhqj';
+  const sent = endCloud(sid, { claude: fake });
+  t('issue-1621 AC1 with no archive command the session is sent the closing follow-up', `${JSON.stringify(sent)} ${readFileSync(join(d, 'args'), 'utf8').split('\n').slice(0, 4).join('|')}`,
+    `{"ok":true,"via":"follow-up"} -p|${CLOUD_END_MSG}|--cloud|${sid}`);
+  t('issue-1621 AC1 the closing follow-up says stop, no more commits or pushes', CLOUD_END_MSG, 'The ticket is finished: stop, make no more commits or pushes');
+  const arch = endCloud(sid, { claude: fake, archive: true });
+  t('issue-1621 AC3 with one it runs claude archive <session>', `${JSON.stringify(arch)} ${readFileSync(join(d, 'args'), 'utf8').trim().split('\n').join(' ')}`, `{"ok":true,"via":"archive"} archive ${sid}`);
+  const failing = join(d, 'claude-fails');
+  writeFileSync(failing, '#!/bin/sh\necho "Error: not authenticated" >&2\nexit 1\n');
+  chmodSync(failing, 0o755);
+  t('issue-1621 AC2 a failed archive says why', JSON.stringify(endCloud(sid, { claude: failing, archive: true })), '{"error":"Error: not authenticated (exit 1)","via":"archive"}');
+  t('issue-1621 AC2 a failed follow-up says why', endCloud(sid, { claude: failing }).via === 'follow-up' && !!endCloud(sid, { claude: failing }).error, true);
+  rmSync(d, { recursive: true, force: true });
+
+  const rec = { key: 'A', session: 'session_a', branch: 'feat/a', head: 'aaa', at: '2026-11-02T11:00:00Z', via: 'follow-up' };
+  t('issue-1621 AC2 a branch at the head it was ended at has not pushed', cloudPushedAfter(rec, new Map([['feat/a', 'aaa']])), null);
+  t('issue-1621 AC2 a branch moved past it has', cloudPushedAfter(rec, new Map([['feat/a', 'bbb']])), 'bbb');
+  t('issue-1621 a branch gone (deleted on merge) has not pushed', cloudPushedAfter(rec, new Map()), null);
+  t('issue-1621 one whose end failed, or whose push was already seen, is not watched',
+    [cloudPushedAfter({ ...rec, error: 'x' }, new Map([['feat/a', 'bbb']])), cloudPushedAfter({ ...rec, pushed_at: 'y' }, new Map([['feat/a', 'ccc']]))].join(), ',');
+  t('issue-1621 one ended with its branch not yet on origin counts its first head as a push', cloudPushedAfter({ ...rec, head: null }, new Map([['feat/a', 'bbb']])), 'bbb');
+
+  const now = Date.parse('2026-11-02T12:00:00Z');
+  const row = (id, more = {}) => ({ key: id.toUpperCase(), session: `session_${id}`, url: `u/${id}`, done: true, at: '2026-11-02T11:30:00Z', ...more });
+  const ended = new Map([
+    ['session_f', { session: 'session_f', via: 'follow-up', error: 'no answer in 60s' }],
+    ['session_g', { session: 'session_g', via: 'archive', error: 'denied (exit 1)' }],
+    ['session_p', { session: 'session_p', branch: 'feat/p', pushed_at: 'z' }],
+    ['session_k', { session: 'session_k', via: 'follow-up' }],
+  ]);
+  const asks = cloudArchiveAsks([row('f'), row('g'), row('p'), row('k'), row('n'), row('o', { at: '2026-11-02T05:00:00Z' }), row('x', { done: undefined })], ended, now);
+  t('issue-1621 AC2 needs-you asks only about a failed end, a push after it, one left unended past the grace, and an abandoned one',
+    asks.map((d) => `${d.key}=${d.why}`).join(' | '),
+    "F=desk's closing follow-up failed: no answer in 60s | G=desk could not archive it: denied (exit 1) | P=it pushed to feat/p after desk ended it | O=no pass has ended it yet | X=null");
+
+  const ed = join(S, 'state-1621');
+  mkdirSync(ed, { recursive: true });
+  t('issue-1621 none ended reads as none, and the file keeps no empty list', `${readEnded(ed).size}`, '0');
+  recordEnded(ed, [{ key: 'A', session: 'session_a', branch: 'feat/a', head: 'aaa', at: new Date(now).toISOString(), via: 'follow-up' }], now);
+  recordEnded(ed, [{ session: 'session_a', pushed_at: 'z', pushed_head: 'bbb' }, { key: 'O', session: 'session_o', at: '2026-09-01T00:00:00Z', via: 'follow-up' }], now);
+  const got = readEnded(ed);
+  t('issue-1621 a later record merges over the earlier one, and one past CLOUD_END_KEEP_MS is dropped',
+    `${got.size} ${got.get('session_a')?.head} ${got.get('session_a')?.pushed_head} ${got.has('session_o')}`, '1 aaa bbb false');
+  recordArchived(ed, ['session_q']);
+  t('issue-1621 recording archived keeps the ended list', `${readEnded(ed).size} ${readArchived(ed).has('session_q')}`, '1 true');
+}
 
 // ---- issue-1552: a fix try on a cloud PR ------------------------------------
 const checksFix = { try: 1, of: 2, pr: 40, kind: 'checks', head: 'aaaa1111bbbb2222', checks: [{ name: 'Lint', url: 'https://ci/run/7' }], not_mine: [{ name: 'E2E' }] };
