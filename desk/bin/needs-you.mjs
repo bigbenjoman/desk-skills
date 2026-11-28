@@ -11,9 +11,13 @@
 //       review left requirement gaps quotes each gap from that review on GitHub, and a PR under a
 //       person's merge hold reads its files and checks there, to say once the hold's step is done.
 //       --no-settle skips that settling, so it writes nothing; --json prints the list as data
-//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it
+//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it,
+//       its PR, and the exact text its park waits for approval of
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
-//       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
+//       Each record run from the command line that succeeds appends {at, batch, key, action, line} to
+//       ~/.desk-autopilot/needs-you-records.jsonl (chmod 600, one older copy kept past 512 KB), so the
+//       desk app can say an item it shows was answered elsewhere (recordsLogPath, readRecords).
+//       resume "<answer>"  answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
 //                           person has done, "<what was done>": handed back to a worker that starts at
 //                           self-review, with it in its briefing (queue.mjs handback). On a PR open on
@@ -119,8 +123,8 @@
 // offered, that offers none it did not offer then; one put off is listed anyway while three or more
 // held tickets wait behind it. Exits 0, or 11
 // (show the person) on anything it refuses.
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { runOnce, outOrNull } from './build-memo.mjs';
 import { createHash } from 'node:crypto';
@@ -130,8 +134,8 @@ import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personGapLines, ANSWERED_ITEM, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
 import { settledCriteria } from './decisions-change.mjs';
-import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
-import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
+import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup, ghTime } from './gate.mjs';
+import { HOME, SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { START_TRIES_MAX } from './base-fix.mjs';
@@ -146,8 +150,8 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
-import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q-model.mjs';
+import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, repoCheckinTimes } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey, addClaim, claimOf, clearClaim } from './not-now.mjs';
 import { claimHoursOf, claimLive, transcriptOf, SESSION_ID } from './claims.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -2388,13 +2392,33 @@ export function causeOf(i) {
 }
 
 // One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
-// behind it. `id` is stable while the item is the same item: its batch, key and kind.
+// behind it. `id` is stable while the item is the same item: its batch, key and kind. `pr` is the
+// ticket's PR, and `approve` the write its park waits for the person to approve, its body verbatim.
+// A key record answers through recordRepoItem: an item of the repo's own, not a queue ticket's.
+function repoItem(ticket) {
+  return ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL);
+}
+// Actions a queue ticket's record refuses without text to pass on. A repo item's record reads text only
+// for a proposal's promote, and then only when the proposal names no value.
+const NEEDS_TEXT = ['answer', 'resume', 'reject', 'override', 'move'];
+const needsText = (i, action) => {
+  const verb = action.split(' ')[0];
+  return repoItem(i.t.key) ? !!i.proposal && verb === 'promote' && !i.to : NEEDS_TEXT.includes(verb);
+};
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
+  const a = i.t.state === 'parked' ? i.t.park?.approve : null;
+  // A ticketless PR's item carries its PR as `pr`, and a promotion PR's as `promotion`: their tickets
+  // are a key alone, with no result for ownPr to read.
+  const pr = Number(i.pr ?? i.promotion ?? ownPr(i.t));
   return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
     ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
-    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
+    pr: Number.isInteger(pr) && pr > 0 ? pr : null,
+    approve: a?.body ? { kind: String(a.kind ?? ''), target: String(a.target ?? ''), body: String(a.body) } : null,
+    // A usage hold's reset, as an ISO time (the queue keeps it in seconds), or null where the pass did not learn it.
+    ...(i.kind === 'usage' ? { resets_at: Number.isFinite(Number(i.r.q?.usage_hold?.resets_at)) && i.r.q?.usage_hold?.resets_at != null ? new Date(Number(i.r.q.usage_hold.resets_at) * 1000).toISOString() : null } : {}),
+    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null, needs_text: needsText(i, action) })) };
 }
 
 // The list as data, what `list --json` prints. With `settle` it first settles what has shipped, as list
@@ -2455,7 +2479,7 @@ const ASK_ANSWERS = ['answer', 'resume', 'approve', 'reject', 'done', 'requeue']
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (repoItem(ticket)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2492,10 +2516,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     ? askAnswered(r.queuePath, { key: ticket, since: x.t.park.since, by: 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: now }, { on: ledgerOnIn(r.slug), by: 'needs-you' }).map((l) => ` ${l}`).join('')
     : '');
   const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}${asked(ok)}`, message });
-  if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
+  if (NEEDS_TEXT.includes(verb) && !text.trim()) return say(false, verb === 'move' ? 'move needs the batch to move it to.' : `${verb} needs the text to record.`);
   // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
   if (['answer', 'resume'].includes(verb)) copiedNote = namedFixturesText(r, ticket, text);
-  if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
@@ -2546,7 +2569,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     const { v, err, repo } = readPr(pr, ',body');
     if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not marked done and stays on your list.`);
     if (v.state === 'MERGED') {
-      const at = v.mergedAt && !String(v.mergedAt).startsWith('0001-') ? v.mergedAt : new Date(now).toISOString();
+      const at = ghTime(v.mergedAt) ?? new Date(now).toISOString();
       const m = queueCmd(r, ['set', ticket, 'pr_status.state=MERGED', `pr_status.merged_at=${at}`]);
       if (!m.ok) return say(false, `GitHub shows PR #${pr} merged, but recording it was refused: ${m.out}`);
       return say(true, `GitHub shows PR #${pr} merged, so it is off your list.`);
@@ -2611,7 +2634,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // (pr_status and merged_at), so no pass reads its number as one of this repo's PRs and the tickets
   // held behind it are released as behind any merge.
   const elsewhereDone = ({ repo, pr, mergedAt }) => {
-    const at = mergedAt && !String(mergedAt).startsWith('0001-') ? new Date(mergedAt).toISOString() : new Date(now).toISOString();
+    const at = new Date(ghTime(mergedAt) ?? now).toISOString();
     const how = `you said done; PR #${pr} merged in ${repo}${mergedAt ? ` at ${utc(at)}` : ''}`;
     const status = { pr, state: 'MERGED', merged_at: at, url: `https://github.com/${repo}/pull/${pr}` };
     const m = queueCmd(r, [...shippedSet(x.t, how, pr, at), `pr_status=${JSON.stringify(status)}`]);
@@ -2939,10 +2962,7 @@ export function ask({ word, text, until = [], options = [], recommend = null, ap
     const by = applyBy == null ? null : applyByOf(applyBy, new Date(now));
     if (applyBy != null && !by) return { ok: false, line: `--apply-by wants a local HH:MM or an ISO time, not "${applyBy}"` };
     const nd = recommend ? neverDefault(what, recommend, never) : null;
-    let times = null;
-    try { times = [].concat(repoConfigValues(r.slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
-    const c = checkinTimes(times);
-    const at = !recommend || nd ? null : by ?? nextCheckin(c.ok ? c.times : DEFAULT_TIMES, new Date(now));
+    const at = !recommend || nd ? null : by ?? nextCheckin(repoCheckinTimes(r.slug), new Date(now));
     choice = { options, recommended: recommend, apply_by: at ? at.toISOString() : null, never_default: nd };
   }
   const { id, added, until: kept, ask: a } = addAsk(r.stateDir, what, now, { until, choice });
@@ -3047,12 +3067,53 @@ export function run(argv, { reads } = {}) {
   return end(0);
 }
 
+// The machine's log of answers recorded from the command line, whichever session or window ran them.
+const recordsLogPath = (home = HOME) => join(home, '.desk-autopilot', 'needs-you-records.jsonl');
+const RECORDS_ROLL_BYTES = 512 * 1024;
+function logRecord(entry, path = recordsLogPath()) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    if (existsSync(path) && statSync(path).size > RECORDS_ROLL_BYTES) renameSync(path, `${path}.1`);
+    appendFileSync(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch (e) { console.error(`needs-you: the records log was not written (${e.code ?? e.message})`); }
+}
+// The batch a record named by `word` went to, as list --json names it (`<repo>` or `<repo>:<batch>`):
+// the one holding the ticket, as record finds it, else the batch the word names; the word as typed
+// where it names none.
+function recordedBatch(word, key, repos = null) {
+  try {
+    const { named, scope } = batchesNamed(repos ?? loadRepos(Date.now(), word), word);
+    return (scope.find((b) => b.q?.tickets?.[key]) ?? named).word ?? word;
+  } catch { return word; }
+}
+// The log's entries recorded at or after `since` (ms), oldest first, read from at most its last `tail` bytes.
+export function readRecords({ since = 0, tail = 256 * 1024, path = recordsLogPath() } = {}) {
+  let text = '';
+  try {
+    const fd = openSync(path, 'r');
+    try {
+      const size = fstatSync(fd).size, from = Math.max(0, size - tail);
+      const buf = Buffer.alloc(size - from);
+      readSync(fd, buf, 0, buf.length, from);
+      text = buf.toString('utf8');
+      if (from > 0) text = text.slice(text.indexOf('\n') + 1);
+    } finally { closeSync(fd); }
+  } catch { return []; }
+  return text.split('\n').flatMap((l) => { try { const e = JSON.parse(l); return e && Date.parse(e.at) >= since ? [e] : []; } catch { return []; } });
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const { code, out, err } = run(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const { code, out, err } = run(argv);
+  if (code === 0 && argv[0] === 'record' && argv.length >= 4) {
+    const [, word, key, verb, ...more] = argv;
+    logRecord({ at: new Date().toISOString(), batch: recordedBatch(word, key), key, action: verb === 'override' ? `override ${more[0] ?? ''}` : verb, line: out.split('\n')[0] });
+  }
   // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
   if (out) console.log(out.replace(/\n$/, ''));
   if (err) console.error(err.replace(/\n$/, ''));

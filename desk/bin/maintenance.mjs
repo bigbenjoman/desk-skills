@@ -23,14 +23,14 @@
 // seconds), DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD and DESK_RESTART_CMD
 // (each run with sh -c).
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { uptime } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, tryBorrowLock, otherQueues } from './borrow.mjs';
-import { readInstalled } from './installed.mjs';
+import { gitIn, mainCommitsBetween, readInstalled } from './installed.mjs';
 import { bootTime, runsInCloud, runningHere } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
@@ -47,6 +47,8 @@ const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 // Phases that hold every new spawn, resumes included.
 const HOLDING = ['draining', 'updating', 'checking', 'reboot', 'rebooting'];
+// Whether the window is open now, which holds the auto-release (Settings · Desk install says so).
+export const windowOpen = (dir = maintDir()) => HOLDING.includes(readState(dir)?.phase);
 
 export const maintDir = () => E.expandHome(process.env.DESK_MAINT_DIR ?? join(E.HOME, '.desk-autopilot', 'maintenance'));
 const now = () => (process.env.DESK_MAINT_NOW ? new Date(process.env.DESK_MAINT_NOW) : new Date());
@@ -182,8 +184,9 @@ function incomingBlock(git, dir, to) {
 // commit where the new head is past it and else the old head (first parent only), so a PR merged with a
 // merge commit is one however many commits its branch held.
 // -> {ok, old, from, new, merges, restarted} | {ok: false, why, old}
-// main's own commits after `from`, up to `to` (first parent only).
-const pendingMerges = (git, from, to) => Number(git('rev-list', '--first-parent', '--count', `${from}..${to}`).out) || 0;
+// main's own commits after `from`, up to `to` in checkout `dir`, as installed.mjs counts them; 0 when git
+// could not count them.
+const pendingMerges = (dir, from, to, timeout) => mainCommitsBetween(gitIn(dir, timeout), from, to) ?? 0;
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -199,7 +202,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   // the release watch's row (installed.mjs), so the log and the row give the same figure.
   const inst = readInstalled()?.commit;
   const from = inst && inst !== head && git('merge-base', '--is-ancestor', inst, head).ok ? inst : old;
-  const merges = from === head ? 0 : pendingMerges(git, from, head);
+  const merges = from === head ? 0 : pendingMerges(dir, from, head);
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const done = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!done.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(done)}` };
@@ -259,17 +262,31 @@ export const RELEASE_CHECK = 'tests';
 export const FETCH_EVERY_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 60 * 1000;
 export const releaseFile = (dir) => join(dir, 'release.json');
-const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(dir), 'utf8')) ?? {}; } catch { return {}; } };
+export const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(dir), 'utf8')) ?? {}; } catch { return {}; } };
 const writeRelease = (dir, s) => { mkdirSync(dir, { recursive: true }); writeFileSync(releaseFile(dir), `${JSON.stringify(s, null, 2)}\n`); };
 
 // main's `tests` check on `sha`: {state: 'success' | 'pending' | 'failure', word} | {error}. A check
 // not started yet is pending, and so is a cancelled one, which is read again on later passes; any
 // other conclusion but success is a failure.
-export function releaseCheck(dir, sha) {
+const checkCall = (dir, sha) => {
   const jq = `[.check_runs[] | select(.name == "${RELEASE_CHECK}")] | sort_by(.started_at) | last | if . == null then "pending" elif .status != "completed" then "pending" else .conclusion end`;
-  const r = process.env.DESK_RELEASE_CHECK_CMD
-    ? shell(`${process.env.DESK_RELEASE_CHECK_CMD} ${sha}`, { cwd: dir })
-    : run('gh', ['api', `repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${RELEASE_CHECK}`, '--jq', jq], { cwd: dir, timeout: FETCH_TIMEOUT_MS });
+  return process.env.DESK_RELEASE_CHECK_CMD
+    ? ['sh', ['-c', `${process.env.DESK_RELEASE_CHECK_CMD} ${sha}`], { cwd: dir }]
+    : ['gh', ['api', `repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${RELEASE_CHECK}`, '--jq', jq], { cwd: dir, timeout: FETCH_TIMEOUT_MS }];
+};
+export const releaseCheck = (dir, sha) => checkAnswer(run(...checkCall(dir, sha)));
+// The same read without blocking: Desk's server (desk-ui-settings.mjs installView) answers other
+// requests while gh runs.
+export function releaseCheckAsync(dir, sha) {
+  const [cmd, args, opts] = checkCall(dir, sha);
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: 'utf8', ...opts }, (err, stdout, stderr) => resolve(checkAnswer({
+      ok: !err, status: err ? (Number.isInteger(err.code) ? err.code : null) : 0,
+      out: `${stdout ?? ''}${stderr ?? ''}`.trim(), error: err && !Number.isInteger(err.code) ? err.message : undefined,
+    })));
+  });
+}
+function checkAnswer(r) {
   const word = lastLine(r.out).trim().toLowerCase();
   if (!r.ok || !word) return { error: said(r) };
   if (word === 'success') return { state: 'success', word };
@@ -400,7 +417,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     const pushing = [...o.running, ...o.unreadable];
     let past = '';
     if (pushing.length) {
-      const w = stage7Wait(s.waiting, { base, merges: pendingMerges(git, base, to), at });
+      const w = stage7Wait(s.waiting, { base, merges: pendingMerges(src, base, to, FETCH_TIMEOUT_MS), at });
       if (!w.over) {
         s.waiting = w.next;
         save();

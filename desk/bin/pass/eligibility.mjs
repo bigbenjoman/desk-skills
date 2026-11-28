@@ -20,7 +20,7 @@
 //                      what decideSlots decided; machine is the stricter of the worker count
 //                      (machineLine) and the memory reservations (memLine, null where none are read)
 import { parseBudget } from '../desk-env.mjs';
-import { keysOf } from '../desk-q.mjs';
+import { keysOf } from '../desk-q-model.mjs';
 import { borrowPlan, machineBudget, repoBudget } from '../borrow.mjs';
 import { memBudget } from '../mem-lease.mjs';
 import { say, usageHeldText, toResume, toHandoff } from './shared.mjs';

@@ -29,14 +29,14 @@ import { leverStatesIn } from './levers-auto.mjs';
 import { CATEGORY, VALUES, choicesOf, recordLeverDecision } from './lever-changes.mjs';
 import { appendDecisions } from './decisions.mjs';
 import { readDecisions } from './digest.mjs';
-import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q.mjs';
+import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q-model.mjs';
 
 const BY_HAND = 'ben';
 
 export class LeversRefusal extends Error {}
 const refuse = (why) => { throw new LeversRefusal(why); };
 
-// The configured repo `want` names, as desk-q resolves its repos (desk-q.mjs resolveRepo, over each
+// The configured repo `want` names, as desk-q resolves its repos (desk-q-model.mjs resolveRepo, over each
 // repo's name as desk-q shows it), or by its GitHub `owner/name`. Refuses a name no repo has, naming the
 // configured ones, and a name two share, naming both slugs.
 export function resolveRepo(want, root = deskConfigRoot()) {

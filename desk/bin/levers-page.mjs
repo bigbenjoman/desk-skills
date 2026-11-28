@@ -6,7 +6,7 @@
 //   import { renderPage, pageAge } from './levers-page.mjs'
 import * as MS from './merge-stages.mjs';
 import { fmtHours } from './stuck-time.mjs';
-import { andList } from './desk-q.mjs';
+import { andList } from './desk-q-model.mjs';
 import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives

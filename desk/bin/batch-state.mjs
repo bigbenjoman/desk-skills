@@ -327,6 +327,7 @@ export function dateHoldOf(labels) {
 // ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
 // reads its label again once they release it. A stopped ticket is held on no date: the held_label a
 // release left behind stays, so its start is not held again on that label, but never starts it.
+/** @type {(t: any) => { label: string, until?: string, bad?: boolean } | null} */
 export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label && !blockersOf(t).length ? dateHoldOf([t.held_label]) : null);
 // Held behind blockers, with none left in its held_by and no other reason to hold it (not stopped, no
 // date): nothing will ever release it but a release, so `set held_by=null` and the pass both release it.

@@ -57,7 +57,7 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
-import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since, ghTime } from './gate.mjs';
 import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry, VERDICT_CHECK, reviewGates, prInConflict } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
@@ -435,7 +435,7 @@ function rerunCall(gate, cfg, n) {
 // cfg.cancels(name), what was tried for it at this head. The first stuck check gives a `rerun` of its job
 // (an orphan) or a `cancel` of its run (still in progress), and the person once one was tried at this
 // head or §3 ci-rerun is not yes. Null while every pending check may yet finish.
-const isoMs = (s) => (s && !String(s).startsWith('0001-') ? Date.parse(s) || null : null);
+const isoMs = (s) => (ghTime(s) ? Date.parse(s) || null : null);
 function stuckCall(gate, checks, cfg, n) {
   if (!cfg.runOf || !gate.pending.length) return null;
   const now = cfg.now ?? Date.now();

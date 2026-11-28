@@ -246,7 +246,7 @@ ci_run(){ RT="$T/ci$2"; mkdir -p "$RT/job"; ln -s "$RT/result" "$RT/job/results"
   export RUNS="$T/ciruns$2" FLAG="$T/ciflag$2"; : > "$RUNS"; rm -f "$FLAG"
   ( cd "$T/repo" && RUNNER_TEMP=$RT SHARD=1 OF=1 SUITES=$1 HOOK=false DESK_SUITE_BUDGETS=${3:-} bash -e -c "$shard_body" ) >/dev/null 2>&1; src=$?
   res=$(cat "$RT/result/shard-1.txt" 2>/dev/null)
-  out=$(cd "$RT/job" && PLAN=success BASH32=success SHARDS=success MATRIX='{"include":[{"shard":1}]}' bash -e -c "$tests_body" 2>&1); trc=$?; }
+  out=$(cd "$RT/job" && PLAN=success BASH32=success TYPES=success SHARDS=success MATRIX='{"include":[{"shard":1}]}' bash -e -c "$tests_body" 2>&1); trc=$?; }
 ci_run "test_flaky.sh test_pass.sh" 1
 check "DS-926 AC4 a shard whose suite flaked writes it into its result file, and the tests job passes and names it" \
   '[ $src -eq 0 ] && printf "%s\n" "$res" | grep -qx "flaked=test_flaky.sh" && printf "%s\n" "$res" | grep -qx "rc=0" && [ $trc -eq 0 ] && printf "%s\n" "$out" | grep -qx "shard 1/1 passed" && printf "%s\n" "$out" | grep -qx "shard 1/1 flaked (failed, then passed its retry): test_flaky.sh"'

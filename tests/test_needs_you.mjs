@@ -300,6 +300,19 @@ t('AC10 nothing anywhere', N.listText(N.collect({ repos: quiet })), 'Nothing nee
 const b1 = cli('record', 'beta', 'B-1', 'resume', 'the v2 one');
 t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 --all the v2 one');
 t('AC15 the session to message is named, with the requeue', /^MESSAGE beta-batch: B-1 was answered .*queue\.mjs requeue B-1/m.test(b1.out), true);
+// DS-737: a record that succeeds from the command line goes to the machine's records log, readable
+// only by this user; one refused is not logged.
+const recordsLog = join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl');
+const logged737 = () => (existsSync(recordsLog) ? readFileSync(recordsLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+const b1Log = logged737().at(-1);
+t('DS-737 the record is logged with its batch, key, action and first line', JSON.stringify([b1Log?.batch, b1Log?.key, b1Log?.action, b1Log?.line, !Number.isNaN(Date.parse(b1Log?.at))]),
+  JSON.stringify(['beta', 'B-1', 'resume', b1.out.split('\n')[0], true]));
+t('DS-737 the records log is chmod 600', (statSync(recordsLog).mode & 0o777).toString(8), '600');
+t('DS-737 readRecords reads it back', N.readRecords({ path: recordsLog }).at(-1)?.key, 'B-1');
+t('DS-737 readRecords leaves out entries before `since`', N.readRecords({ path: recordsLog, since: Date.now() + 60_000 }).length, 0);
+const nLogged = logged737().length;
+cli('record', 'nosuchrepo', 'Z-1', 'done');
+t('DS-737 a refused record is not logged', logged737().length, nLogged);
 // DS-297 AC1: marked answered, so desk-q shows it waiting on the session, and it is not asked again.
 const betaRow = () => loadRepos().find((r) => r.name === 'beta').rows.find((x) => x.t.key === 'B-1');
 t('DS-297 AC1 the park is marked answered', typeof queueOf('beta').tickets['B-1'].park?.answered, 'string');
@@ -387,6 +400,12 @@ t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stri
 t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue().tickets['X-2'].state}`, '0 triaged');
 const x3 = N.record({ word: 'alpha', ticket: 'X-3', action: 'resume', text: 'the plain one' });
 t('DS-310 AC3 a repo\'s name finds the batch that holds the ticket', `${x3.ok} ${answers().at(-1).queue === xq} ${xQueue().tickets['X-3'].state} ${queueOf('alpha').tickets['X-3']}`, 'true true triaged undefined');
+// DS-737: the records log names the batch the answer went to as list --json does, however the repo was typed.
+writeFileSync(xq, JSON.stringify({ ...xQueue(), tickets: { ...xQueue().tickets, 'X-4': { key: 'X-4', added_at: minsAgo(600), ...parked('A', 5, 'Which header?') } } }));
+const x4 = cli('record', 'ALPHA', 'X-4', 'resume', 'the tall one');
+const x4Log = existsSync(join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl'))
+  ? JSON.parse(readFileSync(join(env.HOME, '.desk-autopilot', 'needs-you-records.jsonl'), 'utf8').trim().split('\n').at(-1)) : null;
+t('DS-737 a record typed with the repo\'s name logs the named batch that holds the ticket', `${x4.code} ${x4Log?.key} ${x4Log?.batch}`, '0 X-4 alpha:X-1');
 
 // ---- DS-279: every row desk-q puts in Needs you is asked about: a worker that gave up, and a PR only you move.
 put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
@@ -843,6 +862,8 @@ put('lambda', { port: 4100, beat: 1, supervised: true, batch: { usage_hold: { si
 const lambda = N.collect({ word: 'lambda' }).items;
 t('DS-344 AC5 a batch held on the usage limit is one item, and no ticket is one', lambda.map((i) => `${i.t.key} ${i.kind}`).join(), 'usage-limit usage');
 t('DS-344 AC5 its need names the limit and how many workers wait', /^held on the weekly usage limit until .+: nothing new starts, and 2 paused workers wait\. It carries on by itself once the limit lifts$/.test(lambda[0]?.need ?? ''), true);
+t('DS-737 a usage item\'s JSON carries its reset as an ISO time', N.listItems({ word: 'lambda' }).items.find((i) => i.key === 'usage-limit')?.resets_at, new Date(wreset * 1000).toISOString());
+t('DS-737 an item of another kind carries no resets_at', N.listItems({ word: 'beta' }).items.some((i) => 'resets_at' in i), false);
 t('DS-344 AC5 it offers done and not-now, and done is recorded', `${lambda[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'lambda', ticket: 'usage-limit', action: 'done' }).ok}`, 'done,not-now true');
 // A repo pinned to a subscription since set off: its queued work starts nowhere, and that is one item.
 put('studia', { port: 4110, beat: 1, supervised: true, batch: { subscription_off: { since: minsAgo(5), email: 'ops@studia.example', login: 'work-2' } }, tickets: { 'S-1': { state: 'triaged', lane: 'A' } } });
@@ -1444,8 +1465,7 @@ t('DS-701 the "waiting behind" count is in the item', ['W-1', 'W-3', 'W-2'].map(
 t('DS-701 its question is the listed need, word for word', ji701['W-1']?.question, need657('W-1'));
 t('DS-701 a PRODUCTION BROKEN park is marked so', `${ji701['W-3']?.production_broken} ${ji701['W-1']?.production_broken}`, 'true false');
 t('DS-701 the item names its batch, key, kind and ticket, and its actions with the recommendation', JSON.stringify((({ id, batch, key, kind, ticket, actions }) => ({ id, batch, key, kind, ticket, first: actions[0] }))(ji701['W-1'])),
-  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null } }));
-t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
+  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null, needs_text: true } }));t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
 t('DS-701 without settling, it says so and settles nothing', `${j701.settled} ${j701.settled_lines.length} ${j701.v}`, 'false 0 1');
 t('DS-701 its queue carries its age', j701.inputs.queues.map((x) => `${x.batch} ${typeof x.age_s}`).join(), 'wait657 number');
 // A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its
@@ -2845,6 +2865,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     /^promotion PR #1001 \(feat\/VPL-842 into the default branch\) is red, failing flows-image and portal \(1\/3\); it is still failing flows-image, portal \(1\/3\) after 2 check tries; the last try parked: the Flows image is missing, so no more workers go to it\. /.test(pi?.need ?? ''), true);
   t('DS-786 AC3 it names the follow items waiting on it', (pi?.need ?? '').endsWith('The follow steps of P-1 and P-2 wait on it reaching the default branch'), true);
   t('DS-786 AC3 the follow items waiting on it stay held, so nothing waiting on it is listed above it', ci.map((i) => i.t.key).join(), 'promotion:1001');
+  t('DS-727 list --json gives a promotion item its promotion PR', N.listItems({ word: 'chi786', reads: null }).items.find((i) => i.key === 'promotion:1001')?.pr, 1001);
   t('DS-786 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi786')).shown, 1);
   const done786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'done' });
   t('DS-786 done records nothing: the next pass reads its checks again', `${done786.ok} ${queueOf('chi786').promotion.red.pr} ${items().length}`, 'true 1001 1');
@@ -3906,6 +3927,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const money = cli('ask', 'ask811', 'Upgrade the CI plan to the paid tier?', '--options', 'upgrade|stay', '--recommend', 'upgrade');
   t('#1366 a recommendation that spends money never applies by itself, and says so', money.out.includes('it never applies by itself: it is a money call'), true);
   t('#1366 a choice needs two one-word options, and a recommendation among them', `${cli('ask', 'ask811', 'x', '--options', 'merge').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|two words').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|hold', '--recommend', 'ship').code}`, '11 11 11');
+  cli('ask', 'ask811', 'Reject the vendor build, or keep it?', '--options', 'reject|keep');
+  const rk = N.listItems({ word: 'ask811', reads: null }).items.find((i) => i.question?.startsWith('Reject the vendor build'));
+  t('DS-727 an ask whose options are named like ticket actions needs no text with any of them', rk?.actions.map((a) => `${a.action}=${a.needs_text}`).join(), 'reject=false,keep=false,done=false,not-now=false');
   const a3 = cli('ask', 'ask811', 'Say whether to admit F-8', '--until', 'F-8, G-9');
   t('#1341 ask --until records the tickets it waits on, and says a pass drops it once they finish',
     `${a3.code} ${a3.out.includes('or a pass finds F-8, G-9 merged or done')} ${JSON.stringify(JSON.parse(readFileSync(join(standing.stateDir, 'asks.json'), 'utf8')).asks.find((a) => a.text === 'Say whether to admit F-8')?.until)}`,
@@ -4260,6 +4284,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-836 AC1 its need names the PR and that no ticket owns it, so nothing will merge it', s[0]?.need,
     'PR #77 ("fix(tests): steady the flaky upload spec") from fix/flaky-upload into main was opened by a desk session, and no ticket owns it, so nothing will merge it: review it, then merge or close it yourself');
   t('DS-836 AC1 it is aged from when the PR was opened, and offers done and not-now', `${s[0]?.since === Date.parse(rec.since)} ${s[0]?.actions.map((a) => a[0]).join()}`, 'true done,not-now');
+  t('DS-727 list --json gives a ticketless item its PR', N.listItems({ word: 'stray836', reads: null }).items.find((i) => i.key === 'ticketless:77')?.pr, 77);
   t('DS-836 AC1 desk-q\'s count lists it once', N.needsCount(loadRepos(Date.now(), 'stray836').find((r) => r.slug === 'acme__stray836' && r.batch == null)).items.filter((i) => i.item.kind === 'ticketless').length, 1);
   const done = N.record({ word: 'stray836', ticket: 'ticketless:77', action: 'done' });
   t('DS-836 done records nothing and says what clears it', `${done.ok} ${done.line} ${strays().length}`, 'true stray836 ticketless:77: noted: the next pass that finds PR #77 merged or closed drops this item; done records nothing. 1');

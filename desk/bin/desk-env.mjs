@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 // Shared resolver for the desk/bin scripts: one place that turns "who am I, where is the repo,
 // what am I allowed to do" into values, so no script hardcodes a person or a machine.
 //
@@ -553,6 +554,14 @@ export function machineProfile() {
   if (machineCache === undefined) machineCache = M.readProfile(machineProfilePath());
   return machineCache;
 }
+// A long-lived process (desk-ui's server) drops what it read so the next read sees edits since.
+// Config files are re-read by their stat stamp already; this drops the machine profile and any pin.
+export function forgetReads() { machineCache = undefined; snapshot = null; }
+// A name in desk's state that workers write all the time and that changes no count: the log and
+// read-only clone folders (logs/, ref/) and any log file, a round rotateRound moved aside included
+// (`.log.round<n>`, `.gz` once compressed). Not any name with `.log.` in it: a repo slug keeps its dots.
+// desk-q's state stamp and desk-ui's watcher both skip it.
+export const quietStateName = (n) => n === 'logs' || n === 'ref' || /\.log(\.round\d+(\.gz)?)?$/.test(n);
 // A profile value by key (hardware or sizing), or null.
 export function machineValue(key) {
   const v = M.profileValue(machineProfile(), key);
@@ -624,7 +633,8 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
     const selfHit = [...labelsRow('other-names'), ...(self.slug ? labelsRow('other-names', self.slug, root) : [])].some(names);
     hits = repos.filter((r) => r.slug !== self.slug && labelsRow('other-names', r.slug, root).some(names));
     if (selfHit && !hits.length) return null;
-    if (selfHit) hits = [{ slug: self.slug ?? own ?? 'this repo' }, ...hits];
+    // This repo and another both answer to the name: ambiguous, so `hits` keeps only configured repos.
+    if (selfHit) return { repository, unknown: true, slugs: [self.slug ?? own ?? 'this repo', ...hits.map((r) => r.slug)] };
     otherName = true;
   }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
@@ -986,6 +996,7 @@ export function commandItemProblem(cmd) {
 }
 
 // env -> config -> fallback. Identity-shaped values have no fallback and fail loudly.
+/** @param {{ env?: string, id?: string, fallback?: any, identity?: boolean }} opts */
 export function resolve({ env, id, fallback, identity = false }) {
   const fromEnv = env ? process.env[env] : undefined;
   if (!unset(fromEnv)) return expandHome(fromEnv);
@@ -1044,6 +1055,8 @@ export function permissionOrUnset(id, parsed) {
   return permValue(key, v);
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
+// Another repo's, by slug, as permissionOrUnset reads it: null for a row missing, blank or TODO.
+export const repoPermissionOrUnset = (slug, id, root = deskConfigRoot()) => permissionOrUnset(id, parseConfigFile(join(root, 'repos', slug, 'config.md')));
 
 // The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
 // user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
@@ -1132,7 +1145,7 @@ export function leverValue(name, env = process.env) {
 // lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset. The row
 // is parsed either way, so a malformed one is refused on both arms.
 export function finderModel(l = levers()) {
-  const { finder = null } = workerModels();
+  const { finder = null } = /** @type {{ finder?: string | null }} */ (workerModels());
   return leverOn('finder-model', l) ? FINDER_MODEL_LEVER : finder;
 }
 
@@ -1197,6 +1210,7 @@ export function codexReview() {
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
+/** @param {{ lane?: string | null, size?: string | null }} [triage] */
 export function modelTier({ lane, size } = {}) {
   return ['A', 'E'].includes(String(lane ?? '').toUpperCase()) && ['XS', 'S'].includes(String(size ?? '').toUpperCase())
     ? 'standard' : 'high';
@@ -1989,15 +2003,18 @@ export function tmpfsUsage() {
 export const uuid = () => randomUUID();
 
 // Probe by connecting, which works the same on Linux and macOS and needs no ss/lsof.
-export function portInUse(port, timeoutMs = 400) {
-  const probe = (host) => new Promise((res) => {
+// Whether anything accepts a connection on host:port (a listener on the wildcard address counts).
+export function probePort(port, host, timeoutMs = 400) {
+  return new Promise((res) => {
     const s = net.connect({ port, host });
     const done = (v) => { s.destroy(); res(v); };
     s.setTimeout(timeoutMs, () => done(false));
     s.once('connect', () => done(true));
     s.once('error', () => done(false));
   });
-  return Promise.all([probe('127.0.0.1'), probe('::1')]).then((r) => r.some(Boolean));
+}
+export function portInUse(port, timeoutMs = 400) {
+  return Promise.all([probePort(port, '127.0.0.1', timeoutMs), probePort(port, '::1', timeoutMs)]).then((r) => r.some(Boolean));
 }
 
 // ---- the session's permission mode ---------------------------------------------------------
@@ -2568,11 +2585,20 @@ function logRowChange(row, LL) {
 //     parsed   the value as the row's type reads it, null where value is null or errors is not empty
 //     default  the schema's default, never substituted into value; null where it has none
 //     errors   [{ item, error, fatal }]: each item that does not fit the type, and list's refusal (fatal) }
+/** @typedef {{ item: string | null, error: string, fatal: boolean }} RowError */
+/**
+ * @typedef {{ section: string, label: string, kind: string, type: string, set: boolean,
+ *   source: 'environment' | 'repo' | 'machine' | 'default' | 'unset', value: string | null, items: string[] | null,
+ *   parsed: unknown, default: unknown, errors: RowError[] }} ConfigRowJson
+ */
+/** @typedef {ConfigRowJson & { id: string }} ConfigRowRead */
 const ROW_ENTRY = new Map(ROWS.map((e) => [e.id, e]));
 const rowHead = (e) => ({ id: e.id, section: e.section, label: e.label, kind: e.kind, type: e.type });
+/** @returns {ConfigRowRead} */
 function readRow(id) {
   return PERMISSION_KEYS[id] ? permRow(id) : valueRow(id);
 }
+/** @returns {ConfigRowRead} */
 function permRow(id) {
   const parsed = parseConfig();
   const e = ROW_ENTRY.get(id);
@@ -2600,6 +2626,7 @@ function rowItems(id, rows = CONFIG_ROWS) {
 }
 // A declared row other than a permission. Its type is checked on the row's items where the value is
 // the row's own, and on the value itself where something else gave it (a cap, an override, a fallback).
+/** @returns {ConfigRowRead} */
 function valueRow(id) {
   const e = ROW_ENTRY.get(id);
   const { value, source, fromRow } = rowValue(id, DECLARED_ROWS);
@@ -2613,7 +2640,7 @@ function valueRow(id) {
   const errors = !refused ? checked.errors
     : readsAsList(e) ? checked.errors.map((x) => ({ ...x, error: refused.message }))
       : [{ item: null, error: refused.message, fatal: false }, ...checked.errors];
-  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source, value, items,
+  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source: /** @type {ConfigRowJson['source']} */ (source), value, items,
     parsed: errors.length ? null : checked.value, default: e.default ?? null, errors };
 }
 
@@ -2624,8 +2651,15 @@ function valueRow(id) {
 // caller learns the repo and its rows in one run. A DESK_CONFIG_FILE stands in for a missing config:
 // its rows are read and `config` is null. Asked for jira-required-fields as well, it adds
 // `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
+/** @typedef {{ slug: string, gh_repo: string, config: string, creds: string, exists: boolean }} WhereJson */
+/**
+ * What `desk-env get --json` prints.
+ * @typedef {{ where?: WhereJson, config: string | null, rows: Record<string, ConfigRowJson>,
+ *   required_fields?: { need: Record<string, string[]>, malformed: string[] } }} GetJson
+ */
 class GetJsonUsage extends Error {}
 export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+/** @returns {WhereJson} */
 function whereJson() {
   const r = currentRepo(); const p = configPathOrNull();
   return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
@@ -2644,6 +2678,7 @@ function checkIds(cmd, ids) {
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`${cmd}: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
 }
+/** @returns {GetJson & { noConfig?: boolean }} */
 function getJson(args) {
   const ids = [], named = [];
   let where = false;

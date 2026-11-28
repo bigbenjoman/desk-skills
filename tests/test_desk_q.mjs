@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, 
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { registerHooks } from 'node:module';
 import { xterm256, rgbOfSgr } from './sgr_rgb.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -1762,6 +1763,12 @@ t('DS-215 AC13 no screen draws dim (SGR 2)', [S215, Rs, Sy].some((s) => s.output
 t('DS-215 AC13 every text colour drawn is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
   `${sel215 != null} ${drawn215.has('38;5;247')} ${textCodes(drawn215).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands215.join()} ${bands215.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
   'true true |1;7;38;5;210 true');
+// The theme is read when desk-q-model.mjs loads, so a ?light or ?truecolor copy of desk-q.mjs loads its
+// own copy of the model under the same query.
+registerHooks({ resolve(s, c, next) {
+  const r = next(s, c), parent = c.parentURL && new URL(c.parentURL);
+  return parent?.search && s === './desk-q-model.mjs' && parent.pathname.endsWith('/desk-q.mjs') ? { ...r, url: `${r.url}${parent.search}` } : r;
+} });
 process.env.COLORFGBG = '0;15';
 const QL = await import(`${pathToFileURL(BIN).href}?light`);
 delete process.env.COLORFGBG;
@@ -2211,6 +2218,15 @@ t('DS-357 AC2b the repo\'s name opens all its batches\' tickets', ['X-2', 'X-3',
 t('DS-310 a ticket in the named batch is shown from it', /which copy\?/.test(W310.run('--plain', 'desk-skills:X-1', 'show', 'X-3').out), true);
 const over310 = W310.run('desk-skills:X-1', 'workers', '4');
 t('DS-310 a named batch\'s workers past the cap counts its sibling batch in the machine total', `${over310.code !== 0} ${/live batches would then allow 6 /.test(over310.out + over310.err)}`, 'true true');
+// The Desk window's sidebar and banner read these from home's JSON: each named batch with its own
+// counts, and the tickets parked on a PRODUCTION BROKEN question.
+const home724 = () => JSON.parse(W310.run('--json', 'home').out).repos.find((r) => r.name === 'desk-skills');
+t('DS-724 AC2 home JSON lists a repo\'s named batch with its running and needs-you counts', JSON.stringify(home724().batches),
+  '[{"id":"acme__desk-skills:X-1","name":"desk-skills:X-1","running":1,"needs_you":1}]');
+t('DS-724 AC7 no production-broken park, none listed', JSON.stringify(home724().production_broken), '[]');
+t('DS-724 AC10 a repo with no Jira site has no Jira browse prefix', home724().jira_browse, null);
+writeFileSync(q310, JSON.stringify({ ...JSON.parse(readFileSync(q310, 'utf8')), tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'PRODUCTION BROKEN: checkout 500s' } } } }));
+t('DS-724 AC7 a PRODUCTION BROKEN park is listed by its ticket', JSON.stringify(home724().production_broken), '["X-3"]');
 
 // ---- DS-279: five states named by who moves a ticket next, and a row with a failure leads with it.
 // The 27 Oct voicepa board: #693 in CI, #701 green, #705's fix try running, #704's and #697's queued,

@@ -37,7 +37,7 @@ import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, sto
   HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS, doneOnPr } from '../batch-state.mjs';
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
-import { keysOf } from '../desk-q.mjs';
+import { keysOf } from '../desk-q-model.mjs';
 import { blockersOf } from '../queue-states.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
 import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say, foreignParkPr } from './shared.mjs';

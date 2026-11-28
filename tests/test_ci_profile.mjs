@@ -89,7 +89,7 @@ t('needs on a chain of jobs propagates', placed(`on: pull_request\njobs:\n  a:\n
 
 const own = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows/tests.yml'), 'utf8');
 // The shards install desk's Playwright for the browser suites, so they and the jobs after them are full.
-t('own workflow: plan and bash32 light, the shards and what needs them full', placed(own), 'plan=light@26 bash32=light@74 shard=full@125 tests=full@168 record=full@211');
+t('own workflow: plan, bash32 and types light, the shards and what needs them full', placed(own), 'plan=light@26 bash32=light@74 types=light@96 shard=full@164 tests=full@207 record=full@252');
 
 // ---- AC2: the plan gates every full job on PRs into the default branch
 const files = [{ file: 'ci.yml', text: ci }, { file: 'nightly.yml', text: nightly }, { file: 'light.yml', text: lightOnly }];

@@ -1,0 +1,144 @@
+@import "tailwindcss";
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/geist-sans/700.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "@fontsource/geist-mono/600.css";
+
+/* The canvas's tokens (docs/design/DS-691/project/index.html, version 4), light and dark, value for
+   value. <html data-theme> follows the Mac's appearance (useColorScheme); the media query covers the
+   moment before the script runs. */
+:root{
+  --font-sans:"Geist","Geist Sans","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --radius:6px;
+  --background:#ffffff; --foreground:#09090b;
+  --card:#ffffff; --popover:#ffffff;
+  --muted:#f4f4f5; --muted-fg:#6b6b73; --subtle:#fafafa; --faint:#f4f4f5;
+  --border:#e4e4e7; --input:#e4e4e7; --ring:#a1a1aa; --focus:#52525b;
+  --primary:#18181b; --primary-fg:#fafafa;
+  --secondary:#f4f4f5; --secondary-fg:#18181b;
+  --destructive:#dc2626; --destructive-fg:#fafafa;
+  --sidebar:#fafafa; --sidebar-accent:#ececef;
+  --overlay:rgba(9,9,11,.36);
+  --sh-sm:0 1px 2px rgba(9,9,11,.06);
+  --sh-md:0 4px 12px -2px rgba(9,9,11,.10),0 2px 4px -2px rgba(9,9,11,.06);
+  --sh-lg:0 20px 48px -12px rgba(9,9,11,.28),0 6px 14px -6px rgba(9,9,11,.12);
+  --run:#2563eb; --run-bg:#eff6ff; --run-bd:#bfdbfe;
+  --ready:#475569; --ready-bg:#f1f5f9; --ready-bd:#cbd5e1;
+  --merge:#7c3aed; --merge-bg:#f5f3ff; --merge-bd:#ddd6fe;
+  --wait:#71717a;
+  --needs:#b45309; --needs-solid:#f59e0b; --needs-bg:#fffbeb; --needs-bd:#fcd34d;
+  --done:#15803d; --done-bg:#f0fdf4; --done-bd:#bbf7d0;
+  --fail:#b91c1c; --fail-bg:#fef2f2; --fail-bd:#fecaca;
+  --c1:#dbeafe; --c2:#93c5fd; --c3:#3b82f6; --c4:#1e3a8a;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --background:#09090b; --foreground:#fafafa;
+  --card:#0e0e10; --popover:#131316;
+  --muted:#1d1d21; --muted-fg:#a1a1aa; --subtle:#0e0e10; --faint:#151518;
+  --border:#27272a; --input:#34343a; --ring:#71717a; --focus:#a1a1aa;
+  --primary:#fafafa; --primary-fg:#18181b;
+  --secondary:#27272a; --secondary-fg:#fafafa;
+  --destructive:#dc2626; --destructive-fg:#fafafa;
+  --sidebar:#0e0e10; --sidebar-accent:#1f1f23;
+  --overlay:rgba(0,0,0,.6);
+  --sh-sm:0 1px 2px rgba(0,0,0,.4);
+  --sh-md:0 4px 14px -2px rgba(0,0,0,.5);
+  --sh-lg:0 24px 60px -12px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.04);
+  --run:#60a5fa; --run-bg:rgba(59,130,246,.12); --run-bd:rgba(96,165,250,.35);
+  --ready:#94a3b8; --ready-bg:rgba(148,163,184,.10); --ready-bd:rgba(148,163,184,.3);
+  --merge:#a78bfa; --merge-bg:rgba(139,92,246,.12); --merge-bd:rgba(167,139,250,.35);
+  --wait:#a1a1aa;
+  --needs:#fbbf24; --needs-solid:#f59e0b; --needs-bg:rgba(245,158,11,.09); --needs-bd:rgba(251,191,36,.38);
+  --done:#4ade80; --done-bg:rgba(34,197,94,.10); --done-bd:rgba(74,222,128,.32);
+  --fail:#f87171; --fail-bg:rgba(239,68,68,.10); --fail-bd:rgba(248,113,113,.38);
+  --c1:#1e3a8a; --c2:#2563eb; --c3:#60a5fa; --c4:#dbeafe;
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --background:#09090b; --foreground:#fafafa;
+  --card:#0e0e10; --popover:#131316;
+  --muted:#1d1d21; --muted-fg:#a1a1aa; --subtle:#0e0e10; --faint:#151518;
+  --border:#27272a; --input:#34343a; --ring:#71717a; --focus:#a1a1aa;
+  --primary:#fafafa; --primary-fg:#18181b;
+  --secondary:#27272a; --secondary-fg:#fafafa;
+  --destructive:#dc2626; --destructive-fg:#fafafa;
+  --sidebar:#0e0e10; --sidebar-accent:#1f1f23;
+  --overlay:rgba(0,0,0,.6);
+  --sh-sm:0 1px 2px rgba(0,0,0,.4);
+  --sh-md:0 4px 14px -2px rgba(0,0,0,.5);
+  --sh-lg:0 24px 60px -12px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.04);
+  --run:#60a5fa; --run-bg:rgba(59,130,246,.12); --run-bd:rgba(96,165,250,.35);
+  --ready:#94a3b8; --ready-bg:rgba(148,163,184,.10); --ready-bd:rgba(148,163,184,.3);
+  --merge:#a78bfa; --merge-bg:rgba(139,92,246,.12); --merge-bd:rgba(167,139,250,.35);
+  --wait:#a1a1aa;
+  --needs:#fbbf24; --needs-solid:#f59e0b; --needs-bg:rgba(245,158,11,.09); --needs-bd:rgba(251,191,36,.38);
+  --done:#4ade80; --done-bg:rgba(34,197,94,.10); --done-bd:rgba(74,222,128,.32);
+  --fail:#f87171; --fail-bg:rgba(239,68,68,.10); --fail-bd:rgba(248,113,113,.38);
+  --c1:#1e3a8a; --c2:#2563eb; --c3:#60a5fa; --c4:#dbeafe;
+  color-scheme:dark;
+}
+
+/* The tokens as Tailwind utilities (bg-background, text-muted-fg, border-border, shadow-md ...).
+   font-sans and font-mono need no entry: the :root values above, unlayered, win over Tailwind's. */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --shadow-sm: var(--sh-sm);
+  --shadow-md: var(--sh-md);
+  --shadow-lg: var(--sh-lg);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-muted: var(--muted);
+  --color-muted-fg: var(--muted-fg);
+  --color-subtle: var(--subtle);
+  --color-faint: var(--faint);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-focus: var(--focus);
+  --color-primary: var(--primary);
+  --color-primary-fg: var(--primary-fg);
+  --color-secondary: var(--secondary);
+  --color-secondary-fg: var(--secondary-fg);
+  --color-destructive: var(--destructive);
+  --color-destructive-fg: var(--destructive-fg);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-overlay: var(--overlay);
+  --color-run: var(--run);
+  --color-run-bg: var(--run-bg);
+  --color-run-bd: var(--run-bd);
+  --color-ready: var(--ready);
+  --color-ready-bg: var(--ready-bg);
+  --color-ready-bd: var(--ready-bd);
+  --color-merge: var(--merge);
+  --color-merge-bg: var(--merge-bg);
+  --color-merge-bd: var(--merge-bd);
+  --color-wait: var(--wait);
+  --color-needs: var(--needs);
+  --color-needs-solid: var(--needs-solid);
+  --color-needs-bg: var(--needs-bg);
+  --color-needs-bd: var(--needs-bd);
+  --color-done: var(--done);
+  --color-done-bg: var(--done-bg);
+  --color-done-bd: var(--done-bd);
+  --color-fail: var(--fail);
+  --color-fail-bg: var(--fail-bg);
+  --color-fail-bd: var(--fail-bd);
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: 14px; line-height: 20px; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  /* Settings · App · Density Compact (screen-spec §9.2): everything drawn a little tighter. */
+  html[data-density="compact"] body { zoom: 0.92; }
+}

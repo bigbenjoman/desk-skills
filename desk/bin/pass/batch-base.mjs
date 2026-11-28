@@ -63,7 +63,7 @@ import { usageLimit, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
 import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, countedTry, notStarted, FIX_TRIES_MAX } from '../base-fix.mjs';
 import { tries } from '../fix-tries.mjs';
-import { behindPrs } from '../desk-q.mjs';
+import { behindPrs } from '../desk-q-model.mjs';
 import { summary } from '../baseline.mjs';
 import { QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, usageHeldText, tryWhat, tryNo } from './shared.mjs';
 

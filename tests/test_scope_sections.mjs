@@ -672,15 +672,16 @@ t('DS-1002 an import() written with a space before its parenthesis is read as on
   fmtOn(restSpaced) === everyOn(restSpaced),
 ], [everyClaimer, 'some: test_lint.sh test_ns.mjs test_pass.mjs', true]);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
-// On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
-// command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
-// install.sh by most suites, so this narrows to few fewer suites than CI's.
+// On this repo: an edit to desk-q.mjs's interactive, the screen its command line starts. (Its
+// checkFlags moved to desk-q-model.mjs with DS-954, a module desk-ui takes whole by import(), so an
+// edit there is not narrowed.) Its command line reaches most of the module, and bin/desk-q, which
+// launches it, is claimed through install.sh by most suites, so this narrows to few fewer suites than CI's.
 const deskQ = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');
-const flagsEdit = deskQ.replace("const unknown = argv.filter((a) => a.startsWith('--') && ", "const unknown = argv.filter((a) => a.slice(0, 2) === '--' && ");
-const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(deskQ, flagsEdit) }], real, opts);
+const screenEdit = deskQ.replace('  let scope = word;\n', '  let scope = word ?? null;\n');
+const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(deskQ, screenEdit) }], real, opts);
 const [qCi, qLocal] = [realQ({}), realQ({ byName: true })];
-t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, runs the suite driving desk-q\'s command line, and no suite CI would not',
-  [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.includes('test_desk_q.mjs'), qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], true, []]);
+t('DS-1002 AC1 on the real desk-q.mjs: an edit to interactive narrows on it, runs the suite driving desk-q\'s command line, and no suite CI would not',
+  [screenEdit !== deskQ, qLocal.narrowed, qLocal.suites.includes('test_desk_q.mjs'), qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: interactive'], true, []]);
 // On this repo: triage.sh's embedded node code imports usageLimit from usage-limit.mjs, which loads()
 // does not read (a script's shell lines only), so the suite running triage.sh still runs on an edit to it.
 const limitSrc = readFileSync(join(R, 'desk/bin/usage-limit.mjs'), 'utf8');

@@ -68,8 +68,9 @@ const NEXT_PASS = (r) => `node ~/.claude/desk/bin/queue.mjs next-pass +<seconds>
 
 //   -> { text } or { recheck }
 export async function check(session, mode, now = Date.now()) {
-  // Loaded here: queue.mjs imports markRearmed, and has no use for desk-q.
-  const { loadRepos, movable } = await import('./desk-q.mjs');
+  // Loaded here: queue.mjs imports markRearmed, and has no use for desk-q. The read model, not
+  // desk-q.mjs: it loads no terminal code.
+  const { loadRepos, movable } = await import('./desk-q-model.mjs');
   const slug = E.repoSlug();
   const own = loadRepos(now, slug).filter((r) => r.slug === slug && !r.error && loopSession(r) === session && unscheduled(r, now) && movable(r));
   if (mode === 'stop') {

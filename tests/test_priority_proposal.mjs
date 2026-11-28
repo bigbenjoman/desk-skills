@@ -76,6 +76,8 @@ t('one item a ticket with a pending proposal, none for one without', listed.map(
 const p1 = listed.find((i) => i.ticket === 'P-1');
 t('it names the value, the label and the line asking for it', [/P-1 carries a pending proposal to make its priority P1, from the label lp-proposed-p1 \("Proposed by the priority bot/.test(p1.need), /built either way/.test(p1.need)], [true, true]);
 t('promote is the recommended answer, reject and not-now beside it', p1.actions.map(([a, why]) => [a, !!why]), [['promote', true], ['reject', false], ['not-now', false]]);
+t('its list JSON says none of its actions needs text, reject included, as the proposal names its value',
+  NY.listItems({ reads: null }).items.find((i) => i.key === 'proposal:P-1')?.actions.map((a) => [a.action, a.needs_text]), [['promote', false], ['reject', false], ['not-now', false]]);
 t('it holds no work: the ticket is still running', JSON.parse(readFileSync(qf, 'utf8')).tickets['P-1'].state, 'running');
 
 // A desk-jira read that records each call.

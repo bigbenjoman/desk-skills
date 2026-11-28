@@ -28,7 +28,7 @@ import { jiraSearch, keySearch } from './jira-search.mjs';
 import { describeCond } from './clears-when.mjs';
 import { isHeld, heldBehindOf, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
-import { stalledPrs as stalledOf, STALL_FOR, newHoldPrs } from './desk-q.mjs';
+import { stalledPrs as stalledOf, STALL_FOR, newHoldPrs } from './desk-q-model.mjs';
 import { followChecks, followCheckText } from './needs-you.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
@@ -65,6 +65,13 @@ export function checkinTimes(raw) {
     return { ok: false, why: `config §3b "Check-in times" is "${raw}": want local HH:MM times, e.g. \`08:00, 17:00\`` };
   }
   return { ok: true, times: [...new Set(parts)].sort() };
+}
+// One repo's §3b Check-in times, or the default where its row is unset, unread or malformed.
+export function repoCheckinTimes(slug) {
+  let raw = null;
+  try { raw = [].concat(E.repoConfigValues(slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
+  const c = checkinTimes(raw);
+  return c.ok ? c.times : DEFAULT_TIMES;
 }
 
 // The latest check-in slot at or before `now`, as {id: 'YYYY-MM-DDTHH:MM', at: Date}, local time.

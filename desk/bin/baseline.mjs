@@ -142,6 +142,7 @@ export function newProblems(problems, recorded) {
 // One command item, in `root`, under its lock. -> { out, code, stopped }
 // `timeout` (ms) bounds the whole call, the wait for the lock included; `runFor` (ms) bounds only the
 // command, from when it holds the lock (run-for.mjs). Either running out is `stopped`.
+/** @param {{ bin: string, root: string, dir: string, cmd: string, lock: string, prefix?: string, env?: NodeJS.ProcessEnv, timeout?: number, runFor?: number }} item */
 export function runItem({ bin, root, dir, cmd, lock, prefix = '', env, timeout, runFor }) {
   const full = prefix ? `${prefix} ${cmd}` : cmd;
   const sh = ['sh', '-c', full];
