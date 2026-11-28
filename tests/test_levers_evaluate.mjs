@@ -922,6 +922,24 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
     [1, 'wrappers', 'recount_review', 'wrappers was turned off in recountoff (reverted) on 5 on and 5 off tickets; counted again on the code each ran on, it has 35 on and 35 off. Keep it off (levers decide recountoff wrappers off) or test it again (levers decide recountoff wrappers trial)']);
   evalAt(rv, rvRoot, NOW + DAY);
   t('DS-1065 AC6 the evaluation holds it for Ben, and turns nothing back on', [wrappersRow(RV).state, wrappersRow(RV).decision, wrappersRow(RV).reason_code, transitionOf(RV).length], ['reverted', 'hold', 'recount_review', 1]);
+  recount({ ...args(rv, rvRoot), dryRun: false });
+  t('DS-1065 AC6 a recount run again asks once: the item still waiting gets no second', eventsOf(RV, 'needs_you').length, 1);
+
+  // While an evaluation holds its lock the recount writes nothing, so no evaluation reads the map
+  // without the holds it needs.
+  const RB = 'acme__recountbusy';
+  const rbRoot = join(T, 'recount-busy-root');
+  append(RB, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'reverted', eval_id: 'evl_b', evidence_file: 'levers-evidence/evl_b.jsonl', at: at(-5) });
+  const rb = fixture(RB);
+  evalAt(rb, rbRoot, NOW);
+  const busy = join(rbRoot, 'levers', 'evaluate.lock.d');
+  mkdirSync(busy, { recursive: true });
+  writeFileSync(join(busy, 'pid'), `${process.pid}\n`);
+  let refused = null;
+  try { recount({ ...args(rb, rbRoot), dryRun: false }); } catch (e) { refused = e.message; }
+  t('DS-1065 a recount while an evaluation runs is refused, and writes neither the map nor the holds',
+    [/an evaluation is running/.test(refused ?? ''), existsSync(join(rbRoot, 'levers', 'fp-map.json')), eventsOf(RB, 'needs_you').length, eventsOf(RB, 'recount').length], [true, false, 0, 0]);
+  rmSync(busy, { recursive: true, force: true });
 }
 
 rmSync(T, { recursive: true, force: true });

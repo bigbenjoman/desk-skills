@@ -12,10 +12,11 @@
 //   import { fpMapFile, readFpMap, writeFpMap, mapFp, historyMap } from './lever-fp-history.mjs'
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { HOME } from './desk-env.mjs';
-import { REGISTRY, installedPath, codeFingerprint, partBlocks, partText } from './lever-registry.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
+import { REGISTRY, installedPath, codeFingerprint, hashWhole, partBlocks, partText } from './lever-registry.mjs';
 
 export const fpMapFile = (root = join(HOME, '.desk-autopilot')) => join(root, 'levers', 'fp-map.json');
 
@@ -28,10 +29,7 @@ export function readFpMap(root) {
 }
 export function writeFpMap(levers, { root, at }) {
   const file = fpMapFile(root);
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify({ v: 1, at, levers }, null, 2)}\n`);
-  renameSync(tmp, file);
+  writeJsonAtomic(file, { v: 1, at, levers });
   return file;
 }
 
@@ -113,7 +111,7 @@ export function historyMap({ checkout, registry = REGISTRY, resolve = installedP
     const from = new Set();
     const walk = (i, h) => {
       if (i === choices.length) { from.add(h.digest('hex').slice(0, 16)); return; }
-      for (const body of choices[i]) walk(i + 1, h.copy().update(`${l.code[i].path}\0${body.length}\0`).update(body));
+      for (const body of choices[i]) walk(i + 1, hashWhole(h.copy(), l.code[i].path, body));
     };
     walk(0, createHash('sha256'));
     from.delete(now.fp);

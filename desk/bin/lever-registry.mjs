@@ -6,7 +6,7 @@
 // desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
 //   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording,
-//            leverFingerprints, codeFingerprint, partOf, isValued } from './lever-registry.mjs'
+//            leverFingerprints, codeFingerprint, hashWhole, partOf, isValued } from './lever-registry.mjs'
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -360,26 +360,27 @@ export function partBlocks(text, part) {
 export const partText = (blocks) => blocks.map((b) => b.join('\n')).join('\n');
 export const partOf = (text, part) => { const b = partBlocks(text, part); return b ? partText(b) : null; };
 
+// A whole file's bytes added to a lever's hash `h`, as every fingerprint was taken before parts were.
+export const hashWhole = (h, path, body) => h.update(`${path}\0${body.length}\0`).update(body);
+
 // One lever's hash over its `code` entries in registry order: a whole file's bytes, or a part's text
 // alone, so an edit outside a declared part leaves it unchanged. `read(path)` gives a file's bytes (null
-// when it cannot be read) and `part(path, part, text)` a part's text (null when its markers are
-// missing). A file that cannot be read is left out of the hash; a part that cannot be found makes the
-// lever null, never a hash of the whole file. Either is named in `missing`. `whole` hashes every entry
-// as a whole file, as fingerprints were taken before parts were.
+// when it cannot be read). A file that cannot be read is left out of the hash; a part that cannot be
+// found makes the lever null, never a hash of the whole file. Either is named in `missing`.
 //   -> { fp: hex | null, missing: [path] }
-export function codeFingerprint(code, read, { part = (path, p, text) => partOf(text, p), whole = false } = {}) {
+export function codeFingerprint(code, read) {
   const h = createHash('sha256');
   const missing = [];
   let hashed = 0;
   let lost = false;
   for (const c of code) {
     const body = read(c.path);
-    if (body == null) { missing.push(c.path); if (c.part && !whole) lost = true; continue; }
-    if (c.part && !whole) {
-      const text = part(c.path, c.part, body.toString('utf8'));
+    if (body == null) { missing.push(c.path); if (c.part) lost = true; continue; }
+    if (c.part) {
+      const text = partOf(body.toString('utf8'), c.part);
       if (text == null) { missing.push(c.path); lost = true; continue; }
       h.update(`${c.path}\0${c.part}\0${Buffer.byteLength(text)}\0`).update(text);
-    } else h.update(`${c.path}\0${body.length}\0`).update(body);
+    } else hashWhole(h, c.path, body);
     hashed++;
   }
   return { fp: lost || !hashed ? null : h.digest('hex').slice(0, 16), missing };

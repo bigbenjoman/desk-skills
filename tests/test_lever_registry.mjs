@@ -169,7 +169,8 @@ mkdirSync(INSTALLED);
 writeFileSync(join(INSTALLED, 'a.sh'), marked('run it', 'echo moved on'));
 const reg = { lv: { code: PART }, plain: { code: [{ path: 'a.sh' }] } };
 const hm = historyMap({ checkout: G, registry: reg, resolve: (p) => join(INSTALLED, p) });
-const whole = (body) => codeFingerprint(PART, files({ 'a.sh': body }), { whole: true }).fp;
+// A version's fingerprint as it was recorded before parts: the whole file, hashed as asBefore is.
+const whole = (body) => createHash('sha256').update(`a.sh\0${Buffer.byteLength(body)}\0`).update(body).digest('hex').slice(0, 16);
 t('DS-1065 AC5 the versions whose part is today\'s map to today\'s part-only fingerprint', JSON.stringify(hm.levers.lv), JSON.stringify({ fp: fpOf({ 'a.sh': marked('run it') }).fp, from: [whole(v1), whole(v2)].sort() }));
 t('DS-1065 AC5 a version whose part differs is not mapped', hm.levers.lv.from.includes(whole(v3)), false);
 t('DS-1065 a lever with no part is left out of the map', 'plain' in hm.levers, false);

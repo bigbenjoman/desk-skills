@@ -66,7 +66,7 @@ import { readAsks } from './ask-ledger.mjs';
 import { fold, ASK_TOKEN_STEPS } from './ticket-ledger.mjs';
 import { ledgerTarget } from './queue-ledger.mjs';
 import { quantile } from './quantile.mjs';
-import { readFpMap, mapFp, historyMap, writeFpMap } from './lever-fp-history.mjs';
+import { fpMapFile, readFpMap, mapFp, historyMap, writeFpMap } from './lever-fp-history.mjs';
 import { readInstalled } from './installed.mjs';
 
 const DAY_MS = 86_400_000;
@@ -345,6 +345,9 @@ const ARMS = { trial: ['on', 'off'], reverted: ['on', 'off'], adopted: ['adopted
 // The arms a lever's evaluation in state `state` reads: a valued lever's values on trial or reverted
 // from one, its adopted and holdback arms once adopted.
 const armsOf = (l, state) => (isValued(l) && state !== 'adopted' ? l.values : ARMS[state]);
+// The arm a row on lever `l` is off on, read in state `state`: a valued lever's baseline on trial or
+// reverted from one, else the state's second arm.
+const offArm = (l, state) => (isValued(l) && state !== 'adopted' ? l.baseline : armsOf(l, state)?.[1]);
 // A ticket requeued after merging (batch-state.mjs reworked: its row's `reworked`) has no outcome until its
 // current round finishes: merged_at keeps only its first merge.
 export const outcomeIn = (r) => !r.reworked && (!!r.merged_at || OUTCOME_STATES.includes(r.state));
@@ -372,7 +375,7 @@ export function excludedWhy(r, lever, fp, map = null) {
 export function leverRows(rows, slug, lever, s, fp, registry = REGISTRY, map = null) {
   const arms = armsOf(registry[lever], s.state);
   const valued = isValued(registry[lever]) && s.state !== 'adopted';
-  const off = valued ? registry[lever].baseline : arms[1];
+  const off = offArm(registry[lever], s.state);
   const keep = rowFilter(registry[lever]);
   const drew = rows.filter((r) => arms.includes(r.pin?.arms?.[lever]) && keep(r));
   let id;
@@ -449,9 +452,11 @@ const x2 = (v) => (v == null ? NO_FIGURE : `${v.toFixed(2)}×`);
 const fig = (v) => (Number.isFinite(v) ? v : NO_FIGURE);
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
+// The states of a lever desk turned off. A recount never turns one back on: it asks Ben instead.
+const TURNED_OFF = Object.freeze(['reverted', 'frozen']);
 // The guardrail a logged revert `e` names, where it reverted on one with no estimate: an earlier
 // evaluation read a check with no figure as breached. Such a revert is void; null for any other event.
-const voidedBy = (e) => (e?.kind === 'transition' && ['reverted', 'frozen'].includes(e.to)
+const voidedBy = (e) => (e?.kind === 'transition' && TURNED_OFF.includes(e.to)
   ? (e.guardrails ?? []).find((g) => guardCode(g.name) === e.reason_code && g.est == null) ?? null : null);
 // A guardrail with no figure: none to divide by, or no rows to measure. It never stands in the way of
 // an adopt as a failure does.
@@ -461,10 +466,8 @@ const noFigure = (g) => g.est == null && ['too_early', 'no_data'].includes(g.sta
 // state its next revert goes to: a lever already reverted once is frozen instead. A void revert does
 // not count.
 export const priorRevertsOf = (events, lever) => (events ?? [])
-  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && ['reverted', 'frozen'].includes(e.to) && !voidedBy(e)).length;
+  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && TURNED_OFF.includes(e.to) && !voidedBy(e)).length;
 export const revertTarget = (priorReverts) => (priorReverts >= 1 ? 'frozen' : 'reverted');
-// The states of a lever desk turned off. A recount never turns one back on: it asks Ben instead.
-export const TURNED_OFF = Object.freeze(['reverted', 'frozen']);
 // The recount's needs-you item for `lever` among a repo's log `events` that no later change has
 // answered, or null.
 function recountWaiting(events, lever) {
@@ -944,11 +947,11 @@ export function recount({ repos, checkout, dryRun = true, root = autopilotRoot()
   const at = new Date(now).toISOString();
   const lines = notes.map((n) => `note: ${n}`);
   const out = [];
-  const arms = (rows, lever) => {
-    const reg = registry[lever];
-    const off = ['off', 'holdback', ...(isValued(reg) ? [reg.baseline] : [])];
+  // On and off counts as the evaluation that wrote the evidence split them, in the state it read them in.
+  const arms = (rows, lever, state) => {
+    const off = offArm(registry[lever], state);
     const n = { on: 0, off: 0 };
-    for (const x of rows) n[off.includes(x.pin?.arms?.[lever]) ? 'off' : 'on'] += 1;
+    for (const x of rows) n[x.pin?.arms?.[lever] === off ? 'off' : 'on'] += 1;
     return n;
   };
   for (const r of repos) {
@@ -962,8 +965,9 @@ export function recount({ repos, checkout, dryRun = true, root = autopilotRoot()
       if (!last) continue;
       if (!fingerprints[lever]) { lines.push(`${r.name} ${lever}: not counted again, as its code installed now has no fingerprint`); continue; }
       const rows = readJsonl(join(r.state, last.evidence_file)).rows.filter((x) => (x.slug ?? r.slug) === r.slug && weighable(registry[lever])(x));
-      const before = arms(rows.filter((x) => !x.excluded), lever);
-      const after = arms(rows.filter((x) => !excludedWhy(x, lever, fingerprints[lever] ?? null, map)), lever);
+      const read = last.from ?? last.state;
+      const before = arms(rows.filter((x) => !x.excluded), lever, read);
+      const after = arms(rows.filter((x) => !excludedWhy(x, lever, fingerprints[lever] ?? null, map)), lever, read);
       counts[lever] = { before, after, state: states[lever]?.state ?? null };
       const ask = TURNED_OFF.includes(counts[lever].state) && (before.on !== after.on || before.off !== after.off);
       lines.push(`${r.name} ${lever}: on ${before.on} → ${after.on}, off ${before.off} → ${after.off}${ask ? ` (${counts[lever].state}: not judged again, Ben decides)` : ''}`);
@@ -971,21 +975,32 @@ export function recount({ repos, checkout, dryRun = true, root = autopilotRoot()
     out.push({ slug: r.slug, name: r.name, counts, events: [] });
   }
   if (dryRun) return { lines: [...lines, 'dry run: nothing written'], repos: out, notes, file: null };
-  const file = writeFpMap(map, { root, at });
-  for (const r of out) {
-    if (!Object.keys(r.counts).length) continue;
-    const changed = Object.entries(r.counts).filter(([, c]) => TURNED_OFF.includes(c.state) && (c.before.on !== c.after.on || c.before.off !== c.after.off));
-    const written = appendWith(r.slug, () => {
-      const stamp = stampAfter(read(r.slug).events, at);
-      return [
-        { kind: 'recount', actor: ACTOR, reason_code: 'recount', at: stamp, fp_map: file,
-          counts: Object.fromEntries(Object.entries(r.counts).map(([l, c]) => [l, { before: c.before, after: c.after }])),
-          reason: `${Object.keys(r.counts).length} lever(s)' latest evidence counted again on the code each ticket ran on, read through ${file}` },
-        ...changed.map(([lever, c]) => ({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'recount_review', at: stamp, reason: recountText(lever, r.name, c, registry) })),
-      ];
-    });
-    r.events = written ?? [];
-  }
+  // Under the daily evaluation's lock, so no evaluation reads the map between its writes. Every repo's
+  // holds are in its log before the map is written, so no evaluation reads the map without the holds
+  // it needs. A recount stopped part way leaves the map unwritten and is safe to run again: a lever whose
+  // hold is already waiting gets no second one.
+  const lock = join(leversDir(root), 'evaluate.lock.d');
+  const got = tryLock(lock);
+  if (got !== true) throw new Error(`an evaluation is running (pid ${got ?? '?'}): run the recount again once it finishes`);
+  const file = fpMapFile(root);
+  try {
+    for (const r of out) {
+      if (!Object.keys(r.counts).length) continue;
+      const written = appendWith(r.slug, () => {
+        const events = read(r.slug).events;
+        const changed = Object.entries(r.counts).filter(([lever, c]) => TURNED_OFF.includes(c.state) && (c.before.on !== c.after.on || c.before.off !== c.after.off) && !recountWaiting(events, lever));
+        const stamp = stampAfter(events, at);
+        return [
+          { kind: 'recount', actor: ACTOR, reason_code: 'recount', at: stamp, fp_map: file,
+            counts: Object.fromEntries(Object.entries(r.counts).map(([l, c]) => [l, { before: c.before, after: c.after }])),
+            reason: `${Object.keys(r.counts).length} lever(s)' latest evidence counted again on the code each ticket ran on, read through ${file}` },
+          ...changed.map(([lever, c]) => ({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'recount_review', at: stamp, reason: recountText(lever, r.name, c, registry) })),
+        ];
+      });
+      r.events = written ?? [];
+    }
+    writeFpMap(map, { root, at });
+  } finally { unlock(lock); }
   return { lines: [...lines, `fingerprint map written: ${file}`, ...out.filter((r) => r.events.length).map((r) => `${r.name}: ${r.events.length} event(s) in its lever log`)], repos: out, notes, file };
 }
 // The needs-you item for `lever` in repo `name`, turned off on `c.before` and recounted to `c.after`.
