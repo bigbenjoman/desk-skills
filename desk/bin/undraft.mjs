@@ -217,6 +217,7 @@ export const movedByBase = ({ from, head, base, git }) => {
   return !!chain && isBaseMerge(chain[0], base, git);
 };
 
+// lever-part: review reuse start
 // The files a desk-review rests on, as verdict.mjs records them on a line of their own after the method
 // marker: the files its seats read. null when the body records none, or not in that form.
 const RESTS_ON = /^<!-- desk-review:rests-on v=1 files=(\[.*\]) -->$/m;
@@ -228,6 +229,7 @@ export function restsOn(body) {
     return Array.isArray(files) && files.length && files.every((f) => typeof f === 'string' && f) ? files : null;
   } catch { return null; }
 }
+// lever-part: review reuse end
 
 // The criteria a desk-review leaves for after the merge, as verdict.mjs records them on a
 // line of their own after the accepted line: { gap, needs, step } each, which verdict.mjs checked
@@ -258,6 +260,7 @@ const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main'
 export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: p.step, row: null, from: 'review',
   ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));
 
+// lever-part: review reuse start
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
 // on whatever its seats read: a change to one can change what the code does without touching it.
 // test-scope.mjs owns lockfiles and test or build config, any root file but documentation included;
@@ -366,6 +369,7 @@ const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
 const carriedTo = (head, range) => `carried to this head (${short(head)}), which no review has read: the PR's own diff is unchanged, and the base range \`${range}\` changed none of the files the review rests on, no dependency manifest, lockfile or configuration file`;
 // The merge driver's comment on such a carry, for a PR that left draft before its head moved.
 export const carryComment = (from, head, range) => `The review posted on ${short(from)} is ${carriedTo(head, range)}.`;
+// lever-part: review reuse end
 
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
 // review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on

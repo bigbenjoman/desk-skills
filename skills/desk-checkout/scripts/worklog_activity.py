@@ -53,8 +53,8 @@ BULLET = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+(.*)$")
 # The lever-log kinds (desk/bin/lever-log.mjs KINDS) that change a lever or the row: a trial moving on
 # (transition), a lever set by hand (override), a revert with no evaluation (trip), a kept lever's
 # ramp, the machine-wide freeze and thaw, the config row changed, and a pair trial's state change.
-# The rest are bookkeeping, not a change: assign (one ticket's draw), fp_reset, evidence_incomplete,
-# audit, audit_deferred, and needs_you (an item raised, not resolved).
+# The rest are bookkeeping, not a change: assign (one ticket's draw), fp_reset, recount,
+# evidence_incomplete, audit, audit_deferred, and needs_you (an item raised, not resolved).
 LEVER_KINDS = ("transition", "override", "trip", "ramp", "freeze", "thaw", "row_change", "pair")
 
 

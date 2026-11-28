@@ -173,6 +173,7 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   try {
     const payload = JSON.parse(readFileSync(0, 'utf8'));
     const head = payload?.data?.repository?.pullRequest?.headRefOid;
+    // lever-part: review reuse start
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
     // The lever is the ticket's pin, as the pass reads it; a mangled pin reads no verdict.
@@ -180,6 +181,7 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     if (at('--ticket')) { try { ticket = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets?.[at('--ticket')] ?? null; } catch { /* no queue: the row */ } }
     const reuse = leverOnFor('review-reuse', ticket);
     const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && reviewCarries({ reuse, from: sha, head, base: `origin/${base}`, body, git });
+    // lever-part: review reuse end
     r = readVerdict(payload, { handle: at('--handle'), clean: at('--clean'), carry });
   } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }

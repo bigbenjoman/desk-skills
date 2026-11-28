@@ -194,6 +194,7 @@ TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
 MEMORY_LEVER="$(node "$DESK_ENV_MJS" levers memory 2>/dev/null </dev/null || true)"
 [ "$MEMORY_LEVER" != on ] && [ -d "$DESK_MEMORY_DIR" ] && ADD_DIRS+=(--add-dir "$DESK_MEMORY_DIR")
 
+# lever-part: preflight block start
 if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
   CANARY="$DESK_REPO_ROOT/.preflight-should-not-exist.tmp"
   rm -f "$CANARY" "$WT/.preflight.tmp"
@@ -474,6 +475,7 @@ $CHECKS"
   echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
   exit 1
 fi
+# lever-part: preflight block end
 
 # AUTOPILOT_TASK gives a FRESH worker a different job to "implement this ticket" (e.g. a PR review
 # sweep). $TICKET, $WT and $PORT are substituted into it — plain bash substitution, not envsubst,

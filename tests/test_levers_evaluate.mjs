@@ -1,6 +1,6 @@
 // suite: levers evaluate (the daily adopt, revert, settle or hold of each lever on trial, per repo)
 // layer: L1
-// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
+// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-fp-history.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -874,6 +874,88 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   append(G3, { kind: 'override', lever: 'failure-class', from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'put back on trial', at: at(-0.5) });
   run([repo(G3, [])]);
   t('AC4 a void revert Ben has already acted on raises nothing', eventsOf(G3, 'needs_you').filter((x) => x.reason_code === 'revert_no_figure').length, 0);
+}
+
+// ---- DS-1065: the recount, on evidence whose old whole-file fingerprints were reset ---------------------
+// 30 tickets per arm ran on the code before its fingerprint covered only its part ('whole'), 5 since
+// ('part'). The history the map comes from is lever-fp-history.mjs's, tested in test_lever_registry.mjs.
+{
+  const { recount } = await import('../desk/bin/levers-evaluate.mjs');
+  const NOWFP = { ...FP, wrappers: 'part' };
+  const history = () => ({ levers: { wrappers: { fp: 'part', from: ['whole'] } }, notes: [] });
+  const fixture = (slug) => repo(slug, [
+    ...arms(slug, initial(slug), 30, (i) => withFp('whole')(better.on(i)), () => withFp('whole')(better.off())),
+    ...arms(slug, initial(slug), 5, (i) => withFp('part')(better.on(i)), () => withFp('part')(better.off())),
+  ]);
+  const evalAt = (r, root, now) => evaluate({ repos: [r], now, tz: 'UTC', root, frozen: false, fingerprints: NOWFP });
+  const args = (r, root) => ({ repos: [{ slug: r.slug, name: r.name, state: r.state }], checkout: null, root, fingerprints: NOWFP, now: NOW + 60_000, history });
+
+  const RC = 'acme__recount';
+  const rcRoot = join(T, 'recount-root');
+  const rc = fixture(RC);
+  evalAt(rc, rcRoot, NOW);
+  t('DS-1065 the fixture: the 60 tickets on the old fingerprint are left out', [wrappersRow(RC).n.on, wrappersRow(RC).n.off, wrappersRow(RC).n.excluded.fp_reset], [5, 5, 60]);
+  const logged = read(RC).events.length;
+  const dry = recount({ ...args(rc, rcRoot), dryRun: true });
+  t('DS-1065 AC4 the dry run prints each lever\'s on and off counts, before and after', dry.lines.filter((l) => l.startsWith('recount wrappers')), ['recount wrappers: on 5 → 35, off 5 → 35']);
+  t('DS-1065 AC4 a lever whose evidence nothing remaps keeps its counts', dry.lines.filter((l) => l.startsWith('recount memory')), ['recount memory: on 0 → 0, off 0 → 0']);
+  t('DS-1065 AC4 and it writes nothing', [existsSync(join(rcRoot, 'levers', 'fp-map.json')), read(RC).events.length, dry.lines.at(-1)], [false, logged, 'dry run: nothing written']);
+  recount({ ...args(rc, rcRoot), dryRun: false });
+  const rcEv = eventsOf(RC, 'recount');
+  t('DS-1065 AC5 one recount event in the repo\'s lever log, with each lever\'s before and after', [rcEv.length, rcEv[0]?.counts?.wrappers, rcEv[0]?.reason_code], [1, { before: { on: 5, off: 5 }, after: { on: 35, off: 35 } }, 'recount']);
+  t('DS-1065 AC5 the map is written for every evaluation after it', JSON.parse(readFileSync(join(rcRoot, 'levers', 'fp-map.json'), 'utf8')).levers, { wrappers: { fp: 'part', from: ['whole'] } });
+  evalAt(rc, rcRoot, NOW + DAY);
+  t('DS-1065 AC5 the next evaluation counts every ticket whose code reads as today\'s', [wrappersRow(RC).n.on, wrappersRow(RC).n.off, wrappersRow(RC).n.excluded.fp_reset], [35, 35, 0]);
+  t('DS-1065 no turned-off lever, so no needs-you item', eventsOf(RC, 'needs_you').length, 0);
+
+  // AC6: a lever desk reverted is not judged again on its recounted evidence: Ben is asked.
+  const RV = 'acme__recountoff';
+  const rvRoot = join(T, 'recount-off-root');
+  append(RV, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'reverted', eval_id: 'evl_r', evidence_file: 'levers-evidence/evl_r.jsonl', at: at(-5) });
+  const rv = fixture(RV);
+  evalAt(rv, rvRoot, NOW);
+  const rvDry = recount({ ...args(rv, rvRoot), dryRun: true });
+  t('DS-1065 AC6 the dry run says the reverted lever is not judged again', rvDry.lines.filter((l) => l.startsWith('recountoff wrappers')), ['recountoff wrappers: on 5 → 35, off 5 → 35 (reverted: not judged again, Ben decides)']);
+  recount({ ...args(rv, rvRoot), dryRun: false });
+  const item = eventsOf(RV, 'needs_you');
+  t('DS-1065 AC6 one needs-you item, naming the lever, its old and new counts, and both choices', [item.length, item[0]?.lever, item[0]?.reason_code, item[0]?.reason],
+    [1, 'wrappers', 'recount_review', 'wrappers was turned off in recountoff (reverted) on 5 on and 5 off tickets; counted again on the code each ran on, it has 35 on and 35 off. Keep it off (levers decide recountoff wrappers off) or test it again (levers decide recountoff wrappers trial)']);
+  // Run again before any evaluation re-reads the evidence, as after a recount stopped part way: the
+  // counts still differ, so only the waiting item keeps it from asking twice.
+  rmSync(join(rvRoot, 'levers', 'fp-map.json'), { force: true });
+  recount({ ...args(rv, rvRoot), dryRun: false });
+  t('DS-1065 AC6 a recount run again asks once: the item still waiting gets no second', [eventsOf(RV, 'needs_you').length, eventsOf(RV, 'recount').length], [1, 2]);
+  evalAt(rv, rvRoot, NOW + DAY);
+  t('DS-1065 AC6 the evaluation holds it for Ben, and turns nothing back on', [wrappersRow(RV).state, wrappersRow(RV).decision, wrappersRow(RV).reason_code, transitionOf(RV).length], ['reverted', 'hold', 'recount_review', 1]);
+
+  // A frozen lever is not evaluated, so its rows from then on carry its last evidence forward in the
+  // frozen state: the recount splits that evidence in the state the row that wrote it read it in.
+  const RF = 'acme__recountfrz';
+  const rfRoot = join(T, 'recount-frozen-root');
+  append(RF, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'reverted', eval_id: 'evl_f1', evidence_file: 'levers-evidence/evl_f1.jsonl', at: at(-5) });
+  const rf = fixture(RF);
+  evalAt(rf, rfRoot, NOW);
+  append(RF, { kind: 'transition', lever: 'wrappers', from: 'reverted', to: 'frozen', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'frozen', eval_id: 'evl_f2', evidence_file: 'levers-evidence/evl_f2.jsonl', at: at(0.5) });
+  evalAt(rf, rfRoot, NOW + DAY);
+  t('DS-1065 the fixture: the frozen lever\'s newest row carries its evidence forward', [wrappersRow(RF).state, !!wrappersRow(RF).evidence_from], ['frozen', true]);
+  t('DS-1065 AC6 a frozen lever is recounted on both arms, and Ben is asked', recount({ ...args(rf, rfRoot), now: NOW + DAY + 60_000, dryRun: true }).lines.filter((l) => l.startsWith('recountfrz wrappers')),
+    ['recountfrz wrappers: on 5 → 35, off 5 → 35 (frozen: not judged again, Ben decides)']);
+
+  // While an evaluation holds its lock the recount writes nothing, so no evaluation reads the map
+  // without the holds it needs.
+  const RB = 'acme__recountbusy';
+  const rbRoot = join(T, 'recount-busy-root');
+  append(RB, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'reverted', eval_id: 'evl_b', evidence_file: 'levers-evidence/evl_b.jsonl', at: at(-5) });
+  const rb = fixture(RB);
+  evalAt(rb, rbRoot, NOW);
+  const busy = join(rbRoot, 'levers', 'evaluate.lock.d');
+  mkdirSync(busy, { recursive: true });
+  writeFileSync(join(busy, 'pid'), `${process.pid}\n`);
+  let refused = null;
+  try { recount({ ...args(rb, rbRoot), dryRun: false }); } catch (e) { refused = e.message; }
+  t('DS-1065 a recount while an evaluation runs is refused, and writes neither the map nor the holds',
+    [/an evaluation is running/.test(refused ?? ''), existsSync(join(rbRoot, 'levers', 'fp-map.json')), eventsOf(RB, 'needs_you').length, eventsOf(RB, 'recount').length], [true, false, 0, 0]);
+  rmSync(busy, { recursive: true, force: true });
 }
 
 rmSync(T, { recursive: true, force: true });
