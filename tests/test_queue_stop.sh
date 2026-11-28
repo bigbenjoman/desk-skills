@@ -194,10 +194,11 @@ q stop C-2; q local C-2
 check "issue-1689 once stopped it is pinned local"                           '[ $rc -eq 0 ] && [ "$(f C-2 location)" = "\"local\"" ]'
 q requeue C-2
 check "issue-1689 and requeue sends the stopped, pinned ticket to a local worker" '[ $rc -eq 0 ] && [ "$(f C-2 state)" = "\"triaged\"" ] && [ "$(f C-2 location)" = "\"local\"" ]'
+check "issue-1689 keeping its stopped cloud session, which still reads as one that ran for it (its cost row)" '[ "$(f C-2 cloud.session)" = "\"session_02abc\"" ] && node -e "import(process.argv[1]).then((m) => import(\"node:fs\").then((fs) => process.exit(m.ranInCloud(JSON.parse(fs.readFileSync(process.argv[2], \"utf8\")).tickets[\"C-2\"]) ? 0 : 1)))" "$B/cloud-worker.mjs" "$DESK_QUEUE"'
 q add C-3; q set C-3 state=triaged lane=A location=cloud branch=feat/C-3
 q set C-3 state=running stage=cloud 'cloud={"session":"session_03abc","url":"https://claude.ai/code/session_03abc","name":"widgets-ticket-C-3","started":"2026-11-27T02:29:00Z"}'
 q stop C-3; q set C-3 location=auto; q requeue C-3
-check "issue-1689 a stopped cloud ticket unpinned (location=auto) is requeued too, placement at start deciding" '[ $rc -eq 0 ] && [ "$(f C-3 state)" = "\"triaged\"" ] && [ "$(f C-3 location)" = null ]'
+check "issue-1689 a stopped cloud ticket unpinned (location=auto) is requeued too, placement at start deciding" '[ $rc -eq 0 ] && [ "$(f C-3 state)" = "\"triaged\"" ] && [ "$(f C-3 location)" = null ] && [ "$(f C-3 cloud.session)" = "\"session_03abc\"" ]'
 
 # A worker paused at a usage limit whose process is gone: stop finds nothing to end and the pass waits
 # for its own login's limit, so requeue sends it to a new worker, its worktree committed first.

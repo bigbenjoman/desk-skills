@@ -288,10 +288,12 @@ export function findCloudPr(prs, { key, branch, since }) {
 // A cloud session's display name: one per ticket, as a local worker's (spawn-worker.sh).
 export const cloudName = (ghRepo, key) => `${String(ghRepo ?? '').split('/').pop()}-ticket-${key}`;
 
-// A ticket whose `cloud` record is a session that ran for it: one placed in the cloud, or one the pass
+// A ticket whose `cloud` record is a session that ran for it: one placed in the cloud, one the pass
 // moved to this computer after that session went idle (cloud.moved_local_at, pass.mjs cloudUnfinished),
-// whatever its pin says since: location=local, or none once location=auto clears it (issue-1689).
-export const ranInCloud = (t) => t?.location === 'cloud' || t?.cloud?.moved_local_at != null;
+// or one stopped by queue.mjs stop (cloud.abandoned_at, stopCloud), which requeue keeps once it is
+// pinned or unpinned: whatever its pin says since, location=local, or none once location=auto clears it
+// (issue-1689).
+export const ranInCloud = (t) => t?.location === 'cloud' || t?.cloud?.moved_local_at != null || t?.cloud?.abandoned_at != null;
 
 // A cloud ticket's cost, wherever it is shown: Claude Code reports no tokens or cost for a cloud
 // session, and no OpenTelemetry collector is set up to read them, so it is named unknown with its

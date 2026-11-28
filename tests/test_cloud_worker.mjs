@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
+import { ranInCloud } from '../desk/bin/cloud-worker.mjs';
 import { cloudStartCommand, cloudStartPark, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -438,6 +439,13 @@ const moved = (location) => ({ key: 'M', state: 'done', location, merged_at: '20
 t('issue-1689 a ticket moved local keeps its session on the archive list, pinned or with its pin cleared (location=auto, stored as none)',
   [finishedCloud({ M: moved('local') }, {}), finishedCloud({ M: moved(null) }, {})].map((r) => r.map((d) => d.session).join()).join(' '), 'session_m session_m');
 t('issue-1689 and its cloud session keeps its cost row with its pin cleared', ticketCost(S, { ...moved(null), key: 'M-1' })?.cloud?.url, 'https://claude.ai/code/session_m');
+// Stopped (queue.mjs stop records cloud.abandoned_at), then pinned or unpinned and requeued: requeue keeps
+// the record once location is not cloud, and its session's cost row stays.
+const stoppedAt = (location) => ({ key: 'S-1', state: 'triaged', location, cloud: cs('s', { abandoned_at: '2026-11-02T12:00:00Z' }) });
+t('issue-1689 a stopped cloud ticket pinned local or unpinned keeps its session as one that ran for it',
+  [ranInCloud(stoppedAt('local')), ranInCloud(stoppedAt(null)), ranInCloud({ key: 'X', location: null, cloud: cs('x') })].join(), 'true,true,false');
+t('issue-1689 and keeps its cost row, pinned or unpinned',
+  [ticketCost(S, stoppedAt('local'))?.cloud?.url, ticketCost(S, stoppedAt(null))?.cloud?.url].join(' '), 'https://claude.ai/code/session_s https://claude.ai/code/session_s');
 const dir = join(S, 'state-1311');
 mkdirSync(dir, { recursive: true });
 t('archived: none recorded reads as none', readArchived(dir).size, 0);
