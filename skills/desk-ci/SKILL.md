@@ -127,12 +127,16 @@ hosted-workflows: [release.yml]   # workflow files kept on GitHub-hosted runners
   and names the AWS label a job runs on today: `(runs-on today: AWS runner <label>, …)`.
 - Where any AWS runner label is declared, `classify` places every other job **aws** instead of
   self-hosted: secrets, environments, `id-token`, staging URLs, third-party services and YAML aliases
-  no longer keep a job hosted, and the line still cites the first of them. Two things do:
+  no longer keep a job hosted, and the line still cites the first of them. Three things do:
+  - **needing macOS or Windows**: a `runs-on` that can pick a `macos-*` or `windows-*` label, or a
+    `macOS` or `Windows` self-hosted label, is placed hosted (`needs macOS or Windows: runs-on <label>,
+    and the repo's AWS runners are Linux`);
   - **needing x64**: an image with no arm64 build or production x64 build parity. Such a job is placed
     hosted (`needs x64: <trigger>, and the repo's AWS runners are arm64`), or, where an
     `aws-x64-runner-labels` label is declared, aws on the first one (`needs x64: <trigger>, on AWS x64
     runner <label>`);
-  - **a call to a reusable workflow outside this repo**, which cannot be read here.
+  - **a call to a reusable workflow outside this repo**, which cannot be read here. A call to one in
+    this repo has no `runs-on` of its own, so it is placed aws and its jobs are placed in that file.
 
   The summary then reads `summary: jobs=<n> hosted=<n> aws=<n>`.
 - With no `.github/desk-ci.yml`, both read as before.

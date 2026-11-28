@@ -176,32 +176,43 @@ export function classify(text, { awsLabels = [], x64Labels = [], hostedWorkflow 
     if (awsLabels.length) return awsPlacement(job, reasons, today, x64Labels);
     if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: `${reasons[0].why}${today}`, also: reasons.slice(1) };
     const call = reusableCall(job);
-    if (call) {
-      return call.local
-        ? { job: job.id, placement: 'self-hosted', line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
-        : { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
-    }
-    const ro = job.keys['runs-on'];
-    const runsOn = today || (ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : '');
-    return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${runsOn}`, also: [] };
+    if (call && !call.local) return { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
+    return untriggered(job, call, today, 'self-hosted');
   });
 }
 
-// On a repo's AWS runners, which are arm64 unless declared under aws-x64-runner-labels, a secret, an
-// environment, id-token or an outside service is no reason to stay hosted; needing x64 is.
-const NEEDS_X64 = new Set(['image', 'parity']);
-function awsPlacement(job, reasons, today, x64Labels) {
-  const x64 = reasons.find((r) => NEEDS_X64.has(r.kind));
-  const rest = (r0) => reasons.filter((r) => r !== r0);
-  if (x64 && !x64Labels.length) return { job: job.id, placement: 'hosted', line: x64.line.n, why: `needs x64: ${x64.why}, and the repo's AWS runners are arm64${today}`, also: rest(x64) };
-  if (x64) return { job: job.id, placement: 'aws', line: x64.line.n, why: `needs x64: ${x64.why}, on AWS x64 runner ${x64Labels[0]}${today}`, also: rest(x64) };
-  const call = reusableCall(job);
-  if (call && !call.local) return { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: reasons };
-  if (reasons.length) return { job: job.id, placement: 'aws', line: reasons[0].line.n, why: `${reasons[0].why}, which the AWS runners take${today}`, also: rest(reasons[0]) };
-  if (call) return { job: job.id, placement: 'aws', line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] };
+// A job with nothing keeping it hosted: a call to a workflow in this repo, or one with runs-on.
+function untriggered(job, call, today, placement) {
+  if (call) return { job: job.id, placement, line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] };
   const ro = job.keys['runs-on'];
   const runsOn = today || (ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : '');
-  return { job: job.id, placement: 'aws', line: job.line.n, why: `no hosted trigger${runsOn}`, also: [] };
+  return { job: job.id, placement, line: job.line.n, why: `no hosted trigger${runsOn}`, also: [] };
+}
+
+// On a repo's AWS runners, which are Linux and arm64 unless declared under aws-x64-runner-labels, a
+// secret, an environment, id-token or an outside service is no reason to stay hosted. Needing macOS or
+// Windows is, and so is needing x64 where no x64 label is declared. A call to a workflow has no
+// runs-on: one outside the repo stays hosted, and one inside is placed in its own file.
+const NEEDS_X64 = new Set(['image', 'parity']);
+const NOT_LINUX = /^(macos|windows)(-|$)/i;
+function osHit(job) {
+  const choices = runsOnChoices(job);
+  const labels = (choices?.sets ?? []).filter(Array.isArray).flat()
+    .filter((l) => typeof l === 'string' && NOT_LINUX.test(l.trim())).map((l) => l.trim());
+  return labels.length ? { line: job.keys['runs-on'].line, why: `runs-on ${[...new Set(labels)].join(', ')}` } : null;
+}
+function awsPlacement(job, reasons, today, x64Labels) {
+  const rest = (r0) => reasons.filter((r) => r !== r0);
+  const call = reusableCall(job);
+  if (call && !call.local) return { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: reasons };
+  const os = !call && osHit(job);
+  if (os) return { job: job.id, placement: 'hosted', line: os.line.n, why: `needs macOS or Windows: ${os.why}, and the repo's AWS runners are Linux${today}`, also: reasons };
+  const x64 = !call && reasons.find((r) => NEEDS_X64.has(r.kind));
+  if (x64 && !x64Labels.length) return { job: job.id, placement: 'hosted', line: x64.line.n, why: `needs x64: ${x64.why}, and the repo's AWS runners are arm64${today}`, also: rest(x64) };
+  if (x64) return { job: job.id, placement: 'aws', line: x64.line.n, why: `needs x64: ${x64.why}, on AWS x64 runner ${x64Labels[0]}${today}`, also: rest(x64) };
+  const own = call ? reasons.filter((r) => !NEEDS_X64.has(r.kind)) : reasons;
+  if (own.length) return { job: job.id, placement: 'aws', line: own[0].line.n, why: `${own[0].why}, which the AWS runners take${today}`, also: reasons.filter((r) => r !== own[0]) };
+  return untriggered(job, call, today, 'aws');
 }
 
 // ---- runs-on ----------------------------------------------------------------------------------

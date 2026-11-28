@@ -437,7 +437,16 @@ t('placement AC4 the reason says it needs x64', classify(parity, VPA)[0].why,
   'needs x64: production x64 build parity (name: Vercel parity build), and the repo\'s AWS runners are arm64');
 t('placement AC4 with an x64 label declared, parity is aws', placed(parity, VPA_X64), 'parity=aws@5 prod=aws@11');
 t('placement AC4 on the x64 label', classify(parity, VPA_X64)[1].why, 'needs x64: production x64 build parity (vercel build), on AWS x64 runner voicepa-linux-x64');
-t('placement AC5 a job with no hosted trigger is aws', placed(noDependabot, VPA), 'unit=aws@4 matrixed=aws@7 custom=aws@13 dynamic=aws@20');
+t('placement AC5 a job with no hosted trigger is aws, one that can pick macOS hosted', placed(noDependabot, VPA), 'unit=aws@4 matrixed=hosted@11 custom=hosted@18 dynamic=aws@20');
+t('placement a macOS leg needs macOS', classify(noDependabot, VPA)[1].why, 'needs macOS or Windows: runs-on macos-latest, and the repo\'s AWS runners are Linux');
+t('placement a self-hosted macOS label needs macOS too', classify(noDependabot, VPA_X64)[2].why, 'needs macOS or Windows: runs-on macOS, and the repo\'s AWS runners are Linux');
+const parityCalls = wf(`  production-build:
+    uses: acme/shared/.github/workflows/build.yml@v1
+  prod-build:
+    uses: ./.github/workflows/build.yml
+`);
+t('placement a reusable call named like parity is placed as a call, not on an x64 label', placed(parityCalls, VPA_X64), 'production-build=hosted@5 prod-build=aws@7');
+t('placement a local call named like parity is placed in its own file', classify(parityCalls, VPA_X64)[1].why, 'calls ./.github/workflows/build.yml: no hosted trigger here; its own jobs are placed in that file');
 t('placement AC5 reasons that kept a job hosted no longer do', placed(outside, VPA) + ' ' + placed(alias, VPA), 'smoke=aws@9 cov=aws@13 local=aws@14 h=aws@7 a=aws@11');
 t('placement a local reusable call is aws, an outside one hosted', placed(reusable, VPA), 'call=aws@5 callsecrets=aws@8 remote=hosted@10');
 t('placement AC6 a hosted workflow stays hosted', placed(keptHosted, { ...HOSTED, x64Labels: [] }), 'ok=hosted@4 aws=hosted@7 call=hosted@10');
