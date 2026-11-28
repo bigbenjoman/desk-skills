@@ -1257,6 +1257,9 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   // that has not started: the pass still holds it (budgetHolds `front`).
   'F-10': { state: 'triaged', lane: 'A', placed: true },
   'F-11': { state: 'triaged', lane: 'A', handoff: 'pending', handoff_stage: '4b' },
+  // F-12 is the same, but its placed holder F-13 has since been moved below it, so the pass lets it start.
+  'F-12': { state: 'triaged', lane: 'A', handoff: 'pending', handoff_stage: '4b' },
+  'F-13': { state: 'triaged', lane: 'A', placed: true },
 } });
 // The last pass held F-2, F-3, F-6 and F-7 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
 const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
@@ -1268,6 +1271,7 @@ writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date()
   { key: 'F-7', with: ['F-1'], files: ['a.mjs'] },
   phiHold('F-8', [{ file: 'src/two.ts', k: 2, with: ['F-1', 'F-9'] }]),
   phiHold('F-11', [{ file: 'src/three.ts', k: 2, with: ['F-1', 'F-10'] }]),
+  phiHold('F-12', [{ file: 'src/four.ts', k: 2, with: ['F-1', 'F-13'] }]),
 ] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
@@ -1287,6 +1291,8 @@ t('DS-1033 AC2 a ticket held on a file whose holder has since finished, freeing 
   `${phiText('F-8')} ${/F-8 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
 t('DS-1033 a handoff held on a file a running ticket and an unstarted front ticket fill still waits for both',
   phiText('F-11').includes('waits for F-1, F-10 (collides on src/three.ts, 2 of 2 places taken)'), true);
+t('DS-1033 a handoff whose placed holder has since moved below it is not held by it',
+  `${phiText('F-12').includes('collides')} ${phiText('F-12').includes('starts at the next pass')}`, 'false true');
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.

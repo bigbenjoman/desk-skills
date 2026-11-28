@@ -47,7 +47,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff, toResume, reviewOnlyTry, cloudAble } from './pass/shared.mjs';
 import { modeLine as personModeLine } from './person-use.mjs';
 import { isHeld, stoppedHold, bareHold, bareHoldText, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
@@ -3511,22 +3511,33 @@ function countsLine(r, now = Date.now()) {
 // session, whose hold outlasts a free worker, its batch's worker slots, or the machine cap, which every
 // repo's workers share. A holder this batch has since moved on from holds nothing; one from another
 // batch stays named until the next pass. A ticket placed at the front of the queue that has not started
-// still holds a handoff below it, as budgetHolds counts it (`front`).
-const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && (toHandoff(o) || !!o.placed));
+// holds a pending handoff only while it is still above it and still one atFront counts (budgetHolds `front`).
+const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
+const frontHolds = (r, k, o, held) => {
+  const h = r.q?.tickets?.[held];
+  if (!o?.placed || o.state !== 'triaged' || !h || !toHandoff(h)) return false;
+  if (toHandoff(o) || toResume(o) || reviewOnlyTry(o) || (o.open_questions ?? 0) !== 0 || keysOf(o.cycle_link).length) return false;
+  const order = Object.keys(r.q.tickets);
+  return order.indexOf(k) < order.indexOf(held);
+};
 // A recorded holder is a key, or "key in batch x" for another batch's ticket.
-const holderHolds = (r, w) => stillHolds(r.q?.tickets?.[String(w).split(' in ')[0]]);
+const holderHolds = (r, w, held) => {
+  const k = String(w).split(' in ')[0];
+  const o = r.q?.tickets?.[k];
+  return stillHolds(o) || frontHolds(r, k, o, held);
+};
 // "waits for F-1 (collides on src/f.ts, 1 of 1 place taken; …)": each file the pass held the ticket on
 // whose places the holders that still hold fill, as budgetHolds counts them, with those holders. A file
 // one of them has since left has a free place, so it holds nothing. A pass line that recorded no files
 // says only that the ticket shares them, while any of its holders still holds.
 function heldWords(r, rec) {
   if (rec?.holds?.length) {
-    const files = rec.holds.map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w)) })).filter((h) => h.with.length >= h.k);
+    const files = rec.holds.map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w, rec.key)) })).filter((h) => h.with.length >= h.k);
     if (!files.length) return null;
     const who = [...new Set(files.flatMap((h) => h.with))];
     return `waits for ${who.join(', ')} (collides on ${files.map((h) => `${h.file}, ${h.with.length} of ${h.k} place${h.k === 1 ? '' : 's'} taken`).join('; ')})`;
   }
-  const clash = (rec?.with ?? []).filter((w) => holderHolds(r, w));
+  const clash = (rec?.with ?? []).filter((w) => holderHolds(r, w, rec.key));
   return clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
 }
 function startWait(r, t) {
