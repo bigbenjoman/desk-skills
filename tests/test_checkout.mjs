@@ -59,7 +59,7 @@ ${body}
   chmodSync(f, 0o755);
 };
 fake('gh', `
-// #1666 a rate limit: a call whose arguments contain $FAKE_LIMIT_MATCH fails with GitHub's secondary
+// A rate limit: a call whose arguments contain $FAKE_LIMIT_MATCH fails with GitHub's secondary
 // limit for its first $FAKE_LIMIT_TIMES calls (counted in limit.count), with a Retry-After header
 // under -i when $FAKE_RETRY_AFTER is set; -i prints a header block before the body, as gh api -i does.
 if (process.env.FAKE_LIMIT_MATCH && args.join(' ').includes(process.env.FAKE_LIMIT_MATCH)) {
@@ -435,17 +435,21 @@ const libOthers = ghRun('--include', 'acme__lib', '--include-others', 'acme__lib
 has('#1534 --include-others counts everyone\'s', libOthers.stdout, '- acme/lib: 1 mine / 2 all');
 t('#1534 --include-others searches every author there', libOthers.merged.some((l) => l.includes('repo:acme/lib') && !l.includes('author:')), true);
 
-// #1666 a rate-limited gh call waits and retries; one still limited fails naming the limit and when
+// A rate-limited gh call waits and retries; one still limited fails naming the limit and when
 // to retry; a failed optional search is skipped, said in its section, and the run goes on.
 const limited = (match, times, extra = {}) => {
   rmSync(join(FAKE, 'limit.count'), { force: true });
   return spawnSync('python3', ['-B', join(SCRIPTS, 'github_activity.py'), '--day', DAY], { cwd: APP, encoding: 'utf8',
     env: { ...env, FAKE_LIMIT_MATCH: match, FAKE_LIMIT_TIMES: String(times), DESK_GH_BACKOFF_BASE: '0.01', DESK_GH_BACKOFF_TOTAL: '0.05', ...extra } });
 };
-const once = limited('is:pr author:me', 1, { FAKE_RETRY_AFTER: '0' });
+const once = limited('is:pr author:me', 1, { FAKE_RETRY_AFTER: '0.03' });
 t('#1666 a secondary limit, then success: exits 0', once.status, 0);
-has('#1666 it waited as Retry-After said', once.stderr, "gh: GitHub's secondary rate limit; waiting 0s, then retrying");
+has('#1666 it waited as Retry-After said', once.stderr, "gh: GitHub's secondary rate limit; waiting 0.03s, then retrying");
 has('#1666 and the retried search was read', once.stdout, '- acme/app#10 Fix the redirect — opened; merged');
+const zero = limited('is:pr author:me', 99, { FAKE_RETRY_AFTER: '0' });
+t('#1666 a Retry-After of 0 still ends at the budget', zero.status, 1);
+has('#1666 backing off as if none was given', zero.stderr, 'waiting 0.01s');
+has('#1666 and fails naming the limit', zero.stderr, "GitHub's secondary rate limit, still hit after 3 tries");
 const twice = limited('is:pr author:me', 2);
 t('#1666 with no Retry-After, exponential backoff: exits 0', twice.status, 0);
 has('#1666 the first wait is the base', twice.stderr, 'waiting 0.01s');
@@ -470,7 +474,7 @@ t('#1666 only a 403 or 429 naming a rate limit is one, and which', JSON.stringif
 const reset = probe(`import github_activity as g, time; h, b = g.split_headers("HTTP/2.0 403 Forbidden\\nX-Ratelimit-Reset: %d\\n\\n{}" % (time.time() + 30)); print(json.dumps([27 < g.wait_for(h, "primary") <= 30, g.wait_for(h, "secondary"), b]))`);
 t('#1666 a primary limit waits for its reset header', JSON.stringify(reset), '[true,null,"{}"]');
 
-// #1666 issues with neither a label nor a `prefix:` are themed by a shared #NNNN, then a shared title
+// Issues with neither a label nor a `prefix:` are themed by a shared #NNNN, then a shared title
 // word, before `other`.
 const themed = probe(`import github_activity as g
 iss = lambda n, title, body="", labels=(): {"number": n, "title": title, "body": body, "labels": [{"name": l} for l in labels]}

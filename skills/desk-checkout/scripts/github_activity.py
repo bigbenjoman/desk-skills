@@ -122,7 +122,9 @@ def gh_call(*args, headers=False):
         kind = rate_limit(f"{out.stderr}\n{out.stdout}")
         if kind is None:
             raise GhFailed((out.stderr.strip().splitlines() or [f"gh exited {out.returncode}"])[-1])
-        told = wait_for(hdrs, kind)
+        # A zero wait (Retry-After: 0, or a reset already past) never adds to `waited`, so it backs
+        # off as if the response named none; otherwise the budget would never end the retries.
+        told = wait_for(hdrs, kind) or None
         delay = told if told is not None else BACKOFF_BASE * 2 ** attempt
         if waited + delay > BACKOFF_TOTAL:
             if told is None:
