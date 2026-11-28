@@ -531,28 +531,34 @@ t('archived: records add up, once each', [...readArchived(dir)].sort().join(), '
   t('issue-1621 one ended with its branch not yet on origin counts its first head as a push', cloudPushedAfter({ ...rec, head: null }, new Map([['feat/a', 'bbb']])), 'bbb');
 
   const now = Date.parse('2026-11-02T12:00:00Z');
-  const row = (id, more = {}) => ({ key: id.toUpperCase(), session: `session_${id}`, url: `u/${id}`, done: true, at: '2026-11-02T11:30:00Z', ...more });
+  const row = (id, more = {}) => ({ key: id.toUpperCase(), session: `session_${id}`, url: `u/${id}`, done: true, at: '2026-10-20T11:30:00Z', ...more });
   const ended = new Map([
     ['session_f', { session: 'session_f', via: 'follow-up', error: 'no answer in 60s' }],
     ['session_g', { session: 'session_g', via: 'archive', error: 'denied (exit 1)' }],
     ['session_p', { session: 'session_p', branch: 'feat/p', pushed_at: 'z' }],
     ['session_k', { session: 'session_k', via: 'follow-up' }],
+    ['session_y', { session: 'session_y', via: 'follow-up' }],
   ]);
-  const asks = cloudArchiveAsks([row('f'), row('g'), row('p'), row('k'), row('n'), row('o', { at: '2026-11-02T05:00:00Z' }), row('x', { done: undefined })], ended, now);
-  t('issue-1621 AC2 needs-you asks only about a failed end, a push after it, one left unended past the grace, and an abandoned one',
+  const asks = cloudArchiveAsks([row('f'), row('g'), row('p'), row('k'), row('n'), row('x', { done: undefined }), row('y', { done: undefined })], ended);
+  t('issue-1621 AC2 needs-you asks only about a failed end, a push after it, and an abandoned one no pass ended; not one ended cleanly or a done one still to end',
     asks.map((d) => `${d.key}=${d.why}`).join(' | '),
-    "F=desk's closing follow-up failed: no answer in 60s | G=desk could not archive it: denied (exit 1) | P=it pushed to feat/p after desk ended it | O=no pass has ended it yet | X=null");
+    "F=desk's closing follow-up failed: no answer in 60s | G=desk could not archive it: denied (exit 1) | P=it pushed to feat/p after desk ended it | X=null");
 
   const ed = join(S, 'state-1621');
   mkdirSync(ed, { recursive: true });
   t('issue-1621 none ended reads as none, and the file keeps no empty list', `${readEnded(ed).size}`, '0');
   recordEnded(ed, [{ key: 'A', session: 'session_a', branch: 'feat/a', head: 'aaa', at: new Date(now).toISOString(), via: 'follow-up' }], now);
-  recordEnded(ed, [{ session: 'session_a', pushed_at: 'z', pushed_head: 'bbb' }, { key: 'O', session: 'session_o', at: '2026-09-01T00:00:00Z', via: 'follow-up' }], now);
+  recordEnded(ed, [{ session: 'session_a', pushed_at: 'z', pushed_head: 'bbb' }, { key: 'O', session: 'session_o', at: '2026-09-01T00:00:00Z', via: 'follow-up' },
+    { key: 'E', session: 'session_e', at: '2026-09-01T00:00:00Z', via: 'follow-up', error: 'no answer in 60s' }], now);
   const got = readEnded(ed);
-  t('issue-1621 a later record merges over the earlier one, and one past CLOUD_END_KEEP_MS is dropped',
-    `${got.size} ${got.get('session_a')?.head} ${got.get('session_a')?.pushed_head} ${got.has('session_o')}`, '1 aaa bbb false');
-  recordArchived(ed, ['session_q']);
-  t('issue-1621 recording archived keeps the ended list', `${readEnded(ed).size} ${readArchived(ed).has('session_q')}`, '1 true');
+  t('issue-1621 a later record merges over the earlier one; a failed one past CLOUD_END_KEEP_MS stays, as needs-you still asks about it',
+    `${got.size} ${got.get('session_a')?.head} ${got.get('session_a')?.pushed_head} ${got.has('session_e')}`, '2 aaa bbb true');
+  t('issue-1621 a clean one past CLOUD_END_KEEP_MS moves to the archived sessions, so finishedCloud no longer lists it and no pass ends it again',
+    `${got.has('session_o')} ${readArchived(ed).has('session_o')} ${finishedCloud({}, { O: { key: 'O', location: 'cloud', cloud: { session: 'session_o', url: 'u/o' } } }, readArchived(ed)).length}`, 'false true 0');
+  recordArchived(ed, ['session_q', 'session_e']);
+  t('issue-1621 recording archived keeps the ended list', `${readEnded(ed).size} ${readArchived(ed).has('session_q')}`, '2 true');
+  recordEnded(ed, [{ session: 'session_a', pushed_head: 'bbb' }], now);
+  t('issue-1621 one the person has since recorded archived leaves the ended list', `${readEnded(ed).size} ${readEnded(ed).has('session_e')}`, '1 false');
 }
 
 // ---- issue-1552: a fix try on a cloud PR ------------------------------------

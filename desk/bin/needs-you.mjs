@@ -1807,11 +1807,11 @@ function ticketlessItems(batches) {
 // answers only the list that was shown: once another session joins it, the old key is no longer listed
 // and its done is refused. Done records every session it named as archived (cloud-worker.mjs recordArchived).
 const CLOUD_ARCHIVE = 'cloud-archive';
-function cloudItems(batches, now = Date.now()) {
+function cloudItems(batches) {
   return batches.filter((b) => !b.error && b.q).flatMap((r) => {
     let archive = {};
     try { archive = readArchive(r.queuePath).tickets; } catch { /* an unreadable archive lists none of its tickets */ }
-    const done = cloudArchiveAsks(finishedCloud(r.q.tickets, archive, readArchived(r.stateDir), r.batch == null ? readPending(r.stateDir) : []), readEnded(r.stateDir), now);
+    const done = cloudArchiveAsks(finishedCloud(r.q.tickets, archive, readArchived(r.stateDir), r.batch == null ? readPending(r.stateDir) : []), readEnded(r.stateDir));
     if (!done.length) return [];
     const sessions = done.map((d) => d.session);
     const id = createHash('sha256').update(sessions.join('\n')).digest('hex').slice(0, 8);

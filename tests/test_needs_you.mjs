@@ -4289,17 +4289,20 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     try { f = JSON.parse(readFileSync(archivedFile, 'utf8')); } catch { /* none yet */ }
     writeFileSync(archivedFile, JSON.stringify(change(f)));
   };
+  // issue-1621: the pass ends a done ticket's session itself, so C-1 (merged 30 minutes ago) and C-3
+  // (archived 10 hours ago), which no pass has ended yet, wait for it rather than going on needs-you.
+  t('issue-1621 AC2 done sessions no pass has ended yet are not asked about', items().length, 0);
+  // C-3's archive fails: it is asked about, with why.
+  putArchived((f) => ({ ...f, ended: [{ key: 'C-3', session: 'session_c', url: 'https://claude.ai/code/session_c?from=cli', branch: null, head: null, at: minsAgo(60), via: 'archive', error: 'denied (exit 1)' }] }));
   let c = items();
-  // issue-1621: the pass ends a done ticket's session itself, so C-1 (merged 30 minutes ago, within the
-  // grace) is not asked about; C-3, done 10 hours ago with no pass having ended it, is, with why.
-  t('one item for the batch, naming only a finished session no pass has ended past the grace, with its URL and why',
+  t('one item for the batch, naming the finished session whose end failed, with its URL and why',
     `${c.length} ${/^cloud-archive:[0-9a-f]{8}$/.test(c[0]?.t.key)} ${c[0]?.need}`,
-    '1 true 1 cloud session has finished in cloud1311 and is still open: archive it in claude.ai/code: C-3 https://claude.ai/code/session_c?from=cli (no pass has ended it yet)');
-  t('a running session, one whose PR has not merged, a local ticket and one within the grace are not listed', ['session_a', 'session_b', 'session_d'].some((x) => c[0]?.need.includes(x)), false);
+    '1 true 1 cloud session has finished in cloud1311 and is still open: archive it in claude.ai/code: C-3 https://claude.ai/code/session_c?from=cli (desk could not archive it: denied (exit 1))');
+  t('a running session, one whose PR has not merged, a local ticket and one the pass has still to end are not listed', ['session_a', 'session_b', 'session_d'].some((x) => c[0]?.need.includes(x)), false);
   t('desk-q counts it once', N.needsCount(loadRepos(Date.now(), 'cloud1311').find((r) => r.slug === 'acme__cloud1311' && r.batch == null)).items.filter((i) => i.item.kind === 'cloud-archive').length, 1);
   const shown = c[0].t.key;
   // C-1's closing follow-up fails after the list was shown: it joins the list, and the shown item's done no longer answers it.
-  putArchived((f) => ({ ...f, ended: [{ key: 'C-1', session: 'session_a', name: 'cloud1311-ticket-C-1', url: 'https://claude.ai/code/session_a?from=cli', branch: 'feat/c-1', head: 'a'.repeat(40), at: minsAgo(25), via: 'follow-up', error: 'no answer in 60s' }] }));
+  putArchived((f) => ({ ...f, ended: [...f.ended, { key: 'C-1', session: 'session_a', name: 'cloud1311-ticket-C-1', url: 'https://claude.ai/code/session_a?from=cli', branch: 'feat/c-1', head: 'a'.repeat(40), at: minsAgo(25), via: 'follow-up', error: 'no answer in 60s' }] }));
   c = items();
   t('issue-1621 a session whose closing follow-up failed is listed, saying so', c[0]?.need.includes("cloud1311-ticket-C-1 https://claude.ai/code/session_a?from=cli (desk's closing follow-up failed: no answer in 60s)"), true);
   const stale = N.record({ word: 'cloud1311', ticket: shown, action: 'done' });
@@ -4309,9 +4312,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('done on the list as it stands records every session it named, and the item goes', `${done.ok} ${done.line.endsWith('recorded all 2 sessions archived, so it is off your list.')} ${items().length}`, 'true true 0');
   // C-4's PR merges and the pass ends its session cleanly: nothing to ask. Then it pushes after it: it is asked about.
   const qq = JSON.parse(readFileSync(q, 'utf8'));
-  qq.tickets['C-4'].merged_at = minsAgo(1);
+  qq.tickets['C-4'].merged_at = minsAgo(600);
   writeFileSync(q, JSON.stringify(qq));
-  const endedD = { key: 'C-4', session: 'session_d', name: 'cloud1311-ticket-C-4', url: 'https://claude.ai/code/session_d?from=cli', branch: 'feat/c-4', head: 'd'.repeat(40), at: minsAgo(1), via: 'follow-up' };
+  const endedD = { key: 'C-4', session: 'session_d', name: 'cloud1311-ticket-C-4', url: 'https://claude.ai/code/session_d?from=cli', branch: 'feat/c-4', head: 'd'.repeat(40), at: minsAgo(590), via: 'follow-up' };
   putArchived((f) => ({ ...f, ended: [...f.ended, endedD] }));
   t('issue-1621 a session the pass ended cleanly is not listed', items().length, 0);
   putArchived((f) => ({ ...f, ended: f.ended.map((e) => (e.session === 'session_d' ? { ...e, pushed_at: minsAgo(0), pushed_head: 'e'.repeat(40) } : e)) }));

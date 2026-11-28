@@ -639,14 +639,22 @@ export function handOver(stateDir, rows) {
 }
 
 // Records the pass's tries to end sessions (endCloud), and pushes seen after one: each row merged over
-// what was recorded for its session. A record older than CLOUD_END_KEEP_MS is dropped.
+// what was recorded for its session. A clean record older than CLOUD_END_KEEP_MS moves to `sessions`, so
+// finishedCloud no longer lists it and no pass ends it again; one whose end failed or that pushed after
+// it stays, as needs-you still asks about it, until the person's done records its session there.
 export const CLOUD_END_KEEP_MS = 30 * 24 * 3_600_000;
 export function recordEnded(stateDir, rows, now = Date.now()) {
   if (!rows.length) return;
   update(stateDir, (f) => {
     const by = new Map(f.ended.filter((e) => e?.session).map((e) => [e.session, e]));
     for (const r of rows) by.set(r.session, { ...by.get(r.session), ...r });
-    f.ended = [...by.values()].filter((e) => !(now - (Date.parse(e.at) || now) > CLOUD_END_KEEP_MS));
+    const done = new Set(f.sessions);
+    f.ended = [...by.values()].filter((e) => {
+      if (done.has(e.session)) return false;
+      if (e.error || e.pushed_at || !(now - (Date.parse(e.at) || now) > CLOUD_END_KEEP_MS)) return true;
+      f.sessions.push(e.session);
+      return false;
+    });
   });
 }
 
@@ -654,10 +662,9 @@ export function recordEnded(stateDir, rows, now = Date.now()) {
 export const CLOUD_END_MSG = 'The ticket is finished: stop, make no more commits or pushes';
 // How long after it was ended a session's branch is watched for a push.
 export const CLOUD_END_WATCH_MS = 7 * 24 * 3_600_000;
-// How long a done ticket's session may wait for a pass to end it before needs-you asks the person.
-export const CLOUD_END_GRACE_MS = 6 * 3_600_000;
 
-// Whether `claude --help` lists an `archive` command in its command list.
+// Whether `claude --help` lists an `archive` command in its command list. The CLI has none yet, so the
+// layout is assumed: one command a line, indented, its name first, as `claude --help` lists the rest.
 export const archiveListed = (help) => /^\s{2,}archive\b/m.test(String(help ?? ''));
 // What `claude --help` prints, or '' where it does not run.
 export function claudeHelp({ claude = 'claude', timeout = 30_000, env = process.env } = {}) {
@@ -692,17 +699,15 @@ export function cloudPushedAfter(rec, heads) {
 }
 
 // Which finished sessions (finishedCloud rows) needs-you asks the person to archive, each with why:
-// one whose end failed, one that pushed after it was ended, a done ticket's that no pass has ended
-// past CLOUD_END_GRACE_MS, and one recorded abandoned rather than done, which no pass ends.
+// one whose end failed, one that pushed after it was ended, and one recorded abandoned rather than
+// done, which no pass ends. A done one not yet ended waits for the pass, which reports why it could not.
 // `ended` is readEnded's. -> [{ ...row, why }], `why` null for an abandoned one
-export function cloudArchiveAsks(rows, ended, now = Date.now()) {
+export function cloudArchiveAsks(rows, ended) {
   return rows.flatMap((d) => {
     const e = ended.get(d.session);
     if (e?.error) return [{ ...d, why: e.via === 'archive' ? `desk could not archive it: ${e.error}` : `desk's closing follow-up failed: ${e.error}` }];
     if (e?.pushed_at) return [{ ...d, why: `it pushed to ${e.branch} after desk ended it` }];
-    if (e) return [];
-    if (!d.done) return [{ ...d, why: null }];
-    return now - (Date.parse(d.at ?? '') || 0) > CLOUD_END_GRACE_MS ? [{ ...d, why: 'no pass has ended it yet' }] : [];
+    return !e && !d.done ? [{ ...d, why: null }] : [];
   });
 }
 

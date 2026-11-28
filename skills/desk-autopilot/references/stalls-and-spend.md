@@ -191,10 +191,11 @@ lists one, and records it as ended in the repo's `cloud-archived.json` with its 
 origin then. desk-q's Costs view lists the sessions ended in the last week, each `ended`, `end
 failed` or `pushed after`. A pass that sees the branch move past that head within the week records
 the push. The batch's desk-needs-you item lists only the sessions the person must archive by hand:
-one whose end failed (it is not retried), one that pushed after it, a done one no pass has ended 6
-hours on, and one recorded abandoned (`queue.mjs stop`, a fix try's restart), which the pass leaves
-alone because a new session may be working the same branch. Its done records them so none is asked
-about twice.
+one whose end failed (it is not retried), one that pushed after it, and one recorded abandoned
+(`queue.mjs stop`, a fix try's restart), which the pass leaves alone because a new session may be
+working the same branch. A done one not yet ended waits for the next pass, which says why it could
+not end it. Its done records them so none is asked about twice. A clean end is kept 30 days, then
+recorded as archived, so no pass ends that session again.
 
 **A ticket admitted mid-batch is placed the same way.** `queue.mjs admit`, which every mid-batch
 route admits through (intake, `/desk-admit`, an approved epic plan's children, a ticket handed over
