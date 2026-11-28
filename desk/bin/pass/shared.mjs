@@ -256,6 +256,21 @@ export function placeAtStart({ able, cloudRoom, localRoom, localSpare = false, r
   if (localRoom && localSpare && free > reserve) return { where: 'local', why: `the cloud is full${count}, and a local slot stayed free all last pass` };
   return { where: null, why: `waits for a cloud session${count}; local slots go first to tickets that must run here`, full: 'cloud' };
 }
+// The slot a fresh ticket's priority hold weighs (spawn-order.mjs priorityHold), as placeAtStart places
+// it now: -> { where, free, pending }, or null where it starts nowhere this pass (decideSpawn says so, and
+// priority holds nothing that would not start anyway). `ahead` the tickets the spawn loop has still to
+// read; `local` and `cloud` the local slots and cloud sessions still free; `localSpare` and `personUse`
+// as placeAtStart's. `pending` the fresh tickets ahead that may want that slot: for a cloud start the
+// cloud-able ones, for a local start any, as a cloud-able one may fall back to it. One counted that then
+// goes elsewhere costs only a deferral (spawn-order.mjs deferringOrder).
+export function priorityPool(t, ahead, { local, cloud, localSpare = false, personUse = false }) {
+  const place = placeAtStart({ able: startsInCloud(t), cloudRoom: cloud > 0, localRoom: local > 0, localSpare,
+    reserve: ahead.filter((x) => !startsInCloud(x)).length, free: local, personUse });
+  if (place.where == null) return null;
+  const toCloud = place.where === 'cloud';
+  const pending = ahead.filter((x) => x.key !== t.key && !toResume(x) && !toHandoff(x) && (!toCloud || startsInCloud(x)));
+  return { where: place.where, free: toCloud ? cloud : local, pending: new Set(pending.map((x) => x.key)) };
+}
 // The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its
 // session ended with where there is one, which the ticket ledger's failed event records.
 export const failedField = (why, { subtype = null, at = new Date().toISOString() } = {}) =>

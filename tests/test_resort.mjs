@@ -1,10 +1,11 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
-// covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs desk/bin/config-schema.mjs
+// covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs desk/bin/config-schema.mjs desk/bin/pass/shared.mjs
 import { resortQueue, resortLine, chainName, priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank, deferringOrder } from '../desk/bin/spawn-order.mjs';
 import { ROWS } from '../desk/bin/config-schema.mjs';
 import { readFileSync } from 'node:fs';
 import { layOrder } from '../desk/bin/queue-writer.mjs';
+import { priorityPool } from '../desk/bin/pass/shared.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -186,6 +187,27 @@ t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainN
   t('#1624 deferringOrder reads a deferred entry again after the rest, and caps its deferrals',
     (() => { const seen = []; for (const s of deferringOrder(['a', 'b'], (x) => x, 2)) { seen.push(`${s.item}${s.deferred ? '*' : ''}:${s.ahead.join('')}`); if (s.item === 'a') s.defer(); } return seen.join(' '); })(),
     'a:b b:a a*: a*:');
+  // The slot a priority hold weighs: a cloud-able ticket with the cloud full may fall back to a local slot.
+  const CL = { key: 'CL', cloud_ok: true };
+  const HL = { key: 'HL' };
+  const HC = { key: 'HC', cloud_ok: true };
+  const pr2 = { CL: 2, HL: 0, HC: 0 };
+  const pool = (ahead, o) => priorityPool(CL, ahead, { local: 1, cloud: 0, localSpare: true, ...o });
+  const held = (p, mode, waiting) => p && priorityHold('CL', { mode, rank: (k) => pr2[k], waiting, pending: p.pending, free: p.free, files: () => [] });
+  t('#1624 a cloud-able ticket with the cloud full weighs the local slot it falls back to', `${pool([]).where} ${pool([]).free}`, 'local 1');
+  t('#1624 strict: a lower cloud-able ticket falling back to a local slot waits for a held higher one', held(pool([]), 'strict', ['CL', 'HL'])?.key, 'HL');
+  t('#1624 soft: it defers for a higher cloud-able ticket still to come that may fall back to that slot', held(pool([HC]), 'soft', ['CL', 'HC'])?.defer, true);
+  t('#1624 a local-only ticket still to come keeps its slot from the fallback (placeAtStart reserve)', pool([HL]), null);
+  t('#1624 with the cloud full and no spare local slot it starts nowhere, so priority holds nothing', pool([], { localSpare: false }), null);
+  t('#1624 a ticket the person is using the computer for goes only to the cloud: nowhere when it is full', pool([], { personUse: true }), null);
+  const inCloud = priorityPool(CL, [HL, HC], { local: 1, cloud: 1, localSpare: true });
+  t('#1624 a cloud start weighs the cloud sessions, and only the cloud-able tickets still to come', `${inCloud.where} ${inCloud.free} ${[...inCloud.pending].join(',')}`, 'cloud 1 HC');
+  const kinds = [tk('LO'), tk('HI'), tk('CC', { cloud_ok: true }), tk('CH', { cloud_ok: true })];
+  const kr = { LO: 3, HI: 1, CC: 3, CH: 0 };
+  t('#1624 priority sorts within each kind\'s list, each laid over its own kind\'s places',
+    resortQueue(kinds, { scope: () => [], fileCount: () => 0, cloud: (x) => x.cloud_ok === true, rank: (k) => kr[k], priority: 'soft' }).order.join(' '), 'HI LO CH CC');
+  const fallback = pool([HL, HC], { local: 2 });
+  t('#1624 a local fallback counts every fresh ticket still to come, as a cloud-able one may fall back too', [...fallback.pending].join(','), 'HL,HC');
   t('#1624 a blocker still starts before what it blocks, whatever its priority', resortQueue([tk('LO'), tk('HI', { state: 'parked', held_by: 'LO' })], { scope: () => [], fileCount: () => 0, rank: (k) => (k === 'HI' ? 0 : 3), priority: 'strict' }).order.join(' '), 'LO HI');
 }
 

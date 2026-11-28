@@ -110,7 +110,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -4829,11 +4829,12 @@ for (const x of Object.values(fresh.tickets)) for (const p of blockersOf(x)) (bl
 const priorityHeldBy = (t, ahead) => {
   if (PRIORITY.mode === 'off' || !unstarted(t) || toResume(t) || toHandoff(t)) return null;
   const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key)).map((x) => x.key);
-  const pending = new Set(ahead.filter((x) => x.key !== t.key && !toResume(x) && !toHandoff(x) && !startsInCloud(x) === !startsInCloud(t)).map((x) => x.key));
-  const free = startsInCloud(t) ? cloudSlots - cloudAttempts : (memStop ? 0 : localSlots) - attempts;
-  // With no slot left, decideSpawn says so: priority holds nothing that would not start anyway.
-  if (free <= 0) return null;
-  return priorityHold(t.key, { mode: PRIORITY.mode, rank: heldRankOf, waiting, pending, free, files: budgetFiles,
+  // The slot it would take, as decideSpawn places it: a cloud-able ticket with the cloud full may still
+  // take a local one (pass/shared.mjs priorityPool).
+  const pool = priorityPool(t, ahead, { local: (memStop ? 0 : localSlots) - attempts, cloud: cloudSlots - cloudAttempts,
+    localSpare: LOCAL_SPARE, personUse: PERSON.on });
+  if (!pool) return null;
+  return priorityHold(t.key, { mode: PRIORITY.mode, rank: heldRankOf, waiting, pending: pool.pending, free: pool.free, files: budgetFiles,
     blocks: (a, b) => reach(a, blockerSucc[a] ?? [], blockerSucc).has(b) });
 };
 for (const step of deferringOrder(spawnable, (x) => x.key)) {
