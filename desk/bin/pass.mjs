@@ -3436,15 +3436,18 @@ const auditDue = !DRY && REPO_SLUG != null && !lowMemory && !MAINT.hold && !PACE
   && (() => { try { return Object.values(E.leverStates({}).states).includes('auto') && auditWanted(REPO_SLUG); } catch { return false; } })();
 // The person is using this computer (person-use.mjs): while processes that are not desk's hold more
 // than the machine profile's baseline by its threshold, the local cap drops to person-use-floor and
-// cloud-able tickets go only to the cloud; running workers are left running. Read only with a machine
-// profile, and never with AUTOPILOT_PERSON_USE=off (every test suite but the one that tests it). A
-// reading that cannot be taken keeps the mode the last pass left.
+// cloud-able tickets go only to the cloud; running workers are left running. Read only where the machine
+// profile's person-use row is `on` (unset is off: a machine opts in), and never with
+// AUTOPILOT_PERSON_USE=off (every test suite but the one that tests it). Off, the batch keeps no
+// person_use record and the pass says nothing of it. A reading that cannot be taken keeps the mode the
+// last pass left.
 const PERSON = (() => {
   const prev = fresh.person_use ?? null;
   if (process.env.AUTOPILOT_PERSON_USE === 'off' || E.machineProfile() == null) return { on: false, rows: null, prev, next: null };
   const rows = personUseRows((k) => E.machineValue(k));
   for (const p of rows.problems) report.waits.push(`person in use: ${p} (machine profile)`);
-  const procs = rows.on ? readProcs() : null;
+  if (!rows.on) return { on: false, rows, prev, next: null };
+  const procs = readProcs();
   const held = procs ? othersHold(procs, { marks: [SHOWN_BIN, BIN, WORKTREES].filter(Boolean), self: process.pid }) : null;
   const next = nextMode(prev, held, rows, PASS_AT);
   return { on: next.on, rows, prev, next };

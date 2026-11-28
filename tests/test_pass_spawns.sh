@@ -712,7 +712,12 @@ for k in LL-1 LL-2; do q set "$k" state=done session_id=null; done
 pu_prev=$DESK_QUEUE; export DESK_QUEUE="$T/queue-pu.json"
 q init pu; q set-batch concurrency=3
 for k in PU-1 PU-2 PU-3; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
-pu_machine(){ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `person-baseline-gb` | `1` | test |\n| `person-use-gb` | `2` | test |\n| `person-baseline-cpu` | `1` | test |\n| `person-use-cpu` | `8` | test |\n| `person-use-floor` | `2` | test |\n| `person-use-calm-min` | `%s` | test |\n' "$1" > "$T/machine-pu.md"; }
+# pu_machine <calm-min> [<person-use row value>, default on; - for no row]
+pu_machine(){
+  local mode=${2:-on} row=''
+  [ "$mode" = - ] || row="| \`person-use\` | \`$mode\` | test |\n"
+  printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n%b| `person-baseline-gb` | `1` | test |\n| `person-use-gb` | `2` | test |\n| `person-baseline-cpu` | `1` | test |\n| `person-use-cpu` | `8` | test |\n| `person-use-floor` | `2` | test |\n| `person-use-calm-min` | `%s` | test |\n' "$row" "$1" > "$T/machine-pu.md"
+}
 pu_machine 10
 printf '  100     1 4194304 10.0 /Applications/IDE.app/ide\n  200     1 8388608 90.0 bash -c x desk-worker claude -p go\n' > "$T/ps-pu.out"
 pu_pass(){ out=$(AUTOPILOT_PERSON_USE=on AUTOPILOT_PERSON_USE_PS="$T/ps-pu.out" DESK_MACHINE="$T/machine-pu.md" node "$B/pass.mjs" 2>&1); }
@@ -732,6 +737,25 @@ pu_machine 0; pu_pass
 check "issue-1587 AC3 once it has, the mode switches off and the pass says the local cap is back" \
   '[ "$(bfield person_use.on)" = false ] && echo "$out" | grep -qF "person in use: off, under the threshold for 0 min; the local cap is back"'
 for k in PU-1 PU-2 PU-3; do q set "$k" state=done session_id=null; done
+# The mode is opt-in per machine. With no person-use row, or `off`, the pass reads nothing,
+# keeps no person_use record (clearing one an earlier pass left) and says nothing of it.
+printf '  100     1 4194304 10.0 /Applications/IDE.app/ide\n' > "$T/ps-pu.out"
+pu_off(){ # pu_off <row value, or - for none> <ticket prefix>
+  pu_machine 10 "$1"
+  for k in "$2-1" "$2-2" "$2-3"; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+  q set-batch 'person_use={"on":true,"since":"2026-11-28T00:00:00.000Z","calm_since":null,"gb":4,"cpu":0.1,"floor":2}'
+  pu_pass
+}
+pu_off - PN
+check "DS-1058 AC1 with no person-use row and the IDE over the threshold, the local cap is not lowered: more than the floor's one start" \
+  '[ $(( $(spawns_of PN-1) + $(spawns_of PN-2) + $(spawns_of PN-3) )) -gt 1 ]'
+check "DS-1058 AC1 AC2 and the pass says nothing of it and clears the record desk-q reads" \
+  '! echo "$out" | grep -qiE "using this computer|person in use" && [ "$(bfield person_use)" = null ]'
+for k in PN-1 PN-2 PN-3; do q set "$k" state=done session_id=null; done
+pu_off off PF
+check "DS-1058 AC4 with person-use=off, the mode is off and nothing about it is shown" \
+  '[ $(( $(spawns_of PF-1) + $(spawns_of PF-2) + $(spawns_of PF-3) )) -gt 1 ] && ! echo "$out" | grep -qiE "using this computer|person in use" && [ "$(bfield person_use)" = null ]'
+for k in PF-1 PF-2 PF-3; do q set "$k" state=done session_id=null; done
 export DESK_QUEUE="$pu_prev"
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"

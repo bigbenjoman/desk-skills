@@ -126,9 +126,11 @@ or desk itself, hold more memory or CPU than the machine profile's `person-basel
 `person-use-floor` (1 unset), for local-only tickets, and cloud-able tickets go only to the cloud. No
 running worker is stopped. The cap comes back once your use has stayed under the threshold for
 `person-use-calm-min` minutes (10 unset). Unset, the baseline is 15% of `memory-gb` and 5% of
-`cpu-cores`, and the threshold 10% of `memory-gb` and 25% of `cpu-cores`; `person-use=off` turns it
-off, and no machine profile means it never reads. Set any of them with `desk-env machine set`. desk-q
-and the pass say "you're using this computer: local cap 1, cloud first" while it is on.
+`cpu-cores`, and the threshold 10% of `memory-gb` and 25% of `cpu-cores`. The mode is off unless the
+machine's own profile has `person-use=on` (`desk-env machine set person-use=on`): unset or `off`, and
+with no machine profile, it never reads and says nothing. Set any of the rows with
+`desk-env machine set`. desk-q and the pass say "you're using this computer: local cap 1, cloud first"
+while it is on.
 With config §3b "Cloud environment" set, each cloud prompt first has the
 session check `DESK_CLOUD_ENV` names that environment, stopping with "wrong cloud environment" if not
 (a stall report on it names that as a cause), and says how to start the database (§4 Database migrate
