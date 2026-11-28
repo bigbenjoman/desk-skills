@@ -80,7 +80,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY } from './cloud-worker.mjs';
+import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY, ranInCloud } from './cloud-worker.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount, followCheckText } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
@@ -2001,7 +2001,7 @@ function useOnlyLines(repos, use, width) {
 // (cloud-worker.mjs CLOUD_COST_WHY), so it is listed as such with its session URL rather than left out
 // of what the list-price use counts. A ticket the queue has archived is no longer listed.
 const cloudCosts = (repos) => (repos ?? []).flatMap((r) => Object.values(r.q?.tickets ?? {})
-  .filter((t) => ['cloud', 'local'].includes(t?.location) && t.cloud?.started)
+  .filter((t) => ranInCloud(t) && t.cloud?.started)
   .map((t) => ({ repo: r.repo ?? r.name, key: t.key, cost: null, why: CLOUD_COST_UNKNOWN, url: t.cloud.url ?? null })));
 function cloudCostLines(repos, width) {
   const rows = cloudCosts(repos).map((x) => ({ name: `${x.repo} ${x.key}`, url: x.url ?? 'its session URL was not recorded' }));

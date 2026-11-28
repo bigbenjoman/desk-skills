@@ -188,6 +188,8 @@ q set C-2 location=local
 check "issue-1689 and so does set location=local"                            '[ $rc -ne 0 ] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
 q set C-2 location=auto
 check "issue-1689 and so does set location=auto, which would clear its cloud location as surely" '[ $rc -ne 0 ] && [[ "$out" == *"location=auto"* ]] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q set C-2 location=cloud location=auto
+check "issue-1689 the last location in one set is the one checked, as it is the one written" '[ $rc -ne 0 ] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
 q stop C-2; q local C-2
 check "issue-1689 once stopped it is pinned local"                           '[ $rc -eq 0 ] && [ "$(f C-2 location)" = "\"local\"" ]'
 q requeue C-2

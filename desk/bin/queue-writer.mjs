@@ -120,7 +120,7 @@ export function applySet(t, pairs, now = new Date().toISOString()) {
   // cloudUnfinished) is let through. Running in a cloud session is what queue.mjs stop reads as one: a
   // local worker started on a ticket triage placed in the cloud records its session id first, and the
   // pass's place handler then unpins it (location=auto), which is no cloud session to strand.
-  const loc = sets.find(([k]) => k === 'location');
+  const loc = sets.findLast(([k]) => k === 'location');
   const state = sets.findLast(([k]) => k === 'state')?.[1] ?? t.state;
   const inCloudSession = t.state === 'running' && t.location === 'cloud' && t.cloud && !t.session_id;
   if (loc && loc[1] !== 'cloud' && inCloudSession && state === 'running') {
