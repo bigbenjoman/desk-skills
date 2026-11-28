@@ -113,7 +113,8 @@ with the reason, when its triage record says it renders (the browser lock and a 
 database, or names a §4 Local service in `needs_services`, unless config §3b "Cloud environment"
 says its environment provides it (`db`, `browser`, `services:<names>`). It also stays local when the
 record names in `needs_local` anything else only this computer has (stub binaries, a clone of another
-repo), and when the record predates `needs_local`. Admission records only that a ticket can run in
+repo), and when the record predates `needs_local`; with the row set, a `needs_local` from before
+`needs_services` says to re-run triage.sh. Admission records only that a ticket can run in
 the cloud (`cloud_ok: true` on the queue); the pass places it when it starts. Cloud first: a cloud-able
 ticket goes to a cloud session while "Cloud sessions at once" has room. Local slots go first to
 local-only tickets: a cloud-able one takes a local slot only with the cloud full, a local slot left free
@@ -129,9 +130,10 @@ running worker is stopped. The cap comes back once your use has stayed under the
 off, and no machine profile means it never reads. Set any of them with `desk-env machine set`. desk-q
 and the pass say "you're using this computer: local cap 1, cloud first" while it is on.
 With config §3b "Cloud environment" set, each cloud prompt first has the
-session check `DESK_CLOUD_ENV` names that environment, stopping with "wrong cloud environment" if not,
-and says how to start the database (§4 Database migrate and Seed after it), the services and the dev
-server. A session that renders pushes its screenshots to `desk-shots/<branch>` and leaves
+session check `DESK_CLOUD_ENV` names that environment, stopping with "wrong cloud environment" if not
+(a stall report on it names that as a cause), and says how to start the database (§4 Database migrate
+and Seed after it), the services and the dev server. A session that renders pushes its screenshots to
+`desk-shots/<branch>/<its start time>` and leaves
 `_drag <file>_` cells in its PR. Before recording it done, the pass copies them into the ticket's
 screenshot directory, where the undraft step uploads them as a local worker's, and deletes that ref
 where §3 branch-delete allows. A ticket started in the cloud (`location: cloud` on the queue)

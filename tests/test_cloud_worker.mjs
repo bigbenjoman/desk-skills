@@ -59,7 +59,10 @@ t('issue-1550 AC1 where the environment lacks one, it stays local naming the row
 t('issue-1550 AC1 a service the row names runs in the cloud', atEnv(rec({ needs_services: ['redis'] }), 'widgets: services:redis'), 'cloud');
 t('issue-1550 AC1 a service it does not name stays local', atEnv(rec({ needs_services: ['redis', 'typesense'] }), 'widgets: services:redis'),
   'local: it needs the local service typesense, which cloud environment widgets does not provide (config §3b "Cloud environment")');
-t('issue-1550 AC1 needs_local still keeps it local', atEnv(rec({ renders: true, needs_local: 'stub binaries' }), 'widgets: browser'), 'local: stub binaries');
+t('issue-1550 AC1 needs_local still keeps it local', atEnv(rec({ renders: true, needs_local: 'stub binaries', needs_services: [] }), 'widgets: browser'), 'local: stub binaries');
+t('issue-1550 AC1 a needs_local triaged before needs_services says to re-triage against the environment', atEnv(rec({ needs_local: 'a local dev server and the browser' }), 'widgets: browser'),
+  'local: a local dev server and the browser (triaged before config §3b "Cloud environment": re-run triage.sh to place it against widgets)');
+t('issue-1550 AC3 with the row unset that needs_local reads as before', at(rec({ needs_local: 'a local dev server' })), 'local: a local dev server');
 t('issue-1550 a lane D ticket needs the browser', cloudNeeds(rec({ lane: 'D' })).browser, true);
 
 // ---- the maintenance window counts only workers on this computer --------------
@@ -112,17 +115,21 @@ t('issue-1555 disabled, missing, another value, another plugin, no file or bad J
 
 // ---- issue-1550: a cloud ticket that needs the database or a browser (AC2, AC6) --
 const widgets = parseCloudEnv('widgets: db browser services:redis');
-const setup = { services: ['redis :6379', 'typesense :8108'], migrate: ['pnpm db:migrate'], seed: ['apps/api: pnpm db:seed'], dev: ['pnpm dev'], dbVars: ['DATABASE_URL'] };
-const served = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup });
+const setup = { services: ['redis :6379', 'typesense :8108', 'mailpit:8025'], migrate: ['pnpm db:migrate'], seed: ['apps/api: pnpm db:seed'], dev: ['pnpm dev'], dbVars: ['DATABASE_URL'] };
+const shots = shotsRef('feat/K-1-x', '2026-11-28T10:20:30.000Z');
+const served = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup, shots });
+t('issue-1550 AC4 each session of a ticket has its own screenshot ref, under its branch', `${shots} ${shots === shotsRef('feat/K-1-x', '2026-11-28T11:00:00.000Z')}`, 'desk-shots/feat/K-1-x/20261128102030 false');
+t('issue-1550 AC2 a service item written service:port is matched by its name', cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ needs_services: ['mailpit'] })), setup }).includes('`mailpit:8025`'), true);
 t('issue-1550 AC2 the prompt starts the database, points its variable at it, then migrates and seeds',
   ['service postgresql start', '`DATABASE_URL`', 'then run `pnpm db:migrate` and then `pnpm db:seed` in `apps/api`'].every((x) => served.includes(x)), true);
 t('issue-1550 AC2 it starts the services the ticket needs, and only those', served.includes('docker compose up -d redis') && !served.includes('typesense'), true);
 t('issue-1550 AC2 it takes its screenshots with the environment\'s Chrome, from the dev server', ['`pnpm dev`', 'Chrome for Testing', 'before-<view>.png', 'after-<view>.png'].every((x) => served.includes(x)), true);
-t('issue-1550 AC4 it pushes them to the side ref and leaves _drag cells naming them', served.includes(`push it to origin as \`${shotsRef('feat/K-1-x')}\``) && served.includes('`_drag before-<view>.png_`'), true);
+t('issue-1550 AC4 it pushes them to the side ref and leaves _drag cells naming them', served.includes(`push it to origin as \`${shots}\``) && served.includes('`_drag before-<view>.png_`'), true);
 t('issue-1550 AC6 its first step checks the environment, and stops naming the wrong one',
   served.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && served.indexOf(`printenv ${CLOUD_ENV_VAR}`) < served.indexOf('1. Do the smallest change') && served.includes('`wrong cloud environment: <what it printed, or none>`'), true);
 const plain = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({})), setup });
 t('issue-1550 AC2 a ticket that needs none of them gets the check but no services section', plain.includes(CLOUD_ENV_VAR) && !plain.includes('What this ticket needs in your environment'), true);
+t('issue-1550 AC6 the retry follow-up keeps a session stopped in the wrong environment stopped', CLOUD_RETRY_MSG.includes('stay stopped'), true);
 t('issue-1550 AC3 with no environment the prompt is as before', prompt.includes(CLOUD_ENV_VAR) || prompt.includes('desk-shots/'), false);
 
 // ---- issue-1550: what /desk-setup proposes (AC5) --------------------------------

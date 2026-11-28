@@ -1046,7 +1046,8 @@ function advanceCloud(t) {
   if (!pr) {
     const since = `${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started`;
     const stuck = cloudStuck(t, c);
-    const flag = (why) => report.stalled.push(`${t.key}: cloud session ${where} possibly stuck (quiet, or stopped on an error) — no PR, and ${why}. ` +
+    const stopped = c.env ? `, stopped on an error, or stopped as started outside cloud environment ${c.env} (it ends "wrong cloud environment")` : ', or stopped on an error';
+    const flag = (why) => report.stalled.push(`${t.key}: cloud session ${where} possibly stuck (quiet${stopped}) — no PR, and ${why}. ` +
       `Open the session to see; to start it again: queue.mjs stop ${t.key} (records the session abandoned), then queue.mjs requeue ${t.key}`);
     if (!stuck) report.quiet.push(`${t.key}: cloud session ${where}, no PR yet (${since})`);
     else if (!stuck.retry) flag(`${stuck.why}, and nothing since the one retry follow-up sent at ${c.retried_at}`);
@@ -1194,10 +1195,16 @@ function fetchCloudShots(t, ref) {
     for (const f of names) { writeFileSync(join(dir, f), execFileSync('git', ['-C', MAIN, 'show', `${local}:${f}`], { maxBuffer: 256 * 1024 * 1024 })); n += 1; }
   } catch (e) { return { wait: `its screenshots on ${ref} could not be copied into ${dir} (${lastLine(e.message)})` }; }
   finally { sh('git', ['-C', MAIN, 'update-ref', '-d', local], { tolerant: true }); }
+  return { n, dir, left: deleteOnOrigin(ref, sha) };
+}
+
+// Deletes `branch` on origin, pinned to `sha`, where config §3 branch-delete is `yes`.
+//   -> null once deleted, else a clause saying it was left or why deleting it failed
+function deleteOnOrigin(branch, sha) {
   const del = E.permission('branch-delete');
-  if (del !== 'yes') return { n, dir, left: `${ref} on origin is left, since config §3 branch-delete is "${del}"` };
-  const d = shOut('git', ['-C', MAIN, 'push', `--force-with-lease=refs/heads/${ref}:${sha}`, 'origin', '--delete', ref]);
-  return { n, dir, left: d.ok ? null : `deleting ${ref} on origin failed (${lastLine(d.out)})` };
+  if (del !== 'yes') return `${branch} on origin is left, since config §3 branch-delete is "${del}"`;
+  const d = shOut('git', ['-C', MAIN, 'push', `--force-with-lease=refs/heads/${branch}:${sha}`, 'origin', '--delete', branch]);
+  return d.ok ? null : `deleting ${branch} on origin failed (${lastLine(d.out)})`;
 }
 
 // Cloud PR `pr` (its `view`) its session marked unfinished (`mark`): the ticket stays running at stage
@@ -2076,14 +2083,7 @@ function dropDuplicate(t) {
   }
   git('branch', '-D', t.branch);
   let remote = '';
-  if (remoteHead) {
-    const del = E.permission('branch-delete');
-    if (del !== 'yes') remote = `; ${t.branch} on origin is left, since config §3 branch-delete is "${del}"`;
-    else {
-      const d = git('push', `--force-with-lease=refs/heads/${t.branch}:${remoteHead}`, 'origin', '--delete', t.branch);
-      remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`;
-    }
-  }
+  if (remoteHead) remote = `; ${deleteOnOrigin(t.branch, remoteHead) ?? `${t.branch} deleted on origin`}`;
   q('set', t.key, ...doneOnPr(pr.number, { summary: `its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}` }));
   report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, and merged PR #${pr.number} (${pr.title}) names it: recorded done on that PR, worktree and branch dropped${remote}`);
   return true;
@@ -4454,9 +4454,10 @@ function spawnCloud(t, pick) {
   const name = cloudName(GH_REPO, t.key);
   // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
   const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
+  const shots = shotsRef(t.branch, started);
   const prompt = f ? cloudFixPrompt({ key: t.key, repo: GH_REPO, pr: f.pr, branch: t.branch, fix: f, rules: cloudRules(), text })
     : cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview(),
-      env: cloudEnvRow, needs, setup: cloudEnvRow ? cloudSetupRows() : null });
+      env: cloudEnvRow, needs, setup: cloudEnvRow ? cloudSetupRows() : null, shots });
   const s = startCloud(prompt, { name, env, cwd: MAIN });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
@@ -4465,9 +4466,10 @@ function spawnCloud(t, pick) {
   }
   // config_dir is kept so the retry follow-up (advanceCloud) reaches the session on the same login.
   // `shots` is the ref a first session's prompt told it to push its screenshots to, which advanceCloud
-  // fetches. A fix try's prompt names none.
+  // fetches (a fix try's prompt names none), and `env` the environment it was told to check it runs in,
+  // which a stall report names.
   q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started, ...onPr, login: { name: login.name, email, config_dir: login.configDir ?? null },
-    ...(!f && cloudEnvRow && needs?.browser ? { shots: shotsRef(t.branch) } : {}) })}`, ...fixStarted(t));
+    ...(!f && cloudEnvRow ? { env: cloudEnvRow.name } : {}), ...(!f && cloudEnvRow && needs?.browser ? { shots } : {}) })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   refreshDelivered(t, refreshed);
   report.spawned.push(`${t.key} in a cloud session on ${who}: ${s.url}${f ? ` (${tryLabel(f)} on PR #${f.pr}, its own session gone)` : ''}${refreshed.line}`);
