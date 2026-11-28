@@ -257,6 +257,11 @@ export function cloudSetupRows() {
 // §4 Database URL variable's names, without the directory an item may name (`apps/portal: DATABASE_URL`).
 export const dbVarNames = () => [...new Set(rowItems('db-url-var').map((v) => parseCommandItem(v).cmd))];
 
+// A cloud prompt's first step where config §3b "Cloud environment" is set (`env`, parseCloudEnv): the
+// session checks it runs there, and stops with "wrong cloud environment" if not. [] with no row.
+const envCheck = (env) => (env ? [`Before anything else, check you are in the \`${env.name}\` cloud environment: run \`printenv ${CLOUD_ENV_VAR}\`. ` +
+  `If it does not print exactly \`${env.name}\`, stop there: change nothing, push nothing, open no PR, and end with the line \`wrong cloud environment: <what it printed, or none>\`.`, ''] : []);
+
 // The cloud session's whole brief: it reads nothing from this computer. `review` is set where the session
 // has desk-review (deskReviewEnabled), and adds reviewSteps; null leaves the brief as it was. `env` is
 // config §3b "Cloud environment" (parseCloudEnv), or null; with one, the session first checks it runs
@@ -266,8 +271,7 @@ export function cloudPrompt({ key, repo, base, branch, text, tests, rules, revie
   return [
     `Work ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.`,
     '',
-    ...(env ? [`Before anything else, check you are in the \`${env.name}\` cloud environment: run \`printenv ${CLOUD_ENV_VAR}\`. ` +
-      `If it does not print exactly \`${env.name}\`, stop there: change nothing, push nothing, open no PR, and end with the line \`wrong cloud environment: <what it printed, or none>\`.`, ''] : []),
+    ...envCheck(env),
     `1. Do the smallest change that meets the ticket's acceptance criteria below. ${run}`,
     // A change that branches on a value it never read the source of is the P0 a local review then finds.
     '2. Before you push: where your change branches on a value an API or server state sets (a status, flag, enum or role read from a response or a stored record), read where that value is set, the endpoint, handler or service that assigns it, and check your branch against every value it can set, not only the one the ticket names. If that source is not in this repository, say so in the PR body as a premise: which value, and why it could not be read.',
@@ -543,15 +547,19 @@ export function cloudFixMsg({ pr, branch, fix, rules }) {
 }
 
 // A new session's whole brief for a fix try on PR #`pr`, whose own session is gone: the fix, and the
-// ticket's text for what the PR is for.
-export function cloudFixPrompt({ key, repo, pr, branch, fix, rules, text }) {
+// ticket's text for what the PR is for. `env`, `needs` and `setup` are cloudPrompt's: with config §3b
+// "Cloud environment" set, it first checks it runs there, and is told how to start the database and
+// services its ticket needs. Its PR has its screenshots already, so it is given no screenshot ref.
+export function cloudFixPrompt({ key, repo, pr, branch, fix, rules, text, env = null, needs = null, setup = null }) {
   return [
     `Work a fix try on PR #${pr} of ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in a PR comment. ` +
       `The PR is open on \`${branch}\`: check that branch out from origin and work on it.`,
     '',
+    ...envCheck(env),
     cloudFixMsg({ pr, branch, fix, rules }),
     '',
     'Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.',
+    ...(env ? servicesSection({ branch, needs: needs ? { ...needs, browser: false } : null, setup }) : []),
     '',
     `## The ticket`,
     '',

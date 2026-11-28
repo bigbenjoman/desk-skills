@@ -1172,7 +1172,8 @@ function cloudFixPr(t, c, where) {
   // Counted gone: queued again with the try kept, so the next pass routes it to a new cloud session, or
   // a local worker as placement says.
   const done = abandonCloud(t, null, ['state=triaged', `result.pr=${f.pr}`]);
-  report.stalled.push(`${t.key}: its ${label} out to cloud session ${where} has no push to PR #${f.pr} in ${wallTime(waited)}, past the ${wallTime(CLOUD_FIX_WAIT_MS)} a sent fix is given, so ${done}. The next pass starts the try in a new cloud session, or a local worker where placement says local`);
+  const outside = c.env ? ` (if it ends "wrong cloud environment", it started outside cloud environment ${c.env}: set the claude.ai/code environment selector to Auto)` : '';
+  report.stalled.push(`${t.key}: its ${label} out to cloud session ${where} has no push to PR #${f.pr} in ${wallTime(waited)}${outside}, past the ${wallTime(CLOUD_FIX_WAIT_MS)} a sent fix is given, so ${done}. The next pass starts the try in a new cloud session, or a local worker where placement says local`);
   return null;
 }
 
@@ -4460,9 +4461,10 @@ function spawnCloud(t, pick) {
   // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
   const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
   const shots = shotsRef(t.branch, started);
-  const prompt = f ? cloudFixPrompt({ key: t.key, repo: GH_REPO, pr: f.pr, branch: t.branch, fix: f, rules: cloudRules(), text })
+  const setup = cloudEnvRow ? cloudSetupRows() : null;
+  const prompt = f ? cloudFixPrompt({ key: t.key, repo: GH_REPO, pr: f.pr, branch: t.branch, fix: f, rules: cloudRules(), text, env: cloudEnvRow, needs, setup })
     : cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview(),
-      env: cloudEnvRow, needs, setup: cloudEnvRow ? cloudSetupRows() : null, shots });
+      env: cloudEnvRow, needs, setup, shots });
   const s = startCloud(prompt, { name, env, cwd: MAIN });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
@@ -4474,7 +4476,7 @@ function spawnCloud(t, pick) {
   // fetches (a fix try's prompt names none), and `env` the environment it was told to check it runs in,
   // which a stall report names.
   q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started, ...onPr, login: { name: login.name, email, config_dir: login.configDir ?? null },
-    ...(!f && cloudEnvRow ? { env: cloudEnvRow.name } : {}), ...(!f && cloudEnvRow && needs?.browser ? { shots } : {}) })}`, ...fixStarted(t));
+    ...(cloudEnvRow ? { env: cloudEnvRow.name } : {}), ...(!f && cloudEnvRow && needs?.browser ? { shots } : {}) })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   refreshDelivered(t, refreshed);
   report.spawned.push(`${t.key} in a cloud session on ${who}: ${s.url}${f ? ` (${tryLabel(f)} on PR #${f.pr}, its own session gone)` : ''}${refreshed.line}`);

@@ -494,6 +494,13 @@ const fb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind
 t('issue-1552 AC1 a feedback try lists its threads and body findings apart', fb.includes('Its unresolved review threads:\n\n- rename it') && fb.includes('Findings in the review body:\n\n- add a test'), true);
 const fp = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: '# CW-3\n\nAC1: it saves.' });
 t('issue-1552 AC2 a new session for the try works the PR branch, with the fix and the ticket', fp.startsWith('Work a fix try on PR #40 of ticket CW-3 in acme/widgets') && fp.includes('check that branch out from origin') && fp.includes('- Lint') && fp.includes('AC1: it saves.'), true);
+const fpEnv = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: 'T', env: widgets,
+  needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup });
+t('issue-1550 AC6 a fix try\'s new session checks the environment first, and stops naming the wrong one',
+  fpEnv.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && fpEnv.indexOf(`printenv ${CLOUD_ENV_VAR}`) < fpEnv.indexOf('desk has a fix try') && fpEnv.includes('`wrong cloud environment: <what it printed, or none>`'), true);
+t('issue-1550 AC2 a fix try\'s new session starts the database and services, and is given no screenshot ref',
+  fpEnv.includes('service postgresql start') && fpEnv.includes('docker compose up -d redis') && !fpEnv.includes('desk-shots/') && !fpEnv.includes('_drag'), true);
+t('issue-1550 AC3 with no environment the fix try prompt is as before', fp.includes(CLOUD_ENV_VAR) || fp.includes('What this ticket needs'), false);
 const onPr = (more = {}) => ({ key: 'A', location: 'cloud', result: { pr: 40 }, fix: { ...checksFix }, cloud: { session: 'session_x', pr_at: '2026-11-20T10:00:00Z' }, ...more });
 t('issue-1552 AC1 a fix try on a cloud PR with a live session is sent to it', cloudFixRoute(onPr()), 'send');
 t('issue-1552 AC2 one whose session is recorded abandoned goes to a new session', cloudFixRoute(onPr({ cloud: { session: 'session_x', pr_at: 'x', abandoned_at: 'y' } })), 'new');
