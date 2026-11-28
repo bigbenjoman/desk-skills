@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt, cloudNeeds, cloudSetup, envFileNames, shotsRef, CLOUD_ENV_VAR } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt, cloudNeeds, shotsRef, CLOUD_ENV_VAR } from '../desk/bin/cloud-worker.mjs';
 import { cloudFixRoute, runsInCloud, fixInCloud, cloudArchiveWait } from '../desk/bin/pass/shared.mjs';
 import { parseCloudEnv } from '../desk/bin/config-schema.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
@@ -131,14 +131,6 @@ const plain = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', te
 t('issue-1550 AC2 a ticket that needs none of them gets the check but no services section', plain.includes(CLOUD_ENV_VAR) && !plain.includes('What this ticket needs in your environment'), true);
 t('issue-1550 AC6 the retry follow-up keeps a session stopped in the wrong environment stopped', CLOUD_RETRY_MSG.includes('stay stopped'), true);
 t('issue-1550 AC3 with no environment the prompt is as before', prompt.includes(CLOUD_ENV_VAR) || prompt.includes('desk-shots/'), false);
-
-// ---- issue-1550: what /desk-setup proposes (AC5) --------------------------------
-const proposed = cloudSetup({ env: widgets, install: ['pnpm install --frozen-lockfile', 'apps/api: uv sync'], dbVars: ['DATABASE_URL'], envNames: envFileNames('# c\nDATABASE_URL=postgres://secret\nexport CLERK_SECRET_KEY="sk_live_x"\nNOT A VAR\n') });
-t('issue-1550 AC5 the setup script runs §4 Install, each item in its directory', proposed.script.includes('pnpm install --frozen-lockfile || true') && proposed.script.includes('(cd apps/api && uv sync) || true'), true);
-t('issue-1550 AC5 the variables are the environment\'s name, then names with no value', proposed.vars.join(' '), `${CLOUD_ENV_VAR}=widgets DATABASE_URL= CLERK_SECRET_KEY=`);
-t('issue-1550 AC5 no value from an env file is ever proposed', JSON.stringify(proposed).includes('secret') || JSON.stringify(proposed).includes('sk_live'), false);
-t('issue-1550 AC5 without db, the database variable is not proposed', cloudSetup({ env: parseCloudEnv('w: browser'), dbVars: ['DATABASE_URL'] }).vars.join(' '), `${CLOUD_ENV_VAR}=w`);
-
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
 const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
 const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'b', text: 'T', tests: [], rules });

@@ -12,16 +12,11 @@
 // Nothing gives a cloud session an effort: no recording or doc shows `claude --cloud` passing --effort
 // on, and local settings do not reach the session. So with the effort lever on, which promises each
 // session an effort config names, no ticket runs in the cloud (CLOUD_NO_EFFORT).
-//
-//   node cloud-worker.mjs setup   run in the repo: what /desk-setup proposes for config §3b "Cloud
-//                                 environment", as JSON { env, script, vars } (cloudSetup), or
-//                                 { env: null } with the row unset
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { repoStateOf, cloudEnvironment, configValues, isNone, repoRoot } from './desk-env.mjs';
+import { repoStateOf, configValues, isNone } from './desk-env.mjs';
 import { parseCommandItem, parseServicePort } from './config-schema.mjs';
 import { FAILED } from './gate.mjs';
 import { FIRST_RUN } from './logins.mjs';
@@ -251,22 +246,6 @@ function servicesSection({ branch, base, needs, setup, shots }) {
   return lines.length ? ['', '## What this ticket needs in your environment', '', ...lines] : [];
 }
 
-// What /desk-setup proposes for the person to paste into the environment's settings in claude.ai/code:
-// a setup script running §4 Install (it runs as root before each new session, without the variables,
-// and must exit 0), and the variables: CLOUD_ENV_VAR with the environment's name, the one value desk
-// writes, then every other name with no value, for the person to fill in: §4 Database URL variable
-// where the environment provides the database, and `envNames`, the names §4 Env files hold.
-//   -> { script, vars: ['NAME=value' | 'NAME='] }
-export function cloudSetup({ env, install = [], dbVars = [], envNames = [] }) {
-  const script = ['#!/bin/bash', `# The ${env.name} cloud environment: runs as root before each new session, without its variables.`,
-    ...install.map((i) => { const { dir, cmd } = parseCommandItem(i); return `${dir === '.' ? cmd : `(cd ${dir} && ${cmd})`} || true`; })];
-  const names = [...new Set([...(env.db ? dbVars : []), ...envNames])].filter((n) => n !== CLOUD_ENV_VAR);
-  return { script: script.join('\n'), vars: [`${CLOUD_ENV_VAR}=${env.name}`, ...names.map((n) => `${n}=`)] };
-}
-
-// The variable names in an env file's text, never their values.
-export const envFileNames = (text) => [...String(text ?? '').matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map((m) => m[1]);
-
 // A §4 list row's items, [] where it is unset or `none`.
 const rowItems = (id) => [].concat(configValues(id) ?? []).map((v) => String(v).trim()).filter((v) => v && !isNone(v));
 
@@ -276,7 +255,7 @@ export function cloudSetupRows() {
 }
 
 // §4 Database URL variable's names, without the directory an item may name (`apps/portal: DATABASE_URL`).
-const dbVarNames = () => [...new Set(rowItems('db-url-var').map((v) => parseCommandItem(v).cmd))];
+export const dbVarNames = () => [...new Set(rowItems('db-url-var').map((v) => parseCommandItem(v).cmd))];
 
 // The cloud session's whole brief: it reads nothing from this computer. `review` is set where the session
 // has desk-review (deskReviewEnabled), and adds reviewSteps; null leaves the brief as it was. `env` is
@@ -652,25 +631,4 @@ export function finishedCloud(tickets, archived, done = new Set(), pending = [])
   const seen = new Set(done);
   return [...rows, ...pending].filter((d) => !seen.has(d.session) && seen.add(d.session))
     .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
-}
-
-// `setup`: cloudSetup for this repo's config, the variable names read from §4 Env files in the main
-// checkout (a file missing there names none).
-function setupCli() {
-  const env = cloudEnvironment();
-  if (!env) return { env: null };
-  const root = repoRoot();
-  const envNames = rowItems('env-files').flatMap((f) => { try { return envFileNames(readFileSync(join(root, f), 'utf8')); } catch { return []; } });
-  return { env, ...cloudSetup({ env, install: rowItems('install-cmd'), dbVars: dbVarNames(), envNames }) };
-}
-
-const isMain = (() => {
-  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
-  catch { return false; }
-})();
-if (isMain) {
-  const [cmd] = process.argv.slice(2);
-  if (cmd !== 'setup') { console.error('usage: node cloud-worker.mjs setup'); process.exit(2); }
-  try { console.log(JSON.stringify(setupCli(), null, 2)); }
-  catch (e) { console.error(e.message); process.exit(1); }
 }

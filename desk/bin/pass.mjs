@@ -1125,9 +1125,14 @@ function advanceCloud(t) {
   const shots = c.shots ? fetchCloudShots(t, c.shots) : null;
   if (shots?.wait) { report.waiting.push(`${t.key}: cloud PR #${pr.number} is finished, but ${shots.wait}; read again next pass`); return; }
   if (shots?.n) report.advanced.push(`${t.key}: ${shots.n} screenshot(s) from ${c.shots} copied into ${shots.dir}, for the undraft step to upload into PR #${pr.number}${shots.left ? `; ${shots.left}` : ''}`);
+  // Where config §3 pr-images leaves uploads to the person, they are asked as for a local worker's
+  // screenshots (pass/advance.mjs), and the undraft step holds the PR on that ask (undraft.mjs).
+  const ask = shots?.n > 0 && uploadPerm !== 'yes' && !process.env.DESK_UPLOAD_APPROVED;
+  if (ask) report.waiting.push(`${t.key}: screenshots for PR #${pr.number} are in ${shots.dir} — config §3 ${UPLOAD_GRANT.key} is "${UPLOAD_GRANT.perm}". ` +
+    `Ask, then: DESK_UPLOAD_APPROVED=1 node ${UPLOAD_GRANT.command} ${pr.number} ${shots.dir}`);
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
-    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
+    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due', ...(ask ? ['images_reported=true'] : []));
   report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
 }
 

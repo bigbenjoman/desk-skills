@@ -75,14 +75,14 @@ is asked for its §4 Test sign-in item where it has none (step 1, *Test sign-in*
 
 **Where §3b Cloud environment names an environment** (the core's §3b calls ask it as the template
 row reads; Recommended `none` keeps every ticket that renders, needs a database or names a local
-service on this computer), run `node ~/.claude/desk/bin/cloud-worker.mjs setup` in the repo and show
-what it prints for the person to paste into that environment's settings in claude.ai/code: `script`
-as its setup script, and each of `vars` as a variable. `DESK_CLOUD_ENV` carries its value already.
-Every other name is printed without a value, and the person fills those in: never write or ask for a
-value yourself. Then say two things. First, `claude --cloud` cannot name a hosted environment, so
-they should set the environment selector in claude.ai/code to Auto, which picks by repository.
-Second, each session first checks `DESK_CLOUD_ENV` and stops with `wrong cloud environment: <name>`
-if it started anywhere else.
+service on this computer), take the person through step 1's *Cloud environment* flow
+(`step-1-cloud-env.md`) for that environment, if they have not just done it: `cloud-env.mjs script`
+is its setup script, and `cloud-env.mjs hosts` its variables. Its `SET` line, `DESK_CLOUD_ENV`,
+carries its value already. Every `VARS` name is printed without a value, and the person fills those
+in: never write or ask for a value yourself. Then say two things. First, `claude --cloud` cannot name
+a hosted environment, so they should set the environment selector in claude.ai/code to Auto, which
+picks by repository. Second, each session first checks `DESK_CLOUD_ENV` and stops with
+`wrong cloud environment: <name>` if it started anywhere else.
 
 **Then offer the instruction-file audit**, `/desk-cleanup instructions`: it measures everything a
 session in this repo loads at launch (the `CLAUDE.md` and `AGENTS.md` chain, rules, `MEMORY.md`,

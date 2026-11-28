@@ -5,16 +5,19 @@
 //   cloud-env.mjs script [--write]   the repo's setup script, from what the checkout holds; --write also
 //                                    writes it to cloud-setup.sh in the repo config's folder
 //   cloud-env.mjs hosts              the hosts the repo's env files point at, and the variable names
-//                                    (never values) the dev server and tests read
+//                                    (never values) the dev server and tests read, with §4 Database URL
+//                                    variable's where config §3b "Cloud environment" provides `db`, and
+//                                    the one value desk writes, DESK_CLOUD_ENV, where that row is set
 //   cloud-env.mjs first-start        the first `claude --cloud` start, under the repo's Subscription login
 //   cloud-env.mjs smoke [--timeout <minutes>]
 //                                    the cloud smoke, also `node ~/.claude/desk/bin/cloud-smoke.mjs`: a
 //                                    smoke session under that login, its results read from a scratch
 //                                    branch that is then deleted; exit 0 only when every check passed
 //
-// The script is repo-agnostic: one environment serves every desk repo (`claude --cloud` reuses the
-// last-used environment, not one matched to the repo), so each repo's part is a block between guard
-// lines, self-contained, and several repos' blocks are joined one after another. A block finds its
+// The script is repo-agnostic: `claude --cloud` cannot name a hosted environment, so the person sets the
+// claude.ai/code environment selector to Auto (it picks by repository), and one environment may still
+// serve several desk repos. So each repo's part is a block between guard lines, self-contained, and
+// several repos' blocks are joined one after another. A block finds its
 // checkout by searching for a clone whose origin names the repo: the setup script does not run in the
 // checkout, and CLAUDE_PROJECT_DIR does not point at it. Toolchains are installed directly (n, the bun
 // installer, uv), not through mise, which did not install the pins in the container. Each step is
@@ -26,6 +29,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { lockfileManager } from './test-scope.mjs';
+import { CLOUD_ENV_VAR } from './cloud-worker.mjs';
 
 export const REGISTRY_MIRROR = 'https://mirror.gcr.io';
 export const SMOKE_FILE = '.desk-cloud-smoke.json';
@@ -259,6 +263,16 @@ export function envHosts(texts) {
   };
 }
 
+// The variables to set in the environment, from envHosts' `names`: those, with §4 Database URL variable's
+// `dbVars` where config §3b "Cloud environment" (`env`, parseCloudEnv, or null) provides `db`, sorted and
+// never CLOUD_ENV_VAR; and `set`, `CLOUD_ENV_VAR=<its name>`, the one value desk writes, which each
+// cloud prompt's first step checks, or null with the row unset.
+//   -> { names: [name], set: string | null }
+export function cloudEnvVars({ names = [], env = null, dbVars = [] }) {
+  const all = [...new Set([...names, ...(env?.db ? dbVars : [])])].filter((n) => n !== CLOUD_ENV_VAR).sort();
+  return { names: all, set: env ? `${CLOUD_ENV_VAR}=${env.name}` : null };
+}
+
 // ---- the smoke session --------------------------------------------------------------------------
 // The checks to ask for, each with what the session is to do, from the config rows (null or [] where a
 // row is unset or `none`) and the detected toolchain. A check whose row is unset is not asked.
@@ -343,9 +357,13 @@ async function main(cmd, args) {
   if (cmd === 'hosts') {
     const { E, root } = await repoContext();
     const files = envFilesOf(root, rowValues(E, 'env-files'));
-    const { names, hosts } = envHosts(Object.fromEntries(files.map((f) => [f, readText(join(root, f))])));
+    const found = envHosts(Object.fromEntries(files.map((f) => [f, readText(join(root, f))])));
+    const W = await import('./cloud-worker.mjs');
+    const or = (fn, none) => { try { return fn(); } catch { return none; } };
+    const { names, set } = cloudEnvVars({ names: found.names, env: or(() => E.cloudEnvironment(), null), dbVars: or(() => W.dbVarNames(), []) });
     console.log(`FILES ${files.length ? files.join(' ') : '(none found)'}`);
-    for (const h of hosts) console.log(`HOST ${h.host}\t${h.vars.join(' ')}`);
+    for (const h of found.hosts) console.log(`HOST ${h.host}\t${h.vars.join(' ')}`);
+    if (set) console.log(`SET ${set}`);
     console.log(`VARS ${names.length ? names.join(' ') : '(none)'}`);
     console.log(`NOTE ${SHARED_VARS_NOTE}`);
     return 0;
