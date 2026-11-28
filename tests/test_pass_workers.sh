@@ -1124,7 +1124,10 @@ printf '#!/bin/sh\ncase "$*" in *"pr view 77 "*) echo "{\\"state\\":\\"OPEN\\",\
 q set H-20 draft_pr=77
 midhand H-20 7
 check "#1680 AC3 the first empty Stage 7 handoff resumes Stage 7, its briefing naming the open PR" '[ "$(field H-20 handoff_stuck)" = 1 ] && [ "$(spawned_for H-20 | tail -1 | grep -o "stage=[^ ]*")" = stage=7 ] && brief H-20 | grep -qF "Your PR #77 is open on this branch"'
+c20=$(field H-20 handoff_cost | tr -d '"')
 midhand H-20 7
+check "#1680 AC3 the review try keeps the ticket's cost so far, the handing-off session's included, through its spawn" 'awk -v a="$c20" -v b="$(field H-20 handoff_cost | tr -d "\"")" "BEGIN { exit !(a > 0 && b - a > 0.49 && b - a < 0.51) }"'
+c20=$(field H-20 handoff_cost | tr -d '"')
 check "#1680 AC3 the second sends PR #77's head to a review try, not a third Stage 7 session" 'echo "$out" | grep -qF "H-20 sent for PR #77 — review its head: its last 2 Stage 7 sessions handed off partway through on context" && [ "$(field H-20 fix.kind)" = "\"rereview\"" ] && [ "$(field H-20 handoff)" = null ] && [ "$(spawned_for H-20 | wc -l | tr -d " ")" = 3 ] && [ "$(spawned_for H-20 | tail -1 | grep -o "stage=[^ ]*")" = stage= ]'
 q set H-20 fix.then=8
 hlog H-20 "AUTOPILOT_DONE: pr=77 jira=none"
@@ -1132,7 +1135,14 @@ out=$(node "$B/pass.mjs" 2>&1)
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
 check "#1680 AC3 once the review try finishes, a Stage 8 session follows it rather than the ticket being done" 'echo "$out" | grep -qF "its review try on PR #77 is finished, and a fresh session from Stage 8 is queued for the tracker step" && [ "$(spawned_for H-20 | tail -1 | grep -o "stage=[^ ]*")" = stage=8 ] && [ "$(field H-20 fix.finished)" != null ] && [ "$(field H-20 result.pr)" = 77 ]'
 check "#1680 AC3 its briefing starts it at Stage 8, with nothing left over from Stage 7" 'brief H-20 | grep -qF "## Handoff: this session starts at Stage 8" && ! brief H-20 | grep -qF "Left of Stage" && ! brief H-20 | grep -qF "### Before any review round"'
+check "#1680 AC3 and the try's cost adds to the ticket's, not in place of it" 'awk -v a="$c20" -v b="$(field H-20 handoff_cost | tr -d "\"")" "BEGIN { exit !(b - a > 0.49 && b - a < 0.51) }"'
 q set H-20 state=done
+# With no PR to review, two empty Stage 7 handoffs stop Stage 7 all the same: a park, not a third session.
+handing H-21; hfile H-21 7 "typecheck: pass"; hlog H-21 "$(printf 'AUTOPILOT_STAGE: 6/9 hygiene\nAUTOPILOT_HANDOFF: 7')"
+out=$(node "$B/pass.mjs" 2>&1)
+midhand H-21 7; midhand H-21 7
+check "#1680 AC3 two empty Stage 7 handoffs with no PR park, naming why, and spawn no third session" '[ "$(field H-21 state)" = "\"parked\"" ] && field H-21 park.question | grep -qF "handed off partway through Stage 7 2 times in a row with no new commit and no review verdict posted, and it has no open PR" && [ "$(spawned_for H-21 | wc -l | tr -d " ")" = 2 ]'
+q set H-21 state=done
 
 # DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
 handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"

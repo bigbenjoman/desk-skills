@@ -525,11 +525,17 @@ t('#1680 AC3 one empty Stage 7 handoff resumes Stage 7 as before', emptySevenTry
 const e7 = emptySevenTry(tk(), { empties: 2, s: open7, head: HEAD, tracker: true });
 t('#1680 AC3 the second sends the PR head to a review try, not a Stage 7 session', `${e7?.call} ${e7?.fix.kind} ${e7?.fix.pr} ${e7?.fix.head === HEAD} ${e7?.fix.try}/${e7?.fix.of}`, 'requeue rereview 702 true 1/2');
 t('#1680 AC3 its try says why', e7?.fix.what, 'review its head: its last 2 Stage 7 sessions handed off partway through on context with no new commit and no review verdict posted at its head');
-t('#1680 AC3 and a Stage 8 session follows it for a tracker ticket', e7?.fix.then, '8');
-t('#1680 AC3 a ticket with no tracker has no Stage 8 to follow', 'then' in emptySevenTry(tk(), { empties: 2, s: open7, head: HEAD, tracker: false }).fix, false);
+t('#1680 AC3 and a Stage 8 session follows it for a tracker ticket', `${e7?.fix.then} ${e7?.fix.replaces}`, '8 7');
+const e7n = emptySevenTry(tk(), { empties: 2, s: open7, head: HEAD, tracker: false }).fix;
+t('#1680 AC3 a ticket with no tracker has no Stage 8 to follow, its try still replacing Stage 7', `${'then' in e7n} ${e7n.replaces}`, 'false 7');
 t('#1680 AC3 its brief and task are the review try\'s', fixBrief(tk({ fix: e7.fix })).includes('## Review try 1 of 2: PR #702') && fixTask(tk({ fix: e7.fix })).includes('change no code'), true);
-t('#1680 AC3 a PR head without the session\'s commits resumes Stage 7 instead', emptySevenTry(tk(), { empties: 2, s: { ...open7, head: 'b'.repeat(40) }, head: HEAD, tracker: true }), null);
-t('#1680 AC3 so does no open PR', [null, { ...open7, state: 'CLOSED' }].map((s) => emptySevenTry(tk(), { empties: 3, s, head: HEAD, tracker: true })).join(','), ',');
+const behind = { ...open7, head: 'b'.repeat(40) };
+t('#1680 AC3 a PR head the branch\'s commits lead to gets the try at the branch\'s head, which its spawn pushes', `${emptySevenTry(tk(), { empties: 2, s: behind, head: HEAD, ahead: true, tracker: true })?.fix.head === HEAD}`, 'true');
+const off7 = emptySevenTry(tk(), { empties: 2, s: behind, head: HEAD, tracker: true });
+t('#1680 AC3 a PR head off the branch\'s head stops Stage 7 with a park, not a third session', `${off7?.call} ${off7?.why}`, `park PR #702's head bbbbbbbbb is not on its branch's head ${HEAD.slice(0, 9)}`);
+t('#1680 AC3 so does no open PR', [null, { ...open7, state: 'CLOSED' }].map((s) => emptySevenTry(tk(), { empties: 3, s, head: HEAD, tracker: true })?.why).join(' | '),
+  'it has no open PR, so its commits were never pushed for review | it has no open PR, so its commits were never pushed for review');
+t('#1680 AC3 one empty handoff with no PR resumes Stage 7 as before', emptySevenTry(tk(), { empties: 1, s: null, head: HEAD, tracker: true }), null);
 t('#1680 AC3 two review tries spent at that head are stuck, for the person', emptySevenTry(tk({ fix_tries: rvTwice }), { empties: 2, s: open7, head: HEAD, tracker: true })?.call, 'stuck');
 
 // ---- DS-377: a head a merge from the base moved gets a review try of its own, outside the fix tries

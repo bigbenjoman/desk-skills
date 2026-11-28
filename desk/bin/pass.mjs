@@ -882,10 +882,17 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   const stuck = stageless && !posted ? (Number(t.handoff_stuck) || 0) + 1 : 0;
   // Stage 7 stops resuming in a session after EMPTY_SEVEN_MAX empty handoffs: its PR's head goes to a
   // review try, then a tracker ticket to a Stage 8 session (fix-tries.mjs emptySevenTry, thenStage).
-  const instead = stage === '7' && mid ? emptySevenTry(t, { empties: stuck, s: seven, head, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
-  if (instead?.call === 'stuck') return parkIt(`handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted, and PR #${seven.pr} has ${instead.why}. ${FROM_ZERO(t)}`);
+  // A PR head behind the worktree's is one its commits lead to: the try's spawn pushes them.
+  const ahead = Boolean(seven?.head && seven.head !== head && shOut('git', ['-C', t.worktree, 'merge-base', '--is-ancestor', seven.head, head]).ok);
+  const instead = stage === '7' && mid ? emptySevenTry(t, { empties: stuck, s: seven, head, ahead, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
+  const empty = `handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted`;
+  if (instead?.call === 'park') return parkIt(`${empty}, and ${instead.why}: there is no PR head for a review try to read. ${FROM_ZERO(t)}`);
+  if (instead?.call === 'stuck') return parkIt(`${empty}, and PR #${seven.pr} has ${instead.why}. ${FROM_ZERO(t)}`);
   if (instead) {
-    const fields = { state: 'triaged', handoff: null, handoff_stage: null, handoff_mid: null, handoff_repeats: null, handoff_stuck: null, handoff_head: null, ...(imgs ? { images_dir: imgs } : {}) };
+    // The ticket's cost so far, this session's included, is kept through the try's spawn (`replaces`).
+    const spent = /notional=\$([\d.]+)/.exec(h)?.[1];
+    const cost = spent || t.handoff_cost != null ? (Number(spent || 0) + (Number(t.handoff_cost) || 0)).toFixed(2) : null;
+    const fields = { state: 'triaged', handoff: null, handoff_stage: null, handoff_mid: null, handoff_repeats: null, handoff_stuck: null, handoff_head: null, handoff_cost: cost, ...(imgs ? { images_dir: imgs } : {}) };
     if (applyFix(t, seven.pr, head, instead, { requeue: false, fields, instead: `resuming Stage 7 after ${stuck} empty handoffs` }) === 'requeued') return undefined;
   }
   const ran = stuck >= STAGELESS_RAISE && t.handoff_pct == null ? sessionThreshold(E.deskHome(), t.session_id) ?? (Number(mid.threshold) || null) : null;
@@ -5431,7 +5438,8 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'handoff_head=null', 'handoff_stuck=null', 'handoff_pct=null', 'images_dir=null',
+    // A try sent in place of Stage 7 keeps the cost of the sessions before it (handedOff).
+    'handoff=null', 'handoff_stage=null', ...(t.fix?.replaces && !t.fix.finished ? [] : ['handoff_cost=null']), 'handoff_mid=null', 'handoff_repeats=null', 'handoff_head=null', 'handoff_stuck=null', 'handoff_pct=null', 'images_dir=null',
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.
