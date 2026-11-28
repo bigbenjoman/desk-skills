@@ -36,7 +36,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, readArchived, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, readArchived, readPending, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -4458,13 +4458,22 @@ function abandonCloud(t, why, sets = []) {
   const cloud = { ...rest, abandoned_at: at, ...(why ? { send_error: why } : {}) };
   q('set', t.key, `cloud=${JSON.stringify(cloud)}`, ...sets);
   t.cloud = cloud;
+  return listForArchive(t, at);
+}
+
+// Puts ticket `t`'s abandoned cloud session on the repo's finished-session list, where needs-you asks the
+// person to archive it (cloud-worker.mjs handOver, which keeps each session once). Run on every pass a fix
+// try waits on that session, so a hand-over that failed is tried again: the wait clears only once the
+// person archives it from that list. -> what was done, for the report
+function listForArchive(t, at = new Date().toISOString()) {
+  const c = t.cloud ?? {};
   const where = c.url ?? c.session ?? '(its session URL was not recorded)';
   if (!c.session || !c.url) return `its cloud session ${where} is recorded abandoned`;
   try {
-    handOver(STATE, [{ key: t.key, session: c.session, name: c.name ?? null, url: c.url, at }]);
+    if (!readPending(STATE).some((d) => d.session === c.session)) handOver(STATE, [{ key: t.key, session: c.session, name: c.name ?? null, url: c.url, at }]);
     return `its cloud session ${where} is recorded abandoned, and needs-you asks you to archive it`;
   } catch (e) {
-    return `its cloud session ${where} is recorded abandoned, but could not be put on needs-you's archive list (${e.message})`;
+    return `its cloud session ${where} is recorded abandoned, but could not be put on needs-you's archive list (${e.message}); the next pass tries again`;
   }
 }
 
@@ -5105,11 +5114,11 @@ const SPAWN_HANDLERS = {
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),
   // A fix try held until its cloud PR's session is archived: a live one is recorded abandoned and put on
-  // needs-you's archive list first (abandonCloud), so it is asked about once.
+  // needs-you's archive list (abandonCloud), and one already abandoned is put there if it is not yet.
   'cloud-archive-wait': (a, s) => {
-    if (!cloudSessionLive(s.t)) return 'its session is recorded abandoned, and needs-you asks you to archive it';
-    if (DRY) return 'its session would be recorded abandoned (dry run: nothing recorded)';
-    return abandonCloud(s.t, null);
+    const live = cloudSessionLive(s.t);
+    if (DRY) return live ? 'its session would be recorded abandoned (dry run: nothing recorded)' : 'its session is recorded abandoned (dry run: needs-you\'s archive list not checked)';
+    return live ? abandonCloud(s.t, null) : listForArchive(s.t);
   },
   start: () => {},
 };

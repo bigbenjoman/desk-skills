@@ -254,12 +254,19 @@ check "issue-1552 AC4 the try is the one it was, of the same count" '[ "$(field 
 # starts the try in a new cloud session on the PR's branch.
 rm -f "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-fixpr.json"; : > "$T/cloud-send-fail"
 q set CW-3 state=triaged stage=null result.pr=40 "$cw3_fix" "$cw3_cloud"
+# The archive list cannot be read as the send fails, so the session is not put on it yet.
+echo 'not json' > "$T/state-cl/cloud-archived.json"
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1552 AC2 a send that fails records the session abandoned and keeps the ticket queued" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ "$(field CW-3 cloud.abandoned_at)" != null ] && [ "$(field CW-3 cloud.fix)" = null ] && field CW-3 cloud.send_error | grep -q "does not support" && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 on PR #40 could not be sent to its cloud session"'
-rm -f "$T/cloud-send-fail" "$T/cloud-sent"
-# Comment AC: the old session may still push, so the new one waits, taking no slot, for it to be archived.
+check "issue-1552 comment AC an archive list that cannot be read is named, not taken for the session being on it" 'echo "$out" | grep -F "CW-3: its fix try 1 of 2 on PR #40 could not be sent" | grep -qF "could not be put on needs-you'"'"'s archive list"'
+rm -f "$T/cloud-send-fail" "$T/cloud-sent" "$T/state-cl/cloud-archived.json"
+# Comment AC: the old session may still push, so the new one waits, taking no slot, for it to be archived;
+# the wait puts the session on needs-you's archive list, which the failed hand-over left it off.
 out=$(node "$B/pass.mjs" 2>&1)
-check "issue-1552 comment AC a new session for the try waits until the abandoned one is archived" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -F "CW-3: its fix try on PR #40 writes to the PR" | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj may still push to: its session is recorded abandoned, and needs-you asks you to archive it. It starts once that session is archived"'
+check "issue-1552 comment AC a new session for the try waits until the abandoned one is archived" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -F "CW-3: its fix try on PR #40 writes to the PR" | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj may still push to: its cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj is recorded abandoned, and needs-you asks you to archive it. It starts once that session is archived"'
+check "issue-1552 comment AC the waiting pass puts the abandoned session on needs-you's archive list once it can" 'jq -e ".pending | map(.session) == [\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"]" "$T/state-cl/cloud-archived.json" >/dev/null'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 comment AC a later waiting pass lists it once, not again" 'jq -e ".pending | length == 1" "$T/state-cl/cloud-archived.json" >/dev/null && [ "$(field CW-3 state)" = "\"triaged\"" ]'
 echo '{"sessions":["session_01Vy49H7Z4T3CSgAhSxsuhqj"]}' > "$T/state-cl/cloud-archived.json"
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1552 AC2 once archived, the next pass starts the try in a new cloud session on the PR's branch" '[ "$(field CW-3 state)" = "\"running\"" ] && grep -qF "Work a fix try on PR #40 of ticket CW-3" "$T/cloud-prompt" && grep -qF "feat/CW-3" "$T/cloud-prompt" && [ "$(field CW-3 cloud.fix.pr)" = 40 ] && [ "$(field CW-3 cloud.pr_at)" = "\"2026-11-20T10:00:00Z\"" ] && [ "$(field CW-3 cloud.abandoned_at)" = null ] && [ ! -e "$T/cloud-sent" ]'
