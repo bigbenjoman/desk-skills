@@ -2457,7 +2457,10 @@ function claudeSide(repos, now, subs) {
   if (!login) return null;
   const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login, now });
   const on = (s) => s.source === 'default' || s.login?.dir === login.dir;
-  return { login, name: loginLabel(login), reading, n: claudeLogins().length, pinned: [...bySlug.values()].filter((s) => !on(s)).length, bySlug,
+  // Every other Claude login with a reading of its own, whatever its rule: its own figures and resets.
+  const others = claudeLogins().filter((l) => l.dir !== login.dir).map((l) => ({ login: l, name: loginLabel(l), reading: readUsage({ dirs: stateDirs({ self: usageDir() }), login: l, now }),
+    running: runningOn(repos, l) })).filter((x) => x.reading.at != null);
+  return { login, name: loginLabel(login), reading, others, n: claudeLogins().length, pinned: [...bySlug.values()].filter((s) => !on(s)).length, bySlug,
     follows: (slug) => !bySlug.has(slug) || on(bySlug.get(slug)),
     limit: limitOf({ out: holdOut(repos, login, now), reading }, now) };
 }
@@ -2511,20 +2514,25 @@ export function usageLine({ reading, running, held, heldBy }, { now, solid = fal
 // many repos are pinned elsewhere. The Codex line has no "as of" or pace note: its reading changes only
 // when Codex is used, which logs anew. The names take the longest one's width, so the two lines' bars
 // line up. Weekly pace is judged on desk-q's own login (usageOf), which need not be the one named, so a
-// hold is the note alone.
-function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, heldBy = [], running = null } = {}) {
+// hold is the note alone. Below the Claude default, a line for each other Claude login with a reading
+// (claudeSide's `others`), with its own figures and resets, its old reading's time while no worker runs
+// on it, and no "│ default".
+function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, heldBy = [], running = null } = {}, isDefault = true) {
   const r = s.reading;
   const segs = [[pad(tool, 8), GREY], [`${s.name.padEnd(nameW)}  `, null]];
   if (r?.at == null) segs.push(['no reading yet', GREY]);
   else segs.push(...barSegs(r, false, now, solid));
-  segs.push([`  │ default${s.pinned ? ` · ${s.pinned} repo${s.pinned === 1 ? '' : 's'} pinned` : ''}`, GREY]);
+  if (isDefault) segs.push([`  │ default${s.pinned ? ` · ${s.pinned} repo${s.pinned === 1 ? '' : 's'} pinned` : ''}`, GREY]);
   segs.push(...tailSegs(r, { running, held, heldBy }, now));
   return segLine(segs.filter(([x]) => x));
 }
 export function usageLines(u, opts) {
   const l = u.logins;
-  const o = { ...opts, nameW: Math.max(0, ...[l?.claude, l?.codex].map((s) => s?.name.length ?? 0)) };
-  return [l?.claude ? loginLine('Claude', l.claude, o, u) : usageLine(u, opts), ...(l?.codex ? [loginLine('Codex', l.codex, o)] : [])];
+  const others = l?.claude?.others ?? [];
+  const o = { ...opts, nameW: Math.max(0, ...[l?.claude, ...others, l?.codex].map((s) => s?.name.length ?? 0)) };
+  return [l?.claude ? loginLine('Claude', l.claude, o, u) : usageLine(u, opts),
+    ...others.map((x) => loginLine('', x, o, { running: x.running }, false)),
+    ...(l?.codex ? [loginLine('Codex', l.codex, o)] : [])];
 }
 
 // The Claude default at its limit `l` ({ type, at }, from limitOf): which limit, until when, and that its
