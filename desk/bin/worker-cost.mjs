@@ -6,7 +6,7 @@
 import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
-import { cloudWall, CLOUD_COST_UNKNOWN } from './cloud-worker.mjs';
+import { cloudWall, ranInCloud, CLOUD_COST_UNKNOWN } from './cloud-worker.mjs';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { NO_EFFORT } from './desk-env.mjs';
@@ -248,8 +248,8 @@ export const logRound = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.
 // usage the row's usage, with the cloud session kept first (`cloud: true`, no cost).
 export function ticketCost(stateDir, ticket) {
   const local = localCost(stateDir, ticket);
-  // A ticket moved local after its session went idle (location=local, issue-1689) keeps that session's row.
-  if (!(['cloud', 'local'].includes(ticket.location) && ticket.cloud)) return local;
+  // A ticket moved local after its session went idle keeps that session's row, pinned or not (ranInCloud).
+  if (!(ranInCloud(ticket) && ticket.cloud)) return local;
   const session = { starts: [startFields({})], cost: null, cloud: true };
   const cloud = { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) };
   if (!local) {

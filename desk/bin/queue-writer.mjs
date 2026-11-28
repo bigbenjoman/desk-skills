@@ -114,13 +114,17 @@ export function applySet(t, pairs, now = new Date().toISOString()) {
   });
   const held = blockersOf(t).length > 0, bare = bareHold(t);
   // A ticket running in a cloud session is watched only while its location reads cloud (pass/shared.mjs
-  // runsInCloud): pinned local while it still runs there, no pass reads its PR, stop finds no session
-  // and requeue refuses it, so it stays running for good. It is stopped first. A write that moves it
-  // off running in the same set (the pass's own move, pass.mjs cloudUnfinished) is let through.
+  // runsInCloud): pinned local, or unpinned (location=auto, stored as none), while it still runs there,
+  // no pass reads its PR, stop finds no session and requeue refuses it, so it stays running for good. It
+  // is stopped first. A write that moves it off running in the same set (the pass's own move, pass.mjs
+  // cloudUnfinished) is let through. Running in a cloud session is what queue.mjs stop reads as one: a
+  // local worker started on a ticket triage placed in the cloud records its session id first, and the
+  // pass's place handler then unpins it (location=auto), which is no cloud session to strand.
   const loc = sets.find(([k]) => k === 'location');
   const state = sets.findLast(([k]) => k === 'state')?.[1] ?? t.state;
-  if (loc?.[1] === 'local' && t.state === 'running' && t.location === 'cloud' && state === 'running') {
-    throw new Error(`${t.key ?? 'this ticket'} is running in a cloud session, so it cannot be pinned local while it runs there: queue.mjs stop ${t.key ?? '<KEY>'} first (it records the session abandoned), then pin it and requeue it. Nothing written.`);
+  const inCloudSession = t.state === 'running' && t.location === 'cloud' && t.cloud && !t.session_id;
+  if (loc && loc[1] !== 'cloud' && inCloudSession && state === 'running') {
+    throw new Error(`${t.key ?? 'this ticket'} is running in a cloud session, so its location cannot be changed while it runs there (location=${loc[1] ?? 'auto'}): queue.mjs stop ${t.key ?? '<KEY>'} first (it records the session abandoned), then pin it and requeue it. Nothing written.`);
   }
   for (const [k, v] of sets) setPath(t, k, v);
   t.updated_at = now;

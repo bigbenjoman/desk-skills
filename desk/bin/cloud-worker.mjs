@@ -288,6 +288,11 @@ export function findCloudPr(prs, { key, branch, since }) {
 // A cloud session's display name: one per ticket, as a local worker's (spawn-worker.sh).
 export const cloudName = (ghRepo, key) => `${String(ghRepo ?? '').split('/').pop()}-ticket-${key}`;
 
+// A ticket whose `cloud` record is a session that ran for it: one placed in the cloud, or one the pass
+// moved to this computer after that session went idle (cloud.moved_local_at, pass.mjs cloudUnfinished),
+// whatever its pin says since: location=local, or none once location=auto clears it (issue-1689).
+export const ranInCloud = (t) => t?.location === 'cloud' || t?.cloud?.moved_local_at != null;
+
 // A cloud ticket's cost, wherever it is shown: Claude Code reports no tokens or cost for a cloud
 // session, and no OpenTelemetry collector is set up to read them, so it is named unknown with its
 // session URL beside it, never left out and never $0.
@@ -550,8 +555,8 @@ export function finishedCloud(tickets, archived, done = new Set(), pending = [])
   const rows = [
     ...Object.values(tickets ?? {}).filter((t) => t?.state === 'done' && t.merged_at),
     ...Object.values(archived ?? {}),
-  // A ticket moved local after its session went idle (location=local, issue-1689) keeps that session.
-  ].filter((t) => ['cloud', 'local'].includes(t?.location) && t.cloud?.session && t.cloud.url)
+  // A ticket moved local after its session went idle keeps that session, pinned or not (ranInCloud).
+  ].filter((t) => ranInCloud(t) && t.cloud?.session && t.cloud.url)
     .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }));
   const seen = new Set(done);
   return [...rows, ...pending].filter((d) => !seen.has(d.session) && seen.add(d.session))

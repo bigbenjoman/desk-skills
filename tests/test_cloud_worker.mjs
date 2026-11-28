@@ -434,6 +434,10 @@ const archived = { E: { key: 'E', state: 'done', location: 'cloud', merged_at: '
 t('finished: merged live cloud tickets and archived ones with a session, oldest first',
   finishedCloud(live, archived).map((d) => `${d.key}:${d.name ?? '-'}`).join(), 'E:-,A:w-ticket-A');
 t('finished: a session recorded archived is left out', finishedCloud(live, archived, new Set(['session_e'])).map((d) => d.key).join(), 'A');
+const moved = (location) => ({ key: 'M', state: 'done', location, merged_at: '2026-11-03T10:00:00Z', cloud: cs('m', { pr_at: '2026-11-02T09:00:00Z', moved_local_at: '2026-11-02T12:00:00Z' }) });
+t('issue-1689 a ticket moved local keeps its session on the archive list, pinned or with its pin cleared (location=auto, stored as none)',
+  [finishedCloud({ M: moved('local') }, {}), finishedCloud({ M: moved(null) }, {})].map((r) => r.map((d) => d.session).join()).join(' '), 'session_m session_m');
+t('issue-1689 and its cloud session keeps its cost row with its pin cleared', ticketCost(S, { ...moved(null), key: 'M-1' })?.cloud?.url, 'https://claude.ai/code/session_m');
 const dir = join(S, 'state-1311');
 mkdirSync(dir, { recursive: true });
 t('archived: none recorded reads as none', readArchived(dir).size, 0);
