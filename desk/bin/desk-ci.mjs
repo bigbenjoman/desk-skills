@@ -643,11 +643,15 @@ export const isSelfHosted = (job) => (job.labels ?? []).includes('self-hosted')
 // A GitHub-hosted job stops at 6 hours, so a longer span (a stuck job's cancelled record) counts as
 // 360 minutes. A self-hosted job has no such limit and is counted as reported.
 export const HOSTED_CAP = 360;
-const rawMinutes = (job) => { const d = ms(job.completed_at) - ms(job.started_at); return Number.isFinite(d) && d > 0 ? Math.ceil(d / 60000) : 0; };
+const jobSpan = (job) => { const d = ms(job.completed_at) - ms(job.started_at); return Number.isFinite(d) && d > 0 ? d / 60000 : 0; };
+const rawMinutes = (job) => Math.ceil(jobSpan(job));
 export const isCapped = (job) => !isSelfHosted(job) && rawMinutes(job) > HOSTED_CAP;
 
-// GitHub bills each job in whole minutes, rounded up; a job that never ran bills nothing.
+// GitHub bills each hosted job in whole minutes, rounded up; a self-hosted runner is the repo's own
+// EC2 instance, which bills by the second, so its jobs count to the second. A job that never ran
+// counts nothing.
 export function jobMinutes(job) {
+  if (isSelfHosted(job)) return jobSpan(job);
   return isCapped(job) ? HOSTED_CAP : rawMinutes(job);
 }
 
@@ -1078,6 +1082,7 @@ export function collect({ repo, since, until, budget = 600, api = ghApi }) {
 // ---- measure: the report ------------------------------------------------------------------------
 
 const int = (x) => (x == null ? 'n/a' : Math.round(x).toLocaleString('en-US'));
+const min2 = (x) => (x == null ? 'n/a' : x.toLocaleString('en-US', { maximumFractionDigits: 2 }));
 const pct = (a, b) => (b ? `${Math.round((a / b) * 1000) / 10}%` : 'n/a');
 const dur = (v) => (v == null ? 'n/a' : v < 3600000 ? `${Math.round(v / 60000)}m` : `${(v / 3600000).toFixed(1)}h`);
 const secs = (v) => (v == null ? 'n/a' : v < 120 ? `${Math.round(v)}s` : `${(v / 60).toFixed(1)}m`);
@@ -1102,8 +1107,8 @@ export function report(m, c, measuredAt) {
     '',
     '## Totals',
     '',
-    `- billed minutes${est}: ${int(m.totals.billed)} (each job rounded up to the minute; macOS ×10, Windows ×2)`,
-    `- self-hosted minutes${est}: ${int(m.totals.self)}`,
+    `- billed minutes${est}: ${int(m.totals.billed)}, each job rounded up to the minute, macOS ×10, Windows ×2 (counts against the account's included minutes, shared by every private repo on it)`,
+    `- self-hosted minutes${est}: ${min2(m.totals.self)}, each job to the second`,
     '- red as GitHub shows it: by the run\'s conclusion, and for an earlier attempt of a re-run any failed job that is not continue-on-error; today\'s required checks are not applied to older runs',
     `- attempts: ${m.totals.attempts}, red ${m.totals.failed} (${pct(m.totals.failed, m.totals.decided)} of ${m.totals.decided} that passed or failed)`,
     '',
