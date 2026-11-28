@@ -4,10 +4,11 @@
 // FIX_TRIES_MAX tries, one per head of the base, as a PR in conflict does (fix-tries.mjs).
 //
 // pass.mjs keeps the tries on the queue as `base_fix`:
-//   { tries: [{ try, head, source, files, at, session, outcome, lock_wait?, kept?, from?, kept_stale? }], running: <session id> | null }
+//   { tries: [{ try, head, source, files, at, session, outcome, lock_wait?, usage_moved?, kept?, from?, kept_stale? }], running: <session id> | null }
 // `kept` is the merge a try committed and did not push ({ ref, sha }), `from` the kept merge a try
 // started from, `kept_stale` why the kept merge could not be, and `lock_wait` a try that parked only
-// on the busy test lock, which counts against no try.
+// on the busy test lock, which counts against no try, as `usage_moved` does: one ended at a usage limit
+// on a login new work had moved off.
 // A merge try that is due and does not start is kept as `start` (notStarted), never as a try:
 //   { try, files, check, since, passes, failed, why }   (check: the §4 Merged-tree check's command, for a merged-tree fix)
 // `passes` counts the passes it waited, `failed` the spawns that failed or were refused, and `why` the
@@ -32,6 +33,10 @@ export const mergeTry = (x) => !x?.kind;
 export const cleanedTry = (x) => mergeTry(x) || x?.kind === 'checks';
 const fileList = (files) => (files?.length ? files.join(', ') : 'not listed');
 
+// Whether merge try `x` counts against FIX_TRIES_MAX: not one that parked only on the busy test lock, nor
+// one ended at a usage limit on a login new work had moved off (pass/batch-base.mjs decideBaseSync).
+export const countedTry = (x) => !x.lock_wait && !x.usage_moved;
+
 // rec: the queue's base_fix, or null. c: { head (origin's base), source (origin's default branch),
 // files, perm (§3 pr-conflict-unreviewed), alive (the running try's worker is live), push (E.basePushGrant())
 // }. A try already made at this head is one whose worker finished without moving the base. A worker that
@@ -46,8 +51,7 @@ export function baseFixCall(rec, c) {
   const done = (rec?.tries ?? []).filter(mergeTry);
   const last = done[done.length - 1] ?? null;
   if (rec?.running && c.alive) return { call: 'wait', try: last };
-  // A try that parked only on the busy test lock spends nothing.
-  const counted = done.filter((x) => !x.lock_wait);
+  const counted = done.filter(countedTry);
   if (triesSpent(counted, c.head)) {
     return { call: 'stuck', why: `still ${c.check ? 'failing the check' : 'in conflict'} after ${tries(counted.length)}${last?.outcome ? `; the last try ${last.outcome}` : ''}` };
   }

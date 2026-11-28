@@ -179,6 +179,11 @@ prints nothing. The merge driver runs this itself after its own move to Done.
   it without waiting; on: wait for a unit, saying you wait on the preview build).
 - **`DIRTY` merges nothing.** Merge `origin/<default>`, typecheck, then re-run Stage 4b at the new
   head and post it: a gate that matches the verdict against the exact head SHA reads nothing older.
+- **A PR in conflict is never "nothing to push".** Before you finish Stage 7, resumed or not, read
+  `gh pr view <n> --json mergeable,mergeStateStatus`. `CONFLICTING` or `DIRTY`: merge
+  `origin/<default>` in, resolve, run the targeted suites, push, then finish. A conflict you cannot
+  resolve is a park naming it and the files, never a DONE. A desk pass parks a Stage 7 DONE on a
+  conflicting PR and sends it to a conflict fix try.
 - **Human review feedback lands while armed** and §3 `merge-feedback-first` is `yes`:
   `gh pr merge <n> --disable-auto`, work it via `desk-review-response`, then re-arm.
 - **Never `--admin`.** Any code change while shepherding gets the same diff record and self-review.
@@ -190,6 +195,7 @@ prints nothing. The merge driver runs this itself after its own move to Done.
 - Posting a review whose header does not state which agents actually ran, what refuted the
   findings, or that drops the SHA
 - About to merge without `--match-head-commit`, or a PR under a §4 Merge holds glob
+- About to finish with "nothing to push" while the PR reads `CONFLICTING`
 
 ## Rationalizations at this stage
 

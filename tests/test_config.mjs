@@ -365,6 +365,34 @@ t('#1526 AC4 items that bound themselves, or whose script is not one simple comm
   drift(`${conf()}| Unit tests | \`bun run test --maxWorkers=2\` \`bun run both\` |\n| Typecheck | \`turbo run typecheck --concurrency=2\` |\n`).out, 'no drift');
 rmSync(join(repoDir, 'package.json'), { force: true });
 
+// #1539 AC3: a §2 handoff row that the median start-up share of the last 10 worker sessions on its
+// window already reaches is named STARTUP, with that share. The hook's state stamps each session's start.
+{
+  const home = join(T, 'startup-desk');
+  const hs = join(home, 'handoff');
+  mkdirSync(hs, { recursive: true });
+  const wt = `${repoDir}-worktrees`;
+  const st = (id, used, window, at, root) => writeFileSync(join(hs, `${id}.json`), JSON.stringify({ arm: { pct: 20, window }, start: { used, window, at, root } }));
+  st('old', 20_000, 200_000, 1, `${wt}/X-0`);
+  for (let i = 1; i <= 10; i += 1) st(`s${i}`, [42_000, 44_000, 46_000][i % 3], 200_000, 100 + i, i % 2 ? repoDir : `${wt}/X-${i}`);
+  st('elsewhere', 190_000, 200_000, 500, join(T, 'elsewhere'));
+  st('big', 150_000, 1_000_000, 50, repoDir);
+  const startup = (rows) => {
+    const c = join(T, 'drift-startup.md');
+    writeFileSync(c, conf().replace(`| Primary repo root | \`${repoDir}\` | |\n`, `$&${rows}`));
+    try { return { code: 0, out: execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c, DESK_HOME: home }), stdio: 'pipe' }).trim() }; }
+    catch (e) { return { code: e.status, out: String(e.stdout).trim() }; }
+  };
+  d = startup('| Handoff at context % | `20` | |\n');
+  t('#1539 AC3 a row at 20 under a 22% median start-up of this repo\'s last 10 sessions is named, with the share', `${d.code} ${d.out}`,
+    '1 STARTUP  §2 Handoff at context % is 20, but a fresh session\'s start-up already uses 22% of its 200,000-token window (the median of its last 10 sessions), so its sessions hand off as soon as they start: set it above 22');
+  t('#1539 AC3 a row above the median start-up is no drift', startup('| Handoff at context % | `25` | |\n').out, 'no drift');
+  t('#1539 AC3 the 1M row is read against the 1M window\'s sessions, and one the start-up reaches is named',
+    startup('| Handoff at context % | `25` | |\n| Handoff at context % on a 1M window | `15` | |\n').out,
+    'STARTUP  §2 Handoff at context % on a 1M window is 15, but a fresh session\'s start-up already uses 15% of its 1,000,000-token window (the median of its last 1 session), so its sessions hand off as soon as they start: set it above 15');
+  t('#1539 AC3 a row of 0 hands off never, so is no drift', startup('| Handoff at context % | `0` | |\n').out, 'no drift');
+}
+
 // One app's setup gaps, each §4 row it lacks with the value to add, in one call.
 mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
 writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
@@ -688,6 +716,23 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-875 AC4 desk-env show 3c exits 2 and prints no ledger', (({ status, stdout }) => `${status} ${/Bash\(x\)/.test(stdout)}`)(showRun(['3', '§3c'])), '2 false');
   t('DS-875 an unknown section exits 2, naming it', (({ status, stderr }) => `${status} ${/"9"/.test(stderr)}`)(showRun(['9'])), '2 true');
   t('DS-875 AC4 every section show prints leaves the ledger out', /Bash\(x\)|3c/.test(showRun([]).stdout), false);
+  // issue-1533: `show --rows` prints only the named rows, one line each, and names an unset one.
+  const help = `(${'help text a reader of this row needs and the checkout does not. '.repeat(40)})`;
+  writeFileSync(join(T, 'rows.md'), ['## 1. You', '| Field | Value |', '|---|---|', '| Name | `Pat Example` |', '| Short form colleagues use | `TODO` |', '',
+    '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `read-calendar` | read | `yes` | `yes` |', '',
+    '## 4. Project', '| Field | Value |', '|---|---|', '| Check-out destination | `#team` (where the post goes) |', `| Check builds | \`none\` ${help} |`,
+    '| No longer on the team | `Ana` `Bo` |', ''].join('\n'));
+  const rowsRun = showRun(['--rows', 'name', 'short-name', 'read-calendar', 'read-slack-own', 'checkout-destination', 'former-members'], { ...showEnv, DESK_CONFIG: join(T, 'rows.md') });
+  t('issue-1533 AC1 show --rows prints the named rows alone, one line each', `${rowsRun.status}\n${rowsRun.stdout}`, ['0',
+    '§1 Name (name) = Pat Example',
+    '§1 Short form colleagues use (short-name) = UNSET',
+    '§3 read-calendar (read-calendar) = yes',
+    '§3 read-slack-own (read-slack-own) = UNSET (reads as no)',
+    '§4 Check-out destination (checkout-destination) = #team',
+    '§4 No longer on the team (former-members) = Ana · Bo', ''].join('\n'));
+  t('issue-1533 an unknown id exits 2, naming it', (({ status, stderr }) => `${status} ${/"nope"/.test(stderr)}`)(showRun(['--rows', 'name', 'nope'])), '2 true');
+  t('issue-1533 no id exits 2', showRun(['--rows']).status, 2);
+  t('issue-1533 with no config it exits 3', showRun(['--rows', 'name'], { ...showEnv, DESK_CONFIG: join(T, 'missing.md') }).status, 3);
 }
 // The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
 // derives from it against the literals they replaced.
@@ -768,8 +813,14 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'preview-db|4|Preview database', // DS-550
     'plan-first-wait|3b|Plan-first wait before needs-you (hours)', // issue-1384
     'slot-candidates|3b|Propose candidates for a free slot', // #1394
+    'checkout-worklogs|3b|Check-out work logs', // #1646
     'light-lock-slots|3b|Light lock slots',
     'test-signin-permissions|4|Test sign-in permissions', // DS-1026
+    'cloud-sessions|3b|Cloud sessions at once', // #1564
+    'worker-memory|3b|Worker memory weight (GB)', // issue-1523
+    'queue-priority|3b|Queue order: priority', // #1624
+    'placed-order|3b|Queue order: placed tickets', // #1625
+    'move-threshold|3b|Queue order: move threshold', // #1625
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');
@@ -812,7 +863,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['number', '1.5', 'soon', false], ['number-or-off', 'off', 'on', false], ['gb', '16', '0', false], ['port', '3228', '70000', false],
     ['subagent-cap', 'no cap', 'lots', false], ['concurrency', '2 / 3', 'two', false], ['times', '08:00, 17:00', 'morning', false],
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
-    ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
+    ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false], ['queue-priority', 'strict', 'high', false],
+    ['placed-order', 'move-and-say', 'move', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
     ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['signin-permissions', 'apps/portal: HELP_ARTICLES, ADMIN', 'apps/portal: help articles', false],['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],

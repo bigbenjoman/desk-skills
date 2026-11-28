@@ -5,8 +5,9 @@ Reads <folder>/projects/*/*.jsonl for every Claude login's config folder, ~/.cla
 first (top-level session transcripts only; subagent
 transcripts are skipped because their parent session already carries the work)
 and prints one compact block per session: repo, branches, what the human asked,
-and how the session ended. The output is evidence for a check-out, not the
-check-out itself, so it stays terse.
+and how the session ended. A batch's headless sessions fold into one line per ticket
+instead: its key (from the branch name, else the most-mentioned), the stages reached and the
+session count. The output is evidence for a check-out, not the check-out itself, so it stays terse.
 
 A session that loads the desk-checkout skill is cut off at that point, so the drafting
 session never reports itself and needs no session ID. When the window starts at a
@@ -25,9 +26,19 @@ A session in a configured repo is summarised only when that repo's §3 read-tran
 `yes` (or `ask` and passed with --include <slug>); a session in no configured repo follows
 the current repo's row.
 
+Every source and its permission: references/sources.md.
+
 Usage:
   claude_activity.py [--day auto|today|yesterday|<weekday>|YYYY-MM-DD] [--include <slug>]
   claude_activity.py --session <id-prefix> [--tail 6]   # the last substantive replies, in full
+  claude_activity.py --window-turns [--turn-threshold 40000] [--reply-chars 500]
+
+--window-turns: a long session (its activity spans more than half the window, or its prompts and
+replies in the window pass --turn-threshold characters) is listed turn by turn, each prompt the person
+typed in the window with Claude's final reply to it (long replies cut at --reply-chars), in place of
+its first and last prompts and how it ended. Other sessions are listed as usual. Use it when one
+session ran through the day (an orchestrator, or a session kept open), where the end alone loses
+everything before its last replies.
 """
 import argparse
 import glob
@@ -62,6 +73,27 @@ EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 PR_IN_COMMAND = re.compile(r"gh pr (?:merge|ready|view|edit|checks|review|comment|close)\s+(?:-\S+\s+\S+\s+)*#?(\d{3,5})\b")
 PR_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
 SELF_MARKER = "desk-checkout"
+HEADLESS = ("sdk-cli", "sdk-ts", "sdk-py")
+
+
+def triage_openings():
+    """How triage.sh's two passes open their prompts, from desk/bin/triage-openings.json (cache-report.mjs
+    reads it too); none when it cannot be read, so no session reads as triage."""
+    path = desk_repos.desk_file("triage-openings.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return tuple(json.load(fh)["openings"])
+    except (TypeError, OSError, ValueError, KeyError):
+        return ()
+
+
+# How an autopilot batch opens each session's prompt: triage's passes, then a worker's (a fix try's
+# carries its task after the opening).
+TRIAGE_OPENINGS = triage_openings()
+WORKER_OPENING = "Follow the autopilot worker contract"
+# A batch ticket in a repo with no tracker: issue-<n>, in the branch (fix/issue-12-x) or the prompt.
+ISSUE_IN_BRANCH = re.compile(r"(?:^|/)issue-(\d+)(?=-|$)")
+ISSUE_KEY = re.compile(r"\bissue-(\d+)\b")
 
 # Filled in main(): every configured repo, the current one, and the side-project roots.
 REPOS, CURRENT, SIDE_ROOTS = [], None, ()
@@ -177,7 +209,7 @@ def read_session(path, since, until, drafting_from=None):
     s = {
         "id": os.path.basename(path)[:-6], "cwd": None, "branches": Counter(), "prompts": [],
         "texts": [], "tools": Counter(), "commits": [], "prs": set(), "tickets": Counter(),
-        "first": None, "last": None, "entrypoint": None, "drafted": None,
+        "first": None, "last": None, "entrypoint": None, "drafted": None, "turns": [],
     }
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -203,8 +235,12 @@ def read_session(path, since, until, drafting_from=None):
             text, tools = assistant_parts(entry)
             if prompt:
                 s["prompts"].append(prompt)
+                s["turns"].append({"when": when, "prompt": prompt, "reply": None})
             if text:
                 s["texts"].append((when, text))
+                if not s["turns"]:
+                    s["turns"].append({"when": when, "prompt": None, "reply": None})  # a turn begun before the window
+                s["turns"][-1]["reply"] = text  # the last text before the next prompt is the turn's final reply
             for tool in tools:
                 name = tool.get("name", "?")
                 s["tools"][name] += 1
@@ -225,6 +261,54 @@ def read_session(path, since, until, drafting_from=None):
                 s["first"] = s["first"] or when
                 s["last"] = when
     return s
+
+
+def is_long(s, since, until, threshold):
+    """True for a session whose activity spans more than half the window, or whose prompts and replies
+    in it pass `threshold` characters."""
+    span = (s["last"] - s["first"]) if s["first"] and s["last"] else timedelta(0)
+    size = sum(len(p) for p in s["prompts"]) + sum(len(t) for _, t in s["texts"])
+    return span > (until - since) / 2 or size > threshold
+
+
+def batch_stage(s):
+    """Which batch stage a headless session ran, read from its first prompt."""
+    first = s["prompts"][0] if s["prompts"] else ""
+    if first.startswith(TRIAGE_OPENINGS):
+        return "triage"
+    if first.startswith(WORKER_OPENING):
+        return "fix try" if "Your task is " in first else "worker"
+    return "batch"
+
+
+def batch_ticket(s):
+    """The ticket a headless session folds under: the one in its branch name, else its most-mentioned.
+    A repo with no ticket key pattern names its batch tickets issue-<n>, so that form counts too.
+    A triage session runs in the person's main checkout (triage.sh cds there), so its branch is that
+    checkout's, not the triaged ticket's: it folds under the ticket its opening names instead."""
+    if not in_scope(s["cwd"]):
+        return None
+    triage = batch_stage(s) == "triage"
+    if triage:
+        first = s["prompts"][0]
+        opening = next(o for o in TRIAGE_OPENINGS if first.startswith(o))
+        for word in first[len(opening):].split(maxsplit=1)[:1]:  # "… ticket <KEY> in …"
+            word = word.rstrip(".,:;")
+            if any(rx.fullmatch(word) for rx in TICKET_RES) or ISSUE_KEY.fullmatch(word):
+                return word
+    branches = [] if triage else s["branches"].most_common()
+    for branch, _ in branches:
+        for rx in TICKET_RES:
+            m = rx.search(branch)
+            if m:
+                return m.group(0)
+        m = ISSUE_IN_BRANCH.search(branch)
+        if m:
+            return f"issue-{m.group(1)}"
+    if s["tickets"]:
+        return s["tickets"].most_common(1)[0][0]
+    issues = Counter(f"issue-{n}" for p in s["prompts"] for n in ISSUE_KEY.findall(p))
+    return issues.most_common(1)[0][0] if issues else None
 
 
 def claude_folders():
@@ -278,6 +362,11 @@ def main():
     ap.add_argument("--tail", type=int, default=6)
     ap.add_argument("--prompt-chars", type=int, default=280)
     ap.add_argument("--max-prompts", type=int, default=8)
+    ap.add_argument("--window-turns", action="store_true",
+                    help="list a long session's turns in the window: each prompt with Claude's final reply")
+    ap.add_argument("--turn-threshold", type=int, default=40000,
+                    help="characters of prompts and replies in the window that make a session long")
+    ap.add_argument("--reply-chars", type=int, default=500)
     args = ap.parse_args()
     since, until = window.resolve(args.day, since=args.since, since_for=args.since_for)
     REPOS, CURRENT = desk_repos.load_all(args.include)
@@ -300,7 +389,7 @@ def main():
     drafted = [s for s in read if s["drafted"]]
     drafter = max(drafted, key=lambda s: s["drafted"]) if drafted else None
 
-    sessions, workers, withheld = [], [], {}
+    sessions, workers, withheld, batch, unjoined = [], [], {}, {}, 0
     for s in read:
         if not s["first"]:
             continue
@@ -316,25 +405,32 @@ def main():
         # A session with no tool calls and one short prompt is a probe ("reply with just OK").
         if not s["tools"] and sum(len(p) for p in s["prompts"]) < 60:
             continue
-        headless = s["entrypoint"] in ("sdk-cli", "sdk-ts", "sdk-py")
+        headless = s["entrypoint"] in HEADLESS
         # Headless preflight/triage workers with almost no tool use are autopilot plumbing.
         preflight = s["texts"] and re.match(r"\s*W_IN=", s["texts"][-1][1])
         if headless and (sum(s["tools"].values()) < 3 or preflight):
             workers.append(s)
+            continue
+        if headless:
+            # A batch's sessions are evidence for their ticket, never items: one line per ticket.
+            key = batch_ticket(s)
+            if key:
+                batch.setdefault(key, []).append(s)
+            else:
+                unjoined += 1
             continue
         sessions.append(s)
     sessions.sort(key=lambda s: (desk_repos.SCOPE_ORDER[scope_and_repo(s["cwd"])[0]], s["first"]))
 
     tz = since.astimezone().tzname() or "local time"
     print(f"# Claude Code activity, {window.label(since, until)} ({tz}) — {len(sessions)} sessions\n")
-    if not sessions:
+    if not sessions and not batch:
         print("No Claude Code activity in the window.")
     for s in sessions:
-        kind = "headless worker" if s["entrypoint"] in ("sdk-cli", "sdk-ts", "sdk-py") else "interactive"
         scope = scope_suffix(s["cwd"])
         edits = sum(n for t, n in s["tools"].items() if t in EDIT_TOOLS)
         span = f"{s['first'].astimezone():%H:%M}–{s['last'].astimezone():%H:%M}"
-        print(f"## {repo_label(s['cwd'])}  [{span}, {kind}{scope}, session {s['id'][:8]}]")
+        print(f"## {repo_label(s['cwd'])}  [{span}, interactive{scope}, session {s['id'][:8]}]")
         if s["branches"]:
             print("branches: " + ", ".join(b for b, _ in s["branches"].most_common(4)))
         if s["tickets"]:
@@ -344,6 +440,15 @@ def main():
             print("commits: " + " | ".join(shorten(c, 90) for c in s["commits"][:6]))
         if s["prs"]:
             print("PRs acted on: " + ", ".join("#" + p for p in sorted(s["prs"])))
+        if args.window_turns and is_long(s, since, until, args.turn_threshold):
+            print(f"turns in the window ({len(s['turns'])}; a long session, so each prompt with Claude's final reply):")
+            for turn in s["turns"]:
+                asked = shorten(turn["prompt"], args.prompt_chars) if turn["prompt"] else "(continued from before the window)"
+                print(f"  - {turn['when'].astimezone():%H:%M} asked: {asked}")
+                if turn["reply"]:
+                    print(f"    replied: {shorten(turn['reply'], args.reply_chars)}")
+            print()
+            continue
         prompts = s["prompts"]
         if prompts:
             print("asked:")
@@ -356,6 +461,16 @@ def main():
         if s["texts"]:
             print("ended with: " + shorten(s["texts"][-1][1], 600))
         print()
+    if batch:
+        print(f"## Headless batch sessions, one line per ticket ({sum(map(len, batch.values()))} sessions)")
+        order = ["triage", "worker", "fix try", "batch"]
+        for key in sorted(batch, key=lambda k: min(s["first"] for s in batch[k])):
+            stages = sorted({batch_stage(s) for s in batch[key]}, key=order.index)
+            n = len(batch[key])
+            print(f"- {key}: {', '.join(stages)} ({n} session{'s' if n > 1 else ''})")
+        print()
+    if unjoined:
+        print(f"({unjoined} headless session{'s' if unjoined > 1 else ''} naming no ticket omitted)")
     if workers:
         print(f"({len(workers)} short headless autopilot/preflight sessions omitted)")
     for note, n in sorted(withheld.items()):

@@ -1,5 +1,6 @@
-// The queue commands that change one ticket's fields or the batch's (set, set-batch, park, front), as
-// functions on a queue in memory, and the writer a pass records its changes through.
+// The queue commands that change one ticket's fields, the batch's or the spawn order (set, set-batch,
+// park, front, order), as functions on a queue in memory, and the writer a pass records its changes
+// through.
 //
 // queue.mjs runs each command against the file, one process and one write per command. A pass makes
 // dozens, so it applies them here instead, to its own copy, and writes them in one go (flush): one hold
@@ -10,8 +11,8 @@ import { readFileSync } from 'node:fs';
 import { lock, unlock } from './dir-lock.mjs';
 import { parkClass } from './failure-class.mjs';
 import { versionOf, writeQueueFile, mergeQueue, archiveDone, attachArchive, same, LedgerRefusal } from './queue-store.mjs';
-import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
-import { parkKindOf } from './batch-state.mjs';
+import { STATES, FINISHED, PARK_KINDS, blockersOf } from './queue-states.mjs';
+import { parkKindOf, bareHold } from './batch-state.mjs';
 
 export { STATES, FINISHED };
 
@@ -68,13 +69,32 @@ export function toFront(q, key) {
   return 'moved to the front of the spawn order';
 }
 
+// `order <KEY>…`: the keys named take the places they hold now, in the order named. A ticket running,
+// finished or placed by the user keeps its place, and so does every ticket not named. -> the keys laid.
+export function layOrder(q, named) {
+  const { keys, order } = laidOrder(q, named);
+  q.tickets = Object.setPrototypeOf(Object.fromEntries(order.map((k) => [k, q.tickets[k]])), Object.getPrototypeOf(q.tickets));
+  return keys;
+}
+// What layOrder would lay, leaving q as it is -> { keys: the keys laid, order: every key of the queue
+// in its new order }. spawn-order.mjs projects the queue's finish from it.
+export function laidOrder(q, named) {
+  const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
+  const keys = [...new Set(named)].filter(free);
+  const slots = new Set(keys);
+  const next = keys[Symbol.iterator]();
+  return { keys, order: Object.keys(q.tickets).map((k) => (slots.has(k) ? next.next().value : k)) };
+}
+
 const pairsOf = (pairs) => pairs.map((p) => {
   const i = p.indexOf('=');
   if (i < 0) throw new Error(`expected key=value, got: ${p}`);
   return [p.slice(0, i), p.slice(i + 1)];
 });
 
-// `set <KEY> k=v …` on ticket `t`: every pair is checked before any is written.
+// `set <KEY> k=v …` on ticket `t`: every pair is checked before any is written. A set that clears the
+// last blocker from a hold's held_by and names neither state nor park releases it in the same write
+// (bareHold): nothing else would, and it would sit held behind nothing. -> the words saying so, or ''.
 export function applySet(t, pairs, now = new Date().toISOString()) {
   const sets = pairsOf(pairs).map(([k, raw]) => {
     const v = coerce(raw);
@@ -82,8 +102,17 @@ export function applySet(t, pairs, now = new Date().toISOString()) {
     if (RESULT_KEYS.includes(k.split('.')[0])) throw new Error(`no ticket carries a top-level "${k}", so nothing would read it: did you mean result.${k}=${raw}? Nothing written.`);
     return [k, v];
   });
+  const held = blockersOf(t).length > 0, bare = bareHold(t);
   for (const [k, v] of sets) setPath(t, k, v);
   t.updated_at = now;
+  const named = new Set(sets.map(([k]) => k.split('.')[0]));
+  if (named.has('park')) return '';
+  // `set <KEY> state=triaged` on a bare hold, as desk shows it (bareHoldText), takes its hold's park too.
+  if (bare && t.state === 'triaged' && t.park) { t.park = null; return '; its hold is lifted: park=null'; }
+  if (!held || !named.has('held_by') || named.has('state') || !bareHold(t)) return '';
+  t.state = 'triaged';
+  t.park = null;
+  return '; no blocker is left, so it is released: state=triaged park=null';
 }
 
 // `set-batch k=v …` on queue `q`. `setBase(q, v)` sets the batch base, which asks origin.
@@ -159,6 +188,12 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       ops.push(args);
       return { ok: true, out: `batch: ${rest.join(' ')}` };
     }
+    if (cmd === 'order') {
+      rebase();
+      const keys = layOrder(mine, rest);
+      ops.push(args);
+      return { ok: true, out: `spawn order: ${keys.join(' ') || 'nothing to reorder'}` };
+    }
     if (!['set', 'park', 'front'].includes(cmd) || (cmd === 'park' && rest.includes('--claimed-by'))) return { direct: true };
     const [key, ...more] = rest;
     rebase();
@@ -166,7 +201,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     const t = mine.tickets[key];
     let out;
     try {
-      if (cmd === 'set') { applySet(t, more); out = `${key}: ${more.join(' ')}`; }
+      if (cmd === 'set') { const freed = applySet(t, more); out = `${key}: ${more.join(' ')}${freed}`; }
       else if (cmd === 'park') { const p = parkArgs(more); t.state = 'parked'; t.park = newPark(p.question, undefined, p.kind); out = `${key} parked`; }
       else out = `${key} ${toFront(mine, key)}`;
     } catch (e) { return { ok: false, why: e.message }; }
@@ -184,10 +219,12 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     rebase();
     const t = Object.hasOwn(mine.tickets ?? {}, key) ? mine.tickets[key] : null;
     if (!t || !when(t, mine)) return { ok: true, skipped: true, out: `${key}: not written, it changed since it was read` };
-    try { applySet(t, pairs); } catch (e) { return { ok: false, why: e.message }; }
+    let freed;
+    try { freed = applySet(t, pairs); } catch (e) { return { ok: false, why: e.message }; }
     ops.push(args);
-    guards.push({ key, fields: pairs.map((p) => p.split('=')[0].split('.')[0]), when });
-    return { ok: true, out: `${key}: ${pairs.join(' ')}` };
+    // A release the set made (applySet) is taken back with it.
+    guards.push({ key, fields: [...new Set([...pairs.map((p) => p.split('=')[0].split('.')[0]), ...(freed ? ['state', 'park'] : [])])], when });
+    return { ok: true, out: `${key}: ${pairs.join(' ')}${freed}` };
   }
 
   // Under the lock, after the rebase: each conditional `set` whose ticket no longer meets its condition

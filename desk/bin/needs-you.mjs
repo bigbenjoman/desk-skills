@@ -79,6 +79,12 @@
 //                                                     must never default (ask-defaults.mjs)
 //   needs-you.mjs ask-status <repo> <id>              whether ask <id> is open, or which option was chosen,
 //                                                     by the person or by default, and when
+//   needs-you.mjs claim [<repo>] <item> --by <session>
+//                                                     a session takes a follow item (`follow:<KEY>…`, a check
+//                                                     after merge) on: desk-q shows it as checking (<session>)
+//                                                     and leaves it out of the person's count until it is
+//                                                     done, or the session is idle past §3b Release idle
+//                                                     claims after (hours) (the not-now register keeps it)
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
@@ -106,7 +112,8 @@
 // refused push, the command that pushes it (done records nothing; the next pass clears it once the base is current).
 // `stalled` (`stalled:<batch>` for a named batch) is a batch's: a session runs it and its passes stopped
 // with work left (done records nothing; the next pass clears it).
-// Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
+// Items are what desk-q's home screen counts as "◆ needs you", and its follow items it counts apart as
+// checks after merge, in order: a PRODUCTION BROKEN park
 // first, then most held tickets waiting behind it (each item says how many), then the longest waiting,
 // less any put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
 // offered, that offers none it did not offer then; one put off is listed anyway while three or more
@@ -140,7 +147,8 @@ import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } fr
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
-import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
+import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey, addClaim, claimOf, clearClaim } from './not-now.mjs';
+import { claimHoursOf, claimLive, transcriptOf, SESSION_ID } from './claims.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
 import { followKind, checkOf, settled, broken, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS, FOLLOW_BROKEN_RETRY_MS } from './follow-steps.mjs';
@@ -1218,6 +1226,34 @@ function followItems(r, reads = null) {
   });
 }
 const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
+// A session's claim on follow item `key` (needs-you.mjs claim), { item, session, at }, while it is live:
+// the session's transcript has changed within the repo's §3b "Release idle claims after (hours)", counted
+// from the claim at the latest (claimLive, as pass.mjs releases a ticket's claim). 0 never lapses while a
+// transcript is there; with none the claim has lapsed, and the item needs the person again. Null where
+// none is live.
+export function liveClaim(r, key, register = readRegister(r.stateDir), now = Date.now()) {
+  const c = claimOf(register, key);
+  return c && claimLive(transcriptOf(c.session), c.at, claimHoursOf(r.slug).hours, now) ? c : null;
+}
+// A follow item's need from its first "Check: " on (followItem's wording), whitespace folded: what
+// desk-q's and the digest's Checks after merge show. Any other item's need is kept whole.
+export function followCheckText(item) {
+  const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
+  return item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
+}
+// The batch's listed follow items (neither put off nor dropped), each with `item.claim` where a session
+// has a live claim on it: desk-q's and the check-in digest's "Checks after merge". Those put off go in
+// `off`, where one is given.   -> [{ r, t, item }]
+export function followChecks(r, register = readRegister(r.stateDir), now = Date.now(), off = null) {
+  if (!r?.q) return [];
+  return followItems(r).flatMap((f) => {
+    const st = lookupItem(register, putOffKey(f.r, f.t, f.item)).status;
+    if (st === 'put_off') off?.push(f);
+    if (st === 'put_off' || st === 'dismissed') return [];
+    const claim = liveClaim(f.r, f.t.key, register, now);
+    return [claim ? { ...f, item: { ...f.item, claim } } : f];
+  });
+}
 // A step whose evidence source a checker found broken (follow-steps.mjs broken): not unchecked, but
 // waiting on that source's fix, so the item names the broken step, what it printed, and the open issue
 // tracking it, or drafts one to file where none does. A checker runs it again every
@@ -2112,6 +2148,8 @@ function stampItem(r, x, item) {
 // `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
 // `items` are the counted items that are not ticket rows (steps, follow-ons, asks, sign-ins, …), each
 // { r, t, item }, so a reader can draw a row for every one it counts; `offItems` those put off.
+// Follow steps are not in `shown` or `items`: `follows` lists those nobody has taken on and `checking`
+// those a session has claimed (followChecks), desk-q's "checks after merge".
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
@@ -2153,12 +2191,21 @@ export function needsCount(r) {
     return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`))
       || (planFirstHeld(x) && livePlanFirst.has(b.stateDir));
   });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) place(f, f.r.stateDir);
+  // A follow step is a check after a merge, counted apart from what needs the person: `follows` those
+  // nobody has taken on, `checking` those a session has a live claim on (item.claim), neither in `shown`.
+  const follows = [], checking = [];
+  for (const b of (r.batches ?? [r]).filter((x) => x.q)) {
+    const off = [];
+    for (const f of followChecks(b, register(b), Date.now(), off)) (f.item.claim ? checking : follows).push(f);
+    putOff += off.length;
+    offItems.push(...off);
+  }
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) place(f, f.r.stateDir);
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir);
   const own = (r.batches ?? [r]).filter((x) => x.q);
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) place(s, s.dir);
   for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...cloudItems(own), ...proposalItems(own)]) place(s, s.dir);
-  return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
+  return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems, follows, checking };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.
@@ -2228,7 +2275,15 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  // A follow item a session has a live claim on (claim) is that session's to check: in `checking`, not
+  // listed, until it is done or the claim lapses. Put off or dropped, it stays so.
+  const checking = [];
+  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) {
+    const claim = f.item.kind === 'follow' ? liveClaim(f.r, f.t.key, readRegister(f.r.stateDir), now) : null;
+    const key = claim && putOffKey(f.r, f.t, f.item);
+    if (claim && !['put_off', 'dismissed'].includes(lookupItem(readRegister(f.r.stateDir), key).status)) checking.push({ r: f.r, t: f.t, ...f.item, claim, putOffKey: key, putOffDir: f.r.stateDir, since: f.item.since, broken: false });
+    else repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  }
   for (const f of inScope.flatMap(noPrItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, f.said);
   for (const f of inScope.flatMap(planFirstItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, true, true);
   for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
@@ -2262,7 +2317,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   // Green PRs whoever merges for the batch takes (desk-q batchMerging): shown, never the person's items.
   const moving = scope.filter((x) => !x.error && x.q).flatMap((r) => batchMerging(r).map((m) => ({ r, ...m })));
-  return { repos, scope, items, named, putOff, off, moving };
+  return { repos, scope, items, named, putOff, off, moving, checking };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -2276,7 +2331,8 @@ const runLine = (r) => {
 // The put-off count, after the item count: they are not listed again until their inputs change.
 const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left out until ${c.putOff === 1 ? 'it changes' : 'they change'}.` : '');
 // The PRs that move without the person, on the same line, in desk-q's words for its Merging row.
-const movingLine = (c) => (c.moving ?? []).map((m) => ` Moves without you: PR #${m.pr} (${m.key}${c.named ? '' : `, ${m.r.name}`}), ${m.text}.`).join('');
+const movingLine = (c) => (c.moving ?? []).map((m) => ` Moves without you: PR #${m.pr} (${m.key}${c.named ? '' : `, ${m.r.name}`}), ${m.text}.`).join('')
+  + (c.checking ?? []).map((i) => ` Checking (${i.claim.session}): ${i.t.key}${c.named ? '' : `, ${i.r.name}`}, a check after merge that session took on.`).join('');
 
 // A parked write awaiting approval, as listText prints it under its item: a header naming its kind and
 // target, the body line for line as the worker wrote it, and an end line, so the body is never cut or
@@ -2759,7 +2815,8 @@ function donePutOff(c, ticket, { word, now, repos, reads }) {
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = READS }) {
   const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
-  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.finished || y.planFirst || y.promotion != null) && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.finished || y.planFirst || y.promotion != null) && y.t.key === ticket)
+    ?? c.checking.find((y) => y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them. One
   // put off is dropped as it stands, before that.
   if (!i && ticket.startsWith(UNSET) && c.named && !(action.split(/\s+/)[0] === 'drop' && c.off.some((y) => y.t.key === ticket))) {
@@ -2799,7 +2856,10 @@ function answerRepoItem(i, { ticket, verb, text, now, reads }) {
   // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
   if (i.kind === 'follow') {
     const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
-    return m.ok ? say(true, 'recorded done, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
+    if (!m.ok) return say(false, `recording it was refused: ${m.out}`);
+    // A session's claim on it ends with it.
+    try { clearClaim(i.t.key, i.r.stateDir, new Date(now).toISOString()); } catch { /* an unreadable register holds no claim to clear */ }
+    return say(true, 'recorded done, so it is off your list.');
   }
   if (i.proposal) return proposalAnswer(i, verb, text, reads ?? READS, now, say);
   if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
@@ -2885,6 +2945,27 @@ export function ask({ word, text, until = [], options = [], recommend = null, ap
   return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you ${choice ? `choose (${options.join(', ')})` : 'say done'}${kept.length ? `, or a pass finds ${kept.join(', ')} merged or done` : ''}${when ? `; it ${when}` : ''}.` };
 }
 
+// A session takes a follow item on (claim <item> --by <session>): desk-q shows it as checking (<session>)
+// and leaves it out of the person's count until done, or until the session is idle past §3b "Release
+// idle claims after (hours)" (liveClaim). `item` is its key (follow:<KEY>…) or the ticket it is about,
+// where that names one item.   -> { ok, line }
+export function claim({ word = null, item, session, now = Date.now(), repos = loadRepos(now, word) }) {
+  if (!SESSION_ID.test(String(session ?? ''))) return { ok: false, line: `--by wants a session id (letters, digits, - and _), not "${session ?? ''}"` };
+  const c = collect({ word, now, repos, reads: null, ciRed: null });
+  const follows = [...c.items, ...c.checking].filter((y) => y.kind === 'follow');
+  const exact = follows.filter((y) => y.t.key === item || y.t.key === `${FOLLOW}${item}`);
+  const hits = exact.length ? exact : follows.filter((y) => y.ticket === item);
+  const where = c.named ? ` in ${c.named.name}` : '';
+  if (!hits.length) return { ok: false, line: `no check after merge${where} is listed as ${item}, so nothing was claimed: claim takes a follow item's key (needs-you.mjs list shows them).` };
+  if (hits.length > 1) return { ok: false, line: `${item} names ${hits.length} checks after merge${where} (${hits.map((y) => `${y.t.key}${c.named ? '' : ` in ${y.r.name}`}`).join(', ')}): claim one by its key.` };
+  const [i] = hits;
+  if (!transcriptOf(session)) return { ok: false, line: `no transcript for session ${session} on this computer, so nothing was claimed: --by wants the id of a session here.` };
+  addClaim({ item: i.t.key, session, ticket: i.ticket, at: new Date(now).toISOString() }, i.r.stateDir);
+  const { hours } = claimHoursOf(i.r.slug);
+  const until = hours > 0 ? `, or session ${session} has been idle past §3b Release idle claims after (${hours} hours)` : '';
+  return { ok: true, line: `${i.r.repo} ${i.t.key}: claimed by session ${session}. desk-q shows it as checking (${session}) and leaves it out of your count until it is done${until}.` };
+}
+
 // ask's flags after the repo and text: { until, options, recommend, applyBy, neverDefault }, or null where
 // one is unknown or has no value.
 function askFlags(args) {
@@ -2950,7 +3031,13 @@ export function run(argv, { reads } = {}) {
       if (!res.ok) return end(EXIT.SHOW_PERSON);
     } else if (cmd === 'ask-status' && rest.length === 2 && /^(ask:)?\d+$/.test(rest[1])) {
       lines.push(askStatus({ word: rest[0], id: Number(rest[1].replace(/^ask:/, '')) }).line);
-    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]] [--options <a>|<b> [--recommend <a>] [--apply-by <HH:MM|ISO>] [--never-default "<why>"]] | ask-status <repo> <id>\n');
+    } else if (cmd === 'claim' && rest.indexOf('--by') >= 1 && rest.indexOf('--by') <= 2 && rest.length === rest.indexOf('--by') + 2) {
+      const by = rest.indexOf('--by');
+      const [word, item] = by === 2 ? rest : [null, rest[0]];
+      const res = claim({ word, item, session: rest[by + 1] });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]] [--options <a>|<b> [--recommend <a>] [--apply-by <HH:MM|ISO>] [--never-default "<why>"]] | ask-status <repo> <id> | claim [<repo>] <item> --by <session>\n');
   } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
   return end(0);
 }

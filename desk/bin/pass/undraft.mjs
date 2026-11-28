@@ -38,7 +38,7 @@
 //   undraft-error {line}               a gh pr ready that failed, for the pass record
 //   evidence-failures {items}          settle the drafts whose evidence run failed, together
 import { undraftCall, undraftComment, personHold, repairSaid } from '../undraft.mjs';
-import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry } from '../fix-tries.mjs';
+import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, outsideRerunWait, prInConflict } from '../fix-tries.mjs';
 import { latestPerCheck, normaliseRollup } from '../gate.mjs';
 import { dragCells, dragFiles } from '../evidence.mjs';
 import { set, say } from './shared.mjs';
@@ -108,7 +108,7 @@ export function* decideRenames(snap) {
   for (const list of ['drafts', 'undrafted']) {
     for (const entry of [...snap[list]]) {
       const { t, s } = entry;
-      if (!t.branch || !s.head || s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') continue;
+      if (!t.branch || !s.head || prInConflict(s)) continue;
       if (!(yield { type: 'fetch', key: t.key, branch: t.branch })) continue;
       const renames = yield { type: 'child-renames', key: t.key, head: s.head };
       const c = renamesFix(t, { pr: s.pr, head: s.head, base: snap.base, renames, draft: list === 'drafts' });
@@ -204,7 +204,7 @@ export function* decideUndraft(snap) {
       hold = ev.hold;
     }
     let rec = hold ? { call: 'held', why: hold.why, action: hold.action, sha: head ?? null, carried_from: null, pr: n }
-      : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}), ...(c.unknown_repair ? { unknown_repair: c.unknown_repair } : {}) };
+      : { call: c.call, why: outsideRerunWait(t, c, n, head ?? null) ?? c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}), ...(c.unknown_repair ? { unknown_repair: c.unknown_repair } : {}) };
     // Red only on a verdict state check while the reviewer check fails: no review or checks fix worker,
     // as out of draft. A review at the head with findings is not held: the hold is for a review that is
     // missing or stale, and those findings are the fix worker's whatever the reviewer check says.

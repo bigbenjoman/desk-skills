@@ -1,7 +1,7 @@
 // suite: pass phase: fix tries (the decision, run through the generator runner)
 // layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { decideFixTries, decideOutage, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
+import { decideFixTries, decideOutage, decideResumeConflicts, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
 import { reviewerGated } from '../desk/bin/pass/shared.mjs';
 import { parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -432,6 +432,67 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const lone = outage([three[0]], { recorded: null });
   t('DS-904 AC5 a check red on one PR only records nothing, and is that PR\'s', j([recordOf(lone) ?? null, applied(fixes([three[0]], lone)).map((a) => a.call.call).join()]), '[null,"requeue"]');
   t('DS-904 a dry run records nothing', recordOf(outage(three, { dry: true })), undefined);
+}
+
+// issue-1669: a Stage 7 resume whose PR is in conflict goes to a conflict fix try in place of the session,
+// or is parked naming the conflict; one the advance step parked goes the same way, or back to Stage 7
+// once its conflict is resolved by hand.
+{
+  const STAGE7_PARK = 'CONFLICT at Stage 7 — PR #1655 conflicts with main';
+  const seven = tk({ state: 'triaged', handoff: 'pending', handoff_stage: 7 });
+  const parkedT = tk({ state: 'parked', handoff_stage: 7, park: { question: STAGE7_PARK } });
+  const conflicting = pr([ok('tests')], { pr: 1655, mergeable: 'CONFLICTING', mergeState: 'DIRTY', isDraft: true });
+  const mergeable = { ...conflicting, mergeable: 'MERGEABLE', mergeState: 'BLOCKED' };
+  const rSnap = (resumes, fields = {}) => ({ resumes: resumes.map(([tt, s, o = {}]) => ({ t: tt, s, parked: false, notes: [], ...o })), base: 'main', dry: false,
+    conflictRows: { 'pr-conflict-reviewed': yes, 'pr-conflict-unreviewed': yes }, ...fields });
+  const ask = { 'pr-conflict-reviewed': yes, 'pr-conflict-unreviewed': { perm: 'ask', key: 'Resolve an unreviewed PR\'s conflict' } };
+  const RREADS = { 'human-seen': false, 'conflict-files': ['src/a.ts'], requeue: { ok: true, out: 'T-1 requeued' }, apply: true };
+  const rDrive = (s, answers = {}) => {
+    const handlers = Object.fromEntries([...Object.keys(RREADS), 'set', 'report', 'park'].map((type) => [type, (a) => {
+      const v = Object.hasOwn(answers, type) ? answers[type] : RREADS[type];
+      return typeof v === 'function' ? v(a) : v;
+    }]));
+    const report = { failed: [] };
+    const actions = runSteps({ name: 'stage 7 conflicts', snapshot: () => s, decide: decideResumeConflicts, handlers, report });
+    if (report.failed.length) { fails++; console.log(`FAIL a handler was missing: ${j(report.failed)}`); }
+    return actions;
+  };
+  const tried = rDrive(rSnap([[seven, conflicting]]));
+  const a = applied(tried)[0];
+  t('issue-1669 AC1 a Stage 7 resume on a CONFLICTING PR goes to its conflict fix try, the row read first, its files after', j(types(tried)), j(['human-seen', 'conflict-files', 'apply']));
+  t('issue-1669 AC1 the try is try 1 of 2 of a conflict fix at the head, with the files git named, not requeued as the ticket spawns as it is', j([a?.call?.call, a?.call?.fix?.kind, a?.call?.fix?.try, a?.call?.fix?.pr, a?.call?.fix?.head === HEAD, a?.call?.fix?.files, a?.parked]), j(['requeue', 'conflict', 1, 1655, true, ['src/a.ts'], false]));
+  t('issue-1669 AC1 it is neither parked nor reported apart from the try', j(types(tried).filter((x) => x === 'park' || x === 'report')), '[]');
+  const parkedTry = rDrive(rSnap([[parkedT, conflicting, { parked: true }]]));
+  t('issue-1669 AC1 a ticket the advance step parked is requeued for the try', j(applied(parkedTry).map((x) => x.parked)), '[true]');
+  // A §3 row that is not yes: parked, not resumed and not sent; its files are never read.
+  const rowPark = rDrive(rSnap([[seven, conflicting]], { conflictRows: ask }));
+  const pk = rowPark.find((x) => x.type === 'park');
+  t('issue-1669 under a conflict row that is not yes it is parked, no try sent and no files read', j([types(rowPark), pk?.question]), j([['human-seen', 'park', 'report'], 'CONFLICT — PR #1655 conflicts with main, and config §3 Resolve an unreviewed PR\'s conflict is "ask", so no fix worker resolves it and it is not resumed at Stage 7: resolve it on the PR\'s branch and push']));
+  t('issue-1669 and the report says it is parked', lines(rowPark, 'report')[0], `T-1: ${pk?.question}`);
+  t('issue-1669 a PR a person has seen reads the reviewed row', applied(rDrive(rSnap([[seven, conflicting]], { conflictRows: ask }), { 'human-seen': true })).length, 1);
+  const parkedRow = rDrive(rSnap([[parkedT, conflicting, { parked: true }]], { conflictRows: ask }));
+  t('issue-1669 one already parked stays parked: said as waiting, not parked again', j([types(parkedRow), parkedRow.find((x) => x.type === 'report')?.list]), j([['human-seen', 'report'], 'waiting']));
+  const dryRow = rDrive(rSnap([[seven, conflicting]], { conflictRows: ask, dry: true }));
+  t('issue-1669 a dry run parks nothing and says it would', j([types(dryRow).includes('park'), /^T-1 \(dry run\): would park instead of resuming at Stage 7: CONFLICT — /.test(lines(dryRow, 'report')[0])]), '[false,true]');
+  // A requeue note naming the conflict is the instruction to resolve it, whatever the row says.
+  const noted = rDrive(rSnap([[seven, mergeable, { notes: ['Merge main in and resolve the conflict with #1656.'] }]], { conflictRows: ask }));
+  t('issue-1669 AC1 a requeue note naming a conflict sends the try without reading the row', j(types(noted)), j(['conflict-files', 'apply']));
+  // Its conflict tries spent at this head: parked, naming the conflict.
+  const spentT = { ...seven, fix_tries: [{ kind: 'conflict', head: HEAD, try: 1 }] };
+  const spent = rDrive(rSnap([[spentT, conflicting]]));
+  t('issue-1669 with its conflict tries spent at this head it is parked naming the conflict', j([types(spent), /^CONFLICT — PR #1655 conflicts with main, and it is still in conflict with main after .*: not resumed at Stage 7/.test(spent.find((x) => x.type === 'park')?.question)]), j([['park', 'report'], true]));
+  t('issue-1669 one already parked so is only said as waiting', j(types(rDrive(rSnap([[{ ...parkedT, fix_tries: spentT.fix_tries }, conflicting, { parked: true }]])))), j(['report']));
+  // A try the pass did not write (its class waits) on a ticket about to resume: parked, not resumed.
+  const unwritten = rDrive(rSnap([[seven, conflicting]]), { apply: false });
+  t('issue-1669 a try the pass did not write parks a ticket about to resume rather than leave it to Stage 7', j([types(unwritten), /^CONFLICT — PR #1655 conflicts with main, and no conflict fix try was sent for it this pass/.test(unwritten.find((x) => x.type === 'park')?.question)]), j([['human-seen', 'conflict-files', 'apply', 'park', 'report'], true]));
+  t('issue-1669 one already parked is left parked', j(types(rDrive(rSnap([[parkedT, conflicting, { parked: true }]]), { apply: false }))), j(['human-seen', 'conflict-files', 'apply']));
+  // Not in conflict: a resume goes ahead untouched; a ticket the advance step parked is requeued to finish Stage 7.
+  t('issue-1669 a resume whose PR is not in conflict goes ahead, nothing read or written', j(types(rDrive(rSnap([[seven, mergeable]])))), '[]');
+  const back = rDrive(rSnap([[parkedT, mergeable, { parked: true }]]));
+  t('issue-1669 a parked one resolved by hand is requeued to finish Stage 7', j([types(back), lines(back, 'report')[0], back.find((x) => x.type === 'report')?.list]), j([['requeue', 'report'], 'T-1: PR #1655 no longer conflicts with main: requeued to finish Stage 7', 'recovered']));
+  const refused = rDrive(rSnap([[parkedT, mergeable, { parked: true }]]), { requeue: { ok: false, out: 'queue.mjs: busy\nT-1 is held behind T-0' } });
+  t('issue-1669 a refused requeue is said as waiting, with the refusal\'s last line', j([lines(refused, 'report')[0], refused.find((x) => x.type === 'report')?.list]), j(['T-1: PR #1655 no longer conflicts with main: its requeue was refused (T-1 is held behind T-0)', 'waiting']));
+  t('issue-1669 a dry run requeues nothing', j(types(rDrive(rSnap([[parkedT, mergeable, { parked: true }]], { dry: true })))), '[]');
 }
 
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }

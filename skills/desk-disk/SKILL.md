@@ -129,5 +129,7 @@ evicted, and the catalogue's eviction checks again for a `.git` first.
 - About to evict an iCloud folder the scan marked as holding a git repository
 - About to run `sudo` through the Bash tool or the `!` prefix
 - About to remove a worktree by hand rather than through `desk-cleanup` (step 2)
+- About to remove anything under `~/.config/desk/`: repo configs, credentials and the frozen bench
+  task sets (`~/.config/desk/bench/`) live there, and none is an offender
 - About to add `-a` to `docker volume prune`, or prune images
 - Hunting a new offender after a fix did not free space, before checking local snapshots

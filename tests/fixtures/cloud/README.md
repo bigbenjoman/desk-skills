@@ -16,6 +16,13 @@ Verification section. `tests/test_cloud_worker.mjs` reads them.
   things differ from `created.txt`: the output carries `ESC 7`/`ESC 8` (save/restore cursor),
   `ESC ( B` and `SI`, which `clean()` strips; and the session title (`No-TTY recording`) is the
   CLI's own summary, not the description passed in.
+- `trust-dialog.txt` and `external-imports.txt` (issue-1642): the two first-run prompts a start
+  waits on when its login has not answered them for the checkout, as the captured output of a start
+  that timed out ends. Not raw recordings: rebuilt by hand with terminal noise around the prompts'
+  wording from the 27 Nov reports, for `firstRunPrompt` to read.
 
 No route found gives a cloud session's tokens or cost: `claude --teleport <session-id>` replays the
 conversation, but `/cost` then shows only local turns, and no local transcript is written.
+- `prompt-no-review.txt`: `cloudPrompt`'s brief for a fixture ticket (K-1, no repo rules) as `main`
+  wrote it before issue-1555, generated from that commit's `cloud-worker.mjs`. A brief with no
+  desk-review must still equal it.

@@ -4,7 +4,8 @@
 # A running ticket's worker processes (found by the session id on their command line) are ended, what
 # its worktree holds is committed on its branch, and the ticket is held behind no blocker, which only
 # the person's start releases. A ticket with no running worker exits 11, a key the queue does not hold
-# exits 2, and both change nothing.
+# exits 2, and both change nothing. A worker paused at a usage limit whose process is gone is requeued
+# instead, its worktree committed first.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -162,6 +163,65 @@ out=$(DESK_REPO_ROOT="$T/repo" node "$B/pass.mjs" 2>&1); prc=$?
 kill -9 -- "-$WPID" 2>/dev/null
 wait "$stopper"; wait "$WPID" 2>/dev/null
 check "a pass started while a stop holds the lock refuses, naming it"    '[ $prc -ne 0 ] && [[ "$out" == *"queue.mjs stop S-13"* ]] && [ "$(f S-13 state)" = "\"parked\"" ]'
+
+# issue-1553 comment 2: a ticket worked in a cloud session has no process here. stop records its session
+# abandoned and hands it to needs-you's archive list, holding the ticket; requeue refuses it running, and
+# after the stop sends it back with no session, so the pass starts a new one.
+q add C-1; q set C-1 state=triaged lane=A location=cloud branch=feat/C-1
+q set C-1 state=running stage=cloud 'cloud={"session":"session_01abc","url":"https://claude.ai/code/session_01abc","name":"widgets-ticket-C-1","started":"2026-11-27T02:29:00Z"}'
+before=$(sum); q requeue C-1
+check "issue-1553 a running cloud ticket is not requeued, and is told to stop first" '[ $rc -ne 0 ] && [[ "$out" == *"running in a cloud session: queue.mjs stop C-1 first"* ]] && [ "$(sum)" = "$before" ]'
+q stop C-1
+check "issue-1553 stop finds a cloud worker: its session is recorded abandoned" '[ $rc -eq 0 ] && [[ "$out" == *"its cloud session https://claude.ai/code/session_01abc is recorded abandoned"* ]] && [ "$(f C-1 cloud.abandoned_at)" != null ]'
+check "issue-1553 the cloud ticket is held as a stopped worker is"          '[ "$(f C-1 state)" = "\"parked\"" ] && [ "$(f C-1 park.kind)" = "\"stopped\"" ] && [[ "$(f C-1 park.question)" == *"recorded abandoned"* ]]'
+check "issue-1553 the abandoned session goes on needs-you's archive list"     '[[ "$out" == *"needs-you asks you to archive it"* ]] && node -e "import(process.argv[1]).then((m) => process.exit(m.readPending(process.argv[2]).some((d) => d.session === \"session_01abc\" && d.key === \"C-1\") ? 0 : 1))" "$B/cloud-worker.mjs" "$T/state"'
+q requeue C-1
+check "issue-1553 after the stop, requeue works with no local worker"         '[ $rc -eq 0 ] && [ "$(f C-1 state)" = "\"triaged\"" ] && [ "$(f C-1 location)" = "\"cloud\"" ] && [ "$(f C-1 cloud)" = null ]'
+
+# A worker paused at a usage limit whose process is gone: stop finds nothing to end and the pass waits
+# for its own login's limit, so requeue sends it to a new worker, its worktree committed first.
+PAUSED='usage_paused={"type":"seven_day","resets_at":1796104800}'
+running U-1; q set U-1 "$PAUSED"
+echo "half done" > "$T/wt/U-1/half.txt"
+sleep 30 & pass=$!
+printf '{"pid":%s,"since":"now"}\n' "$pass" > "$T/state/orchestrator.lock"
+before=$(sum); q requeue U-1
+check "a usage-paused gone worker is not requeued while a pass runs"     '[ $rc -ne 0 ] && [[ "$out" == *"a pass is running now"* ]] && [ "$(sum)" = "$before" ] && [ -n "$(git -C "$T/wt/U-1" status --porcelain)" ]'
+kill "$pass"; wait "$pass" 2>/dev/null; rm -f "$T/state/orchestrator.lock"
+q requeue U-1
+sha=$(git -C "$T/wt/U-1" rev-parse HEAD)
+check "DS-1056 AC1: a usage-paused ticket whose worker is gone is requeued"            '[ $rc -eq 0 ] && [[ "$out" == *"U-1 requeued"* ]] && [ "$(f U-1 state)" = "\"triaged\"" ] && [ "$(f U-1 usage_paused)" = null ] && [ "$(f U-1 session_id)" = null ]'
+check "DS-1056 AC1: its worktree work is committed on its branch first"                '[ -z "$(git -C "$T/wt/U-1" status --porcelain)" ] && git -C "$T/wt/U-1" show --stat HEAD | grep -q half.txt && [ "$(git -C "$T/wt/U-1" rev-parse --abbrev-ref HEAD)" = fix/U-1 ] && [[ "$out" == *"committed as ${sha:0:12} on fix/U-1"* ]]'
+# DS-1056 AC4: nothing on it resumes or hands off its old session, so the next pass starts it fresh
+# (pass.mjs startsFresh) on the login that pass picks (repoLogin), not the limited one.
+fresh_u1=$(node --input-type=module -e 'import { toResume, toHandoff } from "'"$B"'/pass/shared.mjs"; import { readFileSync } from "node:fs"; const t = JSON.parse(readFileSync(process.argv[1], "utf8")).tickets["U-1"]; console.log(JSON.stringify([toResume(t), !!toHandoff(t), t.session_id, t.login_move ?? null, t.resume]))' "$DESK_QUEUE")
+check "DS-1056 AC4: the next pass starts it fresh, on the login it picks" '[ "$fresh_u1" = "[false,false,null,null,null]" ]'
+# It holds the pass lock from before the commit until it has saved, so a pass started meanwhile refuses
+# rather than resuming the old session over the requeue. A git that waits at the commit gives the pass
+# its moment; the lock is let go once the requeue is done.
+running U-4; q set U-4 "$PAUSED"; echo "wip" > "$T/wt/U-4/w.txt"
+mkdir -p "$T/slowgit"; real_git=$(command -v git)
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = commit ] && { : > "%s/slowgit/at-commit"; sleep 2; }; done\nexec "%s" "$@"\n' "$T" "$real_git" > "$T/slowgit/git"; chmod +x "$T/slowgit/git"
+PATH="$T/slowgit:$PATH" node "$B/queue.mjs" requeue U-4 > "$T/U-4.out" 2>&1 & requeuer=$!
+for _ in $(seq 1 60); do [ -e "$T/slowgit/at-commit" ] && break; sleep 0.05; done
+held=no; grep -q 'queue.mjs requeue U-4' "$T/state/orchestrator.lock" 2>/dev/null && held=yes
+pout=$(DESK_REPO_ROOT="$T/repo" node "$B/pass.mjs" 2>&1); prc=$?
+wait "$requeuer"; rc=$?; out=$(cat "$T/U-4.out")
+check "DS-1056 a pass started while it commits refuses, naming the requeue" '[ $held = yes ] && [ $prc -ne 0 ] && [[ "$pout" == *"queue.mjs requeue U-4"* ]]'
+check "DS-1056 and the requeue lands, then lets the pass lock go"         '[ $rc -eq 0 ] && [ "$(f U-4 state)" = "\"triaged\"" ] && [ "$(f U-4 resume)" = null ] && [ ! -e "$T/state/orchestrator.lock" ]'
+# Paused at a limit but its process still runs: refused as any live worker is.
+running U-2; q set U-2 "$PAUSED"; worker U-2
+echo "x" > "$T/wt/U-2/x.txt"
+before=$(sum); heads0=$(heads U-2); q requeue U-2
+check "DS-1056 AC2: a usage-paused ticket whose worker still runs is refused"         '[ $rc -ne 0 ] && [[ "$out" == *"U-2 is paused at a usage limit, but its worker is still live"* ]] && [ "$(sum)" = "$before" ] && [ "$(heads U-2)" = "$heads0" ] && kill -0 "$WPID"'
+kill -9 -- "-$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+# Running and not paused: refused, its worker live or not (the pass records how a gone one ended).
+running U-3; worker U-3
+before=$(sum); q requeue U-3
+check "DS-1056 AC3: a plain running ticket with a live worker is refused"             '[ $rc -ne 0 ] && [[ "$out" == *"U-3 is running: stop its worker first"* ]] && [ "$(sum)" = "$before" ] && kill -0 "$WPID"'
+kill -9 -- "-$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+q requeue U-3
+check "a plain running ticket with no worker is still the pass's"        '[ $rc -ne 0 ] && [[ "$out" == *"U-3 is running: stop its worker first"* ]] && [ "$(sum)" = "$before" ]'
 
 rm -rf "${T:?}"
 echo "queue stop: $PASS passed, $FAIL failed"

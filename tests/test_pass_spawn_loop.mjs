@@ -11,7 +11,7 @@ const AT = '2026-11-19T08:00:00.000Z';
 const ticket = (key, fields = {}) => ({ key, state: 'triaged', branch: `feat/${key}`, ...fields });
 // The loop's state as a candidate's turn comes.
 const snap = (tk, { attempts = 0, slots = 2, ...rest } = {}) => ({
-  t: tk, at: AT, dry: false, stop: false, attempts, slots,
+  t: tk, at: AT, dry: false, stop: false, attempts, slots, cloudAttempts: 0, cloudSlots: 4, cloudRunning: 0, cloudLimit: 4, cloudHeld: false,
   rerun: false, resume: false, handoff: false, dbDown: false, dbUp: false, fetchLimit: '60', ...rest,
 });
 const PICK = { login: { name: 'a' }, vars: {}, row: 'login=null', line: '' };
@@ -19,9 +19,9 @@ const SET_UP = { wt: '/wt/A', kept: false, renamed: '', ok: true, exitOk: true, 
 // What each read answers when a case gives nothing: the ticket spawns as nothing holds it.
 const READS = {
   'file-budget': false, 'fix-try-stale': false, shipped: null, fresh: true, placement: null, 'rows-needed': null, busy: null, 'lock-queue': false,
-  'claim-upload': { ok: true, up: null }, 'read-repos': [], login: PICK, setup: SET_UP,
+  'claim-upload': { ok: true, up: null }, 'read-repos': [], login: PICK, setup: SET_UP, 'cloud-archive-wait': 'its session is recorded abandoned',
 };
-const WRITES = ['set', 'report', 'busy-held', 'lock-queue-held', 'take-slot', 'remote-hung', 'db-down', 'skip', 'record-done', 'park', 'park-ask', 'hand-away', 'start'];
+const WRITES = ['set', 'report', 'busy-held', 'lock-queue-held', 'place', 'take-slot', 'take-cloud-slot', 'remote-hung', 'db-down', 'skip', 'record-done', 'park', 'park-ask', 'hand-away', 'start'];
 const handlersFor = (answers = {}, extra = {}) => Object.fromEntries([...Object.keys(READS), ...WRITES].map((type) => [type, (a) => {
   if (extra[type]) extra[type](a);
   const v = Object.hasOwn(answers, type) ? answers[type] : READS[type];
@@ -39,23 +39,27 @@ const sets = (as) => as.filter((a) => a.type === 'set').flatMap((a) => a.fields)
 // The runner over several candidates, as pass.mjs runs it: a slot taken counts at once, a ticket started
 // is running for the next candidate's per-file budget (a file `files` gives two tickets has one place),
 // and `onStart` stands in for the start's effects.
-function loop(cands, { slots = 2, files = {}, answers = {}, per = {}, onStart = () => {} } = {}) {
-  const st = { attempts: 0, running: [], stop: false, dbDown: false };
+// A full verdict goes on to the next candidate, as pass.mjs does: one on the other kind of slot may start.
+function loop(cands, { slots = 2, cloudSlots = 4, files = {}, answers = {}, per = {}, onStart = () => {} } = {}) {
+  const st = { attempts: 0, cloudAttempts: 0, running: [], stop: false, dbDown: false };
   const atBudget = (key) => (files[key] ?? []).some((f) => st.running.some((k) => (files[k] ?? []).includes(f)));
   const verdicts = [];
+  const said = [];
   for (const tk of cands) {
-    const s = snap(tk, { attempts: st.attempts, slots, stop: st.stop, dbDown: st.dbDown });
+    const s = snap(tk, { attempts: st.attempts, slots, stop: st.stop, dbDown: st.dbDown, cloudAttempts: st.cloudAttempts, cloudSlots, cloudRunning: st.cloudAttempts, cloudLimit: cloudSlots });
     const actions = runSteps({ name: 'spawn loop', snapshot: () => s, decide: decideSpawn,
-      handlers: handlersFor({ 'file-budget': (a) => atBudget(a.key), ...answers, ...(per[tk.key] ?? {}) }, { 'take-slot': () => { st.attempts += 1; }, 'db-down': () => { st.dbDown = true; } }),
+      handlers: handlersFor({ 'file-budget': (a) => atBudget(a.key), ...answers, ...(per[tk.key] ?? {}) },
+        { 'take-slot': () => { st.attempts += 1; }, 'take-cloud-slot': () => { st.cloudAttempts += 1; }, 'db-down': () => { st.dbDown = true; } }),
       report: { failed: [] } });
     const v = actions.at(-1);
-    verdicts.push({ key: tk.key, type: v.type, ...(v.stop ? { stop: true } : {}), ...(v.type === 'start' ? { how: v.how } : {}), setup: types(actions).includes('setup') });
+    said.push(...lines(actions));
+    verdicts.push({ key: tk.key, type: v.type, ...(v.stop ? { stop: true } : {}), ...(v.full ? { full: true } : {}), ...(v.type === 'start' ? { how: v.how } : {}), setup: types(actions).includes('setup') });
     if (v.type === 'skip' && v.stop) break;
     if (v.type === 'start') { st.running.push(tk.key); onStart(st, tk); }
   }
-  return { verdicts, attempts: st.attempts };
+  return { verdicts, attempts: st.attempts, cloudAttempts: st.cloudAttempts, said };
 }
-const brief = (vs) => vs.map((v) => `${v.key}:${v.type}${v.stop ? '(stop)' : ''}${v.how ? `(${v.how})` : ''}`).join(' ');
+const brief = (vs) => vs.map((v) => `${v.key}:${v.type}${v.stop ? '(stop)' : ''}${v.full ? '(full)' : ''}${v.how ? `(${v.how})` : ''}`).join(' ');
 
 // AC10: every case below runs with process starts and file writes trapped (pass_phase_trap.mjs).
 const { threw, calls } = withNoIo(() => {
@@ -66,7 +70,7 @@ const { threw, calls } = withNoIo(() => {
     t('AC1 and no further worker starts that pass', r.verdicts.filter((v) => v.type === 'start').length, 1);
     const { actions } = step(snap(ticket('B'), { stop: true }));
     t('AC1 a stopped loop reads nothing for the candidate', j(types(actions)), j(['skip']));
-    t('AC1 with no slot left, the loop stops too', j(step(snap(ticket('B'), { attempts: 2, slots: 2 })).verdict), j({ type: 'skip', key: 'B', stop: true }));
+    t('AC1 with no slot left, it is skipped as full, so a cloud ticket after it may still start', j(step(snap(ticket('B'), { attempts: 2, slots: 2 })).verdict), j({ type: 'skip', key: 'B', full: true }));
   }
 
   // AC2: two free slots, three candidates, the first shipped outside its worker.
@@ -197,7 +201,104 @@ const { threw, calls } = withNoIo(() => {
       t(`a cloud ticket back for a ${kind} fix try on its PR is set up for a local worker`, j([types(back.actions).includes('setup'), back.verdict.how]), j([true, 'local']));
     }
     t('so is one back for more work on its PR with no try', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 } }))).verdict.how, 'local');
+    // issue-1552: a fix try the pass routes to the cloud (pass/shared.mjs cloudFixRoute).
+    const onPr = ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'checks', try: 1, of: 2, pr: 31 }, cloud: { session: 'session_x', pr_at: AT } });
+    const sent = step(snap(onPr, { cloudFix: 'send', attempts: 2, slots: 2, cloudSlots: 0 }));
+    t('issue-1552 AC1 a fix try sent to its live session starts with no slot of either kind', j([sent.verdict.how, types(sent.actions).filter((x) => /slot|setup|login|place/.test(x))]), j(['send', []]));
+    t('issue-1552 the send is held as any fix try is, by the file budget and a stale try', j([step(snap(onPr, { cloudFix: 'send' }), { 'file-budget': true }).verdict.type, step(snap(onPr, { cloudFix: 'send' }), { 'fix-try-stale': true }).verdict.type]), j(['skip', 'skip']));
+    const anew = step(snap(onPr, { cloudFix: 'new' }));
+    t('issue-1552 AC2 a fix try whose session is gone starts a new cloud session, on a cloud slot', j([anew.verdict.how, types(anew.actions).includes('take-cloud-slot'), types(anew.actions).includes('setup')]), j(['cloud', true, false]));
+    t('issue-1552 AC2 with the cloud full it waits for a cloud session, as a cloud-able ticket does', j(step(snap(onPr, { cloudFix: 'new', cloudSlots: 0 })).verdict), j({ type: 'skip', key: 'A', full: true, cloud: true }));
+    t('issue-1552 AC2 and with a local slot spare all last pass it takes that, as placement says', step(snap(onPr, { cloudFix: 'new', cloudSlots: 0, localSpare: true })).verdict.how, 'local');
+    // Comment AC: a try that writes to the branch, other than a send, waits for the old session to be archived.
+    for (const [what, more] of [['a local one', { cloudFix: null }], ['a new cloud session', { cloudFix: 'new' }]]) {
+      const held = step(snap(onPr, { ...more, archiveWait: 'https://claude.ai/code/session_x' }), { 'cloud-archive-wait': 'its session is recorded abandoned' });
+      t(`issue-1552 ${what} waits, taking no slot, until the PR's session is archived`, j([held.verdict.type, types(held.actions).filter((x) => /slot|setup|login|place|start/.test(x)), types(held.actions).includes('cloud-archive-wait')]), j(['skip', [], true]));
+      t(`issue-1552 and ${what} says why and what clears it`, /cloud session https:\/\/claude\.ai\/code\/session_x may still push to: its session is recorded abandoned\. It starts once that session is archived/.test(lines(held.actions).join()), true);
+    }
+    const stale = step(snap(onPr, { cloudFix: null, archiveWait: 'session_x' }), { 'fix-try-stale': true });
+    t('issue-1552 a try its PR no longer needs is ended before the wait, and abandons no session', j([stale.verdict.type, types(stale.actions).includes('fix-try-stale'), types(stale.actions).includes('cloud-archive-wait')]), j(['skip', true, false]));
+    t('issue-1552 a send to the live session is not held by it', step(snap(onPr, { cloudFix: 'send', archiveWait: 'session_x' })).verdict.how, 'send');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
+  }
+
+  // #1564: a cloud session has its own limit, §3b "Cloud sessions at once", and takes no local slot.
+  {
+    const cloud = (key) => ticket(key, { location: 'cloud' });
+    const full = loop([ticket('A'), ticket('B'), cloud('C'), cloud('D')], { slots: 1, cloudSlots: 4 });
+    t('#1564 AC5 with the local slots full, a ready cloud ticket still starts', brief(full.verdicts), 'A:start(local) B:skip(full) C:start(cloud) D:start(cloud)');
+    t('#1564 AC1 and it takes a cloud session, not a local slot', j([full.attempts, full.cloudAttempts]), j([1, 2]));
+    const none = loop([ticket('A'), ticket('B'), cloud('C')], { slots: 0, cloudSlots: 1 });
+    t('#1564 with no local slot at all, the cloud ticket starts', brief(none.verdicts), 'A:skip(full) B:skip(full) C:start(cloud)');
+    const atLimit = loop([cloud('C'), cloud('D'), ticket('A')], { slots: 2, cloudSlots: 1 });
+    t('#1564 AC5 at the cloud limit, the next cloud ticket does not start, and a local one still does', brief(atLimit.verdicts), 'C:start(cloud) D:skip(full) A:start(local)');
+    t('#1564 AC4 its wait names the cloud limit, not the worker count', atLimit.said.at(-1),
+      'D: waits for a cloud session (1 of 1 running, §3b "Cloud sessions at once"); local slots go first to tickets that must run here. The next pass looks again');
+    // #1626 AC3: each kind takes its own slot, and a file shared across the two is still held.
+    const localWaits = loop([ticket('A'), ticket('B'), cloud('C')], { slots: 1, cloudSlots: 1 });
+    t('#1626 AC3 a cloud ticket starts while a local ticket ahead of it waits for a local slot', brief(localWaits.verdicts), 'A:start(local) B:skip(full) C:start(cloud)');
+    const cloudWaits = loop([cloud('C'), cloud('D'), ticket('A')], { slots: 1, cloudSlots: 1 });
+    t('#1626 AC3 and a local ticket starts while a cloud ticket ahead of it waits for a cloud session', brief(cloudWaits.verdicts), 'C:start(cloud) D:skip(full) A:start(local)');
+    const cross = loop([cloud('C'), ticket('A'), ticket('B')], { slots: 2, cloudSlots: 1, files: { C: ['skills/desk-checkout/SKILL.md'], A: ['skills/desk-checkout/SKILL.md'], B: ['b'] } });
+    t('#1626 AC3 a local ticket sharing a file with a cloud ticket started this pass is held, and the next local one starts', brief(cross.verdicts), 'C:start(cloud) A:skip B:start(local)');
+    const crossBack = loop([ticket('A'), cloud('C'), cloud('D')], { slots: 1, cloudSlots: 2, files: { A: ['f'], C: ['f'], D: ['d'] } });
+    t('#1626 AC3 and a cloud ticket sharing a file with a local one started this pass is held too', brief(crossBack.verdicts), 'A:start(local) C:skip D:start(cloud)');
+    const held = step(snap(cloud('C'), { cloudSlots: 0, cloudHeld: true }));
+    t('#1564 held by a hold on every spawn, it is skipped without the limit line', j([held.verdict, lines(held.actions)]), j([{ type: 'skip', key: 'C', full: true, cloud: true }, []]));
+    t('#1564 AC3 a stopped loop (the usage limit) holds a cloud start too', j(step(snap(cloud('C'), { stop: true })).verdict), j({ type: 'skip', key: 'C', stop: true }));
+    const start = step(snap(cloud('C'), { attempts: 2, slots: 2 }));
+    t('#1564 a cloud start takes a cloud session first', j(types(start.actions).slice(-2)), j(['take-cloud-slot', 'start']));
+    const resumed = step(snap(ticket('A', { location: 'cloud', resume: 'pending' }), { resume: true, cloudSlots: 0 }), { fresh: false });
+    t('#1564 a resume of a cloud-placed ticket runs here, on a local slot', j([resumed.verdict.how, types(resumed.actions).includes('take-slot')]), j(['resume', true]));
+  }
+
+  // issue-1587: a ticket is placed when it starts. Admission says only whether it can run in the cloud
+  // (cloud_ok); the cloud takes it while its cap has room, and a local slot only as placeAtStart allows.
+  {
+    const able = (key, f = {}) => ticket(key, { cloud_ok: true, ...f });
+    // A cloud start yields its place; a local one carries it on its start verdict, for pass.mjs to record once the worker runs.
+    const places = (as) => as.flatMap((a) => (a.type === 'place' ? [a] : a.type === 'start' && a.place ? [{ key: a.key, ...a.place }] : [])).map((a) => `${a.key}:${a.where}`);
+    const whyOf = (as) => (as.find((a) => a.type === 'place') ?? as.find((a) => a.type === 'start')?.place)?.why;
+    const roomy = step(snap(able('C')));
+    t('issue-1587 AC1 a cloud-able ticket goes to the cloud while the cloud cap has room', j([roomy.verdict.how, places(roomy.actions)]), j(['cloud', ['C:cloud']]));
+    t('issue-1587 AC4 and its place says why', roomy.actions.find((a) => a.type === 'place').why, 'cloud first: a cloud session is free (0 of 4 running, §3b "Cloud sessions at once")');
+    const local = step(snap(ticket('L'), { cloudSlots: 4 }));
+    t('issue-1587 AC1 a local-only ticket takes a local slot, the cloud free or not', j([local.verdict.how, places(local.actions)]), j(['local', ['L:local']]));
+    t('issue-1587 AC4 and its place says why', whyOf(local.actions), 'it must run on this computer');
+    const fullNoSpare = step(snap(able('C'), { cloudSlots: 0, cloudRunning: 4 }));
+    t('issue-1587 AC2 with the cloud cap full and no local slot free last pass, a cloud-able ticket waits, a local slot free now or not',
+      j([fullNoSpare.verdict, types(fullNoSpare.actions).includes('take-slot')]), j([{ type: 'skip', key: 'C', full: true, cloud: true }, false]));
+    const spare = step(snap(able('C'), { cloudSlots: 0, cloudRunning: 4, localSpare: true }));
+    t('issue-1587 AC2 with the cloud cap full and a local slot free all last pass, it takes a local slot',
+      j([spare.verdict.how, places(spare.actions), types(spare.actions).includes('take-slot')]), j(['local', ['C:local'], true]));
+    t('issue-1587 AC4 and its place says why', whyOf(spare.actions),'the cloud is full (4 of 4 running, §3b "Cloud sessions at once"), and a local slot stayed free all last pass');
+    const reserved = step(snap(able('C'), { cloudSlots: 0, cloudRunning: 4, localSpare: true, slots: 2, reserve: 2 }));
+    t('issue-1587 AC2 local slots go first to the local-only tickets still to come: one they would take holds it back', reserved.verdict.type, 'skip');
+    // A pass's order: two cloud-able tickets ahead of two local-only ones, one cloud session, two local slots.
+    const order = [able('C1'), able('C2'), ticket('L1'), ticket('L2')];
+    const mixed = loop(order, { slots: 2, cloudSlots: 1 });
+    t('issue-1587 AC1 AC2 cloud first for the cloud-able, and the local slots to the local-only ones', brief(mixed.verdicts), 'C1:start(cloud) C2:skip(full) L1:start(local) L2:start(local)');
+    const personSnap = { cloudSlots: 0, cloudRunning: 4, localSpare: true, personUse: true };
+    const inUse = step(snap(able('C'), personSnap));
+    t('issue-1587 AC3 while the person uses the computer, a cloud-able ticket goes only to the cloud, a local slot free or not', j(inUse.verdict), j({ type: 'skip', key: 'C', full: true, cloud: true }));
+    t('issue-1587 AC3 and its wait says so', lines(inUse.actions)[0], 'C: you\'re using this computer, so it goes only to the cloud, which is full (4 of 4 running, §3b "Cloud sessions at once"). The next pass looks again');
+    t('issue-1587 AC3 a local-only ticket still takes the floor\'s slot', step(snap(ticket('L'), { ...personSnap, slots: 1 })).verdict.how, 'local');
+    t('issue-1587 AC3 a cloud-able ticket still goes to a free cloud session', step(snap(able('C'), { personUse: true })).verdict.how, 'cloud');
+    t('issue-1587 a ticket admitted before cloud_ok (location=cloud) is still cloud-able', step(snap(ticket('O', { location: 'cloud' }), { cloudSlots: 0, cloudRunning: 4, localSpare: true })).verdict.how, 'local');
+    const lockFull = step(snap(able('C')), { 'lock-queue': true });
+    t('issue-1587 a ticket placed in the cloud is never held by this computer\'s test-lock queue',
+      j([lockFull.verdict.how, types(lockFull.actions).includes('lock-queue')]), j(['cloud', false]));
+    const spareSnap = { cloudSlots: 0, cloudRunning: 4, localSpare: true };
+    t('issue-1587 one placed locally still waits on a full test-lock queue', step(snap(able('C'), spareSnap), { 'lock-queue': true }).verdict.type, 'skip');
+    const dbDown = step(snap(able('C'), { ...spareSnap, dbDown: true }));
+    t('issue-1587 a local start the database holds records no place, so it stays cloud-able', j([dbDown.verdict.type, places(dbDown.actions)]), j(['skip', []]));
+    const hung = step(snap(able('C'), spareSnap), { setup: { hung: 'origin hung' } });
+    t('issue-1587 nor does one whose worktree setup found origin hung', j([hung.verdict.type, places(hung.actions)]), j(['skip', []]));
+    const setUp = step(snap(able('C'), spareSnap));
+    t('issue-1587 a local start records no place in the step: its start verdict carries it, for pass.mjs to record once the worker runs',
+      j([types(setUp.actions).includes('place'), setUp.verdict.place?.where]), j([false, 'local']));
+    const back = step(snap(able('C', { result: { pr: 31 } }), { cloudSlots: 4 }));
+    t('issue-1587 one back for more work on its PR runs here, not the cloud', back.verdict.how, 'local');
   }
 });
 t('AC10 the step starts no process and writes nothing', j(calls), '[]');

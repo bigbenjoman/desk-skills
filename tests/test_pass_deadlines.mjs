@@ -29,11 +29,11 @@ const writes = (p) => p.actions.filter((x) => x.type === 'set').length;
 // One pass of the sweep over `tickets` at `mins`, its writes laid back onto the tickets as the queue
 // would keep them. `slotHeld` is pass.mjs's: the handoffs full slots held, with their holders.
 // -> { actions, lines (the waiting lines), waits (the lines that are nobody's), failed }
-function pass(tickets, mins, { dry = false, slotHeld = {} } = {}) {
+function pass(tickets, mins, { dry = false, slotHeld = {}, collisionHeld = {} } = {}) {
   const report = { failed: [], waiting: [], waits: [] };
   const byKey = Object.fromEntries(tickets.map((x) => [x.key, x]));
   const actions = runPhase({
-    name: 'deadlines', snapshot: () => ({ tickets: byKey, at: at(mins), dry, slotHeld }), decide: decideDeadlines, report,
+    name: 'deadlines', snapshot: () => ({ tickets: byKey, at: at(mins), dry, slotHeld, collisionHeld }), decide: decideDeadlines, report,
     handlers: {
       set: (a) => { for (const f of a.fields) { const i = f.indexOf('='); byKey[a.key][f.slice(0, i)] = JSON.parse(f.slice(i + 1)); } },
       report: (a) => report[a.list].push(a.line),
@@ -184,6 +184,28 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   const late = handedOff('L');
   pass([late], 0);
   t('issue-1491 AC3 a handoff with no slot hold is past its deadline as today', pass([late], 26).lines.length, 1);
+}
+
+// #1515: a handoff a running ticket's files hold back waits on that collision, naming the file and the
+// ticket, with no deadline until the file frees.
+{
+  const clash = { collisionHeld: { C: [{ file: 'desk/bin/logins.mjs', with: ['issue-1423'] }] } };
+  const LINE = 'C: held by collision on desk/bin/logins.mjs with issue-1423 — its Stage 4b session starts once that ticket stops running, and its 15-minute deadline runs from then';
+  const c = handedOff('C');
+  pass([c], 0, clash);
+  const held = pass([c], 106, clash);
+  t('#1515 AC4 106 minutes after its handoff with a running ticket holding its file, it names the collision and is not past its deadline',
+    j([held.waits, held.lines]), j([[LINE], []]));
+  t('#1515 AC4 its wait records the collision and no deadline', j(c.waits),
+    j({ handoff: { since: at(0), escalate_to: 'requeue', stage: '4b', collision: [{ file: 'desk/bin/logins.mjs', with: ['issue-1423'] }] } }));
+  const freed = pass([c], 110);
+  t('#1515 once the file frees, its clock starts then, unescalated', j([c.waits, freed.lines]),
+    j([{ handoff: { since: at(110), deadline: at(125), escalate_to: 'requeue', stage: '4b' } }, []]));
+  const e = handedOff('E2');
+  pass([e], 0);
+  pass([e], 16);
+  const now = pass([e], 20, { collisionHeld: { E2: [{ file: 'a.mjs', with: ['X-1'] }] } });
+  t('#1515 an escalated handoff later held by a collision says the collision instead, and leaves WAITING ON YOU', j([now.lines.length, now.waits.length, e.waits.handoff.escalated ?? null]), j([0, 1, null]));
 }
 
 // DS-902: a running worker's progress (a stage change, commit or push, kept as progress_at by the advance

@@ -44,6 +44,7 @@ t('#1526 a script that is not one simple command, bun test, or another tool gets
   ['bun run both', 'bun test', 'bun run lint', 'pytest -x', 'turbo test']);
 t('#1526 sh -c with one simple command is bounded inside its string', bound(['sh', '-c', 'bun run test'], L, { scripts }).words, ['sh', '-c', 'bun run test --maxWorkers=4']);
 t('#1526 sh -c with a compound string is left alone', bound(['sh', '-c', 'jest && true'], L, { scripts }).words, ['sh', '-c', 'jest && true']);
+t('DS-1053 a command run-for.mjs times is bounded inside it', bound(['/usr/bin/node', '/x/run-for.mjs', '5000', '--', 'sh', '-c', 'bun run test'], L, { scripts }).words, ['/usr/bin/node', '/x/run-for.mjs', '5000', '--', 'sh', '-c', 'bun run test --maxWorkers=4']);
 t('#1526 no limit for the tool adds nothing', bound(['turbo', 'run', 'test'], { jest: 4, turbo: null }, { scripts }).added, []);
 t('#1526 analyse names the script a run goes through', analyse(['bun', 'run', 'test'], { scripts })?.via, 'test');
 t('#1526 AC4 unbounded proposes the default bounds with no limits', unbounded('turbo run lint', { root: null }), { tool: 'turbo', why: 'starts turbo run with no --concurrency', bounded: 'turbo run lint --concurrency=1' });
@@ -100,13 +101,18 @@ r = wl(['test', '--', 'sh', '-c', 'sleep 0.2; exit 3'], { DESK_RUN_PEAK: 'on', D
 t('#1526 AC5 a measured run exits with its command\'s status', r.status, 3);
 r = wl(['tsc', '--', 'eslint', '.'], { DESK_RUN_PEAK: 'on', DESK_PEAK_SAMPLE_MS: '20' });
 t('#1526 AC5 and passes its output through', r.stdout.trim(), 'eslint .');
+const reads = usedGiB() != null;
+t('#1597 a measured run where memory does not read (macOS) says it is unmeasured, and only there', r.stderr.includes('memory peak is not measured'), !reads);
 const peaks = readLog({ dir: leases }).peaks;
 const seen = peaks.map((e) => [e.ticket, e.step, e.class, e.code, typeof e.peak_rss_gb, e.worktree]);
-const reads = usedGiB() != null;
 t('#1526 AC5 each measured run is one release line with its ticket, step, exit and peak', seen,
   reads ? [['T-1526', 'test', 'test', 3, 'number', realpathSync(app)], [null, 'lint', 'tsc', 0, 'number', realpathSync(app)]] : []);
 r = wl(['test', '--', 'true']);
 t('#1526 AC5 an unmeasured run logs no peak', readLog({ dir: leases }).peaks.length, peaks.length);
+// #1567 where no flock holds fd 9 (stock macOS), a measured run hands on none, so a descriptor node
+// opened for itself at fd 9 is never passed to the command.
+r = spawnSync('node', [join(root, 'desk', 'bin', 'locked-run.mjs'), 'run', 'tsc', '--', 'sh', '-c', 'echo ran; exit 4'], { cwd: app, env: env({ DESK_PEAK_SAMPLE_MS: '20' }), encoding: 'utf8' });
+t('#1567 a measured run outside flock runs its command and keeps its status', [r.status, r.stdout.trim()], [4, 'ran']);
 t('#1526 AC5 usedGiB reads MemTotal less MemAvailable', usedGiB('MemTotal: 4194304 kB\nMemFree: 1 kB\nMemAvailable: 1048576 kB\n'), 3);
 
 // desk-q's note names the heaviest runs of the last day, heaviest first.

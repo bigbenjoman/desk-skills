@@ -23,7 +23,7 @@
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
 //   full  - a foundational file (tests/run.sh and the environment it gives suites, this script and the
-//           untracked.mjs it reads, the bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs and config-schema.mjs unless the
+//           untracked.mjs and import-closure.mjs it reads, the bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs and config-schema.mjs unless the
 //           change only adds exports), a root file that is not a document or a script (.gitignore, a lockfile), a
 //           deleted or renamed file, or a changed file no suite claims
 //   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it;
@@ -69,6 +69,8 @@ import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { deskUntracked } from '../desk/bin/untracked.mjs';
+import { uncommented, jsImports } from '../desk/bin/import-closure.mjs';
+export { importClosure } from '../desk/bin/import-closure.mjs';
 
 export const ALWAYS = ['test_lint.sh'];
 // The suites that check every test file against the repo's rules for them (a suite's layer label against
@@ -76,7 +78,7 @@ export const ALWAYS = ['test_lint.sh'];
 // leads to. A helper counts too: the layer check reads every tests/ helper a suite imports.
 const TEST_CHECKS = ['test_scope_sections.mjs'];
 // Shared by everything: a change here can move any suite.
-const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/, /^desk\/bin\/untracked\.mjs$/];
+const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/, /^desk\/bin\/(untracked|import-closure)\.mjs$/];
 // Foundational modules whose change, when it only adds exports, reaches only the suites using them.
 const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs', 'desk/bin/config-schema.mjs']);
 // Modules a change to named functions and constants narrows by name (with --by-name).
@@ -893,13 +895,6 @@ export function decide(changes, map, { l3Direct = false, byName = false } = {}) 
 // Python, `"$DIR/x.sh"`, `${DIR}/x`, `$(dirname "$0")/x` in shell. A name in a message or a comment
 // is neither, so it is not followed.
 const quoted = (s) => [...s.matchAll(/(['"`])([^'"`$]*)\1/g)].map((m) => m[2]);
-// A script's text without its whole-line `//` and `#` comments and, outside shell, its block comments.
-// Line comments go first, so a `/*` inside one opens no block; a block opens only at a line's start or
-// after a space, `;` or `,`, so a `/*` glued to a quote, a word or `}` in a string opens none.
-function uncommented(path, text) {
-  const lines = String(text).split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');
-  return /\.(mjs|cjs|js|py)$/.test(path) ? lines.replace(/(^|[\s;,])\/\*[\s\S]*?\*\//gm, '$1 ') : lines;
-}
 // The shell functions in a script's comment-free `code` whose bodies match `re`, or call one that does
 // -> [name]; or null when it is not a shell script, or its top-level code (which every script sourcing
 // it runs) does either.
@@ -928,12 +923,7 @@ export function loads(path, text, { importsOnly = false } = {}) {
   const out = [];
   if (/\.(mjs|cjs|js|py)$/.test(path)) {
     const code = uncommented(path, t);
-    if (!/\.py$/.test(path)) {
-      // `import x from './a.mjs'`, `} from './a.mjs'`, `import './a.mjs'`: no quote before the keyword on
-      // its line, so a fixture string that holds an import is not one.
-      for (const m of code.matchAll(/^[^'"`\n]*\b(?:from|import)\s+(['"])([^'"]+)\1/gm)) out.push(m[2]);
-      for (const m of code.matchAll(/\bimport\s*\(\s*(['"`])([^'"`$]+)\1\s*\)/g)) out.push(m[2]);
-    }
+    if (!/\.py$/.test(path)) out.push(...jsImports(code));
     if (importsOnly) return out.join('\n');
     for (const m of code.matchAll(/\b(?:join|resolve)\(([^()]*)\)/g)) { const q = quoted(m[1]); if (q.length) out.push(q.join('/')); }
     for (const m of code.matchAll(/new URL\(\s*(['"`])([^'"`]+)\1\s*,\s*import\.meta\.url/g)) out.push(m[2]);
@@ -945,19 +935,6 @@ export function loads(path, text, { importsOnly = false } = {}) {
     for (const m of l.matchAll(/(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\))\/([A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*)/g)) out.push(m[1]);
   }
   return out.join('\n');
-}
-
-// Every repo file `entry` loads through the relative imports loads() finds (static and `import()`),
-// itself included, as sorted repo paths. `read(path)` returns a repo file's text.
-export function importClosure(entry, read) {
-  const seen = new Set(), todo = [entry];
-  while (todo.length) {
-    const p = todo.pop();
-    if (seen.has(p)) continue;
-    seen.add(p);
-    for (const spec of loads(p, read(p), { importsOnly: true }).split('\n')) if (/^\.\.?\//.test(spec)) todo.push(posix.join(posix.dirname(p), spec));
-  }
-  return [...seen].sort();
 }
 
 const git = (root, args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 64 << 20 });

@@ -88,6 +88,10 @@ const REWRITTEN = [
   // the lever-off refutation runs through codex-exec.mjs review, which takes `--cd` after `review` and no other codex flag
   ['DS-857', 'after `--sandbox read-only`, so codex reads the PR', 1],
   ['DS-857', '**No `-c`, `--config`, `-m` or `-p`.**', 1],
+  // a desk script is reached through <desk bin>: CLAUDE_PLUGIN_ROOT's, else ~/.claude's (tests/test_plugin_root_paths.mjs)
+  ['issue-1559', 'node ~/.claude/desk/bin/review-post.mjs <n>', 1],
+  // trimmed so the core holds the plugin root line under its cap (references/plugin.md has the rest)
+  ['issue-1561', 'heading from the results file, tested by', 1],
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
@@ -185,7 +189,7 @@ t(`DS-427 AC2 the documented codex commands are read (${codexCalls.length})`, co
 for (const [f, l] of codexCalls) t(`DS-427 AC2 ${f}: "${l.slice(0, 50)}…" carries --skip-git-repo-check`, l.startsWith('codex exec --sandbox read-only --skip-git-repo-check '), true);
 // DS-857 AC5: the finder and refuter calls run through codex-exec.mjs review, which sets those flags
 // itself and ends the call at a timeout.
-const reviewCalls = ['phase-3-find.md', 'phase-4-refute.md'].filter((f) => read(f).split('\n').some((l) => l.startsWith('node ~/.claude/desk/bin/codex-exec.mjs review \'')));
+const reviewCalls = ['phase-3-find.md', 'phase-4-refute.md'].filter((f) => read(f).split('\n').some((l) => l.startsWith('node <desk bin>/codex-exec.mjs review \'')));
 t('DS-857 AC5 the lever-off finder and refuter calls are codex-exec.mjs review', reviewCalls.join(' '), 'phase-3-find.md phase-4-refute.md');
 
 // DS-584: the requirements seat tags a gap code when a settled call, its own text, a same-review

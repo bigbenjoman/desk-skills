@@ -28,8 +28,8 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
-import { splitRow } from './machine.mjs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { isRealDay, localDay, splitRow } from './machine.mjs';
 
 export const TOOLS = Object.freeze(['claude', 'codex']);
 export const RULES = Object.freeze(['in rotation', 'standby', 'off']);
@@ -51,6 +51,102 @@ export const loginsFolder = (tool) => TOOL[tool].logins();
 // tool it opens, or null.   -> { shell, then }
 export const signInParts = (login) => TOOL[login.tool].signIn(login);
 export const signInCommand = (login) => { const p = signInParts(login); return p.then ? `${p.shell}, then ${p.then}` : p.shell; };
+// The one cloud start a person runs on a Claude login in a terminal, to answer what a first start there
+// asks (whether the session may use the environment's variables), which no background start can.
+export const cloudStartCommand = (login) => `${signInParts(login).shell} --cloud "<any prompt>"`;
+
+// The first-run prompts a Claude Code start waits on, which nothing answers from a background process:
+// `name` is how a person is told which one, `seen` what of it the start's captured output shows, `key`
+// the field Claude Code records its answer under in the login's .claude.json projects[<checkout>]
+// (none for the cloud environment's variables, which are not recorded there), `answer` what to choose,
+// and `cloud` whether the start that shows it is `claude --cloud` rather than plain `claude`.
+export const FIRST_RUN = Object.freeze({
+  trust: { name: 'the folder-trust dialog ("Is this a project you created or one you trust?")', seen: /project you created or one you trust|Yes, I trust this folder|Do you trust the files in this folder/i,
+    key: 'hasTrustDialogAccepted', answer: 'choose "Yes, I trust this folder"', cloud: false },
+  imports: { name: 'the external imports prompt ("Allow external CLAUDE.md file imports?")', seen: /Allow external CLAUDE\.md file imports/i,
+    key: 'hasClaudeMdExternalIncludesApproved', answer: 'choose "Yes" to allow them', cloud: false },
+  env: { name: 'the environment-variables prompt (whether the cloud session may use the environment\'s variables)', seen: /environment variables/i,
+    key: null, answer: 'answer it', cloud: true },
+});
+const SHELL_SAFE = /^[\w@%+=:,./~-]+$/;
+const shellWord = (s) => (SHELL_SAFE.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
+// `p` as a `cd` argument: its `~` form when that needs no quoting, else the absolute path quoted, as a
+// quoted `~` is never expanded.
+const cdWord = (p) => (SHELL_SAFE.test(tilde(p)) ? tilde(p) : shellWord(p));
+// The first-run prompts `ids` named in order, and what a person runs once in a terminal to answer them
+// for `login` in `checkout`: one start answers them all, as each shows after the one before.
+//   -> { names, fix }
+export function firstRunFix(ids, login, checkout) {
+  const ps = [ids].flat().map((id) => FIRST_RUN[id]);
+  const start = ps.some((p) => p.cloud) ? cloudStartCommand(login) : signInParts(login).shell;
+  return { names: ps.map((p) => p.name).join(', then '),
+    fix: `cd ${cdWord(checkout)} && ${start}, then ${ps.map((p) => p.answer).join(', then ')}, and exit` };
+}
+// A cloud start's park line for first-run prompts `ids`; `gave` is what a start that timed out said.
+export function firstRunPark(ids, { who, login, checkout, gave = null }) {
+  const { names, fix } = firstRunFix(ids, login, checkout);
+  return `claude --cloud on ${who} ${gave ? `gave ${gave}: it is waiting on` : 'would wait on'} ${names}, which nothing answers in the background. Run this once in a terminal, from the checkout: ${fix}`;
+}
+// The park line for a cloud start `s` (cloud-worker.mjs startCloud) that failed: the first-run prompt
+// a timed-out start waits on, else a timeout's one-time cloud start, else what it said.
+export function cloudStartPark(s, { who, login, checkout }) {
+  if (s.waits) return firstRunPark(s.waits, { who, login, checkout, gave: s.error });
+  if (s.timedOut) return `claude --cloud on ${who} gave ${s.error}. A first cloud start on a login asks whether the session may use the environment's variables, and nothing answers that in the background: run this once in a terminal and answer it: ${cloudStartCommand(login)}`;
+  return s.error;
+}
+
+// The files `@path` imports in a CLAUDE.md, outside code, that exist, followed up to 5 deep as Claude
+// Code follows them.   -> absolute paths
+const IMPORT = /(?:^|\s)@((?:[^\s\\]|\\ )+)/g;
+function importsOf(file, depth = 0, seen = new Set()) {
+  if (depth > 5 || seen.has(file)) return [];
+  seen.add(file);
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch { return []; }
+  const prose = text.replace(/^(```|~~~)[\s\S]*?^\1/gm, '').replace(/`[^`\n]*`/g, '');
+  const out = [];
+  for (const m of prose.matchAll(IMPORT)) {
+    const raw = m[1].replace(/\\ /g, ' ');
+    const p = raw.startsWith('~/') ? join(home(), raw.slice(2)) : resolve(dirname(file), raw);
+    try { if (!statSync(p).isFile()) continue; } catch { continue; }
+    out.push(p, ...importsOf(p, depth + 1, seen));
+  }
+  return out;
+}
+// The files outside `checkout` that its CLAUDE.md chain under `login` imports: the login's own
+// CLAUDE.md, each folder's above the checkout, and the checkout's.
+export function externalImports(login, checkout) {
+  const root = resolve(checkout);
+  const chain = [join(login.configDir ?? TOOL.claude.dir(), 'CLAUDE.md')];
+  const above = [];
+  for (let d = dirname(root); ; d = dirname(d)) { above.unshift(d); if (dirname(d) === d) break; }
+  for (const d of above) chain.push(join(d, 'CLAUDE.md'), join(d, 'CLAUDE.local.md'));
+  chain.push(join(root, 'CLAUDE.md'), join(root, '.claude', 'CLAUDE.md'), join(root, 'CLAUDE.local.md'));
+  const inside = (p) => p === root || p.startsWith(`${root}/`);
+  return [...new Set(chain.flatMap((f) => importsOf(f)).filter((p) => !inside(p)))];
+}
+
+// The first-run prompts a start of `login` in `checkout` would wait on, from its .claude.json, which is
+// read and never written: `trust` unless projects[<checkout or a folder above it>].hasTrustDialogAccepted
+// is true (Claude Code takes a trusted parent as trusting the folders under it), and `imports` when the
+// CLAUDE.md chain imports a file outside the checkout and projects[<checkout>]
+// .hasClaudeMdExternalIncludesApproved is not true. Only `true` counts as answered. A missing file is
+// a login that answered nothing; one that does not parse is `unread`, and asks nothing of the caller.
+//   -> { gaps: ['trust' | 'imports'], file, unread? }
+export function firstRunGaps(login, checkout) {
+  const file = claudeJsonPath(login);
+  let projects = {};
+  if (existsSync(file)) {
+    try { projects = JSON.parse(readFileSync(file, 'utf8'))?.projects ?? {}; } catch (e) { return { gaps: [], file, unread: e.message }; }
+  }
+  const root = resolve(checkout);
+  const gaps = [];
+  let trusted = false;
+  for (let d = root; ; d = dirname(d)) { if (projects[d]?.[FIRST_RUN.trust.key] === true) { trusted = true; break; } if (dirname(d) === d) break; }
+  if (!trusted) gaps.push('trust');
+  if (projects[root]?.[FIRST_RUN.imports.key] !== true && externalImports(login, root).length) gaps.push('imports');
+  return { gaps, file };
+}
 
 // `in rotation`, `In-Rotation` and `in  rotation` are one rule; anything else is null.
 const ruleWords = (v) => String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');
@@ -101,11 +197,12 @@ export function feeUsd(v) {
   return /^\d+(\.\d+)?$/.test(s) ? Number(s) : undefined;
 }
 
-// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A
+// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir, at }], errors: ["line <n>: <why>"] }. A
 // malformed row is named and left out; a tool with no good row keeps its default login, except Claude in
 // a file with an Account column (`accounts`), which stays in multi-account mode with no login rather
-// than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder) names, so
-// setting a rule on one puts back its own folder.
+// than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder, Removed)
+// names, so setting a rule on one puts back its own folder; `at` is the day it was removed (YYYY-MM-DD),
+// null where the table predates that column or says `-`.
 export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
@@ -128,10 +225,13 @@ export function parseSubscriptions(text, { exists = true } = {}) {
       else fees.push({ at, tool, name, fee: { plan: plan && plan !== '-' ? plan : null, usd } });
       return;
     }
-    if (header.join('|') === 'tool|name|folder') {
-      const [tool, name, folder] = c;
-      if (c.length !== 3 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name and a folder`);
-      else removed.push(removedLogin(tool, name, folder));
+    const dated = header.join('|') === 'tool|name|folder|removed';
+    if (dated || header.join('|') === 'tool|name|folder') {
+      const [tool, name, folder, day = '-'] = c;
+      const when = day === '-' || day === '' ? null : day;
+      if (c.length !== (dated ? 4 : 3) || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name, a folder${dated ? ' and the day it was removed' : ''}`);
+      else if (when && !isRealDay(when)) errors.push(`${at}: ${tool} ${name}: removed "${when}" wants a day as YYYY-MM-DD, or -`);
+      else removed.push(removedLogin(tool, name, folder, when));
       return;
     }
     const pinned = header.join('|') === 'tool|name|folder|account|rule';
@@ -167,7 +267,9 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
-const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
+const removedLogin = (tool, name, folder, at = null) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir, at }; };
+// `rows` as Removed table entries, removed today (this computer's date).
+const asRemoved = (rows) => rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir, at: localDay() }));
 
 export const readSubscriptions = (path) => (path && existsSync(path)
   ? parseSubscriptions(readFileSync(path, 'utf8'))
@@ -216,8 +318,8 @@ export function renderSubscriptions(logins, removed = []) {
     'new work of the repos following the default starts there only while the default is full.',
     '`desk-env logins default` changes a tool\'s default, `desk-env logins set claude <name> fallback`',
     'sets the fallback and `desk-env logins remove` removes a login, each keeping the previous copy as',
-    'subscriptions.md.bak; `desk-env logins check` confirms each is signed in. No token or credential',
-    'is kept here.',
+    'subscriptions.md.bak, and a migration keeps a dated copy; `desk-env logins check` confirms each is',
+    'signed in. No token or credential is kept here.',
     ...(pinned ? ['Account is the Claude account a folder belongs to: desk uses the folder only while it is signed in to that account.'] : []),
     '',
     ...(pinned ? ['| Tool | Name | Folder | Account | Rule |', '|---|---|---|---|---|'] : ['| Tool | Name | Folder | Rule |', '|---|---|---|---|']),
@@ -239,10 +341,11 @@ export function renderSubscriptions(logins, removed = []) {
       '',
       'Logins desk leaves alone: removed from the rules, with their folder and sign-in kept, so a folder',
       'under ~/.claude-logins or ~/.codex-logins is not found again. Setting a rule on one lists it again.',
+      'Removed is the day it was removed, `-` where that was not recorded.',
       '',
-      '| Tool | Name | Folder |',
-      '|---|---|---|',
-      ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.name)} | ${cell(r.folder)} |`),
+      '| Tool | Name | Folder | Removed |',
+      '|---|---|---|---|',
+      ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.name)} | ${cell(r.folder)} | ${cell(r.at ?? '-')} |`),
       '',
     ] : []),
   ].join('\n');
@@ -622,14 +725,14 @@ export function removeLogin(subs, { tool, name, check, repos = () => [] }) {
     throw new Error(`logins: claude ${name} is the only Claude account desk has, and removing it would put desk back on ${tilde(TOOL.claude.dir())}: add another account first, or sign this one in again (${signInCommand(target)})`);
   }
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
-  return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
+  return { text: renderSubscriptions(logins, [...subs.removed, ...asRemoved([target])]), login: target };
 }
 
 // ---- pinning a folder to its account ---------------------------------------------------------
 const underLogins = (l) => l.dir.startsWith(`${loginsFolder(l.tool)}/`);
 // A listed ~/.claude row has no place once pins are written: it goes to Removed, as migration does.
 const defaultRows = (subs) => subs.logins.filter((l) => l.tool === 'claude' && !l.configDir);
-const removedFrom = (subs, rows) => [...subs.removed, ...rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir }))];
+const removedFrom = (subs, rows) => [...subs.removed, ...asRemoved(rows)];
 // `logins` once the ~/.claude rows are gone: where one of them was Claude's default, the folder pinned
 // to the account ~/.claude was signed in to (`live`) takes over as the default, and every other Claude
 // login is unused; with no such folder, nothing is marked and the first in rotation reads as default.
@@ -645,7 +748,8 @@ const ownLive = (checked) => checked.logins.find((l) => l.tool === 'claude' && !
 // The file's text with one Claude folder pinned to the email it is signed in to. A folder the file does
 // not list is added unused (a Removed one with its own folder, or a folder of that name under
 // ~/.claude-logins); a listed one keeps its rule. `check` is -> checkLogins' result.
-//   -> { text, login }, or throws with the reason
+//   -> { text, login, migrated }, or throws with the reason; migrated is true when the pin also moves a
+//   ~/.claude row to Removed, which makes the write a migration
 export function pinLogin(subs, { tool, name, check }) {
   if (tool !== 'claude') throw new Error(`logins: only a Claude login is pinned, not ${tool}`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
@@ -672,7 +776,7 @@ export function pinLogin(subs, { tool, name, check }) {
   const logins = listed ? kept.map((l) => (l.dir === changed.dir ? changed : l)) : [...kept, changed];
   const removed = removedFrom({ removed: subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)) }, defaultRows(subs));
   const kept2 = defaultKept(subs, logins, ownLive(checked));
-  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir) };
+  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir), migrated: defaultRows(subs).length > 0 };
 }
 
 // True when the file exists, has no pins, and lists or finds a Claude folder under ~/.claude-logins that
@@ -705,6 +809,33 @@ export function migratePins(subs, check) {
   const live = claude.find((l) => !l.configDir)?.liveEmail?.toLowerCase() ?? null;
   const rows = own.length ? own : [defaultLogin('claude')];
   return { text: renderSubscriptions(defaultKept(subs, [...listed, ...found], live), removedFrom(subs, rows)), hint: live && !pins.has(live) ? live : null };
+}
+
+// What a migration changes, for the person to read: `before -> after` for each login of `was` (the file
+// as read) whose rule or section differs in `text` (the file to be written), then, for a ~/.claude
+// login moved to Removed, why and the command that lists it again.   -> [line]
+export function migrationLines(was, text) {
+  const now = parseSubscriptions(text);
+  const same = (l) => (o) => o.tool === l.tool && o.dir === l.dir;
+  const lines = [], moved = [];
+  for (const l of was.logins) {
+    const after = now.logins.find(same(l));
+    const gone = !after && now.removed.find(same(l));
+    const word = after ? ruleWord(after) : gone ? 'Removed' : null;
+    if (!word || word === ruleWord(l)) continue;
+    lines.push(`${l.tool} ${l.name} (${l.folder}): ${ruleWord(l)} -> ${word}`);
+    if (gone && l.tool === 'claude' && !l.configDir) moved.push(l);
+  }
+  // ~/.claude moved to Removed though the file never listed it (migratePins' fallback): said too.
+  for (const r of now.removed) {
+    if (r.tool !== 'claude' || r.dir !== defaultLogin('claude').dir || was.logins.some(same(r)) || was.removed.some(same(r))) continue;
+    lines.push(`${r.tool} ${r.name} (${r.folder}): not listed -> Removed`);
+    moved.push(r);
+  }
+  for (const l of moved) {
+    lines.push(`${l.tool} ${l.name} (${l.folder}) moved to Removed: once a Claude login is pinned to an account, desk signs in only through pinned folders, never ${l.folder}. To list it again: desk-env logins set ${l.tool} ${l.name} unused`);
+  }
+  return lines;
 }
 
 // ---- what the person is shown ----------------------------------------------------------------

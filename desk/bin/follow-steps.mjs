@@ -167,9 +167,11 @@ export function followPrompt({ slug, repo, t, steps, bin, dirs }) {
     '',
     'A step passes when what it says to check holds. It fails when it does not, or when you could not read what it needs: say what stopped you. It is pending when what it needs has not finished yet (a run or check still queued or in progress): it is checked again later. Give the evidence for each: the run URL, or the file path you read it from.',
     '',
+    'A test run\'s log may print only each suite\'s total line (`test_x.sh … 52 checks passed, 0 failed`), never the checks inside it. When a step names a line the log does not print (a per-check line such as `ok AB-1 AC4`), do not judge the step by that line: give `absent`, with the line it named, the run\'s conclusion and the total line of the suite that check belongs to (`""` where you found none). desk decides it from those.',
+    '',
     'A job that passes is not evidence that the step inside it ran: an advisory job can pass while its step crashed. Read the step\'s own output. A step is broken when what it needs ran and produced nothing to judge: the step that makes the evidence crashed, scanned no page, or collected no tests. Then give `source`, that step and its job (`"<job> › <step>"`), and say in `found` what it printed; and look for an open issue in this repo that tracks it (`gh issue list --state open --search "<words from the step or its error>"`): give its number as `issue`, or `null` when none does. A broken step is checked again later.',
     '',
-    `End your reply with one line, at the start of a line: \`${FOLLOW_RESULT_MARK} {"steps": [{"n": <step number>, "result": "pass", "fail", "pending" or "broken", "found": "<what you found, one line>", "evidence": "<run URL or file path>", "source": "<job › step, for broken>", "issue": <number or null, for broken>}]}\`. A step you leave out counts as failed.`,
+    `End your reply with one line, at the start of a line: \`${FOLLOW_RESULT_MARK} {"steps": [{"n": <step number>, "result": "pass", "fail", "pending" or "broken", "found": "<what you found, one line>", "evidence": "<run URL or file path>", "source": "<job › step, for broken>", "issue": <number or null, for broken>, "absent": {"line": "<the line it named>", "conclusion": "<the run's conclusion>", "total": "<the suite's total line>"}, for a named line the log does not print}]}\`. A step you leave out counts as failed.`,
   ].join('\n');
 }
 
@@ -186,10 +188,27 @@ export function startFollow({ state, slug, repo, bin, t, steps, dirs, cwd, env =
 const line = (s, n = 300) => { const x = String(s ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
 const RESULTS = ['pass', 'fail', 'pending', 'broken'];
 
+// A step naming a line its run's log does not print (a per-check line, where CI logs only each suite's
+// total) is decided by the run and that total, from the checker's `absent` ({ line, conclusion, total }):
+// passed (suite total) where the run concluded success and the total says 0 failed, else failed.
+// -> { result, found }, or null where the checker gave no `absent` naming a line (an empty one filled
+// in from the template leaves its own result standing), or found the step pending or broken.
+const failedIn = (total) => { const m = /\b(\d+)\s+failed\b/i.exec(total); return m ? Number(m[1]) : NaN; };
+function bySuiteTotal(x) {
+  const a = x?.absent;
+  if (!a || typeof a !== 'object' || x.result === 'pending' || x.result === 'broken') return null;
+  const named = line(a.line, 120);
+  if (!named) return null;
+  const total = line(a.total, 200);
+  const conclusion = line(a.conclusion, 40).toLowerCase();
+  if (conclusion === 'success' && failedIn(total) === 0) return { result: 'pass', found: `passed (suite total): ${named} is not in the log, which prints the suite's total: ${total}` };
+  return { result: 'fail', found: `${named} is not in the log, and ${total ? `the suite's total reads ${total}` : 'no suite total was found'}${conclusion ? ` (run ${conclusion})` : ''}` };
+}
+
 // What a finished checker found, from its output file: { cost, results: [{ step, after?, result, found,
 // evidence, source?, issue? }] } in the run's step order, `result` pass, fail, pending or broken (with
-// the broken step as `source` and the issue tracking it, or null), a step it gave no result for read as
-// failed; or { cost, error } where it left no result line, with `limit: true` where the usage
+// the broken step as `source` and the issue tracking it, or null), a step naming a line its log does not
+// print decided by its suite's total (bySuiteTotal), a step it gave no result for read as failed; or { cost, error } where it left no result line, with `limit: true` where the usage
 // limit stopped it.
 export function readFollow(out, steps) {
   const { cost, error, limit, payload } = readMarked(out, FOLLOW_RESULT_MARK);
@@ -199,9 +218,10 @@ export function readFollow(out, steps) {
   const said = { pass: 'it holds', fail: 'it does not hold', pending: 'it has not finished yet', broken: 'what it needs ran and produced nothing to judge' };
   const results = steps.map((s, i) => {
     const x = got.get(i);
-    const result = RESULTS.includes(x?.result) ? x.result : 'fail';
+    const total = bySuiteTotal(x);
+    const result = total?.result ?? (RESULTS.includes(x?.result) ? x.result : 'fail');
     const issue = Number.isInteger(x?.issue) && x.issue > 0 ? x.issue : null;
-    return { ...s, result, found: line(x?.found) || (x ? said[result] : 'the checker gave no result for it'), evidence: line(x?.evidence) || out,
+    return { ...s, result, found: total?.found ?? (line(x?.found) || (x ? said[result] : 'the checker gave no result for it')), evidence: line(x?.evidence) || out,
       ...(result === 'broken' ? { source: line(x?.source, 120) || 'the step that makes its evidence', issue } : {}) };
   });
   return { cost, results };

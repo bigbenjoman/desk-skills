@@ -156,6 +156,7 @@ of this skill. `/desk-update` reinstalls it.
 |---|---|
 | `~/.claude/projects` | session transcripts — `claude -r` resumes from them, and they outlive every worktree |
 | `<backups dir>` (config §2) | rollback artefacts for staging writes and resume-file copies |
+| `~/.config/desk/` | repo configs, credentials, and the frozen bench task sets under `~/.config/desk/bench/` |
 | the database images §4 Local database uses (e.g. `postgres:<version>`) | the dump tooling `desk-dev` needs; `docker system df` calls them reclaimable and they are not |
 | Docker containers | small, and needed the moment work starts |
 | Swap itself | report only (see 5) |

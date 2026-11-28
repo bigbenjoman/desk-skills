@@ -539,7 +539,7 @@ mkcfg "http://127.0.0.1:$PORT" yes
 rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
 r KAN-301 C '[]' '"lane_challenge":{"verdict":"INCONCLUSIVE","reason":"x","failed_reads":["git show main:src/a.ts: denied"]}'
 r KAN-302 C '[]' '"lane_challenge":{"verdict":"CONFIRM","reason":"y"}'
-r KAN-303 A '[]' '"lint":[{"severity":"blocking","rule":"criteria","message":"no acceptance criteria: x"},{"severity":"advisory","rule":"section","message":"no Verification y"}],"ben_steps":[{"step":"apply the migration to production","blocker":"apply migration 0042 to production, unblocking KAN-303"}]'
+r KAN-303 A '[]' '"lint":[{"severity":"blocking","rule":"criteria","message":"no acceptance criteria: x"},{"severity":"advisory","rule":"section","message":"no Verification y"}],"ben_steps":[{"step":"apply the migration to production","blocker":"apply migration 0042 to production, unblocking KAN-303"}],"merge_holds":[{"glob":".github/**","why":"workflow change","files":[".github/workflows/ci.yml"]}]'
 node "$B/queue.mjs" init t3 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-301 KAN-302 KAN-303 2>&1); rc=$?
 check "inconclusive challenge: plan marks the lane UNCHECKED" \
@@ -552,6 +552,8 @@ check "plan: a blocking lint finding is shown under its ticket, an advisory one 
   'printf "%s\n" "$out" | grep -qxF "  ! lint (blocking): no acceptance criteria: x" && ! printf "%s" "$out" | grep -q "no Verification y"'
 check "DS-242 AC4: a step only the person can take is shown with its proposed blocker, and the ticket keeps lane A" \
   'printf "%s\n" "$out" | grep -qxF "  ! your step: apply the migration to production — proposed blocker: apply migration 0042 to production, unblocking KAN-303" && printf "%s" "$out" | grep -q "^KAN-303  lane A "'
+check "issue-1530 AC1: a planned file under a merge hold is shown under its ticket, naming the path and that the merge is the person's" \
+  'printf "%s\n" "$out" | grep -qxF "  ! needs your merge: .github/workflows/ci.yml — its PR touches \`.github/**\` (workflow change), so the merge driver leaves the merge to you" && [ "$(printf "%s\n" "$out" | grep -c "needs your merge")" = 1 ]'
 check "plan: the LINT section lists the ticket before spawning" 'printf "%s\n" "$out" | grep -A1 "^LINT — 1 ticket" | grep -qxF "  KAN-303: 1 blocking finding(s)"'
 check "inconclusive challenge: parked, park question says unchecked, no open answers to block a re-lane" \
   '[ "$(qg KAN-301 .state)" = parked ] && [[ "$(qg KAN-301 .park.question)" == "lane C UNCHECKED"* ]] && [ "$(qg KAN-301 .open_questions)" = 0 ] && [[ "$(qg KAN-302 .park.question)" == "lane C —"* ]] && [ "$(qg KAN-303 .state)" = triaged ]'

@@ -150,6 +150,8 @@ t('AC4 an empty pin prints none', deskEnv([], { DESK_LEVERS: 'none' }), 'on: non
 // ---- spawn-worker.sh ------------------------------------------------------------------------------
 const KEY = 'pin-thing';
 const calls = () => (existsSync(join(T, 'calls')) ? readFileSync(join(T, 'calls'), 'utf8').trim().split('\n') : []);
+// Whether the stub has finished writing a call: its last write is the newline that closes the line.
+const callWritten = () => existsSync(join(T, 'calls')) && readFileSync(join(T, 'calls'), 'utf8').endsWith('\n');
 const seen = () => (existsSync(join(T, 'levers-env')) ? readFileSync(join(T, 'levers-env'), 'utf8').trim().split('\n') : []);
 const reset = () => { for (const f of ['calls', 'levers-env', 'values-env']) rmSync(join(T, f), { force: true }); rmSync(join(STATE, 'workers', `${KEY}.preflight.json`), { force: true }); };
 const pinned = (set, values) => seed({ [KEY]: { key: KEY, state: 'running', ...(set ? { levers: { set, ...(values ? { values } : {}), at: '2026-11-14T00:00:00.000Z' } } : {}) } });
@@ -209,8 +211,10 @@ const start = (task) => {
   reset();
   rmSync(runs, { force: true });
   const x = spawn(SID, { DESK_CONFIG: BOTH, AUTOPILOT_TASK: task, AUTOPILOT_BRANCH: `feat/${KEY}` });
-  // The stub writes levers-env before calls: wait for both, or a slow runner reads an empty call.
-  for (let i = 0; i < 100 && !(seen().length && calls().length); i++) sleep(100);
+  // The stub writes levers-env before calls, and writes its call in pieces (printf | tr, then the
+  // closing newline): wait for both, and for that newline, or a slow runner reads an empty or a
+  // part-written call.
+  for (let i = 0; i < 100 && !(seen().length && callWritten()); i++) sleep(100);
   const line = existsSync(runs) ? JSON.parse(readFileSync(runs, 'utf8').trim().split('\n').pop()) : null;
   return { status: x.status, out: x.stdout + x.stderr, levers: line?.levers, env: seen()[0], call: calls()[0] ?? '' };
 };

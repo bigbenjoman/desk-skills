@@ -1,7 +1,7 @@
-// suite: desk-checkout collectors (window, repo scopes, Claude, GitHub and Jira activity)
+// suite: desk-checkout collectors (window, repo scopes, Claude, GitHub, Jira and work-log activity)
 // layer: L2
 // Runs the check-out scripts under skills/desk-checkout/scripts/ (window.py, desk_repos.py,
-// claude_activity.py, github_activity.py, jira_activity.py) against a throwaway HOME, a scratch desk
+// claude_activity.py, github_activity.py, jira_activity.py, worklog_activity.py) against a throwaway HOME, a scratch desk
 // config root and fake `gh` and `desk-jira` on PATH: no real GitHub, Jira or ~/.claude.
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, utimesSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -35,10 +35,10 @@ const config = (slug, rows, perms) => {
   ].join('\n'));
 };
 const jira = (project, dest) => ({ Tracker: 'jira', 'Jira site': 'acme.atlassian.net', 'Jira project': project, 'Ticket key pattern': `${project}-[0-9]+`, Priority: 'customfield_10207', 'Check-out destination': dest });
-config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
-config('acme__lib', jira('LIB', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'ask' });
+config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes', 'read-others': 'yes' });
+config('acme__lib', jira('LIB', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'ask', 'read-others': 'ask' });
 config('acme__other', jira('OTH', '#elsewhere'), { 'read-transcripts': 'no', 'read-own-work': 'no' });
-config('acme__side', { Tracker: 'none', 'Check-out destination': 'none' }, { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
+config('acme__side', { Tracker: 'none', 'Check-out destination': 'none', 'Merge holds': '.github/**: changes CI`, `src/owned/**: needs code-owner approval','State checks': '🔐 Review gate: approval' }, { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
 
 // The check-out is written from acme/app's main checkout.
 const APP = join(R, 'acme__app');
@@ -59,8 +59,31 @@ ${body}
   chmodSync(f, 0o755);
 };
 fake('gh', `
+// A rate limit: a call whose arguments contain $FAKE_LIMIT_MATCH fails with GitHub's secondary
+// limit for its first $FAKE_LIMIT_TIMES calls (counted in limit.count), with a Retry-After header
+// under -i when $FAKE_RETRY_AFTER is set; -i prints a header block before the body, as gh api -i does.
+if (process.env.FAKE_LIMIT_MATCH && args.join(' ').includes(process.env.FAKE_LIMIT_MATCH)) {
+  const cf = process.env.FAKE_DIR + '/limit.count';
+  const n = existsSync(cf) ? Number(readFileSync(cf, 'utf8')) : 0;
+  if (n < Number(process.env.FAKE_LIMIT_TIMES)) {
+    require('node:fs').writeFileSync(cf, String(n + 1));
+    if (args.includes('-i')) process.stdout.write('HTTP/2.0 403 Forbidden\\r\\n' + (process.env.FAKE_RETRY_AFTER ? 'Retry-After: ' + process.env.FAKE_RETRY_AFTER + '\\r\\n' : '') + '\\r\\n{"message":"You have exceeded a secondary rate limit."}');
+    process.stderr.write('gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)\\n');
+    process.exit(1);
+  }
+}
+if (args.includes('-i')) process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n');
 if (args[0] === 'api' && args[1] === 'user') { console.log('me'); process.exit(0); }
-if (args[0] === 'api' && args.includes('search/issues')) out(args.find((a) => a.startsWith('q=')).includes('reviewed-by') ? 'reviewed' : 'mine');
+const q = args.find((a) => a.startsWith('q=')) || '';
+const page = (args.find((a) => a.startsWith('page=')) || 'page=1').slice(5);
+if (args[0] === 'api' && args.includes('search/issues') && q.includes('is:issue')) {
+  // Issue searches by kind and page; a page or repo with no fake has no results.
+  const k = (q.includes('commenter:') ? 'issues_commented' : q.includes('closed:>=') ? 'issues_closed_' + q.match(/repo:(\\S+)/)[1].replace('/', '_') : 'issues_mine') + (page === '1' ? '' : '_p' + page);
+  if (existsSync(process.env.FAKE_DIR + '/' + k + '.json')) out(k); else process.stdout.write('{"items":[],"total_count":0}');
+} else if (args[0] === 'api' && args.includes('search/issues') && q.includes('is:merged')) out('merged_' + q.match(/repo:(\\S+)/)[1].replace('/', '_'));
+else if (args[0] === 'api' && args.includes('search/issues')) out(q.includes('reviewed-by') ? 'reviewed' : 'mine');
+else if (args[0] === 'api' && args[1] === '--paginate') out(args[2].replace(/[^A-Za-z0-9]+/g, '_'));
+else if (args[0] === 'api' && args[1] === '-H') out(args[3].replace(/[^A-Za-z0-9]+/g, '_'));
 else if (args[0] === 'api') out(args[1].replace(/[^A-Za-z0-9]+/g, '_'));
 else if (args[0] === 'pr' && args[1] === 'view') out('pr_' + args[4].replace('/', '_') + '_' + args[2]);
 else process.exit(1);`);
@@ -278,6 +301,81 @@ const tail = script('claude_activity.py', '--day', DAY, '--session', 'aaaa', '--
 has('claude: --session prints the last replies in full', tail, 'Opened https://github.com/acme/app/pull/345 for APP-12.');
 lacks('claude: only the last n', tail, 'Fixed it.');
 
+// #1646 --window-turns: a session that ran through the day is listed turn by turn, not by its end alone.
+session('mmmm1313-long', APP, [
+  user(at(1), 'Run the orchestrator for the APP batch please'),
+  said(at(1, 5), 'Started.', [{ name: 'Bash', input: { command: 'ls' } }]),
+  said(at(2), 'EARLY-RESULT batch planned with 4 tickets'),
+  user(at(12), 'How is it going with APP-200 and the rest?'),
+  said(at(12, 5), `MIDDAY-REPLY ${'x'.repeat(800)} REPLY-TAIL`),
+  user(at(22), 'Wrap up for the night and summarise'),
+  said(at(22, 10), 'All merged.'),
+]);
+const plain = script('claude_activity.py', '--day', DAY).stdout;
+lacks('#1646 without --window-turns a long session shows only its end', plain, 'EARLY-RESULT');
+const turns = script('claude_activity.py', '--day', DAY, '--window-turns');
+t('#1646 --window-turns: exits 0', turns.status, 0);
+const wt = turns.stdout;
+has('#1646 a session spanning more than half the window is listed turn by turn', wt, "turns in the window (3; a long session, so each prompt with Claude's final reply):");
+has('#1646 each prompt in the window, with its time', wt, `  - ${new Date(at(1)).toTimeString().slice(0, 5)} asked: Run the orchestrator for the APP batch please`);
+has("#1646 with Claude's final reply of that turn, not its first", wt, '    replied: EARLY-RESULT batch planned with 4 tickets');
+lacks('#1646 an earlier reply in the same turn is not the final one', wt, 'replied: Started.');
+has('#1646 a long reply is cut', wt, `replied: MIDDAY-REPLY ${'x'.repeat(486)}…`);
+lacks('#1646 past the reply limit', wt, 'REPLY-TAIL');
+has('#1646 the last turn too', wt, 'replied: All merged.');
+has('#1646 a short session is still summarised by its end', wt, 'ended with: Opened https://github.com/acme/app/pull/345 for APP-12.');
+const small = script('claude_activity.py', '--day', DAY, '--window-turns', '--turn-threshold', '10').stdout;
+t('#1646 a session over the size threshold is listed turn by turn too', small.includes('asked: Please fix APP-12, the login redirect loop\n    replied: Opened'), true);
+
+// #1536: a batch's headless sessions fold into one line per ticket; interactive ones keep their blocks.
+const tools3 = [{ name: 'Bash', input: { command: 'ls' } }, { name: 'Read', input: {} }, { name: 'Edit', input: {} }];
+const headless = (id, wt, branch, prompt, h, reply = 'Done.') => session(id, join(R, 'acme__app-worktrees', wt),
+  [{ ...user(at(h), prompt), entrypoint: 'sdk-cli', ...(branch && { gitBranch: branch }) }, { ...said(at(h, 10), reply, tools3), entrypoint: 'sdk-cli' }]);
+headless('nnnn0001-triage', 'APP-300', null, 'Triage ticket APP-300 against the repo and print the lane', 18, 'TRIAGE-BLOCK lane A for APP-300');
+headless('nnnn0002-worker', 'APP-300', 'fix/APP-300-totals', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-300. Work the ticket.', 19, 'WORKER-BLOCK opened the PR');
+headless('nnnn0003-fixtry', 'APP-300', 'fix/APP-300-totals', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-300. Your task is fix try 1 of 2 on PR #400.', 20);
+headless('nnnn0004-branch', 'APP-301', 'fix/APP-301-dates', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-301, near APP-999, APP-999 and APP-999.', 19);
+headless('nnnn0005-mention', 'scratch', null, 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-302, see APP-302 and APP-303.', 19);
+headless('nnnn0006-noticket', 'scratch2', null, 'Plan the next batch for this repo please', 19, 'NOTICKET-BLOCK');
+const folded = script('claude_activity.py', '--day', DAY);
+t('#1536 claude: exits 0', folded.status, 0);
+const fo = folded.stdout;
+has('#1536 AC1 a ticket\'s triage, worker and fix try fold into one line: key, stages and session count', fo, '- APP-300: triage, worker, fix try (3 sessions)');
+lacks('#1536 AC1 with no full block for any of them', fo, 'TRIAGE-BLOCK');
+lacks('#1536 AC1 nor the worker\'s', fo, 'WORKER-BLOCK');
+lacks('#1536 AC1 nor a session header', fo, 'session nnnn0002');
+has('#1536 a session folds under the ticket in its branch name, over one mentioned more', fo, '- APP-301: worker (1 session)');
+lacks('#1536 so not under that one', fo, '- APP-999');
+has('#1536 with no ticket in its branch, under its most-mentioned key', fo, '- APP-302: worker (1 session)');
+has('#1536 the fold lists every batch session', fo, '## Headless batch sessions, one line per ticket (5 sessions)');
+lacks('#1536 a session naming no ticket stays out', fo, 'NOTICKET-BLOCK');
+has('#1536 and is counted as left out', fo, '(1 headless session naming no ticket omitted)');
+has('#1536 AC2 an interactive session keeps its full block', fo, 'asked:\n  - Please fix APP-12, the login redirect loop');
+t('#1536 AC2 and the session count in the heading is still the blocks\' alone', fo.split('\n')[0], plain.split('\n')[0]);
+const blocksBefore = plain.split('\n').filter((l) => l.startsWith('## ')).length;
+t('#1536 AC3 six batch sessions add one heading and three lines, not six blocks', fo.split('\n').filter((l) => l.startsWith('## ')).length - blocksBefore, 1);
+const stage = probe(`import claude_activity as c
+s = lambda p: c.batch_stage({'prompts': [p] if p else []})
+print(json.dumps([s('A first triage pass put ticket APP-1 in lane B'), s('Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-1. This session starts at Stage 7'), s('Run the orchestrator'), s(None)]))`);
+t('#1536 a challenge triage pass is triage, a handed-off session a worker, anything else batch', JSON.stringify(stage), JSON.stringify(['triage', 'worker', 'batch', 'batch']));
+// A repo with no ticket key pattern names its batch tickets issue-<n>: those fold too, not drop out.
+headless('nnnn0007-issue', 'issue-12', 'fix/issue-12-totals', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is issue-12.', 21);
+headless('nnnn0008-issue', 'scratch3', null, 'Triage ticket issue-13 against the repo, see issue-13 and issue-14', 21);
+const issues = script('claude_activity.py', '--day', DAY).stdout;
+has('#1536 a batch on an issue-<n> branch folds under that key', issues, '- issue-12: worker (1 session)');
+has('#1536 with no branch, under its most-mentioned issue-<n>', issues, '- issue-13: triage (1 session)');
+has('#1536 and neither is counted as naming no ticket', issues, '(1 headless session naming no ticket omitted)');
+// Triage runs in the person's main checkout, so its branch is whatever that checkout has out, not the ticket triaged.
+headless('nnnn0009-triage', 'main', 'fix/APP-342-other-work', 'Triage ticket APP-310 in acme/app. Read-only: change nothing', 22);
+headless('nnnn0010-triage', 'main', 'fix/APP-342-other-work', 'Triage ticket APP-311 in acme/app. Read-only: change nothing', 22);
+headless('nnnn0011-challenge', 'main', 'fix/issue-1500-y', 'A first triage pass put ticket APP-312 in lane B. Challenge it', 22);
+const triaged = script('claude_activity.py', '--day', DAY).stdout;
+has('#1536 a triage session folds under the ticket its opening names, not the main checkout\'s branch', triaged, '- APP-310: triage (1 session)');
+has('#1536 each triaged ticket keeps its own line', triaged, '- APP-311: triage (1 session)');
+has('#1536 a challenge pass too', triaged, '- APP-312: triage (1 session)');
+lacks('#1536 so the checkout\'s branch ticket gets none of them', triaged, '- APP-342');
+lacks('#1536 nor an issue-<n> branch', triaged, '- issue-1500');
+
 // github_activity.py: the user's PRs that moved on the day, grouped by scope.
 const pr = (repo, number, title, extra = {}) => ({ repository_url: `https://api.github.com/repos/${repo}`, number, title, state: 'open', created_at: before, user: { login: 'me' }, pull_request: {}, ...extra });
 put('mine', { items: [
@@ -299,6 +397,38 @@ put('pr_acme_side_14', { reviewDecision: 'REVIEW_REQUIRED', isDraft: true, statu
 put('reviewed', { items: [pr('acme/app', 20, 'Alice\'s change', { user: { login: 'alice' } }), pr('acme/app', 21, 'Reviewed last week', { user: { login: 'bob' } })] });
 put('repos_acme_app_pulls_20_reviews', [{ user: { login: 'me' }, state: 'CHANGES_REQUESTED', submitted_at: at(14) }, { user: { login: 'carol' }, state: 'APPROVED', submitted_at: at(14) }]);
 put('repos_acme_app_pulls_21_reviews', [{ user: { login: 'me' }, state: 'APPROVED', submitted_at: before }]);
+// Merged PRs in the window per repo, split by author; one merged before the window is not counted.
+put('merged_acme_app', { items: [
+  pr('acme/app', 10, 'Fix the redirect', { state: 'closed', pull_request: { merged_at: at(15) } }),
+  pr('acme/app', 30, 'Alice merged', { state: 'closed', user: { login: 'alice' }, pull_request: { merged_at: at(11) } }),
+  pr('acme/app', 31, 'Bob merged', { state: 'closed', user: { login: 'bob' }, pull_request: { merged_at: at(12) } }),
+  pr('acme/app', 32, 'Merged last week', { state: 'closed', pull_request: { merged_at: before } }),
+] });
+put('merged_acme_side', { items: [pr('acme/side', 40, 'Side merged', { state: 'closed', pull_request: { merged_at: at(16) } })] });
+// #1646 issues: yours (two pages, 150 found), others' you commented on (a capped search), and others'
+// closed in a repo read, kept only where you closed them.
+const iss = (repo, number, title, extra = {}) => ({ repository_url: `https://api.github.com/repos/${repo}`, number, title, state: 'open', created_at: before, updated_at: at(9), user: { login: 'me' }, labels: [], comments: 0, ...extra });
+const filler = (from, n) => Array.from({ length: n }, (_, i) => iss('acme/app', from + i, `Old issue ${from + i}`));
+put('issues_mine', { total_count: 150, items: [iss('acme/app', 1, 'Login loop', { created_at: at(9), labels: [{ name: 'bug' }] }), ...filler(1002, 99)] });
+put('issues_mine_p2', { total_count: 150, items: [
+  ...filler(1101, 47),
+  iss('acme/app', 148, 'Mine closed by someone else', { state: 'closed', closed_at: at(15) }),
+  iss('acme/app', 149, 'Elsewhere', { repository_url: 'https://api.github.com/repos/acme/other', created_at: at(9) }),
+  iss('acme/app', 150, 'checkout: collect more sources', { created_at: at(10) }),
+] });
+put('repos_acme_app_issues_148', { closed_by: { login: 'sam' } });
+put('issues_commented', { total_count: 1200, items: [
+  iss('acme/app', 70, 'Flaky export', { user: { login: 'alice' }, comments: 2, labels: [{ name: 'chore' }] }),
+  iss('acme/app', 71, 'Commented last week', { user: { login: 'alice' }, comments: 1 }),
+] });
+put('repos_acme_app_issues_70_comments', [{ user: { login: 'me' }, created_at: at(11) }, { user: { login: 'me' }, created_at: at(12) }, { user: { login: 'alice' }, created_at: at(12) }]);
+put('repos_acme_app_issues_71_comments', [{ user: { login: 'me' }, created_at: before }]);
+put('issues_closed_acme_app', { total_count: 2, items: [
+  iss('acme/app', 80, 'Bob\'s bug', { user: { login: 'bob' }, state: 'closed', closed_at: at(16), labels: [{ name: 'bug' }] }),
+  iss('acme/app', 81, 'Closed by Carol', { user: { login: 'bob' }, state: 'closed', closed_at: at(16) }),
+] });
+put('repos_acme_app_issues_80', { closed_by: { login: 'me' } });
+put('repos_acme_app_issues_81', { closed_by: { login: 'carol' } });
 const github = script('github_activity.py', '--day', DAY);
 t('github: exits 0', github.status, 0);
 const go = github.stdout;
@@ -309,8 +439,150 @@ has('github: pushed commits, less merges and older ones', go, '- nobody/x#12 A p
 lacks('github: a PR nothing happened to is left out', go, 'Untouched today');
 has('github: a review given on the day', go, "## Reviews you gave (1)\n- acme/app#20 Alice's change (by alice) — you: changes requested");
 lacks('github: a review from before the day is left out', go, 'Reviewed last week');
-has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__other: §3 read-own-work is no - skipped');
+has('github: a repo whose read-own-work is no is skipped, and said', go, '## Skipped by permission\n- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees\n- acme__other: §3 read-own-work is no - skipped');
 lacks('github: and none of it shows', go, 'Other thing');
+has('#1534 merged PRs in the window are counted per repo, yours and everyone\'s', go, '## Merged PRs in the window, by author (yours / everyone\'s)\n- acme/app: 1 mine / 3 all\n');
+has('#1534 everyone\'s count needs read-others; without it only yours is given', go, '- acme/side: 1 mine / all not counted (acme__side: §3 read-others is no - skipped) [Side project]');
+has('#1534 and the read-others no is listed with what was skipped', go, '- acme__other: §3 read-own-work is no - skipped\n- acme__side: §3 read-others is no - skipped');
+lacks('#1534 a repo whose read-own-work is no is not counted', go, '- acme/other:');
+const hhmm = (iso) => new Date(iso).toTimeString().slice(0, 5);
+has('#1646 issues are grouped by scope, repo and label', go, `## This check-out issues (4)\n### acme/app (4)\n#### label: bug (2)\n- #1 Login loop [open, created ${hhmm(at(9))}] — you: opened\n- #80 Bob's bug [closed, closed ${hhmm(at(16))}] — you: closed\n#### label: chore (1)\n- #70 Flaky export [open, created 20 Oct ${hhmm(before)}] — you: commented ×2\n`);
+has('#1646 with no label, by the title\'s prefix', go, `#### theme: checkout (1)\n- #150 checkout: collect more sources [open, created ${hhmm(at(10))}] — you: opened`);
+lacks('#1646 an issue of yours nothing happened to is left out', go, 'Old issue');
+lacks('#1646 one closed by someone else, with nothing of yours that day, is left out', go, 'Mine closed by someone else');
+lacks('#1646 another person\'s issue someone else closed is left out', go, 'Closed by Carol');
+lacks('#1646 a comment before the window does not count', go, 'Commented last week');
+lacks('#1646 an issue in a repo whose read-own-work is no is left out', go, 'Elsewhere');
+has('#1646 a search past its cap says so', go, '## Searches cut short\n- issues you commented on (capped: 2 of 1200 found)');
+lacks('#1646 a search paged to its end is not called capped', go, 'your issues (capped');
+const issueCalls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('is:issue author:me'));
+t('#1646 the search pages past 100 results', issueCalls.some((l) => l.includes('page=2')), true);
+t('#1646 and stops at a short page', issueCalls.some((l) => l.includes('page=3')), false);
+t('#1646 a closed-issue search runs only in repos read', readFileSync(join(FAKE, 'calls.log'), 'utf8').includes('repo:acme/other -author:me closed'), false);
+const ghCalls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('is:merged'));
+t('#1534 without read-others the search asks only for your PRs', ghCalls.some((l) => l.includes('repo:acme/side') && l.includes('author:me')), true);
+t('#1534 with it, everyone\'s', ghCalls.some((l) => l.includes('repo:acme/app') && !l.includes('author:')), true);
+// read-others has its own consent: --include, given for read-own-work, does not grant it, and a
+// side repo with no desk config has no read-others row, so only the user's PRs are counted there.
+put('merged_acme_lib', { items: [
+  pr('acme/lib', 50, 'Lib merged', { state: 'closed', pull_request: { merged_at: at(13) } }),
+  pr('acme/lib', 51, 'Dana merged', { state: 'closed', user: { login: 'dana' }, pull_request: { merged_at: at(13) } }),
+] });
+put('merged_solo_proj', { items: [pr('solo/proj', 60, 'Solo merged', { state: 'closed', pull_request: { merged_at: at(14) } })] });
+const ghRun = (...args) => {
+  const from = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').length - 1;
+  const r = spawnSync('python3', ['-B', join(SCRIPTS, 'github_activity.py'), '--day', DAY, ...args], { cwd: APP, env: { ...env, DESK_CHECKOUT_SIDE_REPOS: 'acme/side,solo/proj' }, encoding: 'utf8' });
+  if (r.status) console.log(r.stderr);
+  return { ...r, merged: readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').slice(from).filter((l) => l.includes('is:merged')) };
+};
+const lib = ghRun('--include', 'acme__lib');
+t('#1534 --include alone: exits 0', lib.status, 0);
+has('#1534 --include alone does not count everyone\'s, and says which flag would', lib.stdout, '- acme/lib: 1 mine / all not counted (acme__lib: §3 read-others is ask - pass --include-others acme__lib once the user agrees)');
+has('#1534 the read-others ask is listed with what was skipped', lib.stdout, '- acme__lib: §3 read-others is ask - pass --include-others acme__lib once the user agrees');
+t('#1534 --include alone searches only your PRs there', lib.merged.some((l) => l.includes('repo:acme/lib') && l.includes('author:me')), true);
+has('#1534 a side repo with no desk config: only yours', lib.stdout, '- solo/proj: 1 mine / all not counted (no desk config) [Side project]');
+t('#1534 and its search asks only for your PRs', lib.merged.every((l) => !l.includes('repo:solo/proj') || l.includes('author:me')), true);
+const libOthers = ghRun('--include', 'acme__lib', '--include-others', 'acme__lib');
+has('#1534 --include-others counts everyone\'s', libOthers.stdout, '- acme/lib: 1 mine / 2 all');
+t('#1534 --include-others searches every author there', libOthers.merged.some((l) => l.includes('repo:acme/lib') && !l.includes('author:')), true);
+
+// A rate-limited gh call waits and retries; one still limited fails naming the limit and when
+// to retry; a failed optional search is skipped, said in its section, and the run goes on.
+const limited = (match, times, extra = {}) => {
+  rmSync(join(FAKE, 'limit.count'), { force: true });
+  return spawnSync('python3', ['-B', join(SCRIPTS, 'github_activity.py'), '--day', DAY], { cwd: APP, encoding: 'utf8',
+    env: { ...env, FAKE_LIMIT_MATCH: match, FAKE_LIMIT_TIMES: String(times), DESK_GH_BACKOFF_BASE: '0.01', DESK_GH_BACKOFF_TOTAL: '0.05', ...extra } });
+};
+const once = limited('is:pr author:me', 1, { FAKE_RETRY_AFTER: '0.03' });
+t('#1666 a secondary limit, then success: exits 0', once.status, 0);
+has('#1666 it waited as Retry-After said', once.stderr, "gh: GitHub's secondary rate limit; waiting 0.03s, then retrying");
+has('#1666 and the retried search was read', once.stdout, '- acme/app#10 Fix the redirect — opened; merged');
+const zero = limited('is:pr author:me', 99, { FAKE_RETRY_AFTER: '0' });
+t('#1666 a Retry-After of 0 still ends at the budget', zero.status, 1);
+has('#1666 backing off as if none was given', zero.stderr, 'waiting 0.01s');
+has('#1666 and fails naming the limit', zero.stderr, "GitHub's secondary rate limit, still hit after 3 tries");
+const twice = limited('is:pr author:me', 2);
+t('#1666 with no Retry-After, exponential backoff: exits 0', twice.status, 0);
+has('#1666 the first wait is the base', twice.stderr, 'waiting 0.01s');
+has('#1666 the next doubles', twice.stderr, 'waiting 0.02s');
+has('#1666 and the search was read', twice.stdout, '- acme/app#10 Fix the redirect');
+const stuck = limited('is:pr author:me', 99);
+t('#1666 a persistent limit on a required search fails', stuck.status, 1);
+has('#1666 naming the limit and the tries', stuck.stderr, "gh search failed for 'is:pr author:me updated:>=2026-10-26': GitHub's secondary rate limit, still hit after 3 tries over 0s; retry after ");
+has('#1666 and when to retry', stuck.stderr, '(in 60s)');
+const noReviews = limited('reviewed-by', 99);
+t('#1666 a failed reviews search does not end the run', noReviews.status, 0);
+has('#1666 the reviews section says it was skipped and why', noReviews.stdout, "## Reviews you gave (0)\nskipped, not read (GitHub's secondary rate limit, still hit after 3 tries");
+has('#1666 the rest is still there', noReviews.stdout, '- acme/app: 1 mine / 3 all');
+const noMerged = limited('is:merged', 99);
+t('#1666 a failed merged-count search does not end the run', noMerged.status, 0);
+has('#1666 its line says it was skipped and why', noMerged.stdout, "- acme/app: skipped, not counted (GitHub's secondary rate limit, still hit after 3 tries");
+has('#1666 reviews still read', noMerged.stdout, "- acme/app#20 Alice's change (by alice) — you: changes requested");
+const noIssues = limited('commenter:', 99);
+has('#1666 a failed issue search is skipped and said', noIssues.stdout, "- issues you commented on: skipped, not read (GitHub's secondary rate limit");
+const notLimit = probe(`import github_activity as g; print(json.dumps([g.rate_limit("gh: Not Found (HTTP 404)"), g.rate_limit("gh: API rate limit exceeded for user ID 1. (HTTP 403)"), g.rate_limit("gh: too many requests rate limit (HTTP 429)"), g.rate_limit("gh: Resource not accessible by integration (HTTP 403)")]))`);
+t('#1666 only a 403 or 429 naming a rate limit is one, and which', JSON.stringify(notLimit), '[null,"primary","primary",null]');
+const reset = probe(`import github_activity as g, time; h, b = g.split_headers("HTTP/2.0 403 Forbidden\\nX-Ratelimit-Reset: %d\\n\\n{}" % (time.time() + 30)); print(json.dumps([27 < g.wait_for(h, "primary") <= 30, g.wait_for(h, "secondary"), b]))`);
+t('#1666 a primary limit waits for its reset header', JSON.stringify(reset), '[true,null,"{}"]');
+
+// Issues with neither a label nor a `prefix:` are themed by a shared #NNNN, then a shared title
+// word, before `other`.
+const themed = probe(`import github_activity as g
+iss = lambda n, title, body="", labels=(): {"number": n, "title": title, "body": body, "labels": [{"name": l} for l in labels]}
+print(json.dumps(g.themes([
+  iss(1, "Cloud worker loses its slot"), iss(2, "Cloud session never reports back"),
+  iss(3, "Checkout collector dies on a rate limit", "Follows #1646"), iss(4, "Grouping files most under other", "Part of #1646"),
+  iss(1646, "Collect more sources"), iss(5, "Queue stalls overnight"), iss(6, "Queue order ignores priority"),
+  iss(7, "Tidy the README"), iss(8, "ci: shard the suites"), iss(9, "Cloud thing", labels=["bug"]),
+])))`);
+t('#1666 a shared title word names a theme', themed['1'], 'theme: cloud');
+t('#1666 for each issue sharing it', themed['2'], 'theme: cloud');
+t('#1666 a #NNNN two issues reference names a theme', themed['3'], 'theme: #1646');
+t('#1666 the issue referenced joins it', themed['1646'], 'theme: #1646');
+t('#1666 and the other referencing it', themed['4'], 'theme: #1646');
+t('#1666 another shared word', `${themed['5']} ${themed['6']}`, 'theme: queue theme: queue');
+t('#1666 an issue sharing nothing is other', themed['7'], 'theme: other');
+t('#1666 a prefix still wins', themed['8'], 'theme: ci');
+t('#1666 and a label', themed['9'], 'label: bug');
+
+// issue-1537: an open PR says which §4 Merge holds path leaves its merge to the person, and why each
+// red §4 State check is red; one with neither reads as before.
+{
+  const rawFake = (k, text) => writeFileSync(join(FAKE, `${k}.json`), text);
+  put('mine', { items: [
+    pr('acme/side', 15, 'Touches CI', { created_at: at(10) }),
+    pr('acme/side', 16, 'Plain change', { created_at: at(10) }),
+    pr('acme/side', 17, 'Status gate', { created_at: at(10) }),
+    pr('acme/side', 18, 'Owned code', { created_at: at(10) }),
+  ] });
+  const job = (name, conclusion, id) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, detailsUrl: `https://github.com/acme/side/actions/runs/7/job/${id}` });
+  put('pr_acme_side_15', { reviewDecision: 'REVIEW_REQUIRED', isDraft: false, headRefOid: 'abc1234', baseRefName: 'main',
+    statusCheckRollup: [job('🔐 Review gate', 'FAILURE', 77), job('lint', 'FAILURE', 78)] });
+  put('repos_acme_side_check_runs_77_annotations_per_page_100', [
+    { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+    { annotation_level: 'failure', message: 'No PullBot review at abc1234 yet\nsecond line' },
+  ]);
+  rawFake('repos_acme_side_pulls_15_files_per_page_100', '.github/workflows/ci.yml\nsrc/app.ts\n');
+  put('pr_acme_side_16', { reviewDecision: 'APPROVED', isDraft: false, headRefOid: 'def5678', baseRefName: 'main', statusCheckRollup: [job('ci', 'SUCCESS', 79)] });
+  rawFake('repos_acme_side_pulls_16_files_per_page_100', 'src/plain.ts\n');
+  put('pr_acme_side_17', { reviewDecision: 'REVIEW_REQUIRED', isDraft: false, headRefOid: 'aaa9999', baseRefName: 'main',
+    statusCheckRollup: [{ __typename: 'StatusContext', context: '🔐 Review gate', state: 'FAILURE', description: '1 outstanding finding' }] });
+  rawFake('repos_acme_side_pulls_17_files_per_page_100', 'docs/readme.md\n');
+  // A code-owner hold on files the merging account alone owns is met, as the merge driver reads it.
+  put('pr_acme_side_18', { reviewDecision: 'APPROVED', isDraft: false, headRefOid: 'bbb8888', baseRefName: 'main', statusCheckRollup: [job('ci', 'SUCCESS', 80)] });
+  rawFake('repos_acme_side_pulls_18_files_per_page_100', 'src/owned/x.ts\n');
+  rawFake('repos_acme_side_contents_github_CODEOWNERS_ref_main', '/src/owned/ @me\n');
+  const from = readFileSync(join(FAKE, 'calls.log'), 'utf8').length;
+  const run = script('github_activity.py', '--day', DAY);
+  t('issue-1537 exits 0', run.status, 0);
+  has('issue-1537 AC1 a PR touching a merge-hold path names it, and AC2 a red state check gives its job\'s reason', run.stdout,
+    '- acme/side#15 Touches CI — opened; review required, failing: lint, 🔐 Review gate (No PullBot review at abc1234 yet); merge hold: .github/workflows/ci.yml, the person merges it\n');
+  has('issue-1537 AC2 a red status context gives its own description', run.stdout, '- acme/side#17 Status gate — opened; review required, failing: 🔐 Review gate (1 outstanding finding)\n');
+  has('issue-1537 AC3 a PR with neither reads as before', run.stdout, '- acme/side#16 Plain change — opened; approved, checks green\n');
+  has('issue-1537 a code-owner hold the merging account alone owns is no hold', run.stdout, '- acme/side#18 Owned code — opened; approved, checks green\n');
+  const calls = readFileSync(join(FAKE, 'calls.log'), 'utf8').slice(from);
+  t('issue-1537 a red check that is not a state check is not read for a reason', calls.includes('check-runs/78'), false);
+}
 
 // jira_activity.py: what the user did in each in-scope repo's Jira project.
 put('api_3_myself', { accountId: 'me-id', displayName: 'Me Person' });
@@ -319,7 +591,7 @@ put('api_3_search_jql', { issues: [issue('APP-1', 'A new bug', { created: jiraAt
 const history = (who, ts, field, from, to, extra = {}) => ({ author: { accountId: who, displayName: who === 'me-id' ? 'Me Person' : 'Sam Smith' }, created: jiraAt(ts), items: [{ field, fromString: from, toString: to, ...extra }] });
 put('api_3_issue_APP_1_changelog', { values: [], isLast: true });
 put('api_3_issue_APP_2_changelog', { values: [
-  history('me-id', at(9), 'status', 'To Do', 'In Progress'),
+  history('me-id', at(9), 'status', 'To Do', 'In Review'), history('me-id', at(9, 45), 'status', 'In Review', 'In Progress'),
   history('me-id', at(10), 'assignee', null, 'Me Person'), history('me-id', at(10, 5), 'assignee', 'Me Person', null),
   history('me-id', at(10, 10), 'Rank', 'a', 'b', { fieldtype: 'custom' }),
   history('sam-id', at(15), 'status', 'In Progress', 'Done'),
@@ -334,15 +606,19 @@ t('jira: exits 0', jiraOut.status, 0);
 const jo = jiraOut.stdout;
 has('jira: the header names the user, project and repo', jo, '# Jira activity for Me Person in APP (acme__app), Monday 26 October 2026');
 has('jira: a ticket raised on the day, with its grade', jo, '## Raised (1)\n### individually (1)\n- APP-1 [To Do · Me Person · P2] A new bug');
-has('jira: a status move', jo, '- APP-2 [In Progress · Me Person · P2] Started work\n    · status: To Do → In Progress');
+has('issue-1538 AC1 a status move names your account and the time', jo, '- APP-2 [In Progress · Me Person · P2] Started work\n    · status: To Do → In Progress, by Me Person (you) at 09:45');
 lacks('jira: an assign-then-unassign nets to nothing', jo, 'assignee:');
 lacks('jira: Rank moves are not reported', jo, 'Rank');
 has('jira: a comment on the day', jo, '    · commented: Looks good to me');
 lacks('jira: a comment from before the day is left out', jo, 'An old comment');
-has('jira: what someone else did after, on your ticket', jo, '    · then Sam: In Progress → Done');
+has('issue-1538 AC1 what someone else did after names their account and the time', jo, '    · then status: In Progress → Done, by Sam Smith at 15:00');
 lacks('jira: a ticket only others touched is left out', jo, 'Not mine');
 has('jira: a same-destination repo at ask is not read without --include', jo, '- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees');
 has('jira: a repo with a different destination is named, not queried', jo, '- not queried (different check-out destination): acme__other');
+{
+  const since = script('jira_activity.py', '--day', DAY, '--since', new Date(2026, 9, 25, 19).toISOString(), '--since-for', '2026-10-25').stdout;
+  has('issue-1538 AC1 a window across midnight puts the day on the time', since, 'status: To Do → In Progress, by Me Person (you) at Mon 09:45');
+}
 const calls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.startsWith('desk-jira '));
 t('jira: every request went through desk-jira as acme__app', calls.every((l) => l.startsWith('desk-jira acme__app api ')), true);
 t('jira: the search is limited to the project', calls.some((l) => decodeURIComponent(l.replace(/\+/g, ' ')).includes('project = APP AND (')), true);
@@ -350,6 +626,16 @@ t('jira: the search is limited to the project', calls.some((l) => decodeURICompo
 // At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
 // went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
+// issue-1533: the config step reads only the rows the skill uses, by id, and the read stays small
+// against the shipped template, whose rows carry the help text a section read printed.
+{
+  const read = /^desk-env show --rows ([a-z0-9 -]+)$/m.exec(skill);
+  t('issue-1533 AC1 the config step reads named rows, not sections', !!read && !/desk-env show rules/.test(skill), true);
+  const run = spawnSync('node', [join(REPO, 'desk', 'bin', 'desk-env.mjs'), 'show', '--rows', ...(read?.[1].split(' ') ?? [])],
+    { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(REPO, 'desk-config.md'), DESK_MACHINE: join(R, 'no-machine.md'), HOME } });
+  t('issue-1533 AC1 every id it names reads', run.status, 0);
+  t('issue-1533 AC1 the read prints under 5 KB', Buffer.byteLength(run.stdout) < 5000, true);  t('issue-1533 AC2 an unset row is named as unset', /^§4 Check-out destination \(checkout-destination\) = UNSET$/m.test(run.stdout), true);
+}
 has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
@@ -367,8 +653,14 @@ has('a change in effect is never from tomorrow', skill, 'a change already in eff
 has('an unreadable setting goes under Check before posting', skill, 'If the source cannot be read,\n  name the claim under **Check before posting** with why.');
 const style = readFileSync(join(REPO, 'skills/desk-checkout/references/style.md'), 'utf8');
 has('style: no window qualifier in the header', style, 'Never a window qualifier such as\n  `(since yesterday\'s post)`');
+has('#1471 style: never a ticket as the user last left it', style, 'Don\'t describe a ticket as the user last left it.');
+has('#1471 style: never from the next deploy unread', style, 'Don\'t write "from the next deploy" without reading the latest production deploy.');
 lacks('style: the day is no longer added just for posting late', style, 'with the day when posting late or for another day');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
+has('#1535 the previous check-out is found before any collector runs', skill, 'ended: find that one before any collector runs.**');
+lacks('#1535 the collectors are never run blind, then again', skill, 'Run the collectors again');
+has('#1535 step 2 runs each collector once, with that window', skill, 'python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W');
+has('#1535 with no previous check-out, the fallback still runs each collector once', skill, 'leave both flags out to cover the whole day, and say so. Each collector runs once');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');
@@ -384,6 +676,11 @@ has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the au
 has('#829 a batch\'s own sessions are never items', skill, 'A triage, preflight or worker session is evidence\n  for the ticket it worked, never work in its own right');
 has('#829 a parked ticket with no PR needs a Jira or GitHub change that day', skill, '**A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it\n  that day');
 has('#829 described by that change, not by the session', skill, 'and the item says what that change was. A session\n  alone is not a change.');
+{
+  const items = readFileSync(join(REPO, 'skills/desk-checkout/references/items.md'), 'utf8');
+  has('issue-1538 AC2 a move by your own account is yours', items, '**A status move the Jira collector marks `(you)` is the person\'s own**');
+  has('issue-1538 AC2 and is not something to check', items, 'and never put it under **Check before posting**');
+}
 has('#829 DESK_CHECKOUT_NAME_BATCH names the batch in one line', skill, 'set `DESK_CHECKOUT_NAME_BATCH=1`');
 has('#829 that line names the items by key', skill, 'Then one line after\n  the substantive work names the items a batch built by key');
 has('#819 the read wins over the collector\'s', skill, 'That read wins over the collector\'s: `MERGED` is `(merged)`, an open PR no longer a draft is\n  `(in review)`');
@@ -392,6 +689,117 @@ has('#819 a failed read keeps the collector\'s state and says so', skill, 'If th
 has('#819 Check before posting lists it', skill, 'each PR whose state could not be\n  read again when its line was written');
 has('#819 only in a repo the GitHub collector was allowed to read', skill, 'Read only in a repo the GitHub collector read (its\n  `read-own-work` `yes`, or `ask` and the user agreed)');
 has('#819 and never in any other repo', skill, 'Never read a PR in any other repo: its\n  state stays as its source gave it.');
+has('#1471 step 3 sends each ticket and deploy claim to be read again', skill, '**Read each ticket again as you write its bullet, with every PR naming its key, and the latest\n  deploy before any deploy claim**: `references/current-state.md` says how.');
+has('#1471 one no read settled goes under Check before posting', skill, 'each ticket or deploy claim no read settled.');
+has('#1647 items are built by outcome, not ticket', skill, 'then build **one item per outcome**, not per ticket or source');
+has('#1647 substantive work is every item that changed something', skill, '**Substantive work**: every item that changed something, biggest first');
+lacks('#1647 no longer the few things that mattered most', skill, 'the few things that mattered most');
+has('#1647 the sources line points at sources.md and names the new collectors', skill, '`references/sources.md` covers the newer collectors: `worklog_activity.py`,\n`claude_activity.py --window-turns`, issues in `github_activity.py`.');
+const items = readFileSync(join(REPO, 'skills/desk-checkout/references/items.md'), 'utf8');
+has('#1647 an umbrella ticket is split by outcome', items, '**Split an umbrella.**');
+has('#1647 each item names its ticket', items, '**Each item names its ticket where there is one**');
+has('#1647 work with no ticket is an item', items, 'Work no ticket names is an item in its own right when a source shows it changed something.');
+has('#1647 ranked by the change, not the ticket', items, '## Rank by the change, not the ticket');
+for (const signal of ['1. Security, production or launch-blocking.', '2. Unblocked others or a pipeline.', '3. Shipped or merged.', '4. User- or team-facing.', '5. Fixed a recurring failure.', '6. A milestone in a plan.']) has(`#1647 impact signal: ${signal}`, items, signal);
+has('#1647 only MERGED is shipped', items, 'is a PR whose state is `MERGED`');
+has('#1647 a PR closed unmerged is not shipped', items, 'A PR `CLOSED` without merging (the collector\'s\n  `closed unmerged`) is not shipped');
+has('#1647 equal treatment above the line', items, 'Every item above the\nline gets the same treatment, whatever its source or ticket');
+has('#1647 the line is defined', items, 'The line is between items, which changed something, and everything else');
+has('#1647 the highest signal ranks first, so security leads', items, 'An item ranks by the highest signal it has, so anything security, production or launch-blocking\nleads whatever else is merged that day');
+lacks('#1647 a count of signals never outranks a higher signal', items, 'An item with more signals goes higher');
+has('#1647 never every PR in a large group', items, 'Never list every PR in a large group');
+has('#1647 the quiet-day rule moved here', items, 'a quiet day is five\nlines, and that\'s fine');
+has('#1647 style: the worked example splits an umbrella ticket', style, 'Three separate things moved under the launch-readiness ticket ABC-1700:');
+has('#1647 style: a ticketless setting is its own item', style, 'Branch protection on the payments paths now needs two, in effect since 15:00.');
+const current = readFileSync(join(REPO, 'skills/desk-checkout/references/current-state.md'), 'utf8');
+has('#1471 each ticket is read again as its bullet is written', current, '**Read each ticket again as you write its bullet, with every PR naming its key.**');
+has('#1471 its status is read from its tracker', current, '`desk-jira get <KEY>` for that ticket\'s repo');
+has('#1471 another repo\'s ticket is read from that repo\'s checkout', current, '`DESK_REPO_DIR=<its main checkout> desk-jira get <KEY>`');
+lacks('#1471 never DESK_SLUG for desk-jira, which ignores it', current, '`DESK_SLUG=<slug>`');
+has('#1471 with every PR naming its key, any author, open or merged', current, 'gh pr list --repo <owner/name> --state all --search "<KEY>" --json number,title,author,state,isDraft,mergedAt');
+has('#1471 the bullet states what those reads show', current, 'The bullet states what those reads show.');
+has('#1471 a teammate\'s fix is named or the ticket left out', current, 'is said as that, naming who and which PR\n("Sam fixed it in #1540 (merged), now in Review"), or left out.');
+has('#1471 and its ask is dropped', current, 'Any ask in its bullet is\ndropped, and so is any claim that PR settles');
+has('#1471 a failed ticket read goes under Check before posting', current, 'name the ticket under **Check before posting** as last\nseen by them.');
+has('#1471 a deploy claim is read from the latest production deploy', current, '**is read from\nthe latest production deploy first**');
+has('#1471 GitHub deployments first', current, '1. Its newest successful GitHub deployment to production.');
+has('#1471 a newer failed or unfinished deployment is skipped', current, 'Take the first whose latest status is `success`: a newer one that failed or is still\n   queued or in progress is skipped, never compared.');
+lacks('#1471 never only the single newest deployment', current, 'per_page=1`, then');
+has('#1471 then the default branch\'s deploy workflow', current, '2. With no successful deployment found, the newest successful run of the deploy workflow on the\n   repo\'s default branch');
+has('#1471 a merge the latest deploy contains is live, never from the next deploy', current, 'Then its line says it is live and since when, never "from the next deploy"');
+has('#1471 an unread deploy goes under Check before posting', current, 'the line says only that it merged, and the deploy claim goes\nunder **Check before posting** with why');
+
+// #1646 worklog_activity.py: the person's work logs (§3b Check-out work logs) and desk's own records.
+const appCfg = join(CFG, 'repos', 'acme__app', 'config.md');
+const cfgText = readFileSync(appCfg, 'utf8') + ['', '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Check-out work logs | `none` | `~/notes/worklog.md` `~/notes/daily/*.txt` |', '',
+  '## 1. You', '| Field | Value | Notes |', '|---|---|---|', '| GitHub handle | `me-person` | who opens the PRs |', ''].join('\n');
+writeFileSync(appCfg, cfgText);
+mkdirSync(join(HOME, 'notes', 'daily'), { recursive: true });
+writeFileSync(join(HOME, 'notes', 'worklog.md'), [
+  '# Work log', '## 2026-10-25', '- 17:00 SUNDAY-LOG out of the window',
+  '## 2026-10-26', '- 09:15 Set up the cloud environment', '- Fixed the logins', '- 2026-10-26T14:30 Tuned the throughput settings',
+  // A time no clock shows is an entry with no time, never a crash; a single-digit hour with an offset is read.
+  '- 2026-10-26 24:00 MIDNIGHT-LOG wrapped up', '- 2:75 BAD-MINUTE-LOG', '- 2026-10-26T9:05Z ZULU-LOG paired on the review',
+  '## 2026-10-27', '- 08:00 NEXT-DAY-LOG out of the window',
+].join('\n'));
+const plainLog = join(HOME, 'notes', 'daily', 'plain.txt');
+writeFileSync(plainLog, 'Untimed notes\nPLAIN-LAST line');
+utimesSync(plainLog, new Date(at(18)), new Date(at(18)));
+const oldLog = join(HOME, 'notes', 'daily', 'old.txt');
+writeFileSync(oldLog, 'OLD-NOTES nothing timed');
+utimesSync(oldLog, new Date(before), new Date(before));
+// A config write in the window changed one row (the backup holds the copy from before it); an older
+// backup, from before the window, is not read as a change on the day.
+const bakNew = `${appCfg}.bak-2026-10-26`;
+writeFileSync(bakNew, cfgText.replace('`customfield_10207`', '`customfield_10100`').replace('`me-person`', '`old-person`'));
+utimesSync(bakNew, new Date(at(12)), new Date(at(12)));
+const bakOld = `${appCfg}.bak-2026-10-20`;
+writeFileSync(bakOld, cfgText.replace('`#team`', '`#old-team`'));
+utimesSync(bakOld, new Date(before), new Date(before));
+const state = join(HOME, '.desk-autopilot');
+mkdirSync(join(state, 'acme__app', 'batches', 'b1'), { recursive: true });
+mkdirSync(join(state, 'digest'), { recursive: true });
+writeFileSync(join(state, 'acme__app', 'levers.jsonl'), [
+  { at: at(11), kind: 'transition', lever: 'codex', from: 'trial', to: 'adopted', reason: 'cheaper per ticket' },
+  { at: at(11), kind: 'assign', ticket: 'APP-9', reason: 'drawn' },
+  { at: before, kind: 'override', lever: 'memory', to: 'overridden', value: 'on', reason: 'OLD-LEVER' },
+].map((e) => JSON.stringify(e)).join('\n'));
+writeFileSync(join(state, 'acme__app', 'batches', 'b1', 'decisions.jsonl'), [
+  { id: 'd1', at: at(13), ticket: 'APP-12', question: 'Which copy for the button?', options: ['Save', 'Done'], chose: 'Save', category: 'wording' },
+  { id: 'd2', at: before, ticket: 'APP-1', question: 'OLD-DECISION', options: ['a', 'b'], chose: 'a', category: 'design' },
+].map((e) => JSON.stringify(e)).join('\n'));
+writeFileSync(join(state, 'digest', 'answered.json'), JSON.stringify({ 'acme__app/APP-5/abc123': at(16), 'acme__lib/LIB-1/def456': at(16), 'acme__app/APP-6/old': before }));
+const wl = script('worklog_activity.py', '--day', DAY);
+t('#1646 worklog: exits 0', wl.status, 0);
+const wo = wl.stdout;
+has('#1646 worklog: the header names the window', wo, '# Work logs and desk records, Monday 26 October 2026');
+const zulu = hhmm(new Date(Date.UTC(2026, 9, 26, 9, 5)).toISOString());
+has('#1646 worklog: timed, untimed and ISO-stamped entries in the window', wo, '### ~/notes/worklog.md (5)\n');
+has('#1646 worklog: a timed entry', wo, '- 09:15 Set up the cloud environment\n');
+has('#1646 worklog: an ISO-stamped entry', wo, '- 14:30 Tuned the throughput settings\n');
+has('#1646 worklog: an untimed entry under its date', wo, '- (no time) Fixed the logins\n');
+has('#1646 worklog: a single-digit hour with an offset is read', wo, `- ${zulu} ZULU-LOG paired on the review\n`);
+has('#1646 worklog: 24:00 is an entry on its date with no time', wo, '- (no time) MIDNIGHT-LOG wrapped up\n');
+lacks('#1646 worklog: a minute out of range is no entry', wo, 'BAD-MINUTE-LOG');
+has('#1646 worklog: a Value changed in a Field | Value | Notes table is a fact', wo, `- ${hhmm(at(12))} config §1 "GitHub handle": \`old-person\` → \`me-person\` (source: config.md.bak-2026-10-26 vs config.md)`);
+lacks('#1646 worklog: an entry the day before is left out', wo, 'SUNDAY-LOG');
+lacks('#1646 worklog: an entry the day after is left out', wo, 'NEXT-DAY-LOG');
+has('#1646 worklog: a file with no times falls back to its modified time', wo, `### ~/notes/daily/plain.txt (no timestamped lines; modified ${hhmm(at(18))}, in the window, so its last lines)\n  Untimed notes\n  PLAIN-LAST line`);
+lacks('#1646 worklog: one modified outside the window is left out', wo, 'OLD-NOTES');
+has('#1646 worklog: a config backup diff is one fact, with its source', wo, `- ${hhmm(at(12))} config §4 "Priority": \`customfield_10100\` → \`customfield_10207\` (source: config.md.bak-2026-10-26 vs config.md)`);
+lacks('#1646 worklog: a backup from before the window is not a change on the day', wo, 'old-team');
+has('#1646 worklog: a lever change', wo, `- ${hhmm(at(11))} lever codex transition: trial → adopted — cheaper per ticket (source: levers.jsonl)`);
+lacks('#1646 worklog: a ticket\'s lever draw is not a change', wo, 'APP-9');
+lacks('#1646 worklog: a lever change before the window is left out', wo, 'OLD-LEVER');
+has('#1646 worklog: a logged decision, from a batch\'s log', wo, `- ${hhmm(at(13))} decision taken: APP-12: Which copy for the button?: chose Save [wording] (source: batches/b1/decisions.jsonl)`);
+lacks('#1646 worklog: a decision before the window is left out', wo, 'OLD-DECISION');
+has('#1646 worklog: a needs-you item answered', wo, `- ${hhmm(at(16))} needs-you item answered: APP-5 (source: digest answered.json)`);
+lacks('#1646 worklog: another repo\'s answer, or one before the window, is left out', wo, 'LIB-1');
+lacks('#1646 worklog: and one before the window', wo, 'APP-6');
+has('#1646 worklog: a same-destination repo at ask is skipped and said', wo, '## Skipped by permission\n- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees');
+lacks('#1646 worklog: a repo with a different check-out is not read', wo, 'acme__other');
+const sources = readFileSync(join(REPO, 'skills/desk-checkout/references/sources.md'), 'utf8');
+for (const name of ['github_activity.py', 'worklog_activity.py', 'claude_activity.py', '--window-turns', 'Check-out work logs', 'read-own-work', 'read-transcripts']) has(`#1646 sources.md names ${name}`, sources, name);
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });

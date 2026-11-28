@@ -363,7 +363,10 @@ forever) and **no preview build starts without its team's preview-build lease** 
   with the requeue to run. While no slot is free to it (the batch's own all held and none to borrow, or
   the machine's or the repo's worker cap, or the machine's memory reservations, full), a pending handoff is instead listed under `waiting,
   nothing for you to do` as `waiting for a slot (held by <keys>)`, naming the cap where it is the limit,
-  as desk-q shows it, and its 15 minutes start at the first pass that finds a slot free. That list also
+  as desk-q shows it, and its 15 minutes start at the first pass that finds a slot free. One a running
+  ticket's files hold back is listed there as `held by collision on <file> with <key>`, its 15 minutes
+  starting once the file frees; until its session starts, its files hold back new tickets as a running
+  ticket's do, though not other handoffs, which start in queue order. That list also
   carries what waits only for the next pass (the test-lock queue's `held for the next pass`, a memory
   share that no longer fits, a last round's upload still running), and nothing on it notifies. Each line stays listed while its wait is open, as one item to the decider, and
   a new escalation is recorded only once that wait ends and a new one starts. Any other draft it may not undraft is under WAITING ON
@@ -393,8 +396,10 @@ forever) and **no preview build starts without its team's preview-build lease** 
   spent, or when its red check is one §4 Checks workers can't fix names. With the `failure-class`
   lever on and §3 `ci-rerun` `yes`, a draft whose checks a worker would take all have error lines
   classed runner or resource is re-run once first; red again, its fix try says one rerun was tried.
-  With the lever on or off, so is one whose checks' error lines and annotation paths name no file the
-  PR changes (a flaky test elsewhere, or a job that crashed with no failed test), and that rerun
+  With the lever on or off, so is one whose checks' failed logs name no file the PR changes (a flaky
+  test elsewhere, or a job that crashed with no failed test): every path in the failed log is read,
+  not only its first error lines, and matched against the PR's added, renamed and edited files by
+  repo path and by file name; a path the failure names in a changed file's own folder counts too. That rerun
   takes every job of each run, so a job reading other jobs' results (a test-report gate) reads the
   new ones.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3

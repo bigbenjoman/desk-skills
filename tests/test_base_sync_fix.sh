@@ -168,15 +168,22 @@ check "DS-339 a base fix try moves an earlier try's resume file and handoff asid
   'grep -q "^base-feat-x " "$T/spawns" && [ ! -e "$C/state/resume/base-feat-x.json" ] && [ -e "$C/state/resume/base-feat-x.json.old" ] && [ ! -e "$C/state/handoffs/base-feat-x.json" ]'
 
 # A base try runs suites, so it takes a unit of the test lock gate's room. One run holds the
-# lock and one waits, under the hold at 1 x 2 = 2: room for 1. The base fix takes it, and T-1 is held.
+# lock and one waits, under the hold at 1 x 2 = 2: room for 1. The base fix takes it, and T-1, a handoff
+# to Stage 4b whose next step is a suite, is held. A fresh T-2 takes no room (#1544) and starts.
 mkdir -p "$T/stub-lq" "$T/locks-lq/desk-test.lock.d"; echo "9101 9102" > "$T/locks-lq/desk-test.lock.d/pid"
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps-lq.out"
 printf '#!/bin/sh\n[ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps-lq.out"\n[ "$*" = "-ww -axo pid=,etime=" ] && exit 0\nexec "%s" "$@"\n' "$T" "$(command -v ps)" > "$T/stub-lq/ps"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub-lq/lsof"; chmod +x "$T/stub-lq/ps" "$T/stub-lq/lsof"
 : > "$T/spawns"; fresh blockroom; fixrow yes; conflict; age_probes
+git -C "$C/repo" worktree add -q -b feat/T-1 "$C/wt/T-1"; mkdir -p "$C/state/handoffs"
+echo '{"ticket":"T-1","stage":"4b","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck: pass"],"review":[],"evidence":[]}' > "$C/state/handoffs/T-1.json"
+node "$B/queue.mjs" set T-1 "worktree=$C/wt/T-1" handoff=pending handoff_stage=4b >/dev/null
+node "$B/queue.mjs" add T-2 >/dev/null; node "$B/queue.mjs" set T-2 state=triaged branch=feat/T-2 >/dev/null
 out=$(PATH="$T/stub-lq:$PATH" AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1); rc=$?
-check "DS-958 with room for one on the test lock, the base fix starts and the ready ticket is held" \
+check "DS-958 with room for one on the test lock, the base fix starts and the suite-bound ticket is held" \
   'grep -q "^base-feat-x " "$T/spawns" && ! grep -q "^T-1 " "$T/spawns" && [[ "$out" == *"Stage 4 (T-1), past the 1 this pass had room for"* ]]'
+check "#1544 AC1 beside them a fresh Stage 0 start takes no lock-queue room and starts" \
+  'grep -q "^T-2 " "$T/spawns" && [[ "$out" != *"Stage 4 (T-1, T-2)"* ]]'
 
 # DS-1034 AC1: the sync meets the conflict with no ticket to spawn and no failed gate, beside a sibling
 # batch with a worker running: the fix takes the lock nothing else wanted, counts again under it, finds
