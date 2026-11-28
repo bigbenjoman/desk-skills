@@ -742,7 +742,7 @@ export function evaluate({
           const nowState = leverStatesIn(events, registry)[lever];
           if (nowState.state !== s.state || nowState.id !== s.id) return null;
           return {
-            kind: 'transition', lever, from: s.state, to: d.to, ...(d.value && d.to !== 'reverted' && d.to !== 'frozen' ? { value: d.value } : {}),
+            kind: 'transition', lever, from: s.state, to: d.to, ...(d.value && !OFF_STATES.includes(d.to) ? { value: d.value } : {}),
             actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at),
             n, mechanism, cost, guardrails, desk_commit_range: range, lever_fp: fingerprints[lever] ?? null, ...(holdback ? { holdback } : {}),
           };

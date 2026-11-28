@@ -94,8 +94,24 @@ const chartOf = (view, metric) => ({ ...metric, ...chartMarkers(view, metric) })
 const tileOf = ({ daily: _d, weekly: _w, monthly: _m, ...rest }) => rest;
 
 // ---- the overview's verdict --------------------------------------------------------------------------
-// The levers each state holds, by name, over every repo's cells.
+// The levers each state holds, by name.
 const leversIn = (cells, pred) => [...new Set(cells.filter(pred).map((c) => c.lever))].sort();
+const testingCell = (c) => TESTING_STATES.includes(c.state);
+
+// The levers being tested, kept and turned off by desk, over the cells an evaluation counted in repos
+// enrolled in levers, and the tested cells with a count ranked by how near their smaller arm is to its
+// minimum, nearest first. The desk-q line and the overview's verdict both read it, so they agree.
+// `repos` are the view's repos, `levers` the board's. -> { cells, testing, kept, reverted, ranked }
+export function leverTally(repos, levers) {
+  const out = notEnrolledNames(repos);
+  const cells = levers.flatMap((l) => l.cells.filter((c) => c.sample && !out.has(c.repo)).map((c) => ({ ...c, lever: l.lever })));
+  const ranked = cells.filter((c) => testingCell(c) && c.sample.n != null && c.sample.min)
+    .sort((a, b) => b.sample.n / b.sample.min - a.sample.n / a.sample.min || b.sample.n - a.sample.n || (a.lever < b.lever ? -1 : 1));
+  return {
+    cells, testing: leversIn(cells, testingCell), kept: leversIn(cells, (c) => KEPT.includes(c.state)),
+    reverted: leversIn(cells, (c) => OFF_STATES.includes(c.state)), ranked,
+  };
+}
 
 // Every metric over its limit, judged on the figure since desk started recording and then on last week,
 // and every breached guardrail: what the verdict must not leave out.
@@ -117,17 +133,13 @@ function problemsOf(view) {
 // smaller arm), how many levers are being tested, kept, turned off by desk and on by hand, and every
 // problem, the first as `problem`. A repo not enrolled is left out, as the levers slice leaves it out.
 export function verdictOf(view) {
-  const cells = enrolledCells(view, (view.panels.board.levers ?? []).flatMap((l) => l.cells.map((c) => ({ ...c, lever: l.lever }))));
-  const testingCell = (c) => TESTING_STATES.includes(c.state);
-  const lead = cells.filter((c) => testingCell(c) && c.sample?.n != null && c.sample.min)
-    .sort((a, b) => b.sample.n / b.sample.min - a.sample.n / a.sample.min || b.sample.n - a.sample.n || (a.lever < b.lever ? -1 : 1))[0] ?? null;
+  const { testing, kept, reverted, ranked } = leverTally(view.repos, view.panels.board.levers ?? []);
+  const lead = ranked[0] ?? null;
   const problems = problemsOf(view);
-  const testing = leversIn(cells, testingCell);
-  const reverted = leversIn(cells, (c) => OFF_STATES.includes(c.state));
   return {
     state: view.line.state,
     lead: lead ? { lever: lead.lever, repo: lead.repo, n: lead.sample.n, min: lead.sample.min, on: lead.sample.on, off: lead.sample.off, ready: lead.sample.n >= lead.sample.min, next: lead.next ?? null } : null,
-    testing: testing.length, kept: leversIn(cells, (c) => KEPT.includes(c.state)).length,
+    testing: testing.length, kept: kept.length,
     reverted: reverted.length, reverted_levers: reverted, pinned: (view.panels.status.pinned ?? []).length,
     needs_you: (view.panels.waiting.items ?? []).filter((i) => i.kind === 'lever').length,
     problem: problems[0] ?? null, problems,
@@ -143,8 +155,9 @@ const changeEntry = ({ before, after, paths, ...e }) => ({ ...e, files: paths?.l
 // ---- repos not enrolled ------------------------------------------------------------------------------
 const NOT_ENROLLED = Object.freeze(['missing', 'none']);
 const notEnrolled = (view) => view.repos.filter((r) => NOT_ENROLLED.includes(r.row)).map((r) => ({ repo: r.name, row: r.row, reads: r.reads }));
+function notEnrolledNames(repos) { return new Set(repos.filter((r) => NOT_ENROLLED.includes(r.row)).map((r) => r.name)); }
 const enrolledCells = (view, cells) => {
-  const out = new Set(notEnrolled(view).map((r) => r.repo));
+  const out = notEnrolledNames(view.repos);
   return cells.filter((c) => !out.has(c.repo));
 };
 
@@ -199,7 +212,6 @@ export function leverSlice(view, lever) {
     lever, layer: reg?.layer ?? l?.layer ?? null, min: DECISION_RULE.min_per_arm[reg?.layer] ?? null, baseline: reg && isValued(reg) ? reg.baseline : null,
     board: { ...panelHead(board), age: board.age, pooled_age: board.pooled_age },
     not_enrolled: notEnrolled(view), cells,
-    evidence: cells.filter((c) => c.sample).map((c) => withReasons({ repo: c.repo, on: c.sample.on, off: c.sample.off, pooled_on: c.sample.pooled_on, pooled_off: c.sample.pooled_off, min: c.sample.min }, ['on', 'off', 'pooled_on', 'pooled_off', 'min'], NOT_COUNTED)),
     guardrails: (view.panels.guardrails.rows ?? []).filter((g) => g.lever === lever),
     changes: (view.panels.changes.all ?? []).filter(mine),
     waiting: (view.panels.waiting.items ?? []).filter((i) => i.kind === 'lever' && i.lever === lever),

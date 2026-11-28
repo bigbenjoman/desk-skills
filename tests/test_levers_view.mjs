@@ -213,6 +213,11 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('AC9 its repo\'s cost is unknown, not 0', zd.usd_per_admitted, null);
   t('AC9 it is still counted as admitted', zd.admitted, 1);
   t('AC9 the week\'s cost leaves it out', v.panels.cost.this_week.usd_per_admitted, 16.8);
+  const cost = (await import('../desk/bin/levers-slices.mjs')).overviewSlice(v).cost;
+  const why = (w) => `${w.usd_per_admitted}:${w.reasons?.usd_per_admitted ?? ''}`;
+  t('DS-1068 AC7 the overview\'s cost per admitted ticket is null with a reason, never 0', j([
+    why(cost.per_repo.find((r) => r.repo === 'studia-zendesk')), why(cost.per_repo.find((r) => r.repo === 'ai-agents')), why(cost.weeks_before[0]), why(cost.this_week),
+  ]), '["null:tickets admitted, none with their cost recorded","null:no tickets admitted","null:no tickets admitted","16.8:"]');
 }
 
 // Each repo's rework share this week, cost-weighted, with its data age.
@@ -565,11 +570,12 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     t('DS-1068 AC2 the overview chart carries the same markers', j(S.overviewSlice(v).chart.markers), j(m.markers));
   }
   {
-    const pr = { kind: 'pr', at: iso(2 * DAY), pr: 9, ticket: 'DS-9', title: 'x', sha: 'a', paths: [] };
-    const cfg = { kind: 'config', at: iso(3 * DAY), row: 'Worker models', from: [], to: ['opus'] };
+    // In the week of 2 Nov, which has a weekly point, so the weeks would mark them if they took them.
+    const pr = { kind: 'pr', at: iso(9 * DAY), pr: 9, ticket: 'DS-9', title: 'x', sha: 'a', paths: [] };
+    const cfg = { kind: 'config', at: iso(10 * DAY), row: 'Worker models', from: [], to: ['opus'] };
     const mk = S.trendsSlice(view(machine({ files: evidence(DS, [row('DS-1', 3)]) }), { changeLogs: logs([pr, cfg]) })).metrics.cost.markers;
-    t('DS-1068 AC2 the 30 days mark worker-facing PRs and settings changes too', mk.daily.map((x) => `${x.date}:${x.kinds.join()}`).join(), '2026-11-12:config,2026-11-13:pr');
-    t('DS-1068 AC6 but the weeks do not', mk.weekly.length, 0);
+    t('DS-1068 AC2 the 30 days mark worker-facing PRs and settings changes too', mk.daily.map((x) => `${x.date}:${x.kinds.join()}`).join(), '2026-11-05:config,2026-11-06:pr');
+    t('DS-1068 AC6 but the weeks and months do not', `${mk.weekly.length} ${mk.monthly.length}`, '0 0');
   }
 
   // AC3: the verdict names the lever nearest a decision, counts the reverted ones and never hides a
@@ -603,11 +609,11 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     const wr = s.levers.find((l) => l.lever === 'wrappers');
     t('DS-1068 AC4 a lever carries its minimum and each repo its on and off counts', j([wr.min, wr.cells[0].on, wr.cells[0].off, wr.cells[0].min]), '[30,25,22,30]');
     const one = S.leverSlice(v, 'wrappers');
-    t('DS-1068 AC4 the lever page has the same counts and the repos not enrolled', j([one.evidence[0].on, one.evidence[0].off, one.not_enrolled.length, one.min]), '[25,22,3,30]');
+    t('DS-1068 AC4 the lever page has the same counts and the repos not enrolled', j([one.cells[0].sample.on, one.cells[0].sample.off, one.not_enrolled.length, one.min]), '[25,22,3,30]');
     v.panels.board.levers.find((l) => l.lever === 'wrappers').cells.find((c) => c.repo === 'desk-skills').sample.on = null;
     const blank = S.leversSlice(v).levers.find((l) => l.lever === 'wrappers').cells[0];
     t('DS-1068 AC7 a count the evaluation did not record is null with a reason', j([blank.on, blank.reasons?.on, blank.reasons?.off]), '[null,"not recorded by the latest evaluation",null]');
-    t('DS-1068 AC7 and on the lever page too', j([S.leverSlice(v, 'wrappers').evidence[0].reasons?.on, S.leverSlice(v, 'wrappers').cells[0].sample.reasons?.on]), '["not recorded by the latest evaluation","not recorded by the latest evaluation"]');
+    t('DS-1068 AC7 and on the lever page too', S.leverSlice(v, 'wrappers').cells[0].sample.reasons?.on, 'not recorded by the latest evaluation');
   }
 
   // A pair trial's change is in both its levers' histories.

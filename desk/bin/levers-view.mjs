@@ -29,7 +29,7 @@ import { changeLog, costRecorded } from './desk-changes.mjs';
 import { DAY_MS, addDays, addMonths, monthOf, weekStart } from './day-keys.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, OFF_STATES, TESTING_STATES, decideChoices, fixTriesLimit, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
-import { ageWords, renderPage } from './levers-page.mjs';
+import { ageWords, dayLabel, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { isStateChange, spendsNeedsYou } from './lever-log.mjs';
@@ -38,7 +38,7 @@ import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
 import { excludedWhy, priorRevertsOf, revertTarget } from './levers-evaluate.mjs';
-import { inputsOf, writeSlices } from './levers-slices.mjs';
+import { inputsOf, leverTally, writeSlices } from './levers-slices.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -276,11 +276,12 @@ const val = (v) => round(v, 4);
 
 // Why a figure is null, in words: before desk's first recorded day, a period with no tickets, or one
 // whose merged tickets none recorded what the metric reads.
-const dayLabel = (k) => new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' }).format(new Date(`${k}T12:00:00Z`));
 const noData = (first) => (first == null ? 'no data yet' : `no data before ${dayLabel(first)}`);
 const NO_TICKETS = 'no tickets merged';
 const NOT_RECORDED = 'tickets merged, none with this figure recorded';
 const NO_BASELINE = 'no baseline recorded';
+const NO_ADMITTED = 'no tickets admitted';
+const NO_ADMITTED_COST = 'tickets admitted, none with their cost recorded';
 // Why a percentage change of `a` (a point) against `b` (a point, or the baseline) is null.
 const pctWhy = (a, b) => (a.value == null ? a.reason : b.value == null ? b.reason : b.value === 0 ? 'nothing to compare with: the earlier figure is 0' : null);
 // A metric's limit: the fix tries guardrail's rate ratio over the baseline. The page and the overview
@@ -643,17 +644,23 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 
   // P3 cost per admitted ticket.
   const window = (from, to) => rows.filter((r) => Date.parse(r.admitted_at) >= from && Date.parse(r.admitted_at) < to);
-  const usdPer = (rs) => round(usdMean(rs), 2);
+  // A period's tickets admitted and their mean cost, or null with the reason.
+  const perAdmitted = (rs) => {
+    const usd = round(usdMean(rs), 2);
+    return { admitted: rs.length, usd_per_admitted: usd, ...(usd == null ? { reasons: { usd_per_admitted: rs.length ? NO_ADMITTED_COST : NO_ADMITTED } } : {}) };
+  };
   const thisWeek = window(weekAgo, now);
   const perRepo = repos.map((r) => {
     const mine = thisWeek.filter((x) => x.slug === r.slug);
-    return { repo: r.name, admitted: mine.length, merged: mine.filter((x) => x.merged_at).length, usd_per_admitted: usdPer(mine), cost_incomplete: mine.filter((x) => x.excluded === 'cost_incomplete').length };
+    const { admitted, ...usd } = perAdmitted(mine);
+    return { repo: r.name, admitted, merged: mine.filter((x) => x.merged_at).length, ...usd, cost_incomplete: mine.filter((x) => x.excluded === 'cost_incomplete').length };
   });
   const savings = cells.flatMap((l) => l.cells.filter((c) => c.cost?.saving_usd).map((c) => ({ lever: l.lever, repo: c.repo, ...c.cost.saving_usd })));
   const cost = panel(thisWeek.length ? 'ok' : 'empty', {
-    this_week: { admitted: thisWeek.length, usd_per_admitted: usdPer(thisWeek) },
-    weeks_before: [1, 2, 3, 4].map((k) => { const rs = window(weekAgo - k * WEEK_DAYS * DAY_MS, weekAgo - (k - 1) * WEEK_DAYS * DAY_MS); return { admitted: rs.length, usd_per_admitted: usdPer(rs) }; }),
+    this_week: perAdmitted(thisWeek),
+    weeks_before: [1, 2, 3, 4].map((k) => perAdmitted(window(weekAgo - k * WEEK_DAYS * DAY_MS, weekAgo - (k - 1) * WEEK_DAYS * DAY_MS))),
     baseline: baseline ? { usd: baseline.cost, input_tokens: baseline.input_tokens, output_tokens: baseline.output_tokens, tickets: baseline.tickets_costed, window: baseline.window, label: baseline.label, file: baseline.file } : null,
+    ...(baseline ? {} : { reasons: { baseline: NO_BASELINE } }),
     per_repo: perRepo, savings,
   }, [...rowErrors, ...errs(repos.map((r) => r.evals), baseRead)]);
 
@@ -662,10 +669,11 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const trends = panel(rows.length ? 'ok' : 'empty', { first_recorded: first, metrics }, [...rowErrors, ...errs(baseRead)]);
 
   // The desk-q line.
-  const evalCells = cells.flatMap((l) => l.cells.filter((c) => c.sample).map((c) => ({ lever: l.lever, ...c })));
-  const testing = new Set(evalCells.filter((c) => TESTING_STATES.includes(c.state)).map((c) => c.lever));
-  const kept = new Set(evalCells.filter((c) => KEPT.includes(c.state)).map((c) => c.lever));
-  const early = evalCells.filter((c) => TESTING_STATES.includes(c.state) && c.sample.n != null).sort((a, b) => a.sample.n / a.sample.min - b.sample.n / b.sample.min)[0] ?? null;
+  const tally = leverTally(repoView, cells);
+  const evalCells = tally.cells;
+  const testing = new Set(tally.testing);
+  const kept = new Set(tally.kept);
+  const early = tally.ranked.at(-1) ?? null;
   const lineErrors = errs(repos.map((r) => r.evals), repos.map((r) => r.log), repos.map((r) => r.configRead), baseRead, rowErrors.map((error) => ({ error })));
   const common = { on_auto: status.on_auto, repos: repos.length, pinned: pinnedList };
   const vsBefore = metrics.cost.callouts.last_week_vs_before_pct;
@@ -710,14 +718,15 @@ function armPanel(repos, latest, key) {
 }
 
 // One repo's change log (desk-changes.mjs) over the 30 days the trend charts show, read from its §2
-// Primary repo root against its own default branch, ticket key pattern and config. A repo with no root
-// configured has none to read; one whose read fails is an error naming the root. -> { log, error }
+// Primary repo root against its own default branch, ticket key pattern and config. It reads 31 days back,
+// so the charts' first day, 30 calendar days before today, is read whole. A repo with no root configured
+// has none to read; one whose read fails is an error naming the root. -> { log, error }
 function readChangeLog(r, configRoot, now) {
   const { root } = repoDirs(r.slug, configRoot);
   if (!root) return { log: null, error: null };
   const value = (id) => { const v = repoConfigValue(r.slug, id, configRoot); return v && !isNone(v) ? v : null; };
   try {
-    return { log: changeLog({ slug: r.slug, now, root, ref: `origin/${value('default-branch') ?? 'main'}`, pattern: value('ticket-pattern'), configPath: r.config }), error: null };
+    return { log: changeLog({ slug: r.slug, now, days: 31, root, ref: `origin/${value('default-branch') ?? 'main'}`, pattern: value('ticket-pattern'), configPath: r.config }), error: null };
   } catch (e) { return { log: null, error: { file: root, line: null, message: e.message } }; }
 }
 
