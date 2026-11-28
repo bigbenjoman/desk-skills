@@ -2970,9 +2970,12 @@ const tildeOf = (s) => { const h = process.env.HOME || homedir(); return String(
 // is happening, then, where it clears by itself (`grey`), "Nothing to do: <when it clears>", else the
 // fix to run. A hold of no cause known here, or none (a pass from before holds were recorded), points at
 // the batch's own screen. A fix names the batch it acts on, since the Queue view shows every repo's and
-// the pass's own action command acts on whichever batch the shell it runs in is.   -> { what, grey, then }
+// the pass's own action command acts on whichever batch the shell it runs in is. `g` is the note's
+// batches, one repo's held for the same reason, and a fix to run names each of them.
+//   -> { what, grey, then }
 const NOTHING = 'Nothing to do: new workers start as running ones finish.';
-function holdCopy(h, r) {
+function holdCopy(h, g) {
+  const r = g[0], each = (f) => g.map(f).join(', then ');
   const gb = (v) => (Number.isFinite(v) ? `${Math.round(v * 10) / 10} GB` : null);
   switch (h?.cause) {
     case 'machine': return { what: 'every worker this computer allows is running.', grey: true, then: NOTHING };
@@ -2988,14 +2991,15 @@ function holdCopy(h, r) {
       return r.q?.base_fix?.running
         ? { what: "the batch's base needs fixing before new work can start from it.", grey: true, then: 'Nothing to do: a worker is fixing it.' }
         : { what: "the batch's base cannot take the latest changes, so no new work starts from it.", grey: false, then: 'Run /desk-needs-you in a Claude session.' };
-    case 'concurrency': return { what: "the batch's worker count is 0.", grey: false, then: `Run: desk-q ${r.word} workers 1` };
+    case 'concurrency': return { what: g.length > 1 ? `the worker count of ${andList(g.map(batchName))} is 0.` : "the batch's worker count is 0.", grey: false, then: `Run: ${each((b) => `desk-q ${b.word} workers 1`)}` };
     case 'usage': return { what: 'a usage limit is reached.', grey: false, then: 'Press 6 to switch subscription.' };
-    case 'budget': return { what: 'the batch has spent its budget.', grey: false, then: `Run /desk-autopilot in ${r.repo} to raise ${batchName(r)}'s budget.` };
+    case 'budget': return { what: g.length > 1 ? `${andList(g.map(batchName))} have spent their budgets.` : 'the batch has spent its budget.', grey: false,
+      then: `Run /desk-autopilot in ${r.repo} to raise ${g.length > 1 ? 'them' : `${batchName(r)}'s budget`}.` };
     case 'health': return { what: 'a health check is failing.', grey: false, then: 'Run /desk-needs-you in a Claude session.' };
     case 'config': return /"ask"$/.test(h.detail ?? '')
       ? { what: 'a config row asks for your approval before passes run.', grey: false, then: `Run /desk-autopilot in ${r.repo} to approve them.` }
       : { what: 'a config row stops new work.', grey: false, then: `Run /desk-setup in ${r.repo}.` };
-    default: return { what: '', grey: false, then: `See why: desk-q ${r.word}` };
+    default: return { what: '', grey: false, then: `See why: ${g.map((b) => `desk-q ${b.word}`).join(' or ')}` };
   }
 }
 
@@ -3030,7 +3034,7 @@ function quietNotes(shown) {
     // stalling for another reason adds those, and must not show a hidden note again. A hold on a batch
     // (its base) is that batch's, so its key names the batches it holds whatever the text says.
     const hide = !structured(h) ? null : h.scope === 'batch' ? `${andList(g.map(batchName))} ${holdHide(h)}` : holdHide(h);
-    const c = holdCopy(structured(h) ? h : null, g[0]);
+    const c = holdCopy(structured(h) ? h : null, g);
     const quiet = `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}`;
     const text = `${quiet}${c.what ? `: ${c.what}` : '.'} ${c.grey ? c.then : ''}`.trimEnd();
     return [g[0], { text: c.grey ? text : `${text} `, grey: c.grey, fix: c.grey ? null : c.then, hide }];

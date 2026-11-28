@@ -2853,6 +2853,12 @@ put454('actn', 5970, null, mem454, 185, memHold1048);
 put454('actn', 5970, 'B3', 'concurrency 0', 185, hold1049('concurrency', 'batch', { numbers: { concurrency: 0 } }));
 t('DS-1049 AC2 a named batch whose worker count is 0: the desk-q command names that batch, not the default one',
   notesIn(lines(ov1049(['actn'])), 'actn').join(' / '), "batch B3: nothing started or merged for 3h 5m: the batch's worker count is 0. Run: desk-q actn:B3 workers 1");
+// Two named batches of one repo both at 0 workers share one note, whose fix raises each of them.
+put454('actm', 5990, null, mem454, 185, memHold1048);
+for (const b of ['B4', 'B5']) put454('actm', 5990, b, 'concurrency 0', 185, hold1049('concurrency', 'batch', { numbers: { concurrency: 0 } }));
+t('DS-1049 AC2 two batches of one repo at 0 workers: one note naming both, its fix raising each',
+  notesIn(lines(ov1049(['actm'])), 'actm').join(' / '),
+  'batch B4 and batch B5: nothing started or merged for 3h 5m: the worker count of batch B4 and batch B5 is 0. Run: desk-q actm:B4 workers 1, then desk-q actm:B5 workers 1');
 // A config row set to ask: amber, naming the repo to approve its passes in, never the pass's command.
 put1048('actf', 5980, hold1049('config', 'repo', { detail: 'config §3 autopilot-merge is "ask"', action: { text: 'confirm', cmd: 'AUTOPILOT_USER_APPROVED=1 node /b/pass.mjs' } }));
 t('DS-1049 AC2 a config row set to ask: amber, ending with where to approve the passes',
