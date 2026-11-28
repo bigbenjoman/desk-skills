@@ -1338,7 +1338,7 @@ function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
   // Only a verdict posted at the head counts here; the undraft step reads it again, with its carries.
   const verdict = (pr) => {
     if (!localReviewSet(E.configValue('local-review')) || !conflictHandle) return null;
-    const fb = readFeedback(pr.number);
+    const fb = readFeedback(pr.number, false, t);
     return fb ? readVerdict(fb.payload, { handle: verdictHandle(t, pr.number, conflictHandle), clean: E.configValue('clean-verdict'), cloudHead: cloudHead(t) }) : null;
   };
   return mergePark(cond, readPr, { ...gateLists(), verdict, ready, merge });
@@ -6375,7 +6375,7 @@ const externalSeen = [], externalWaits = [];
       'gate-hold': (a) => { const { t, s } = fixTicket(a.key); markGateHold(t, s, a.on); },
       'human-seen': (a) => humanSeen(a.pr),
       reads: (a) => { const { t, s } = fixTicket(a.key); return fixReads(t, s, a.dirty, a.dirtyFiles); },
-      feedback: (a) => readFeedback(a.pr, a.gate),
+      feedback: (a) => readFeedback(a.pr, a.gate, fixTicket(a.key)?.t ?? null),
       'settle-worked': (a) => settleWorked(fixTicket(a.key).t, a.pr, a.head, a.worked),
       'check-build': (a) => {
         const { t } = fixTicket(a.key);
@@ -6425,14 +6425,16 @@ if (!DRY) {
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
 // it. A PR the reviewer check holds still gets those findings fixed (pass/fix-tries.mjs heldTry).
-function readFeedback(n, gate = false) {
+// `t`, the PR's ticket, where it has one: on a cloud ticket's own PR the login that opened it counts with
+// the handle (verdictHandle), as in the verdict read at its head.
+function readFeedback(n, gate = false, t = null) {
   const [owner, name] = GH_REPO.split('/');
   const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
   if (!r.ok) return null;
   try {
     const payload = JSON.parse(r.out);
     const clean = E.configValue('clean-verdict');
-    const read = readThreads(payload, { handle: conflictHandle, clean });
+    const read = readThreads(payload, { handle: verdictHandle(t, n, conflictHandle), clean });
     const g = gate && gateHandle();
     return read && { ...read, payload, ...(gate ? { gateReview: (g && readThreads(payload, { handle: g, clean })?.review) || null } : {}) };
   } catch { return null; }

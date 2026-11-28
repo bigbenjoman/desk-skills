@@ -1,12 +1,15 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
 import { verdictHandle } from '../desk/bin/pass/shared.mjs';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { scratch } from './scratch.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
 import { errorLinesIn, readError, pathsIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
@@ -1111,6 +1114,19 @@ t('issue-1556 AC1 the cloud PR opener\'s verdict at its head counts on its own P
 t('issue-1556 AC1 and on no other PR', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'cloudbot')), { handle: verdictHandle(openerT, 702, 'ben'), cloudHead: CLOUD }).clean, false);
 t('issue-1556 AC1 nor on a local ticket\'s PR', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'cloudbot')), { handle: verdictHandle({ ...openerT, location: 'local' }, 701, 'ben') }).clean, false);
 t('issue-1556 AC1 anyone else\'s verdict at the cloud head still attests nothing', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'mallory')), { handle: verdictHandle(openerT, 701, 'ben'), cloudHead: CLOUD }).location, null);
+// The merge driver's reads (review-threads.mjs read and verdict, with --pr and --ticket) count the opener as the pass does.
+{
+  const dir = scratch('rt-cli-');
+  writeFileSync(join(dir, 'queue.json'), JSON.stringify({ tickets: { 'T-1': openerT } }));
+  const cli = (args) => {
+    const r = spawnSync('node', [new URL('../desk/bin/review-threads.mjs', import.meta.url).pathname, ...args], { input: JSON.stringify(pl(CLOUD, marked(CLOUD, CLEAN, 'cloudbot'))), encoding: 'utf8', env: { ...process.env, DESK_QUEUE: join(dir, 'queue.json') } });
+    try { return JSON.parse(r.stdout); } catch { return { error: r.stderr }; }
+  };
+  t('issue-1556 AC1 the driver\'s verdict read counts the opener on its cloud ticket\'s PR', cli(['verdict', '--handle', 'ben', '--clean', CLEAN, '--base', 'main', '--pr', '701', '--ticket', 'T-1']).clean, true);
+  t('issue-1556 AC1 and not on another PR', cli(['verdict', '--handle', 'ben', '--clean', CLEAN, '--base', 'main', '--pr', '702', '--ticket', 'T-1']).clean, false);
+  t('issue-1556 AC1 the driver\'s thread read takes the opener\'s clean verdict', cli(['read', '--handle', 'ben', '--clean', CLEAN, '--pr', '701', '--ticket', 'T-1']).verdict, CLOUD);
+  t('issue-1556 AC1 with no ticket it reads the handle alone', cli(['read', '--handle', 'ben', '--clean', CLEAN]).verdict ?? null, null);
+}
 t('issue-1556 verdictHandle: the handle alone with no opener kept, and once with the opener already in it', j([verdictHandle(tk({ location: 'cloud', cloud: { pr: 701 } }), 701, 'ben'), verdictHandle(tk({ location: 'cloud', cloud: { pr: 701, opener: 'Ben' } }), 701, 'ben,bot'), verdictHandle(openerT, 701, 'ben,bot')]), j(['ben', 'ben,bot', ['ben', 'bot', 'cloudbot']]));
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
 }
