@@ -1115,7 +1115,7 @@ function advanceCloud(t) {
   if (view.author?.login) cloud.opener = view.author.login;
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
-  report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
+  report.done.push(`${t.key}: ${prVerdict(pr.number, { ...t, location: 'cloud', cloud })}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
 }
 
 // The environment a follow-up to cloud session `c` is sent from: the login it started on (spawnCloud),
@@ -1312,12 +1312,16 @@ function buildParkOf(t, question) {
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
 // What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
-function prVerdict(pr) {
+// `t`, the ticket, reads its verdict by the logins the pass's own reads count on that PR (verdictHandle):
+// on a cloud ticket's PR, its opener's too.
+function prVerdict(pr, t = null) {
   if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
   try {
-    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
+    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), verdictHandle(t, pr, conflictHandle));
   } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
 }
+// The ticket a phase's `pr-verdict` step names, from the phase's own snapshot.
+const verdictTicket = (a, s) => (s?.t?.key === a.key ? s.t : s?.tickets?.[a.key]) ?? null;
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
   try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
@@ -1423,7 +1427,7 @@ const ADVANCE_HANDLERS = {
   'pr-owner': (a) => {
     try { return prOwner(a.pr); } catch { return null; }
   },
-  'pr-verdict': (a) => prVerdict(a.pr),
+  'pr-verdict': (a, s) => prVerdict(a.pr, verdictTicket(a, s)),
   'pr-conflict': (a) => { const v = readPrStatus(a.pr); return v?.state === 'OPEN' && prInConflict(v) ? { base: v.base ?? DEFAULT_BRANCH } : null; },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
@@ -1852,7 +1856,7 @@ const CLEARS_HANDLERS = {
     return checkCond(a.cond, { ...clearsRead, push: (p) => pushParked(t, p), file: (f) => existsSync(condPath(f, { worktree: t.worktree, state: STATE })) });
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
-  'pr-verdict': (a) => prVerdict(a.pr),
+  'pr-verdict': (a, s) => prVerdict(a.pr, verdictTicket(a, s)),
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
   'other-merged': (a, s) => {
     const t = s.tickets[a.key];
@@ -2036,7 +2040,7 @@ function finishPush(t) {
     report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${r.wait}: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
-  report.done.push(`${t.key}: ${prVerdict(r.pr)}; PR #${r.pr} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
+  report.done.push(`${t.key}: ${prVerdict(r.pr, t)}; PR #${r.pr} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
 }
 // A worker's committed branch pushed and opened as a draft PR into the default branch, recorded done on it
@@ -4776,7 +4780,7 @@ function fixTryStale(t) {
     : headBound && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
   if (!ended) return false;
   // A PR still open (its head moved) leads with the review at that head; a merged or closed one has none to gate.
-  const line = `${t.key}: ${v.state === 'OPEN' ? `${prVerdict(f.pr)}; ` : ''}its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
+  const line = `${t.key}: ${v.state === 'OPEN' ? `${prVerdict(f.pr, t)}; ` : ''}its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
   // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
   // done tickets' reading below.

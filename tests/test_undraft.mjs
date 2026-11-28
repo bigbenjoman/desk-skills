@@ -6,6 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { followOnIn, followOnPending, unreadableFollowOn } from '../desk/bin/harvest.mjs';
 import { undraftWrite } from '../desk/bin/pass/undraft.mjs';
+import { verdictHandle } from '../desk/bin/pass/shared.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK, doneVerdictLine } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
@@ -1143,6 +1144,12 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
     'review read from the PR: the head aaaaaaaaa has no review verdict (the latest, round 1, is at bbbbbbbbb)');
   t('issue-1477 AC2 a PR with no verdict says the head has none', at([review(CLEAN_TEXT)]), 'review read from the PR: the head aaaaaaaaa has no review verdict');
   t('issue-1477 AC2 another account\'s verdict at the head is not the person\'s', at([review(marker(ALL_ZERO), HEAD, 'mallory')]), 'review read from the PR: the head aaaaaaaaa has no review verdict');
+  // issue-1556: the done line reads by the logins the pass's own reads count (verdictHandle).
+  const cloudT = { location: 'cloud', cloud: { pr: 7, opener: 'cloudbot' } };
+  const byOpener = (pr) => doneVerdictLine({ headRefOid: HEAD, reviews: [review(marker(ALL_ZERO), HEAD, 'cloudbot')] }, verdictHandle(cloudT, pr, 'ben'));
+  t('issue-1556 a cloud ticket\'s PR opener\'s verdict reads at the head on its done line', byOpener('7'),
+    'review read from the PR: round 1 at aaaaaaaaa, p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0');
+  t('issue-1556 the opener\'s verdict on another PR is not read', byOpener('8'), 'review read from the PR: the head aaaaaaaaa has no review verdict');
 }
 
 process.exit(fails ? 1 : 0);
