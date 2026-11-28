@@ -85,6 +85,7 @@ import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount, followCheckText } f
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
+import { START_TRIES_MAX } from './base-fix.mjs';
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
@@ -3121,6 +3122,8 @@ function oldCodeNotes(shown) {
 // Claude default's limit stands for the batch's hold on it. A merge driver stopped with no reason is
 // grey for DRIVER_WAIT_MS, while the supervisor's next round can start it again, then amber with its log.
 const BASE_FIX_WAIT_PASSES = 3;
+// The structured holds that stop every start in a batch, a base fix's included, as holdCopy words them.
+const SPAWN_HOLDS = new Set(['memory', 'harm', 'maintenance', 'concurrency', 'usage', 'budget', 'health', 'config']);
 const DRIVER_WAIT_MS = 5 * 60e3;
 const RESTARTS = 'Nothing to do: the supervisor starts it again once a PR is ready to merge.';
 const logCmd = (r, file) => `tail -n 40 ${tildeOf(join(r.stateDir, file))}`;
@@ -3140,9 +3143,14 @@ function stallNotes(r, quiet, old, drivers, allOut = false, now = Date.now()) {
   if (bs && (bs.passes ?? 0) >= BASE_FIX_WAIT_PASSES && !r.q.base_fix.running) {
     const what = `${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s ${bs.check ? 'failing check' : 'conflict'} fix has waited to start${bs.since ? ` since ${clock(bs.since)}` : ''}`;
     const why = String(bs.why ?? '');
-    if ((bs.failed ?? 0) > 0) out.push(note(`${what}: its worker failed to start. `, 'Run /desk-needs-you in a Claude session.'));
+    // A hold on every start in the batch keeps the fix waiting too, and says why as its own note does.
+    const h = structured(s.hold) && SPAWN_HOLDS.has(s.hold.cause) ? holdCopy(s.hold, [r]) : null;
+    // Below START_TRIES_MAX failed starts the pass tries again by itself; from it, the fix is the person's.
+    if ((bs.failed ?? 0) >= START_TRIES_MAX) out.push(note(`${what}: its worker failed to start. `, 'Run /desk-needs-you in a Claude session.'));
     else if (/^no Claude login/.test(why)) out.push(note(`${what}: no signed-in Claude login may start it. `, 'Press 6 to switch subscription.'));
-    else if (/^memory:/.test(why)) out.push(greyNote(r.repo, `${what}: the computer is low on memory. Nothing to do: it starts once memory frees up.`));
+    else if (h) out.push(h.grey ? greyNote(r.repo, `${what}: ${h.what} ${h.then}`) : note(`${what}: ${h.what} `, h.then));
+    else if (/^memory( harm)?:/.test(why)) out.push(greyNote(r.repo, `${what}: the computer is low on memory. Nothing to do: it starts once memory frees up.`));
+    else if ((bs.failed ?? 0) > 0) out.push(greyNote(r.repo, `${what}: its worker has failed to start. Nothing to do: the next pass tries again.`));
     else out.push(greyNote(r.repo, `${what}: every worker it may use is busy. Nothing to do: it starts once one is free.`));
   }
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));

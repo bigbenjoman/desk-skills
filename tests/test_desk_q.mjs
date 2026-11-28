@@ -3745,19 +3745,30 @@ try {
   put(I.T, I.env, 'bfix3', { port: 5934, conc: '2 / 3', beat: 1, queue: { batch: 'bfix3', base: 'feat/x', concurrency: 2, base_fix: fixOf(3), tickets } });
   put(I.T, I.env, 'bfix2', { port: 5935, conc: '2 / 3', beat: 1, queue: { batch: 'bfix2', base: 'feat/x', concurrency: 2, base_fix: fixOf(2), tickets } });
   put(I.T, I.env, 'bfixr', { port: 5936, conc: '2 / 3', beat: 1, queue: { batch: 'bfixr', base: 'feat/x', concurrency: 2, base_fix: fixOf(5, 'sid-1'), tickets } });
-  put(I.T, I.env, 'bfixf', { port: 5937, conc: '2 / 3', beat: 1, queue: { batch: 'bfixf', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'failed its preflight: preflight failed, not spawned', failed: 1 }), tickets } });
+  put(I.T, I.env, 'bfixf', { port: 5937, conc: '2 / 3', beat: 1, queue: { batch: 'bfixf', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'failed its preflight: preflight failed, not spawned', failed: 3 }), tickets } });
+  put(I.T, I.env, 'bfixg', { port: 5940, conc: '2 / 3', beat: 1, queue: { batch: 'bfixg', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'failed its preflight: preflight failed, not spawned', failed: 1 }), tickets } });
   put(I.T, I.env, 'bfixl', { port: 5938, conc: '2 / 3', beat: 1, queue: { batch: 'bfixl', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'no Claude login this repo may start a worker on' }), tickets } });
   put(I.T, I.env, 'bfixm', { port: 5939, conc: '2 / 3', beat: 1, queue: { batch: 'bfixm', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'memory: BASE-FIX not started, its 6G share no longer fits under the 40G ceiling: 3G free' }), tickets } });
-  const bfix = ['bfix3', 'bfix2', 'bfixr', 'bfixf', 'bfixl', 'bfixm'];
+  put(I.T, I.env, 'bfixh', { port: 5941, conc: '2 / 3', beat: 1, queue: { batch: 'bfixh', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'memory harm: VMMEM-HIGH within the last 10m (vmmem 60G)' }), tickets } });
+  const usageHold = { cause: 'usage', scope: 'batch', numbers: null, holders: [], tickets: [], action: null };
+  put(I.T, I.env, 'bfixu', { port: 5942, conc: '2 / 3', beat: 1, queue: { batch: 'bfixu', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'usage: the 5-hour window is at its limit' }), tickets,
+    pass: { at: minsAgo(1), by: 'session', held: 'held: usage', hold: usageHold, errors: 0, progress_at: minsAgo(185) } } });
+  const bfix = ['bfix3', 'bfix2', 'bfixr', 'bfixf', 'bfixg', 'bfixl', 'bfixm', 'bfixh', 'bfixu'];
   const ov1034 = lines(Q.overview(Q.loadRepos(NOW).filter((r) => bfix.includes(r.repo)), { now: NOW, avail: 30 }));
   t('DS-1034 AC3 DS-1049 AC1 three passes waiting for a worker: a grey note says the conflict fix waits, why, and that nothing is to do', greyIn(ov1034, 'bfix3').join(' / '),
     `feat/x's conflict fix has waited to start since ${at}: every worker it may use is busy. Nothing to do: it starts once one is free.`);
   t('DS-1034 AC3 two passes, or a fix worker running: no note', `${notesIn(ov1034, 'bfix2').length + greyIn(ov1034, 'bfix2').length} ${notesIn(ov1034, 'bfixr').length + greyIn(ov1034, 'bfixr').length}`, '0 0');
-  t('DS-1049 AC2 a base fix whose worker failed to start, or that no login may start, is amber and ends with its fix',
+  t('DS-1049 AC1 a base fix whose worker failed to start fewer times than the pass allows is grey: the next pass tries again',
+    `${notesIn(ov1034, 'bfixg').length} ${greyIn(ov1034, 'bfixg').join(' / ')}`,
+    `0 feat/x's conflict fix has waited to start since ${at}: its worker has failed to start. Nothing to do: the next pass tries again.`);
+  t('DS-1049 AC2 a base fix whose worker failed to start as many times as the pass allows, or that no login may start, is amber and ends with its fix',
     `${notesIn(ov1034, 'bfixf').join(' / ')} // ${notesIn(ov1034, 'bfixl').join(' / ')}`,
     `feat/x's conflict fix has waited to start since ${at}: its worker failed to start. Run /desk-needs-you in a Claude session. // feat/x's conflict fix has waited to start since ${at}: no signed-in Claude login may start it. Press 6 to switch subscription.`);
-  t('DS-1049 AC1 a base fix waiting on memory is grey', greyIn(ov1034, 'bfixm').join(' / '),
-    `feat/x's conflict fix has waited to start since ${at}: the computer is low on memory. Nothing to do: it starts once memory frees up.`);
+  t('DS-1049 AC1 a base fix waiting on low memory or memory harm is grey', `${greyIn(ov1034, 'bfixm').join(' / ')} // ${greyIn(ov1034, 'bfixh').join(' / ')}`,
+    `feat/x's conflict fix has waited to start since ${at}: the computer is low on memory. Nothing to do: it starts once memory frees up. // feat/x's conflict fix has waited to start since ${at}: the computer is low on memory. Nothing to do: it starts once memory frees up.`);
+  t('DS-1049 AC2 a base fix held by the batch\'s usage hold is amber with the hold\'s key, never grey',
+    `${notesIn(ov1034, 'bfixu').filter((l) => l.includes('conflict fix')).join(' / ')} // ${greyIn(ov1034, 'bfixu').filter((l) => l.includes('conflict fix')).length}`,
+    `feat/x's conflict fix has waited to start since ${at}: a usage limit is reached. Press 6 to switch subscription. // 0`);
   t('DS-1049 AC5 no base-fix note shows the pass\'s own reason', noteBlock(ov1034).filter((l) => banned1049.test(l) || /preflight|ceiling|§3b/.test(l)).join(' // '), '');
 }
 
