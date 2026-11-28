@@ -1283,6 +1283,7 @@ function followItem(r, t, { gate, ready, waiting }) {
   const checks = ready.map(({ s, failed }) => {
     const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
     const ran = !failed ? '' : broken(failed) ? brokenWords(r, failed)
+      : failed.result === 'unchecked' ? ` A follow-step checker could not check it, twice: ${one(failed.found).replace(/\.$/, '')} (tried: ${one(failed.tried ?? '').replace(/\.$/, '')}; evidence: ${one(failed.evidence)}).`
       : ` A follow-step checker ran it and it failed: ${one(failed.found).replace(/\.$/, '')} (evidence: ${one(failed.evidence)}).`;
     return ` Check: ${stop(said)}${ran}`;
   }).join('');

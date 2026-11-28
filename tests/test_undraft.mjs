@@ -493,6 +493,12 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('issue-1549 AC4 and an object', check('AUTOPILOT_DONE: pr=1 follow_on={} said=x').startsWith('1 not a JSON array: follow_on=['), true);
   t('issue-1549 AC4 the array passes', check('AUTOPILOT_DONE: pr=1 jira=none follow_on=[{"step": "run x", "row": null}] said=y'), '0 reads as 1 follow-on step(s)');
   t('issue-1549 AC4 no follow_on= passes', check('AUTOPILOT_DONE: pr=1 jira=none'), '0 no follow_on=');
+  // #1599 AC2 AC4: a step a follow-step checker runs that names a desk file desk never writes is refused.
+  const checkStep = (s, row = null) => check(`AUTOPILOT_DONE: pr=1 follow_on=${JSON.stringify([{ step: s, row }])}`);
+  t('#1599 AC2 AC4 the self-check refuses a step naming a missing file, naming it',
+    /^1 follow_on= step "read base-red\.jsonl for main read red twice" names base-red\.jsonl, which no desk file is and desk does not write[\s\S]*Reword it/.test(checkStep('read base-red.jsonl for main read red twice')), true);
+  t('#1599 AC2 and passes one naming a log desk writes', checkStep("read maintenance.log for main's tests check read red twice"), '0 reads as 1 follow-on step(s)');
+  t('#1599 AC2 a step with a row is the person\'s, and not checked for files', checkStep('read base-red.jsonl on staging', 'staging-read'), '0 reads as 1 follow-on step(s)');
   t('issue-1549 AC4 follow_on=none is rejected, saying to leave it out',
     check('AUTOPILOT_DONE: pr=1 jira=none follow_on=none').startsWith('1 follow_on= "none" names no step, read as none; with no steps leave follow_on= out'), true);
   t('DS-785 AC1 a step whose "after" is production keeps that gate',
