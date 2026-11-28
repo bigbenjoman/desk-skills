@@ -37,6 +37,7 @@ import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, par
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { cloudPrompt, deskReviewEnabled, cloudNeeds, cloudSetupRows, shotsRef, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, readArchived, readPending, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { finishedCloud, readEnded, recordEnded, endCloud, archiveListed, claudeHelp, cloudPushedAfter, CLOUD_END_WATCH_MS } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -5658,6 +5659,54 @@ runSteps({
   },
   report,
 });
+
+// ---- finished cloud sessions, ended -----------------------------------------
+// A done ticket's cloud session (cloud-worker.mjs finishedCloud) is ended once, with the CLI's archive
+// command where `claude --help` lists one and otherwise the closing follow-up, and recorded with its
+// branch's head on origin then. An ended one is watched for a push past that head for CLOUD_END_WATCH_MS.
+// needs-you asks the person to archive a session only where its end failed or it pushed after it
+// (cloud-worker.mjs cloudArchiveAsks). The standing batch also takes those archived batches handed it.
+{
+  let rows = [];
+  let ended = new Map();
+  try {
+    rows = finishedCloud(queue().tickets, readArchive(QUEUE_FILE).tickets, readArchived(STATE), E.batchName() == null ? readPending(STATE) : []);
+    ended = readEnded(STATE);
+  } catch (e) { report.waiting.push(`cloud sessions: the finished ones could not be read (${lastLine(String(e?.message ?? e))})`); }
+  const toEnd = rows.filter((d) => d.done && !ended.has(d.session));
+  const watched = rows.map((d) => ended.get(d.session))
+    .filter((e) => e?.branch && !e.error && !e.pushed_at && Date.now() - (Date.parse(e.at) || 0) <= CLOUD_END_WATCH_MS);
+  if (toEnd.length || watched.length) {
+    const ls = shOut('git', ['-C', MAIN, 'ls-remote', '--heads', 'origin'], { fresh: true });
+    if (!ls.ok) {
+      report.waiting.push(`cloud sessions: ${toEnd.length} to end and ${watched.length} to watch wait for the next pass, as origin's branches could not be read (${lastLine(ls.out)})`);
+    } else {
+      const heads = new Map(ls.out.split('\n').map((l) => l.trim().split(/\s+/)).filter((p) => p.length === 2 && p[1].startsWith('refs/heads/'))
+        .map(([sha, ref]) => [ref.slice('refs/heads/'.length), sha]));
+      const at = new Date().toISOString();
+      const records = [];
+      for (const e of watched) {
+        const head = cloudPushedAfter(e, heads);
+        if (!head) continue;
+        records.push({ ...e, pushed_at: at, pushed_head: head });
+        report.stalled.push(`${e.key}: cloud session ${e.url} pushed ${e.branch} to ${head.slice(0, 7)} after desk ended it at ${e.at}${DRY ? ' (dry run: nothing recorded)' : ': needs-you asks you to archive it'}`);
+      }
+      const archive = toEnd.length && !DRY ? archiveListed(claudeHelp()) : false;
+      for (const d of toEnd) {
+        if (DRY) { report.advanced.push(`${d.key}: cloud session ${d.url} is finished (dry run: not ended)`); continue; }
+        const got = endCloud(d.session, { archive, env: cloudEnv({ login: d.login }) });
+        const head = d.branch ? heads.get(d.branch) ?? null : null;
+        records.push({ key: d.key, session: d.session, name: d.name ?? null, url: d.url, branch: d.branch ?? null, head, at, via: got.via, ...(got.error ? { error: got.error } : {}) });
+        const how = got.via === 'archive' ? 'archived with claude archive' : 'sent the closing follow-up';
+        if (got.error) report.stalled.push(`${d.key}: cloud session ${d.url} could not be ended (${got.via === 'archive' ? 'claude archive' : 'the closing follow-up'}: ${got.error}): needs-you asks you to archive it`);
+        else report.advanced.push(`${d.key}: cloud session ${d.url} ended, ${how}${d.branch ? `; a push to ${d.branch} after it goes on needs-you` : ''}`);
+      }
+      if (!DRY && records.length) {
+        try { recordEnded(STATE, records); } catch (e) { report.waiting.push(`cloud sessions: what was ended could not be recorded (${lastLine(String(e?.message ?? e))}); the next pass tries again`); }
+      }
+    }
+  }
+}
 
 // ---- outside blockers ----------------------------------------------------
 // The decision is pass/parks.mjs decideOutsideBlockers. Of the tickets the blocker links read above

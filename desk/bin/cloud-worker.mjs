@@ -580,14 +580,15 @@ export const cloudWall = (cloud) => {
   return Number.isFinite(ms) && ms >= 0 ? ms : null;
 };
 
-// ---- finished cloud sessions, to archive ---------------------------------------------------------
-// Nothing on this computer can end or archive a cloud session (`claude stop` and `rm` act on local
-// background sessions only), so a finished one stays in the person's claude.ai/code list until they
-// archive it there. needs-you lists each batch's finished sessions as one item, and its done records
-// them (`sessions`) in one file for the repo, in the standing batch's state folder, which archiving a
-// named batch never moves; each is then asked about once. A named batch archived before that hands its
-// unrecorded ones to the same file (`pending`), under the same lock, since an archived batch is no
-// longer listed: the standing batch's item lists them. `stateDir` is any batch's state folder.
+// ---- finished cloud sessions, to end or archive ----------------------------------------------------
+// The CLI has no archive command (`claude stop` and `rm` act on local background sessions only), so the
+// pass ends a done ticket's session with a closing follow-up (endCloud) and records it in `ended`, with
+// its branch's head then, so a push after it is seen (cloudPushedAfter). needs-you asks the person to
+// archive a session only where that went wrong (cloudArchiveAsks), and its done records them (`sessions`)
+// in one file for the repo, in the standing batch's state folder, which archiving a named batch never
+// moves; each is then asked about once. A named batch archived before that hands its unrecorded ones to
+// the same file (`pending`), under the same lock, since an archived batch is no longer listed: the
+// standing batch's pass and item take them. `stateDir` is any batch's state folder.
 const archivedPath = (stateDir) => join(repoStateOf(stateDir), 'cloud-archived.json');
 const readFile = (stateDir) => {
   try { const f = JSON.parse(readFileSync(archivedPath(stateDir), 'utf8')); return f && typeof f === 'object' ? f : {}; } catch { return {}; }
@@ -597,6 +598,9 @@ const readFile = (stateDir) => {
 export const readArchived = (stateDir) => { const f = readFile(stateDir); return new Set(Array.isArray(f.sessions) ? f.sessions : []); };
 // The finished sessions an archived named batch handed here, as finishedCloud rows.
 export const readPending = (stateDir) => { const f = readFile(stateDir); return Array.isArray(f.pending) ? f.pending.filter((d) => d?.session && d.url) : []; };
+// The sessions the pass has tried to end (recordEnded), keyed by session id.
+//   -> Map(session -> { key, session, name, url, branch, head, at, via, error?, pushed_at?, pushed_head? })
+export const readEnded = (stateDir) => { const f = readFile(stateDir); return new Map((Array.isArray(f.ended) ? f.ended : []).filter((e) => e?.session).map((e) => [e.session, e])); };
 
 // Changes the file under its lock: `change(f)` mutates { sessions, pending }.
 function update(stateDir, change) {
@@ -610,7 +614,9 @@ function update(stateDir, change) {
     }
     f.sessions = Array.isArray(f.sessions) ? f.sessions : [];
     f.pending = Array.isArray(f.pending) ? f.pending : [];
+    f.ended = Array.isArray(f.ended) ? f.ended : [];
     change(f);
+    if (!f.ended.length) delete f.ended;
     writeJsonAtomic(file, f);
   } finally { unlock(held); }
 }
@@ -632,18 +638,88 @@ export function handOver(stateDir, rows) {
   });
 }
 
+// Records the pass's tries to end sessions (endCloud), and pushes seen after one: each row merged over
+// what was recorded for its session. A record older than CLOUD_END_KEEP_MS is dropped.
+export const CLOUD_END_KEEP_MS = 30 * 24 * 3_600_000;
+export function recordEnded(stateDir, rows, now = Date.now()) {
+  if (!rows.length) return;
+  update(stateDir, (f) => {
+    const by = new Map(f.ended.filter((e) => e?.session).map((e) => [e.session, e]));
+    for (const r of rows) by.set(r.session, { ...by.get(r.session), ...r });
+    f.ended = [...by.values()].filter((e) => !(now - (Date.parse(e.at) || now) > CLOUD_END_KEEP_MS));
+  });
+}
+
+// The closing follow-up a done ticket's session is sent, so it pushes nothing more to its branch.
+export const CLOUD_END_MSG = 'The ticket is finished: stop, make no more commits or pushes';
+// How long after it was ended a session's branch is watched for a push.
+export const CLOUD_END_WATCH_MS = 7 * 24 * 3_600_000;
+// How long a done ticket's session may wait for a pass to end it before needs-you asks the person.
+export const CLOUD_END_GRACE_MS = 6 * 3_600_000;
+
+// Whether `claude --help` lists an `archive` command in its command list.
+export const archiveListed = (help) => /^\s{2,}archive\b/m.test(String(help ?? ''));
+// What `claude --help` prints, or '' where it does not run.
+export function claudeHelp({ claude = 'claude', timeout = 30_000, env = process.env } = {}) {
+  const r = spawnSync(claude, ['--help'], { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'], env });
+  return r.error || r.status ? '' : String(r.stdout ?? '');
+}
+
+// Ends cloud session `session`: `claude archive <session>` where `archive` (archiveListed), else the
+// closing follow-up (CLOUD_END_MSG). -> { ok: true, via } or { error, via }, `via` 'archive' | 'follow-up'
+export function endCloud(session, { archive = false, claude = 'claude', timeout = 60_000, env = process.env } = {}) {
+  if (!archive) {
+    const sent = sendCloud(session, CLOUD_END_MSG, { claude, timeout, env });
+    return sent.error ? { error: sent.error, via: 'follow-up' } : { ok: true, via: 'follow-up' };
+  }
+  if (!/^session_\w+$/.test(String(session ?? ''))) return { error: 'its session id was not recorded', via: 'archive' };
+  const r = spawnSync(claude, ['archive', session], { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'], env });
+  if (r.error) return { error: r.error.code === 'ETIMEDOUT' ? `no answer in ${timeout / 1000}s` : r.error.message, via: 'archive' };
+  if (r.status) {
+    const said = clean(`${r.stderr ?? ''}\n${r.stdout ?? ''}`).split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? 'it printed nothing';
+    return { error: `${said} (exit ${r.status})`, via: 'archive' };
+  }
+  return { ok: true, via: 'archive' };
+}
+
+// The head an ended session's branch moved to after it was ended (`heads`: branch -> SHA on origin), or
+// null: none moved, it is not watched (no branch, the end failed, a push already seen), or the branch
+// is gone, which a merged PR's branch deletion does.
+export function cloudPushedAfter(rec, heads) {
+  if (!rec?.branch || rec.error || rec.pushed_at) return null;
+  const now = heads.get(rec.branch) ?? null;
+  return now && now !== (rec.head ?? null) ? now : null;
+}
+
+// Which finished sessions (finishedCloud rows) needs-you asks the person to archive, each with why:
+// one whose end failed, one that pushed after it was ended, a done ticket's that no pass has ended
+// past CLOUD_END_GRACE_MS, and one recorded abandoned rather than done, which no pass ends.
+// `ended` is readEnded's. -> [{ ...row, why }], `why` null for an abandoned one
+export function cloudArchiveAsks(rows, ended, now = Date.now()) {
+  return rows.flatMap((d) => {
+    const e = ended.get(d.session);
+    if (e?.error) return [{ ...d, why: e.via === 'archive' ? `desk could not archive it: ${e.error}` : `desk's closing follow-up failed: ${e.error}` }];
+    if (e?.pushed_at) return [{ ...d, why: `it pushed to ${e.branch} after desk ended it` }];
+    if (e) return [];
+    if (!d.done) return [{ ...d, why: null }];
+    return now - (Date.parse(d.at ?? '') || 0) > CLOUD_END_GRACE_MS ? [{ ...d, why: 'no pass has ended it yet' }] : [];
+  });
+}
+
 // The batch's finished cloud sessions not yet archived, oldest first: each ticket worked in the cloud
 // whose PR has merged (a live ticket with `merged_at`), or that the queue archived, which it does once
-// a done ticket's PR has merged or closed, and any `pending` handed here. `tickets` are the live ones,
-// `archived` the archive's, `done` the sessions recorded archived.
-//   -> [{ key, session, name, url, at }]
+// a done ticket's PR has merged or closed, each marked `done`, and any `pending` handed here, which is
+// marked so only where an archived batch handed its done ones. `tickets` are the live ones, `archived`
+// the archive's, `done` the sessions recorded archived.
+//   -> [{ key, session, name, url, branch, login, done, at }]
 export function finishedCloud(tickets, archived, done = new Set(), pending = []) {
   const rows = [
     ...Object.values(tickets ?? {}).filter((t) => t?.state === 'done' && t.merged_at),
     ...Object.values(archived ?? {}),
   // A ticket moved local after its session went idle keeps that session, pinned or not (ranInCloud).
   ].filter((t) => ranInCloud(t) && t.cloud?.session && t.cloud.url)
-    .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }));
+    .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, branch: t.branch ?? null, login: t.cloud.login ?? null, done: true,
+      at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }));
   const seen = new Set(done);
   return [...rows, ...pending].filter((d) => !seen.has(d.session) && seen.add(d.session))
     .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));

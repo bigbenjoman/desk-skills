@@ -159,7 +159,7 @@ import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk, readAsks, answerAsk, answerOf } from './asks.mjs';
 import { OPTION, applyByOf, neverDefault, nextCheckin, deadlineText } from './ask-defaults.mjs';
-import { finishedCloud, readArchived, readPending, recordArchived } from './cloud-worker.mjs';
+import { finishedCloud, readArchived, readPending, recordArchived, readEnded, cloudArchiveAsks } from './cloud-worker.mjs';
 import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
@@ -1799,23 +1799,23 @@ function ticketlessItems(batches) {
         since: timeOf(p.since) } })));
 }
 
-// ---- finished cloud sessions (cloud-worker.mjs finishedCloud): one item a batch --------------------
-// Nothing here can archive a cloud session, so each batch's finished ones are one item, naming each
-// session and its URL; the standing batch's also lists those an archived named batch handed it. Its
-// key, `cloud-archive:<id>` (`cloud-archive:<batch>:<id>` for a named batch), carries a hash of the
-// sessions it names, so a done answers only the list that was shown: once another session finishes,
-// the old key is no longer listed and its done is refused. Done records every session it named as
-// archived (cloud-worker.mjs recordArchived).
+// ---- finished cloud sessions to archive (cloud-worker.mjs cloudArchiveAsks): one item a batch -------
+// The pass ends a done ticket's session itself, so a batch's item names only the finished sessions
+// cloudArchiveAsks says the person must archive, each with its URL and why; the standing batch's also
+// lists those an archived named batch handed it. Its key, `cloud-archive:<id>`
+// (`cloud-archive:<batch>:<id>` for a named batch), carries a hash of the sessions it names, so a done
+// answers only the list that was shown: once another session joins it, the old key is no longer listed
+// and its done is refused. Done records every session it named as archived (cloud-worker.mjs recordArchived).
 const CLOUD_ARCHIVE = 'cloud-archive';
-function cloudItems(batches) {
+function cloudItems(batches, now = Date.now()) {
   return batches.filter((b) => !b.error && b.q).flatMap((r) => {
     let archive = {};
     try { archive = readArchive(r.queuePath).tickets; } catch { /* an unreadable archive lists none of its tickets */ }
-    const done = finishedCloud(r.q.tickets, archive, readArchived(r.stateDir), r.batch == null ? readPending(r.stateDir) : []);
+    const done = cloudArchiveAsks(finishedCloud(r.q.tickets, archive, readArchived(r.stateDir), r.batch == null ? readPending(r.stateDir) : []), readEnded(r.stateDir), now);
     if (!done.length) return [];
     const sessions = done.map((d) => d.session);
     const id = createHash('sha256').update(sessions.join('\n')).digest('hex').slice(0, 8);
-    const list = done.map((d) => `${d.name ?? d.key} ${d.url}`).join('; ');
+    const list = done.map((d) => `${d.name ?? d.key} ${d.url}${d.why ? ` (${d.why})` : ''}`).join('; ');
     return [{ r, dir: r.stateDir, t: { key: `${CLOUD_ARCHIVE}:${r.batch == null ? '' : `${r.batch}:`}${id}` }, item: { kind: CLOUD_ARCHIVE, repoLevel: true, sessions,
       need: `${done.length === 1 ? '1 cloud session has' : `${done.length} cloud sessions have`} finished in ${r.name ?? r.slug} and ${done.length === 1 ? 'is' : 'are'} still open: archive ${done.length === 1 ? 'it' : 'these'} in claude.ai/code: ${list}`,
       actions: [['done', 'once you have archived them, done records them so they are not listed again'], ['not-now']],
