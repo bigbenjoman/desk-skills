@@ -44,7 +44,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { basename, isAbsolute, join, relative } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints, isValued } from './lever-registry.mjs';
-import { appendWith, read, stampAfter } from './lever-log.mjs';
+import { appendWith, isStateChange, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId, holdbackEnd, pairTrial, ACTOR } from './levers-auto.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
@@ -424,6 +424,8 @@ export function guardrailEstimates(rows, { seed, minN, names = Object.keys(GUARD
     const stat = g.kind === 'diff' ? (rs) => meanDiff(rs, g.value) : (rs) => rateRatio(rs, g.value);
     const est = stat(have);
     if (est == null) return { name, scope: 'repo', est: null, lo90: null, hi90: null, margin: g.margin, p_worse: null, status: 'no_data' };
+    // A ratio over an off arm with none to divide by has no figure yet: too early, never a breach.
+    if (!Number.isFinite(est)) return { name, scope: 'repo', est: null, lo90: null, hi90: null, margin: g.margin, p_worse: null, status: 'too_early' };
     const worse = g.kind === 'diff' ? (d) => d < g.margin : (d) => d > g.margin;
     const iv = interval(bootstrap(strata(have), stat, { random: seededRandom(seedOf(`${seed}|${name}`)) }), worse);
     const out = { name, scope: 'repo', est: r4(est), lo90: r4(iv.lo90), hi90: r4(iv.hi90), margin: g.margin, p_worse: r4(iv.p) };
@@ -432,17 +434,45 @@ export function guardrailEstimates(rows, { seed, minN, names = Object.keys(GUARD
 }
 
 // ---- the decision ----------------------------------------------------------------------------------------
-const pct = (v) => (v == null ? '?' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`);
-const x2 = (v) => (v == null ? '?' : `${v.toFixed(2)}×`);
+const NO_FIGURE = 'no figure yet';
+const pct = (v) => (v == null ? NO_FIGURE : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`);
+const x2 = (v) => (v == null ? NO_FIGURE : `${v.toFixed(2)}×`);
+const fig = (v) => (Number.isFinite(v) ? v : NO_FIGURE);
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
+// The guardrail a logged revert `e` names, where it reverted on one with no estimate: an earlier
+// evaluation read a check with no figure as breached. Such a revert is void; null for any other event.
+export const voidedBy = (e) => (e?.kind === 'transition' && ['reverted', 'frozen'].includes(e.to) && String(e.reason_code ?? '').startsWith('guardrail_')
+  ? (e.guardrails ?? []).find((g) => `guardrail_${snake(String(g.name))}` === e.reason_code && g.est == null) ?? null : null);
+
 // How many times repo log `events` have reverted `lever` (an evaluation's transition or a trip), and the
-// state its next revert goes to: a lever already reverted once is frozen instead.
+// state its next revert goes to: a lever already reverted once is frozen instead. A void revert does
+// not count.
 export const priorRevertsOf = (events, lever) => (events ?? [])
-  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && ['reverted', 'frozen'].includes(e.to)).length;
+  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && ['reverted', 'frozen'].includes(e.to) && !voidedBy(e)).length;
 export const revertTarget = (priorReverts) => (priorReverts >= 1 ? 'frozen' : 'reverted');
 // The needs-you item a freeze raises, for `lever` in repo `name`, `why` being what reverted it.
 export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} after its second revert (${why}): it stays off there until you set it by hand`;
+// The needs-you item a void revert `e` raises, for `lever` in repo `name`, `g` the guardrail it named.
+export const voidedText = (lever, name, e, g) => `${lever} was turned off in ${name} on ${String(e.at).slice(0, 10)} because ${guardMetric(g.name)} read as worse, `
+  + `but that check had ${NO_FIGURE}: the tickets with ${lever} off had none to compare against, so the revert no longer counts. Keep ${lever} off, or test it again?`;
+
+// Raises one needs-you item for each void revert in repo `r`'s log while it is still its lever's latest
+// change there, and never twice for one revert.
+function raiseVoided(r, at, written) {
+  for (const e of r.log.events ?? []) {
+    const g = voidedBy(e);
+    if (!g) continue;
+    const ny = appendWith(r.slug, () => {
+      const events = read(r.slug).events;
+      if (events.some((x) => x.kind === 'needs_you' && x.revert_id === e.id)) return null;
+      if (events.filter((x) => isStateChange(x, e.lever)).at(-1)?.id !== e.id) return null;
+      return { kind: 'needs_you', lever: e.lever, actor: ACTOR, reason_code: 'revert_no_figure', at: stampAfter(events, at), revert_id: e.id,
+        eval_id: e.eval_id, evidence_file: e.evidence_file, evidence_sha256: e.evidence_sha256, reason: voidedText(e.lever, r.name, e, g) };
+    });
+    if (ny) written.events.push(ny);
+  }
+}
 
 // What the evaluation does with one lever in one repo. `n` is the repo's arms, `priorReverts` how many
 // times the repo's log has reverted it before, `changedAt` when it last changed state there (ms or
@@ -466,7 +496,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   const breached = state === 'reverted' ? [] : guardrails.filter((g) => g.status === 'breached');
   if (breached.length && smaller >= R.revert_min_per_arm) {
     const g = breached[0];
-    const why = `${guardMetric(g.name)} worse than its margin with ${Math.round(g.p_worse * 100)}% probability (${g.est} against ${g.margin}, 90%: ${g.lo90} to ${g.hi90}) at ${sample}`;
+    const why = `${guardMetric(g.name)} worse than its margin with ${Math.round(g.p_worse * 100)}% probability (${fig(g.est)} against ${g.margin}, 90%: ${fig(g.lo90)} to ${fig(g.hi90)}) at ${sample}`;
     if (cooling) return hold('change_cooldown', `would revert (${why}), but it changed state less than ${R.cooldown_days} days ago`, `the ${R.cooldown_days}-day wait to pass`);
     return { decision: 'revert', to: revertTo, reason_code: `guardrail_${snake(g.name)}`, reason: why, next: next(null) };
   }
@@ -487,7 +517,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability${probability !== DECISION_RULE.probability ? `, under the ${Math.round(probability * 1000) / 10}% each of its values needs` : ''}`);
   if (!(Number.isFinite(cost.hi90) && cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
   const notOk = guardrails.filter((g) => g.status !== 'ok');
-  if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${g.status}`).join(', ')}`);
+  if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${g.est == null && g.status === 'too_early' ? `has ${NO_FIGURE}` : g.status}`).join(', ')}`);
   const noAudit = !!audits && !(audits.recorded > 0);
   if (noAudit) unmet.push('no blind audit of its merged PRs is recorded in this repo yet');
   if (auditP0) unmet.push('a blind audit found a P0 in a merged PR drawn on for it, which reverted it');
@@ -502,6 +532,11 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
     return { decision: 'adopt', to: 'adopted', reason_code: 'adopt_all_conditions', reason: why, next: next(null) };
   }
   if (state === 'trial' && smaller >= maxN) {
+    // A guardrail too early to read is not a failure: when it is all that stands between the lever and
+    // an adopt, the lever holds rather than reverts.
+    if (unmet.length === 1 && notOk.length && notOk.every((g) => g.status === 'too_early')) {
+      return hold('no_figure_yet', `every other adopt condition holds, but ${unmet[0]} (${sample})`, `a figure for ${notOk.map((g) => g.name).join(', ')}`);
+    }
     const noBenefit = !pair && (mechanism.min_benefit == null || !(mechanism.p_benefit >= R.probability));
     if (cooling) return hold('change_cooldown', `would revert at the maximum sample, but it changed state less than ${R.cooldown_days} days ago`, `the ${R.cooldown_days}-day wait to pass`);
     return { decision: 'revert', to: revertTo, reason_code: noBenefit ? 'no_benefit_max_sample' : 'max_sample_no_adopt', reason: `${noBenefit ? 'no benefit at maximum sample' : 'maximum sample reached'}: ${unmet.join('; ')} (${sample})`, next: next(null) };
@@ -601,6 +636,7 @@ export function evaluate({
 
   for (const r of prepared) {
     if (r.done) continue;
+    if (!r.unreadable) raiseVoided(r, at, written);
     const lines = [];
     for (const lever of levers) {
       if (r.states[lever] !== 'auto') continue;
