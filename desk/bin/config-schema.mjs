@@ -767,6 +767,7 @@ export const ROWS = Object.freeze([
   l('merge-holds', '4', 'Merge holds', 'merge-hold', ['backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)']),
   l('incidental-paths', '4', 'Incidental paths', 'text', ['pnpm-lock.yaml', 'docs/**']),
   l('append-only-paths', '4', 'Append-only paths', 'text', ['messages/*.json'], dflt(['none'])),
+  l('stale-check-paths', '4', 'Stale-check paths', 'text', ['pnpm-lock.yaml', 'prisma/schema.prisma']),
   v('merge-method', '4', 'Merge method', 'merge-method', 'squash'),
   v('repo-merge-settings', '4', 'Repo merge settings', 'text', 'auto-merge allowed; delete_branch_on_merge on'),
   v('gh-token-scopes', '4', 'gh token scopes', 'text', 'repo, workflow', unread),

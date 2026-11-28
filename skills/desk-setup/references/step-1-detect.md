@@ -237,6 +237,15 @@ How to turn what you find into rows:
   `` `messages/*.json` ``); with none named, write `none`. Say that autopilot does not count two
   tickets sharing only such files as a collision, so they run side by side, and that any other
   shared file still collides.
+- **Stale-check paths.** Re-detect Branch protection first: a config written before branch
+  protection's "must be up to date" (`strict`) was turned off still says so. Only where the branch
+  need not be up to date, propose the files whose change on the base leaves a PR's checks stale: the
+  lockfiles present (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `uv.lock`) and a schema
+  the build generates code from (`prisma/schema.prisma`), one glob per span. The user confirms each;
+  `none` is the default, and the row is `none` where the branch must be up to date. Say that before
+  merging a green PR the merge driver diffs its merge base against the base, and where a listed path
+  changed it updates the branch under §3 `pr-update-branch` (else asks the user to) and merges once
+  green at the new head, so each such update costs one more CI run on that PR.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;
