@@ -67,6 +67,8 @@ t('a stage-boundary briefing has no Left of Stage section', renderHandoff({ key:
 const seven = renderHandoff({ key: 'W-1', stage: '7', data: readHandoff(state, 'W-1').data, branch: 'b', worktree: '/w', base: 'origin/main', commits: ['abc1234 feat: W-1'] });
 t('#1680 AC1 a Stage 7 briefing with no PR says to push and open the draft PR before any review round',
   seven.includes('### Before any review round') && /push it \(push-retry\.mjs[^)]*\) and open the draft PR \(desk-pr\) before you run any review round/.test(seven), true);
+t('#1680 AC1 and that push wins over the contract\'s review-before-push rules, which bind the pushes after it',
+  seven.includes('This push comes first even where the Stage 4 file\'s `verdict.mjs --check` or the Stage 5 file\'s §4 asks for a review before a push'), true);
 t('#1680 AC1 and that comes before the ticket and its findings', seven.indexOf('### Before any review round') < seven.indexOf('### Self-review findings so far'), true);
 t('#1680 AC1 one with its PR open says to push each commit to it before a round',
   /Your PR #55 is open on this branch\. Push every commit not on it yet .* before you start a review round/.test(renderHandoff({ key: 'W-1', stage: '7', data: readHandoff(state, 'W-1').data, branch: 'b', worktree: '/w', base: 'origin/main', commits: [], pr: 55 })), true);

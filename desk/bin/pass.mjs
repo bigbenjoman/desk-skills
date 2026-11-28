@@ -882,9 +882,7 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   const stuck = stageless && !posted ? (Number(t.handoff_stuck) || 0) + 1 : 0;
   // Stage 7 stops resuming in a session after EMPTY_SEVEN_MAX empty handoffs: its PR's head goes to a
   // review try, then a tracker ticket to a Stage 8 session (fix-tries.mjs emptySevenTry, thenStage).
-  // A PR head behind the worktree's is one its commits lead to: the try's spawn pushes them.
-  const ahead = Boolean(seven?.head && seven.head !== head && shOut('git', ['-C', t.worktree, 'merge-base', '--is-ancestor', seven.head, head]).ok);
-  const instead = stage === '7' && mid ? emptySevenTry(t, { empties: stuck, s: seven, head, ahead, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
+  const instead = stage === '7' && mid ? emptySevenTry(t, { empties: stuck, s: seven, head, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
   const empty = `handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted`;
   if (instead?.call === 'park') return parkIt(`${empty}, and ${instead.why}: there is no PR head for a review try to read. ${FROM_ZERO(t)}`);
   if (instead?.call === 'stuck') return parkIt(`${empty}, and PR #${seven.pr} has ${instead.why}. ${FROM_ZERO(t)}`);

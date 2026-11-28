@@ -396,6 +396,8 @@ export function pushFirst(pr) {
       ? `Your PR #${pr} is open on this branch. Push every commit not on it yet (push-retry.mjs, after the Stage 5 file's §4 base check) before you start a review round, so a handoff partway through the round loses no work.`
       : 'Where the branch has commits and no PR yet, push it (push-retry.mjs, after the Stage 5 file\'s §4 base check) and open the draft PR (desk-pr) before you run any review round, then post the review on it once the round is done: a handoff partway through the round then loses no work, and the next session finds the PR.',
     '',
+    'This push comes first even where the Stage 4 file\'s `verdict.mjs --check` or the Stage 5 file\'s §4 asks for a review before a push: they bind every push after it, and the PR stays in draft until the round\'s review is posted.',
+    '',
   ];
 }
 

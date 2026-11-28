@@ -530,9 +530,8 @@ const e7n = emptySevenTry(tk(), { empties: 2, s: open7, head: HEAD, tracker: fal
 t('#1680 AC3 a ticket with no tracker has no Stage 8 to follow, its try still replacing Stage 7', `${'then' in e7n} ${e7n.replaces}`, 'false 7');
 t('#1680 AC3 its brief and task are the review try\'s', fixBrief(tk({ fix: e7.fix })).includes('## Review try 1 of 2: PR #702') && fixTask(tk({ fix: e7.fix })).includes('change no code'), true);
 const behind = { ...open7, head: 'b'.repeat(40) };
-t('#1680 AC3 a PR head the branch\'s commits lead to gets the try at the branch\'s head, which its spawn pushes', `${emptySevenTry(tk(), { empties: 2, s: behind, head: HEAD, ahead: true, tracker: true })?.fix.head === HEAD}`, 'true');
 const off7 = emptySevenTry(tk(), { empties: 2, s: behind, head: HEAD, tracker: true });
-t('#1680 AC3 a PR head off the branch\'s head stops Stage 7 with a park, not a third session', `${off7?.call} ${off7?.why}`, `park PR #702's head bbbbbbbbb is not on its branch's head ${HEAD.slice(0, 9)}`);
+t('#1680 AC3 a PR head that is not the branch\'s head, behind it or off it, stops Stage 7 with a park, not a third session or a try the pass would end unspawned', `${off7?.call} ${off7?.why}`, `park PR #702's head bbbbbbbbb is not its branch's head ${HEAD.slice(0, 9)}, so the branch's commits were not all pushed for review`);
 t('#1680 AC3 so does no open PR', [null, { ...open7, state: 'CLOSED' }].map((s) => emptySevenTry(tk(), { empties: 3, s, head: HEAD, tracker: true })?.why).join(' | '),
   'it has no open PR, so its commits were never pushed for review | it has no open PR, so its commits were never pushed for review');
 t('#1680 AC3 one empty handoff with no PR resumes Stage 7 as before', emptySevenTry(tk(), { empties: 1, s: null, head: HEAD, tracker: true }), null);
