@@ -34,19 +34,9 @@ SCOPE_LABELS = {
 SCOPE_ORDER = {"this": 0, "side": 1, "other": 2, "none": 3}
 
 
-def desk_env_cmd():
-    """argv prefix that runs desk-env, or None."""
-    for cand in (os.environ.get("DESK_ENV_MJS"),
-                 os.path.join(HOME, ".claude", "desk", "bin", "desk-env.mjs"),
-                 os.path.normpath(os.path.join(_HERE, "..", "..", "..", "desk", "bin", "desk-env.mjs"))):
-        if cand and os.path.isfile(cand) and shutil.which("node"):
-            return ["node", cand]
-    exe = shutil.which("desk-env")
-    return [exe] if exe else None
-
-
 def desk_script(name):
-    """argv prefix that runs desk/bin/<name> with node, from where desk-env.mjs is found, or None."""
+    """argv prefix that runs desk/bin/<name> with node: beside $DESK_ENV_MJS, else ~/.claude/desk/bin,
+    else this checkout's desk/bin; None when none holds it."""
     env_mjs = os.environ.get("DESK_ENV_MJS")
     for d in (os.path.dirname(env_mjs) if env_mjs else None,
               os.path.join(HOME, ".claude", "desk", "bin"),
@@ -54,6 +44,12 @@ def desk_script(name):
         if d and os.path.isfile(os.path.join(d, name)) and shutil.which("node"):
             return ["node", os.path.join(d, name)]
     return None
+
+
+def desk_env_cmd():
+    """argv prefix that runs desk-env, or None."""
+    exe = shutil.which("desk-env")
+    return desk_script("desk-env.mjs") or ([exe] if exe else None)
 
 
 def run_for(repo, script, *args, timeout=60):

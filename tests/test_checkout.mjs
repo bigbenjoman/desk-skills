@@ -38,7 +38,7 @@ const jira = (project, dest) => ({ Tracker: 'jira', 'Jira site': 'acme.atlassian
 config('acme__app', jira('APP', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'yes', 'read-others': 'yes' });
 config('acme__lib', jira('LIB', '#team'), { 'read-transcripts': 'yes', 'read-own-work': 'ask', 'read-others': 'ask' });
 config('acme__other', jira('OTH', '#elsewhere'), { 'read-transcripts': 'no', 'read-own-work': 'no' });
-config('acme__side', { Tracker: 'none', 'Check-out destination': 'none', 'Merge holds': '.github/**: changes CI', 'State checks': '🔐 Review gate: approval' }, { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
+config('acme__side', { Tracker: 'none', 'Check-out destination': 'none', 'Merge holds': '.github/**: changes CI`, `src/owned/**: needs code-owner approval','State checks': '🔐 Review gate: approval' }, { 'read-transcripts': 'yes', 'read-own-work': 'yes' });
 
 // The check-out is written from acme/app's main checkout.
 const APP = join(R, 'acme__app');
@@ -83,6 +83,7 @@ if (args[0] === 'api' && args.includes('search/issues') && q.includes('is:issue'
 } else if (args[0] === 'api' && args.includes('search/issues') && q.includes('is:merged')) out('merged_' + q.match(/repo:(\\S+)/)[1].replace('/', '_'));
 else if (args[0] === 'api' && args.includes('search/issues')) out(q.includes('reviewed-by') ? 'reviewed' : 'mine');
 else if (args[0] === 'api' && args[1] === '--paginate') out(args[2].replace(/[^A-Za-z0-9]+/g, '_'));
+else if (args[0] === 'api' && args[1] === '-H') out(args[3].replace(/[^A-Za-z0-9]+/g, '_'));
 else if (args[0] === 'api') out(args[1].replace(/[^A-Za-z0-9]+/g, '_'));
 else if (args[0] === 'pr' && args[1] === 'view') out('pr_' + args[4].replace('/', '_') + '_' + args[2]);
 else process.exit(1);`);
@@ -503,6 +504,7 @@ t('#1666 and a label', themed['9'], 'label: bug');
     pr('acme/side', 15, 'Touches CI', { created_at: at(10) }),
     pr('acme/side', 16, 'Plain change', { created_at: at(10) }),
     pr('acme/side', 17, 'Status gate', { created_at: at(10) }),
+    pr('acme/side', 18, 'Owned code', { created_at: at(10) }),
   ] });
   const job = (name, conclusion, id) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, detailsUrl: `https://github.com/acme/side/actions/runs/7/job/${id}` });
   put('pr_acme_side_15', { reviewDecision: 'REVIEW_REQUIRED', isDraft: false, headRefOid: 'abc1234', baseRefName: 'main',
@@ -517,6 +519,10 @@ t('#1666 and a label', themed['9'], 'label: bug');
   put('pr_acme_side_17', { reviewDecision: 'REVIEW_REQUIRED', isDraft: false, headRefOid: 'aaa9999', baseRefName: 'main',
     statusCheckRollup: [{ __typename: 'StatusContext', context: '🔐 Review gate', state: 'FAILURE', description: '1 outstanding finding' }] });
   rawFake('repos_acme_side_pulls_17_files_per_page_100', 'docs/readme.md\n');
+  // A code-owner hold on files the merging account alone owns is met, as the merge driver reads it.
+  put('pr_acme_side_18', { reviewDecision: 'APPROVED', isDraft: false, headRefOid: 'bbb8888', baseRefName: 'main', statusCheckRollup: [job('ci', 'SUCCESS', 80)] });
+  rawFake('repos_acme_side_pulls_18_files_per_page_100', 'src/owned/x.ts\n');
+  rawFake('repos_acme_side_contents_github_CODEOWNERS_ref_main', '/src/owned/ @me\n');
   const from = readFileSync(join(FAKE, 'calls.log'), 'utf8').length;
   const run = script('github_activity.py', '--day', DAY);
   t('issue-1537 exits 0', run.status, 0);
@@ -524,6 +530,7 @@ t('#1666 and a label', themed['9'], 'label: bug');
     '- acme/side#15 Touches CI — opened; review required, failing: lint, 🔐 Review gate (No PullBot review at abc1234 yet); merge hold: .github/workflows/ci.yml, the person merges it\n');
   has('issue-1537 AC2 a red status context gives its own description', run.stdout, '- acme/side#17 Status gate — opened; review required, failing: 🔐 Review gate (1 outstanding finding)\n');
   has('issue-1537 AC3 a PR with neither reads as before', run.stdout, '- acme/side#16 Plain change — opened; approved, checks green\n');
+  has('issue-1537 a code-owner hold the merging account alone owns is no hold', run.stdout, '- acme/side#18 Owned code — opened; approved, checks green\n');
   const calls = readFileSync(join(FAKE, 'calls.log'), 'utf8').slice(from);
   t('issue-1537 a red check that is not a state check is not read for a reason', calls.includes('check-runs/78'), false);
 }

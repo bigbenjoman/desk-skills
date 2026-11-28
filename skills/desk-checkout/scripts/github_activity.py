@@ -217,35 +217,26 @@ def state_checks(cfg):
     return _STATE_CHECKS[cfg.slug]
 
 
-EXIT_LINE = re.compile(r"^Process completed with exit code \d+\.?$")
-
-
-def failure_reason(repo, check):
-    """Why a failing check is red: a status's own description, else the first failure annotation of
-    its job (gate.mjs failureMessage's line, the step's exit-code line aside), or None."""
+def failure_reason(repo, check, cfg):
+    """Why a failing check is red: a status's own description, else the first failure its job
+    annotated, as gate.mjs gives a state check's why (`gate.mjs why`), or None."""
     if check.get("description"):
         return check["description"].strip()
     job = re.search(r"/job/(\d+)", check.get("detailsUrl") or "")
-    raw = job and gh("api", f"repos/{repo}/check-runs/{job.group(1)}/annotations?per_page=100")
-    try:
-        notes = json.loads(raw) if raw else []
-    except ValueError:
-        return None
-    for n in notes if isinstance(notes, list) else []:
-        msg = str(n.get("message") or "").split("\n")[0].strip()
-        if n.get("annotation_level") == "failure" and msg and not EXIT_LINE.match(msg):
-            return msg[:300]
-    return None
+    out = job and desk_repos.run_for(cfg, "gate.mjs", "why", job.group(1), "--repo", repo)
+    return (out or "").strip() or None
 
 
-def merge_holds(repo, number, cfg):
+def merge_holds(repo, number, cfg, login):
     """`merge hold: <files>, the person merges it` for an open PR whose files fall under a §4 Merge holds
-    item that leaves its merge to a person (gate.mjs held, the merge driver's test), "merge holds not
-    checked" when that could not be read, else None."""
+    item that leaves its merge to a person (gate.mjs held, the merge driver's test, merging as the repo's
+    §1 GitHub handle, else `login`), "merge holds not checked" when that could not be read, else None."""
     holds = (cfg.get("merge-holds") or "").strip() if cfg else ""
     if not holds or holds.lower() == "none":
         return None
-    raw = desk_repos.run_for(cfg, "gate.mjs", "held", str(number), "--repo", repo)
+    handle = (cfg.get("github-handle") or "").strip()
+    merger = handle if handle and handle.lower() != "none" and not handle.startswith("TODO") else login
+    raw = desk_repos.run_for(cfg, "gate.mjs", "held", str(number), "--repo", repo, *(["--merger", merger] if merger else []))
     try:
         held = json.loads(raw)["holds"]
     except (TypeError, ValueError, KeyError):
@@ -257,7 +248,7 @@ def merge_holds(repo, number, cfg):
     return f"merge hold: {named}, the person merges it"
 
 
-def pr_state(repo, number, cfg=None):
+def pr_state(repo, number, cfg=None, login=None):
     """Review decision and a one-word check summary for an open PR, with the reason each red §4 State
     check gives and any merge hold."""
     raw = gh("pr", "view", str(number), "-R", repo, "--json", "reviewDecision,statusCheckRollup,isDraft")
@@ -269,13 +260,13 @@ def pr_state(repo, number, cfg=None):
     for c in data.get("statusCheckRollup") or []:
         if (c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED"):
             name = c.get("name") or c.get("context") or "?"
-            why = failure_reason(repo, c) if name in stated else None
+            why = failure_reason(repo, c, cfg) if name in stated else None
             if why or name not in failing:
                 failing[name] = f"{name} ({why})" if why else name
     pending = any((c.get("status") or "").upper() in ("IN_PROGRESS", "QUEUED", "PENDING") for c in data.get("statusCheckRollup") or [])
     checks = f"failing: {', '.join(failing[n] for n in sorted(failing))}" if failing else ("checks running" if pending else "checks green")
     review = (data.get("reviewDecision") or "no review decision").lower().replace("_", " ")
-    hold = merge_holds(repo, number, cfg)
+    hold = merge_holds(repo, number, cfg, login)
     return f"{'draft, ' if data.get('isDraft') else ''}{review}, {checks}" + (f"; {hold}" if hold else "")
 
 
@@ -405,7 +396,7 @@ def main():
             if pushed:
                 events.append(f"{pushed} commit{'s' if pushed > 1 else ''} pushed")
             if events:
-                events.append(pr_state(repo, pr["number"], desk_repos.scope_for_repo_name(repo, repos)[1]))
+                events.append(pr_state(repo, pr["number"], desk_repos.scope_for_repo_name(repo, repos)[1], login))
         if not events:
             return None  # touched only by bots, CI, title edits or branch syncs
         return sc, f"- {repo}#{pr['number']} {pr['title']} — {'; '.join(events)}"
