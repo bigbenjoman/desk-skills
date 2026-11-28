@@ -3,7 +3,8 @@
 // figure the Levers page, the desk-q Levers line and the digest show, with the age of each input and
 // the honesty rules already applied, so no renderer words a result on its own.
 //
-//   node levers-view.mjs build      writes view.json and build.json, and prints where; a build
+//   node levers-view.mjs build      writes view.json, one slice per page under view/ (levers-slices.mjs)
+//                                   and build.json, and prints where; a build
 //                                   another process is running is waited for first
 //                                   (`levers-view build` on PATH runs the same)
 //   node levers-view.mjs render     writes the Levers page, index.html, from view.json beside it
@@ -25,7 +26,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, isNone, leverRow, localDay, repoConfigValue, repoConfigValues, repoDirs, shownNames } from './desk-env.mjs';
 import { changeLog } from './desk-changes.mjs';
-import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
@@ -36,6 +37,7 @@ import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
 import { excludedWhy, priorRevertsOf, revertTarget } from './levers-evaluate.mjs';
+import { inputsOf, writeSlices } from './levers-slices.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -273,43 +275,64 @@ export const METRICS = Object.freeze({
     of: (rs) => { const n = sumOver(rs, 'starts'); return n ? sumOver(rs, 'denials') / n : null; },
     base: (b) => (b?.denials != null && b?.starts ? b.denials / b.starts : null), basis: 'per start',
   },
-  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)), of: (rs) => mean(rs.map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
+  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', keyed_by: 'merged_at', limited: true, over: (rows) => rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)), of: (rs) => mean(rs.map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
 });
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : round(((a - b) / b) * 100, 1));
 const val = (v) => round(v, 4);
 
+// Why a figure is null, in words: before desk's first recorded day, or a period with no tickets.
+const dayLabel = (k) => new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' }).format(new Date(`${k}T12:00:00Z`));
+const noData = (first) => (first == null ? 'no data yet' : `no data before ${dayLabel(first)}`);
+const NO_TICKETS = 'no tickets merged';
+const NO_BASELINE = 'no baseline recorded';
+// Why a percentage change of `a` (a point) against `b` (a point, or the baseline) is null.
+const pctWhy = (a, b) => (a.value == null ? a.reason : b.value == null ? b.reason : b.value === 0 ? 'nothing to compare with: the earlier figure is 0' : null);
+// A metric's limit: the fix tries guardrail's rate ratio over the baseline, as the page judges it.
+const FIX_LIMIT = GUARDRAILS['fix-tries-parks'];
+function limitOf(metric, base) {
+  if (!metric.limited) return null;
+  const ratio = FIX_LIMIT.margin.max_rate_ratio;
+  return base == null ? { value: null, reason: NO_BASELINE, ratio } : { value: round(base * ratio, 2), ratio, basis: `${ratio} × before levers` };
+}
+
 // One metric's 30 daily points ending yesterday, 6 weekly points ending last week, 12 monthly points
-// ending this month, its baseline and its nine callouts. A point with no tickets, or before the first
-// recorded day, is null.
+// ending this month, its baseline, its limit (fix tries only) and its nine callouts. A point with no
+// tickets, or before the first recorded day, is null with a `reason`; `reasons` says the same for
+// each null callout.
 function trend(metric, rows, base, today, first) {
   const mine = metric.over(rows);
   const at = (pred) => mine.filter((r) => pred(r.merged_day));
-  const point = (pred, before) => (first == null || before < first ? null : val(metric.of(at(pred))));
+  const point = (pred, before) => {
+    if (first == null || before < first) return { value: null, reason: noData(first) };
+    const v = val(metric.of(at(pred)));
+    return v == null ? { value: null, reason: NO_TICKETS } : { value: v };
+  };
   const yesterday = addDays(today, -1);
-  const daily = Array.from({ length: 30 }, (_, i) => addDays(yesterday, i - 29)).map((d) => ({ date: d, value: point((x) => x === d, d) }));
+  const daily = Array.from({ length: 30 }, (_, i) => addDays(yesterday, i - 29)).map((d) => ({ date: d, ...point((x) => x === d, d) }));
   const thisWeek = weekStart(today);
-  const weekly = Array.from({ length: 6 }, (_, i) => addDays(thisWeek, (i - 6) * WEEK_DAYS)).map((w) => ({ week: w, value: point((x) => x >= w && x < addDays(w, WEEK_DAYS), addDays(w, WEEK_DAYS - 1)) }));
+  const weekly = Array.from({ length: 6 }, (_, i) => addDays(thisWeek, (i - 6) * WEEK_DAYS)).map((w) => ({ week: w, ...point((x) => x >= w && x < addDays(w, WEEK_DAYS), addDays(w, WEEK_DAYS - 1)) }));
   const month = monthOf(today);
-  const monthly = Array.from({ length: 12 }, (_, i) => addMonths(month, i - 11)).map((m) => ({ month: m, value: point((x) => monthOf(x) === m && x < today, `${m}-31`) }));
-  const day = daily.at(-1).value;
-  const lastWeek = weekly.at(-1).value;
-  const mtd = monthly.at(-1).value;
-  const toDate = first == null ? null : val(metric.of(at((x) => x < today)));
+  const monthly = Array.from({ length: 12 }, (_, i) => addMonths(month, i - 11)).map((m) => ({ month: m, ...point((x) => monthOf(x) === m && x < today, `${m}-31`) }));
+  const toDate = first == null ? { value: null, reason: noData(first) } : point((x) => x < today, today);
+  const baseline = base == null ? { value: null, reason: NO_BASELINE } : { value: val(base) };
   const lastWeekStart = addDays(thisWeek, -WEEK_DAYS);
   const counts = {
     yesterday: at((x) => x === yesterday).length, last_week: at((x) => x >= lastWeekStart && x < thisWeek).length,
     mtd: at((x) => monthOf(x) === month && x < today).length, to_date: at((x) => x < today).length,
   };
+  const pts = {
+    yesterday: daily.at(-1), dod_pct: [daily.at(-1), daily.at(-2)],
+    last_week: weekly.at(-1), wow_pct: [weekly.at(-1), weekly.at(-2)], last_week_vs_before_pct: [weekly.at(-1), baseline],
+    mtd: monthly.at(-1), mom_pct: [monthly.at(-1), monthly.at(-2)],
+    to_date: toDate, to_date_vs_before_pct: [toDate, baseline],
+  };
+  const callouts = Object.fromEntries(Object.entries(pts).map(([k, p]) => [k, Array.isArray(p) ? pct(p[0].value, p[1].value) : p.value]));
+  const reasons = Object.fromEntries(Object.entries(pts).filter(([k]) => callouts[k] == null).map(([k, p]) => [k, Array.isArray(p) ? pctWhy(...p) : p.reason]));
   return {
     title: metric.title, unit: metric.unit, first_recorded: first, keyed_by: metric.keyed_by, counts,
-    baseline: { value: base == null ? null : val(base), basis: metric.basis },
-    daily, weekly, monthly,
-    callouts: {
-      yesterday: day, dod_pct: pct(day, daily.at(-2).value),
-      last_week: lastWeek, wow_pct: pct(lastWeek, weekly.at(-2).value), last_week_vs_before_pct: pct(lastWeek, base),
-      mtd, mom_pct: pct(mtd, monthly.at(-2).value),
-      to_date: toDate, to_date_vs_before_pct: pct(toDate, base),
-    },
+    baseline: { value: baseline.value, basis: metric.basis, ...(baseline.reason ? { reason: baseline.reason } : {}) },
+    limit: limitOf(metric, baseline.value),
+    daily, weekly, monthly, callouts, reasons,
   };
 }
 
@@ -741,14 +764,7 @@ export function buildRecord(view, ms) {
     if (had) had.panels.push(name); else errors.push({ ...e, panels: [name] });
   }
   if (view.line.state === 'broken' && !errors.some((x) => x.file === view.line.error.file && x.line === view.line.error.line)) errors.push({ ...view.line.error, panels: ['line'] });
-  return {
-    v: VERSION, generated_at: view.generated_at, duration_ms: ms,
-    inputs: {
-      supervisor: view.repos.map((r) => ({ repo: r.name, ...r.supervisor })), health: view.panels.status.health,
-      evaluation: view.panels.board.age, pooled: view.panels.board.pooled_age, post_merge: view.panels.guardrails.post_merge,
-    },
-    errors,
-  };
+  return { v: VERSION, generated_at: view.generated_at, duration_ms: ms, inputs: inputsOf(view), errors };
 }
 
 // The machine-wide lock every build of the view in `out` takes (levers-refresh.mjs's too), so two
@@ -756,8 +772,9 @@ export function buildRecord(view, ms) {
 export const buildLock = (out = leversDir()) => join(out, 'build.lock');
 const BUILD_WAIT_MS = 60_000;
 
-// Builds the view and writes view.json and build.json into `out`, under the build lock: a build
-// already running is waited for, up to `waitMs`, then this one runs. -> { view, record, files }
+// Builds the view and writes view.json, its per-page slices (levers-slices.mjs) and build.json into
+// `out`, under the build lock: a build already running is waited for, up to `waitMs`, then this one
+// runs. -> { view, record, files }
 export function build({ out = leversDir(), waitMs = BUILD_WAIT_MS, ...opts } = {}) {
   mkdirSync(out, { recursive: true });
   const held = buildLock(out);
@@ -767,6 +784,7 @@ export function build({ out = leversDir(), waitMs = BUILD_WAIT_MS, ...opts } = {
     const record = buildRecord(view, Date.now() - t0);
     const files = { view: join(out, 'view.json'), build: join(out, 'build.json') };
     writeJsonAtomic(files.view, view);
+    files.slices = writeSlices(out, view).files;
     writeJsonAtomic(files.build, record);
     return { view, record, files };
   }, { waitMs, timeout: (pid) => new Error(`another Levers build (pid ${pid ?? '?'}) held ${held} past the ${waitMs / 1000}s wait: nothing was written`) });
