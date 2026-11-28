@@ -303,6 +303,14 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   t('issue-1384 a page with only claimed work lists it under its heading, and counts it',
     `${only.includes('Nothing to answer')} ${only.includes('### Being worked in a session')} ${only.includes('- `W-1`: being worked in session sess-w')} ${only.includes('; 1 being worked in a session.')}`, 'false true true true');
 }
+// #1625 AC4: a placed ticket the pass moved is listed with where it went and the time saved, and counted.
+{
+  const { renderPage } = await import('../desk/bin/digest.mjs');
+  const moves = [{ at: '2026-11-27T10:15:00.000Z', key: 'W-7', from: 1, to: 6, gain_min: 60, text: 'from 1 to 6, the queue finishes about 60m sooner' }];
+  const page = renderPage({ slot: '2026-11-27T17:00', since: null, groups: [{ slug: 'acme__w', questions: [], decisions: [], moves }] });
+  t('#1625 AC4 the digest lists a placed ticket the pass moved, from where to where and the gain, and counts it',
+    `${page.includes('Nothing to answer')} ${page.includes('### Placed tickets moved')} ${page.includes('- 2026-11-27 10:15: `W-7` moved from 1 to 6, the queue finishes about 60m sooner')} ${page.includes('; 1 placed ticket(s) moved.')}`, 'false true true true');
+}
 // The check-in presents each fresh park it lists as an ask, in that park's own repo's ticket ledger,
 // under that ledger's lock, where that repo's ledger lever is on.
 {

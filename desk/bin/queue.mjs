@@ -1413,7 +1413,8 @@ switch (cmd) {
     const key = args.find((a) => a !== '--placed');
     const t = ticket(q, key);
     const msg = toFront(q, key);
-    if (args.includes('--placed') && t.state !== 'running' && !FINISHED.includes(t.state)) t.placed = true;
+    // Placed by the user, it no longer carries the pass's note of moving it (pass.mjs placed_move).
+    if (args.includes('--placed') && t.state !== 'running' && !FINISHED.includes(t.state)) { t.placed = true; delete t.placed_move; }
     save(q);
     const open = questionsOpen(t);
     console.log(`${key} ${msg}${open > 0 ? `; it still has ${open} question(s) open and will not spawn until they are answered: ${answerWith(t)}` : ''}`);
@@ -1434,6 +1435,7 @@ switch (cmd) {
     const rest = order.filter((k) => k !== key);
     reorder(q, [...rest.slice(0, n - 1), key, ...rest.slice(n - 1)]);
     t.placed = true;
+    delete t.placed_move;
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} moved to position ${n} of ${order.length} in the spawn order and marked placed: front and requeue leave it there`);
@@ -1447,7 +1449,7 @@ switch (cmd) {
   // on, so the pass's re-sort keeps the order named.
   case 'order': {
     const keys = layOrder(q, args.filter((a) => a !== '--placed'));
-    if (args.includes('--placed')) for (const k of keys) q.tickets[k].placed = true;
+    if (args.includes('--placed')) for (const k of keys) { q.tickets[k].placed = true; delete q.tickets[k].placed_move; }
     save(q);
     console.log(`spawn order: ${keys.join(' ') || 'nothing to reorder'}`);
     break;
