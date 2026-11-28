@@ -14,7 +14,7 @@ import { basename, dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, quietStateName, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff, placedFront, keysOf, cloudAble } from './pass/shared.mjs';
 import { modeLine as personModeLine } from './person-use.mjs';
 import { isHeld, stoppedHold, bareHold, bareHoldText, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
@@ -186,7 +186,7 @@ export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, pus
 // The park a requeue cleared on a ticket its worktree then held back, before any worker started on it
 // (queue.mjs keeps it as `prev_park`; a spawn sets `session_id`): why its last worker stopped.
 export const busyPark = (t) => (worktreeBusy(t) && t.session_id == null && t.prev_park?.question ? t.prev_park : null);
-export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
+export { keysOf };
 // The open Jira blockers outside the batch the last pass recorded.
 export const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
 // A held ticket with a question of its own: it needs the user for that, whatever its blockers do.
@@ -870,7 +870,7 @@ function loadBatch(c, repoName, batch, limits, now) {
   return r;
 }
 
-// The tickets the last pass held back on a shared file's budget, { key: [keys holding it] }, running or
+// The tickets the last pass held back on a shared file's budget, { key: { with, holds } }, running or
 // handed off, from the collisions its line in passes.jsonl records (pass.mjs budgetHolds): a collision
 // recorded on a ticket holds nothing until those tickets fill a file's places. None with no line to read.
 const PASS_TAIL = 64 * 1024;
@@ -881,7 +881,12 @@ function passHolds(stateDir) {
   for (const l of lines.slice(-2).reverse()) {
     try {
       const rec = JSON.parse(l);
-      return Object.fromEntries((rec.collisions ?? []).filter((c) => c?.key && Array.isArray(c.with)).map((c) => [c.key, c.with]));
+      return Object.fromEntries((rec.collisions ?? []).filter((c) => c?.key && Array.isArray(c.with)).map((c) => [c.key, {
+        with: c.with,
+        // Each file at its budget with its places and the tickets filling them, where the pass recorded
+        // them; a line from before that records none, and desk-q then names no file.
+        holds: (Array.isArray(c.holds) ? c.holds : []).filter((h) => typeof h?.file === 'string' && Number.isInteger(h.k) && Array.isArray(h.with)),
+      }]));
     } catch { /* a torn line */ }
   }
   return {};
@@ -3540,14 +3545,41 @@ function countsLine(r, now = Date.now()) {
 }
 
 // What holds a ready ticket back from the next free worker, or null: the tickets the last pass held it
-// behind on a shared file's budget (passHolds), running or handed off and waiting for their next
+// behind on a shared file's budget (passHolds, named with each file and its places), running or handed off and waiting for their next
 // session, whose hold outlasts a free worker, its batch's worker slots, or the machine cap, which every
 // repo's workers share. A holder this batch has since moved on from holds nothing; one from another
-// batch stays named until the next pass.
+// batch stays named until the next pass. A ticket placed at the front of the queue that has not started
+// holds a pending handoff only while it is still above it and still one atFront counts (budgetHolds `front`).
 const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
+const frontHolds = (r, k, o, held) => {
+  const h = r.q?.tickets?.[held];
+  if (!placedFront(o) || !h || !toHandoff(h)) return false;
+  const order = Object.keys(r.q.tickets);
+  return order.indexOf(k) < order.indexOf(held);
+};
+// A recorded holder is a key, or "key in batch x" for another batch's ticket.
+const holderHolds = (r, w, held) => {
+  const k = String(w).split(' in ')[0];
+  const o = r.q?.tickets?.[k];
+  return stillHolds(o) || frontHolds(r, k, o, held);
+};
+// "waits for F-1 (collides on src/f.ts, 1 of 1 place taken; …)": each file the pass held the ticket on
+// whose places the holders that still hold fill, as budgetHolds counts them, with those holders. A file
+// one of them has since left has a free place, so it holds nothing. A pass line that recorded no files
+// says only that the ticket shares them, while any of its holders still holds.
+function heldWords(r, key) {
+  const rec = r.passHolds?.[key];
+  if (rec?.holds?.length) {
+    const files = rec.holds.map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w, key)) })).filter((h) => h.with.length >= h.k);
+    if (!files.length) return null;
+    const who = [...new Set(files.flatMap((h) => h.with))];
+    return `waits for ${who.join(', ')} (collides on ${files.map((h) => `${h.file}, ${h.with.length} of ${h.k} place${h.k === 1 ? '' : 's'} taken`).join('; ')})`;
+  }
+  const clash = (rec?.with ?? []).filter((w) => holderHolds(r, w, key));
+  return clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
+}
 function startWait(r, t) {
-  const clash = (r.passHolds?.[t.key] ?? []).filter((k) => stillHolds(r.q?.tickets?.[k]));
-  const held = clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
+  const held = heldWords(r, t.key);
   // A ticket that starts in a cloud session waits on shared files, which the pass holds a cloud start
   // behind too (spawn-loop's file-budget step), then only on §3b "Cloud sessions at once", never on a
   // worker or machine slot, counted over every batch of its repo (loadRepos repoCloud). A resume or

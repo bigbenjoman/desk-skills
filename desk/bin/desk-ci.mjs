@@ -6,7 +6,8 @@
 //   node desk-ci.mjs classify [<workflow file or directory>...]   default .github/workflows
 //   node desk-ci.mjs ci-lint  [<workflow file or directory>...]   exits 1 on any finding
 // classify prints `<file>:<line>  <job>  <hosted|self-hosted>  <reason>` per job, the line being
-// the one that decided it, then `summary: jobs=<n> hosted=<n> self-hosted=<n>`.
+// the one that decided it, then `summary: jobs=<n> hosted=<n> self-hosted=<n>`. In a repo that
+// declares AWS runner labels a job is `hosted` or `aws`, and the summary reads `hosted=<n> aws=<n>`.
 // ci-lint prints `<file>:<line>  <job>  <problem>` per finding, then `summary: findings=<n>`.
 //   node desk-ci.mjs measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>]
 // measure reads a window of Actions runs, jobs and pull requests over the GitHub API within a call
@@ -163,24 +164,55 @@ function reusableCall(job) {
 }
 
 // With the repo's .github/desk-ci.yml read (ciConfigFor): a job on a declared AWS runner label names
-// it, and every job of a workflow listed under hosted-workflows is placed hosted.
-export function classify(text, { awsLabels = [], hostedWorkflow = false } = {}) {
+// it, and every job of a workflow listed under hosted-workflows is placed hosted. A repo that declares
+// AWS runner labels places every other job aws, except one that needs x64 where it declares no x64
+// label, and a call to a reusable workflow outside the repo.
+export function classify(text, { awsLabels = [], x64Labels = [], hostedWorkflow = false } = {}) {
   const wf = parseWorkflow(text);
   return wf.jobs.map((job) => {
     const reasons = hostedReasons(job, wf);
     const today = AWS_TODAY(runnersOf(job, awsLabels).aws);
     if (hostedWorkflow) return { job: job.id, placement: 'hosted', line: job.line.n, why: `hosted-workflows (${CI_CONFIG})${today}`, also: reasons };
+    if (awsLabels.length) return awsPlacement(job, reasons, today, x64Labels);
     if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: `${reasons[0].why}${today}`, also: reasons.slice(1) };
     const call = reusableCall(job);
-    if (call) {
-      return call.local
-        ? { job: job.id, placement: 'self-hosted', line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] }
-        : { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
-    }
-    const ro = job.keys['runs-on'];
-    const runsOn = today || (ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : '');
-    return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${runsOn}`, also: [] };
+    if (call && !call.local) return { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
+    return untriggered(job, call, today, 'self-hosted');
   });
+}
+
+// A job with nothing keeping it hosted: a call to a workflow in this repo, or one with runs-on.
+function untriggered(job, call, today, placement) {
+  if (call) return { job: job.id, placement, line: call.line, why: `calls ${call.uses}: no hosted trigger here; its own jobs are placed in that file`, also: [] };
+  const ro = job.keys['runs-on'];
+  const runsOn = today || (ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : '');
+  return { job: job.id, placement, line: job.line.n, why: `no hosted trigger${runsOn}`, also: [] };
+}
+
+// On a repo's AWS runners, which are Linux and arm64 unless declared under aws-x64-runner-labels, a
+// secret, an environment, id-token or an outside service is no reason to stay hosted. Needing macOS or
+// Windows is, and so is needing x64 where no x64 label is declared. A call to a workflow has no
+// runs-on: one outside the repo stays hosted, and one inside is placed in its own file.
+const NEEDS_X64 = new Set(['image', 'parity']);
+const NOT_LINUX = /^(macos|windows)(-|$)/i;
+function osHit(job) {
+  const choices = runsOnChoices(job);
+  const labels = (choices?.sets ?? []).filter(Array.isArray).flat()
+    .filter((l) => typeof l === 'string' && NOT_LINUX.test(l.trim())).map((l) => l.trim());
+  return labels.length ? { line: job.keys['runs-on'].line, why: `runs-on ${[...new Set(labels)].join(', ')}` } : null;
+}
+function awsPlacement(job, reasons, today, x64Labels) {
+  const rest = (r0) => reasons.filter((r) => r !== r0);
+  const call = reusableCall(job);
+  if (call && !call.local) return { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: reasons };
+  const os = !call && osHit(job);
+  if (os) return { job: job.id, placement: 'hosted', line: os.line.n, why: `needs macOS or Windows: ${os.why}, and the repo's AWS runners are Linux${today}`, also: reasons };
+  const x64 = !call && reasons.find((r) => NEEDS_X64.has(r.kind));
+  if (x64 && !x64Labels.length) return { job: job.id, placement: 'hosted', line: x64.line.n, why: `needs x64: ${x64.why}, and the repo's AWS runners are arm64${today}`, also: rest(x64) };
+  if (x64) return { job: job.id, placement: 'aws', line: x64.line.n, why: `needs x64: ${x64.why}, on AWS x64 runner ${x64Labels[0]}${today}`, also: rest(x64) };
+  const own = call ? reasons.filter((r) => !NEEDS_X64.has(r.kind)) : reasons;
+  if (own.length) return { job: job.id, placement: 'aws', line: own[0].line.n, why: `${own[0].why}, which the AWS runners take${today}`, also: reasons.filter((r) => r !== own[0]) };
+  return untriggered(job, call, today, 'aws');
 }
 
 // ---- runs-on ----------------------------------------------------------------------------------
@@ -563,14 +595,15 @@ function canResolveSelfHosted(job, awsLabels) {
 
 // ---- .github/desk-ci.yml ----
 // A repo declares its AWS runner labels and the workflows kept on GitHub-hosted runners:
-//   aws-runner-labels: [voicepa-linux-arm64, voicepa-linux-arm64-8cpu]
+//   aws-runner-labels: [voicepa-linux-arm64, voicepa-linux-arm64-8cpu]   # arm64
+//   aws-x64-runner-labels: [voicepa-linux-x64]
 //   hosted-workflows:
 //     - release.yml
 export const CI_CONFIG = '.github/desk-ci.yml';
 
 export function parseCiConfig(text) {
   const { lines } = parseWorkflow(text);
-  const out = { 'aws-runner-labels': [], 'hosted-workflows': [] };
+  const out = { 'aws-runner-labels': [], 'aws-x64-runner-labels': [], 'hosted-workflows': [] };
   lines.forEach((l, idx) => {
     const kv = l.indent === 0 ? keyOf(l) : null;
     if (!kv || !(kv.key in out)) return;
@@ -579,11 +612,14 @@ export function parseCiConfig(text) {
       : blockAfter(lines, idx).filter((b) => !b.blank && /^-(\s|$)/.test(b.text)).map((b) => ({ value: yamlScalar(b.text.replace(/^-\s*/, '')), line: b.n }));
     out[kv.key].push(...items.filter((x) => x.value));
   });
+  const labels = (key) => out[key].filter((x) => !notAws(x.value)).map((x) => x.value);
+  const x64Labels = labels('aws-x64-runner-labels');
   return {
-    awsLabels: out['aws-runner-labels'].filter((x) => !notAws(x.value)).map((x) => x.value),
+    awsLabels: [...labels('aws-runner-labels'), ...x64Labels],
+    x64Labels,
     hostedWorkflows: out['hosted-workflows'].map((x) => basename(x.value)),
-    findings: out['aws-runner-labels'].filter((x) => notAws(x.value))
-      .map((x) => ({ job: 'aws-runner-labels', line: x.line, problem: `${x.value} is ${x.value === 'self-hosted' ? 'the bare self-hosted label' : 'a GitHub-hosted label'}, not an AWS runner label` })),
+    findings: ['aws-runner-labels', 'aws-x64-runner-labels'].flatMap((key) => out[key].filter((x) => notAws(x.value))
+      .map((x) => ({ job: key, line: x.line, problem: `${x.value} is ${x.value === 'self-hosted' ? 'the bare self-hosted label' : 'a GitHub-hosted label'}, not an AWS runner label` }))),
   };
 }
 const notAws = (label) => label.toLowerCase() === 'self-hosted' || HOSTED_LABEL.test(label);
@@ -2120,7 +2156,7 @@ function workflowFiles(args) {
 
 // classify's and lint's options for a workflow file, from its repo's desk-ci.yml.
 function ciOptions(file, cfg = ciConfigFor(file)) {
-  return cfg ? { awsLabels: cfg.awsLabels, hostedWorkflow: cfg.hostedWorkflows.includes(basename(file)) } : {};
+  return cfg ? { awsLabels: cfg.awsLabels, x64Labels: cfg.x64Labels, hostedWorkflow: cfg.hostedWorkflows.includes(basename(file)) } : {};
 }
 
 const isMain = (() => {
@@ -2132,16 +2168,20 @@ if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);
   try {
     if (cmd === 'classify') {
-      const count = { hosted: 0, 'self-hosted': 0 };
+      const count = { hosted: 0, 'self-hosted': 0, aws: 0 };
       let jobs = 0;
+      let aws = false;
       for (const f of workflowFiles(rest)) {
-        for (const r of classify(readFileSync(f, 'utf8'), ciOptions(f))) {
+        const opts = ciOptions(f);
+        if (opts.awsLabels?.length) aws = true;
+        for (const r of classify(readFileSync(f, 'utf8'), opts)) {
           jobs++; count[r.placement]++;
           const also = r.also.length ? `  (also ${r.also.map((a) => `${a.kind} :${a.line.n}`).join(', ')})` : '';
           console.log(`${f}:${r.line}  ${r.job}  ${r.placement}  ${r.why}${also}`);
         }
       }
-      console.log(`summary: jobs=${jobs} hosted=${count.hosted} self-hosted=${count['self-hosted']}`);
+      const others = aws ? `aws=${count.aws}${count['self-hosted'] ? ` self-hosted=${count['self-hosted']}` : ''}` : `self-hosted=${count['self-hosted']}`;
+      console.log(`summary: jobs=${jobs} hosted=${count.hosted} ${others}`);
     } else if (cmd === 'ci-lint' || cmd === 'lint') {
       let n = 0;
       const configs = new Set();

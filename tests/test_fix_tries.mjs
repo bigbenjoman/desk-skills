@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT, fixItems } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT, fixItems, emptySevenTry } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -518,6 +518,24 @@ t('DS-558 AC1 both fix tries spent, a head whose verdict is for an older head st
 const afterReview = fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 1, head: 'c'.repeat(40), kind: 'rereview' }, { try: 2, head: 'c'.repeat(40), kind: 'rereview' }] }), both, ctx());
 t('DS-558 AC2 review tries use no fix try: a red check after a fix try and two review tries gets try 2 of 2', `${afterReview?.call} ${afterReview?.fix.try}/${afterReview?.fix.of}`, 'requeue 2/2');
 t('DS-316 a review try at this head does not use up a fix of the findings it then posts', reviewFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, verdict: u1.verdict, body: u1.review })?.call, 'requeue');
+
+// ---- #1680 AC3: after 2 empty Stage 7 handoffs the PR's head goes to a review try, then Stage 8 ----
+const open7 = { pr: 702, state: 'OPEN', head: HEAD };
+t('#1680 AC3 one empty Stage 7 handoff resumes Stage 7 as before', emptySevenTry(tk(), { empties: 1, s: open7, head: HEAD, tracker: true }), null);
+const e7 = emptySevenTry(tk(), { empties: 2, s: open7, head: HEAD, tracker: true });
+t('#1680 AC3 the second sends the PR head to a review try, not a Stage 7 session', `${e7?.call} ${e7?.fix.kind} ${e7?.fix.pr} ${e7?.fix.head === HEAD} ${e7?.fix.try}/${e7?.fix.of}`, 'requeue rereview 702 true 1/2');
+t('#1680 AC3 its try says why', e7?.fix.what, 'review its head: its last 2 Stage 7 sessions handed off partway through on context with no new commit and no review verdict posted at its head');
+t('#1680 AC3 and a Stage 8 session follows it for a tracker ticket', `${e7?.fix.then} ${e7?.fix.replaces}`, '8 7');
+const e7n = emptySevenTry(tk(), { empties: 2, s: open7, head: HEAD, tracker: false }).fix;
+t('#1680 AC3 a ticket with no tracker has no Stage 8 to follow, its try still replacing Stage 7', `${'then' in e7n} ${e7n.replaces}`, 'false 7');
+t('#1680 AC3 its brief and task are the review try\'s', fixBrief(tk({ fix: e7.fix })).includes('## Review try 1 of 2: PR #702') && fixTask(tk({ fix: e7.fix })).includes('change no code'), true);
+const behind = { ...open7, head: 'b'.repeat(40) };
+const off7 = emptySevenTry(tk(), { empties: 2, s: behind, head: HEAD, tracker: true });
+t('#1680 AC3 a PR head that is not the branch\'s head, behind it or off it, stops Stage 7 with a park, not a third session or a try the pass would end unspawned', `${off7?.call} ${off7?.why}`, `park PR #702's head bbbbbbbbb is not its branch's head ${HEAD.slice(0, 9)}, so the branch's commits were not all pushed for review`);
+t('#1680 AC3 so does no open PR', [null, { ...open7, state: 'CLOSED' }].map((s) => emptySevenTry(tk(), { empties: 3, s, head: HEAD, tracker: true })?.why).join(' | '),
+  'it has no open PR, so its commits were never pushed for review | it has no open PR, so its commits were never pushed for review');
+t('#1680 AC3 one empty handoff with no PR resumes Stage 7 as before', emptySevenTry(tk(), { empties: 1, s: null, head: HEAD, tracker: true }), null);
+t('#1680 AC3 two review tries spent at that head are stuck, for the person', emptySevenTry(tk({ fix_tries: rvTwice }), { empties: 2, s: open7, head: HEAD, tracker: true })?.call, 'stuck');
 
 // ---- DS-377: a head a merge from the base moved gets a review try of its own, outside the fix tries
 const unread = 'its latest review is for ccccccccc, not the head aaaaaaaaa';

@@ -822,6 +822,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'placed-order|3b|Queue order: placed tickets', // #1625
     'move-threshold|3b|Queue order: move threshold', // #1625
     'cloud-env|3b|Cloud environment',
+    'stale-check-paths|4|Stale-check paths', // DS-1055
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');

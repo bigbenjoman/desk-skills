@@ -1549,7 +1549,7 @@ check "DS-758 AC1 a pass appends one metrics line with its time, repo, batch, co
 check "DS-758 AC2 a ticket held for memory counts under memory, not collision" \
   'echo "$ml" | jq -e ".held.memory == 1 and .held.collision == 1" >/dev/null'
 check "DS-758 the line names the held ticket, the running one holding it and the file" \
-  'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"]}]" >/dev/null'
+  'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"],\"holds\":[{\"file\":\"src/a.ts\",\"k\":1,\"with\":[\"MX-1\"]}]}]" >/dev/null'
 check "the pass opens a stuck interval for each ticket a hold kept waiting, with its cause, from the pass's time" \
   '[ "$(jq -sc "map(select(.end == null) | [.key, .cause, .start == .recorded]) | sort" "$T/state-mx/stuck-intervals.jsonl")" = "[[\"MX-2\",\"collision\",true],[\"MX-3\",\"memory: low available\",true]]" ]'
 check "DS-758 AC4 after nine such passes, this 10th one (1 of 5 running) carries the warning, stamped when written" \
@@ -1822,7 +1822,7 @@ check "DS-755 AC3 AC9 DS-1032 AC3 of three naming a 1,000-line file, the first t
 check "DS-755 AC5 a ticket naming two files, one at its budget, does not start" '! spawned FB-7 && [ "$(field FB-7 state)" = "\"triaged\"" ]'
 check "DS-755 AC7 an admission-time collides_with naming a running ticket that shares no file in the triage records holds nothing" 'spawned FB-8'
 check "DS-755 the metrics line names each held ticket's files at their budget and the running tickets filling them" \
-  'tail -n 1 "$T/state-fba/passes.jsonl" | jq -e ".held.collision == 3 and (.collisions | map(select(.key == \"FB-7\")) == [{\"key\":\"FB-7\",\"with\":[\"FB-1\",\"FB-2\",\"FB-3\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+  'tail -n 1 "$T/state-fba/passes.jsonl" | jq -e ".held.collision == 3 and (.collisions | map(select(.key == \"FB-7\")) == [{\"key\":\"FB-7\",\"with\":[\"FB-1\",\"FB-2\",\"FB-3\"],\"files\":[\"src/big.ts\"],\"holds\":[{\"file\":\"src/big.ts\",\"k\":3,\"with\":[\"FB-1\",\"FB-2\",\"FB-3\"]}]}])" >/dev/null'
 
 fbq fbb ''
 fbt FB-11 running src/big.ts; fbt FB-12 running src/big.ts; fbt FB-13 running src/big.ts
@@ -1905,7 +1905,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-664 AC1 a ticket naming a file at its budget once another batch's running ticket counts does not start, naming the batch, ticket and file" \
   '! spawned XA-1 && spawned XA-2 && [ "$(field XA-1 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "XA-1 (src/big.ts has 1 running of its 1: XO-1 in batch XB-1)"'
 check "DS-664 the metrics line names the other batch's ticket among those filling the file" \
-  'tail -n 1 "$T/state-xba/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"XA-1\")) == [{\"key\":\"XA-1\",\"with\":[\"XO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+  'tail -n 1 "$T/state-xba/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"XA-1\")) == [{\"key\":\"XA-1\",\"with\":[\"XO-1\"],\"files\":[\"src/big.ts\"],\"holds\":[{\"file\":\"src/big.ts\",\"k\":1,\"with\":[\"XO-1 in batch XB-1\"]}]}])" >/dev/null'
 xb 'done'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-664 AC2 once the other batch's ticket stops running, the held ticket starts" 'spawned XA-1'
@@ -1980,7 +1980,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "#1515 AC1 AC2 a new ticket naming a file a handed-off ticket names does not start, and the report names the handoff holding it" \
   '! spawned HO-2 && [ "$(field HO-2 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-2 (src/big.ts has 1 running or handed off of its 1: HO-1 (handed off))"'
 check "#1515 the metrics line names the handoff among those filling the file" \
-  'tail -n 1 "$T/state-hoa/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"HO-2\")) == [{\"key\":\"HO-2\",\"with\":[\"HO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+  'tail -n 1 "$T/state-hoa/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"HO-2\")) == [{\"key\":\"HO-2\",\"with\":[\"HO-1\"],\"files\":[\"src/big.ts\"],\"holds\":[{\"file\":\"src/big.ts\",\"k\":1,\"with\":[\"HO-1\"]}]}])" >/dev/null'
 q set HO-0 state=done; : > "$T/fb-spawns"
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1515 AC3 when the slot frees, the handed-off ticket takes it and the new ticket naming its file still waits" \

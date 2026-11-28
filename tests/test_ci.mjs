@@ -258,12 +258,12 @@ t('hosted-workflows are read by file name', cfg.hostedWorkflows.join(','), 'rele
 t('AC7 a GitHub-hosted label in a block list', parseCiConfig('aws-runner-labels:\n  - ubuntu-24.04-arm\n').findings.map((f) => `${f.line} ${f.problem}`).join(''), '2 ubuntu-24.04-arm is a GitHub-hosted label, not an AWS runner label');
 
 // AC8: classify names the declared AWS label a job runs on today.
-t('AC8 hosted by its secret, on an AWS label today', classify(secretJob(awsList), VPA)[0].why, 'secret DATABASE_URL (runs-on today: AWS runner voicepa-linux-arm64)');
+t('AC8 placed by its secret, on an AWS label today', classify(secretJob(awsList), VPA)[0].why, 'secret DATABASE_URL, which the AWS runners take (runs-on today: AWS runner voicepa-linux-arm64)');
 const noSecret = wf(`  unit:
     runs-on: [self-hosted, voicepa-linux-arm64]
     steps: [{ run: 'true' }]
 `);
-t('AC8 self-hosted, on an AWS label today', classify(noSecret, VPA)[0].why, 'no hosted trigger (runs-on today: AWS runner voicepa-linux-arm64)');
+t('AC8 aws, on an AWS label today', classify(noSecret, VPA)[0].why, 'no hosted trigger (runs-on today: AWS runner voicepa-linux-arm64)');
 t('AC9 with nothing declared, classify reads as today', classify(noSecret)[0].why, 'no hosted trigger (runs-on today: [self-hosted, voicepa-linux-arm64])');
 
 // AC10: the runs-on forms Voice PA, PR Ninja and Forewatt use, each with its labels declared.
@@ -271,7 +271,7 @@ const fallback = (label) => `\${{ fromJSON(((github.event.pull_request && github
 t('AC10 Voice PA ci.yml:141', linted(secretJob(fallback('voicepa-linux-arm64')), VPA), '');
 t('AC10 Voice PA 8cpu', linted(secretJob(fallback('voicepa-linux-arm64-8cpu')), VPA), '');
 t('AC10 Voice PA names both labels it runs on today', classify(secretJob(fallback('voicepa-linux-arm64')), VPA)[0].why,
-  'secret DATABASE_URL (runs-on today: AWS runner voicepa-linux-arm64, voicepa-linux-arm64-on-demand)');
+  'secret DATABASE_URL, which the AWS runners take (runs-on today: AWS runner voicepa-linux-arm64, voicepa-linux-arm64-on-demand)');
 t('AC10 Voice PA with nothing declared is reported', linted(secretJob(fallback('voicepa-linux-arm64'))), 'j@5 j@9');
 const PRN = { awsLabels: ['prninja-linux-arm64'] };
 t('AC10 PR Ninja validate-prs.yml:62', linted(secretJob(`\${{ vars.DESK_AWS_FALLBACK == 'on' && 'ubuntu-latest' || fromJSON(format('["self-hosted","prninja-linux-arm64{0}"]', fromJSON(github.run_attempt) >= 3 && '-on-demand' || '')) }}`), PRN), '');
@@ -417,6 +417,46 @@ t('AC11 the finding names the config', lint(keptHosted, HOSTED)[0].problem, 'is 
 t('AC12 every job of a hosted workflow is placed hosted', placed(keptHosted, HOSTED), 'ok=hosted@4 aws=hosted@7 call=hosted@10');
 t('AC12 the reason is hosted-workflows', classify(keptHosted, HOSTED)[0].why, 'hosted-workflows (.github/desk-ci.yml)');
 
+// Placement on a repo's AWS runners: every job goes aws, except one kept hosted by name or needing x64.
+const VPA_X64 = { ...VPA, x64Labels: ['voicepa-linux-x64'], awsLabels: [...VPA.awsLabels, 'voicepa-linux-x64'] };
+t('placement AC1 a secret-bearing job is aws at the secret line', placed(secretJob(awsList), VPA), 'j=aws@9');
+t('placement AC1 the reason names the secret', classify(secretJob('ubuntu-latest'), VPA)[0].why, 'secret DATABASE_URL, which the AWS runners take');
+const prodDeploy = wf(`  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+    steps: [{ run: 'true' }]
+`);
+t('placement AC2 a production deploy with id-token is aws', placed(prodDeploy, VPA), 'deploy=aws@6');
+t('placement AC3 an image with no arm64 build stays hosted at the image line', placed(postgis, VPA), 'integration=hosted@8');
+t('placement AC3 the reason names the image and the arm64 runners', classify(postgis, VPA)[0].why,
+  'needs x64: image postgis/postgis:16-3.4 has no arm64 build, and the repo\'s AWS runners are arm64');
+t('placement AC4 x64 parity stays hosted with no x64 label', placed(parity, VPA), 'parity=hosted@5 prod=hosted@11');
+t('placement AC4 the reason says it needs x64', classify(parity, VPA)[0].why,
+  'needs x64: production x64 build parity (name: Vercel parity build), and the repo\'s AWS runners are arm64');
+t('placement AC4 with an x64 label declared, parity is aws', placed(parity, VPA_X64), 'parity=aws@5 prod=aws@11');
+t('placement AC4 on the x64 label', classify(parity, VPA_X64)[1].why, 'needs x64: production x64 build parity (vercel build), on AWS x64 runner voicepa-linux-x64');
+t('placement AC5 a job with no hosted trigger is aws, one that can pick macOS hosted', placed(noDependabot, VPA), 'unit=aws@4 matrixed=hosted@11 custom=hosted@18 dynamic=aws@20');
+t('placement a macOS leg needs macOS', classify(noDependabot, VPA)[1].why, 'needs macOS or Windows: runs-on macos-latest, and the repo\'s AWS runners are Linux');
+t('placement a self-hosted macOS label needs macOS too', classify(noDependabot, VPA_X64)[2].why, 'needs macOS or Windows: runs-on macOS, and the repo\'s AWS runners are Linux');
+const parityCalls = wf(`  production-build:
+    uses: acme/shared/.github/workflows/build.yml@v1
+  prod-build:
+    uses: ./.github/workflows/build.yml
+`);
+t('placement a reusable call named like parity is placed as a call, not on an x64 label', placed(parityCalls, VPA_X64), 'production-build=hosted@5 prod-build=aws@7');
+t('placement a local call named like parity is placed in its own file', classify(parityCalls, VPA_X64)[1].why, 'calls ./.github/workflows/build.yml: no hosted trigger here; its own jobs are placed in that file');
+t('placement AC5 reasons that kept a job hosted no longer do', placed(outside, VPA) + ' ' + placed(alias, VPA), 'smoke=aws@9 cov=aws@13 local=aws@14 h=aws@7 a=aws@11');
+t('placement a local reusable call is aws, an outside one hosted', placed(reusable, VPA), 'call=aws@5 callsecrets=aws@8 remote=hosted@10');
+t('placement AC6 a hosted workflow stays hosted', placed(keptHosted, { ...HOSTED, x64Labels: [] }), 'ok=hosted@4 aws=hosted@7 call=hosted@10');
+t('placement AC8 with no labels declared, placement is as before', placed(postgis) + ' ' + placed(parity) + ' ' + placed(noDependabot),
+  'integration=hosted@8 parity=hosted@5 prod=hosted@11 unit=self-hosted@4 matrixed=self-hosted@7 custom=self-hosted@13 dynamic=self-hosted@20');
+const x64Cfg = parseCiConfig('aws-runner-labels: [voicepa-linux-arm64]\naws-x64-runner-labels:\n  - voicepa-linux-x64\n  - ubuntu-latest\n');
+t('aws-x64-runner-labels are AWS labels and x64', `${x64Cfg.awsLabels.join(',')} | ${x64Cfg.x64Labels.join(',')}`, 'voicepa-linux-arm64,voicepa-linux-x64 | voicepa-linux-x64');
+t('a GitHub-hosted label under aws-x64-runner-labels is a finding', x64Cfg.findings.map((f) => `${f.job}:${f.line} ${f.problem}`).join(''), 'aws-x64-runner-labels:4 ubuntu-latest is a GitHub-hosted label, not an AWS runner label');
+t('a secret on an x64 label lints clean', linted(secretJob('[self-hosted, voicepa-linux-x64]'), x64Cfg), '');
+
 // The CLI reads .github/desk-ci.yml from the repo holding the workflows.
 const repo = scratch('desk-ci-repo-');
 try {
@@ -434,8 +474,9 @@ try {
     '.github/desk-ci.yml:1  aws-runner-labels  ubuntu-latest is a GitHub-hosted label, not an AWS runner label | .github/workflows/release.yml:8  aws  is in a workflow listed under hosted-workflows in .github/desk-ci.yml but runs-on can pick a runner that is not GitHub-hosted | summary: findings=2');
   t('cli ci-lint fails on those', after.status, 1);
   const cls = run('classify').out.trim().split('\n');
-  t('cli classify names the AWS label', cls[0], '.github/workflows/ci.yml:9  j  hosted  secret DATABASE_URL (runs-on today: AWS runner voicepa-linux-arm64)');
+  t('cli classify names the AWS label', cls[0], '.github/workflows/ci.yml:9  j  aws  secret DATABASE_URL, which the AWS runners take (runs-on today: AWS runner voicepa-linux-arm64)');
   t('cli classify places the hosted workflow', cls[2], '.github/workflows/release.yml:7  aws  hosted  hosted-workflows (.github/desk-ci.yml) (runs-on today: AWS runner voicepa-linux-arm64)');
+  t('placement AC7 the summary counts hosted and aws', cls.at(-1), 'summary: jobs=4 hosted=3 aws=1');
 } finally { rmSync(repo, { recursive: true, force: true }); }
 
 // The CLI over a directory: classify lines and summary, ci-lint exit status.

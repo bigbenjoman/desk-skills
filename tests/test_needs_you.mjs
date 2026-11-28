@@ -1265,19 +1265,55 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-2': { state: 'triaged', lane: 'A', collides_with: 'F-1', fix: { try: 1, of: 2, pr: 131, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
+  // DS-1033: F-5's admission snapshot names F-1, but the pass did not hold it; F-6's names nothing, but
+  // the pass held it on two files, one of them with another batch's ticket; F-7's pass line is from
+  // before holds were recorded.
+  'F-5': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
+  'F-6': { state: 'triaged', lane: 'A' },
+  'F-7': { state: 'triaged', lane: 'A' },
+  // F-8 was held on a file of two places behind F-1 and F-9, and F-9 has since finished.
+  'F-8': { state: 'triaged', lane: 'A' },
+  'F-9': { state: 'done', lane: 'A' },
+  // F-11 is a handoff held on a file of two places behind F-1 and F-10, a ticket placed at the front
+  // that has not started: the pass still holds it (budgetHolds `front`).
+  'F-10': { state: 'triaged', lane: 'A', placed: true },
+  'F-11': { state: 'triaged', lane: 'A', handoff: 'pending', handoff_stage: '4b' },
+  // F-12 is the same, but its placed holder F-13 has since been moved below it, so the pass lets it start.
+  'F-12': { state: 'triaged', lane: 'A', handoff: 'pending', handoff_stage: '4b' },
+  'F-13': { state: 'triaged', lane: 'A', placed: true },
 } });
-// The last pass held F-2 and F-3 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
+// The last pass held F-2, F-3, F-6 and F-7 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
 const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
 mkdirSync(phiState, { recursive: true });
-writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), collisions: [{ key: 'F-2', with: ['F-1'], files: ['a.mjs'] }, { key: 'F-3', with: ['F-1'], files: ['a.mjs'] }] })}\n`);
+const phiHold = (key, holds) => ({ key, with: [...new Set(holds.flatMap((h) => h.with.map((w) => w.split(' in ')[0])))], files: holds.map((h) => h.file), holds });
+writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), collisions: [
+  phiHold('F-2', [{ file: 'a.mjs', k: 1, with: ['F-1'] }]), phiHold('F-3', [{ file: 'a.mjs', k: 1, with: ['F-1'] }]),
+  phiHold('F-6', [{ file: 'src/one.ts', k: 1, with: ['F-1'] }, { file: 'src/big.ts', k: 2, with: ['F-1', 'X-9 in batch X'] }]),
+  { key: 'F-7', with: ['F-1'], files: ['a.mjs'] },
+  phiHold('F-8', [{ file: 'src/two.ts', k: 2, with: ['F-1', 'F-9'] }]),
+  phiHold('F-11', [{ file: 'src/three.ts', k: 2, with: ['F-1', 'F-10'] }]),
+  phiHold('F-12', [{ file: 'src/four.ts', k: 2, with: ['F-1', 'F-13'] }]),
+] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
 const phi = strip(repoScreen(phr));
+const phiWait = 'waits for F-1 (collides on a.mjs, 1 of 1 place taken)';
 t('a fix try held back by a collision waits for the running ticket, not the next free worker, in Ready',
-  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, '#131 · 1 check failed · waits for F-1 (shared files), then a worker repairs it, try 1 of 2 true');
-t('a ticket held back by a collision says it shares files', /F-3 +○ ready +waits for F-1 \(shared files\)/.test(phi), true);
+  `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, `#131 · 1 check failed · ${phiWait}, then a worker repairs it, try 1 of 2 true`);
+t('a ticket held back by a collision names the holder, the file and its places', `${phiText('F-3')} ${/F-3 +○ ready +waits for F-1 \(collides/.test(phi)}`, `${phiWait} true`);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
-t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).replace(/\n▌ /g, ' ').includes('waits for F-1 (shared files), then a worker repairs it'), true);
+t('its ticket page says the same', strip(ticketScreen(phr, 'F-2', { width: 200 })).replace(/\n▌ /g, ' ').includes(`${phiWait}, then a worker repairs it`), true);
+t('DS-1033 AC2 a ready ticket whose collides_with names a running one, but which the pass did not hold, starts at the next pass',
+  `${phiText('F-5')} ${/F-5 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
+t('DS-1033 AC1 a ready ticket the pass held names every file at its budget, its places and the holders, whatever its collides_with',
+  phiText('F-6'), 'waits for F-1, X-9 in batch X (collides on src/one.ts, 1 of 1 place taken; src/big.ts, 2 of 2 places taken)');
+t('DS-1033 a pass line from before holds were recorded still says the ticket shares files', phiText('F-7'), 'waits for F-1 (shared files)');
+t('DS-1033 AC2 a ticket held on a file whose holder has since finished, freeing a place, starts at the next pass',
+  `${phiText('F-8')} ${/F-8 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
+t('DS-1033 a handoff held on a file a running ticket and an unstarted front ticket fill still waits for both',
+  phiText('F-11').includes('waits for F-1, F-10 (collides on src/three.ts, 2 of 2 places taken)'), true);
+t('DS-1033 a handoff whose placed holder has since moved below it is not held by it',
+  `${phiText('F-12').includes('collides')} ${phiText('F-12').includes('starts at the next pass')}`, 'false true');
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.
