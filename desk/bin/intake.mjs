@@ -335,11 +335,11 @@ const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? read
 
 const queueCmdIn = (env, args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env });
 const queueCmd = (...args) => queueCmdIn(process.env, args);
-// /desk-admit --front for `key`, in the batch `env` points queue.mjs at, as one line: a ticket whose
+// /desk-admit --front for `key`, placed, in the batch `env` points queue.mjs at, as one line: a ticket whose
 // worker has started or finished (`state`) has no place left in the spawn order, so it stays.
 const toFrontIn = (env, key, state) => {
   if (['running', 'done', 'failed'].includes(state)) return `${key} not moved to the front: it is ${state}, so it has no place left in the spawn order`;
-  const f = queueCmdIn(env, ['front', key]);
+  const f = queueCmdIn(env, ['front', key, '--placed']);
   return f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`;
 };
 // The named batches that are live (listed, readable and not finished): feature batches, by name.

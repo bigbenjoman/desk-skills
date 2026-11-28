@@ -712,5 +712,27 @@ if (canvases.length && canvases.every((c) => c.snapshot || c.saved)) {
 }
 SNAPPED_END
 
+# The §4 Merge holds the planned files fall under, read from the config rather than judged by the model:
+# each one that leaves the merge to a person goes in merge_holds, so the plan says the PR will need the
+# person's merge and names the path. With no diff to read, a `#<key>` hold on a planned file holds.
+# Only this repo's files are matched (desk-env scopeEntry): an entry prefixed `<other repo>: ` is not
+# under this repo's holds, and one prefixed with this repo's name is matched without it.
+node --input-type=module - "$OUT" "$DESK_RUN_BIN" <<'HOLDS_END' || { echo "FAIL: $TICKET triage record's merge holds could not be read" >&2; exit 1; }
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const E = await import(pathToFileURL(join(bin, 'desk-env.mjs')).href);
+const { matchHolds, personHolds, parseHolds, routinePerm } = await import(pathToFileURL(join(bin, 'gate.mjs')).href);
+const d = JSON.parse(readFileSync(out, 'utf8'));
+const files = (Array.isArray(d.files_in_scope) ? d.files_in_scope : []).map((f) => E.scopeEntry(f).path).filter(Boolean);
+const held = personHolds(matchHolds(files, parseHolds(E.configValues('merge-holds'))), routinePerm(E)).map(({ glob, why, files: f }) => ({ glob, why, files: f }));
+if (held.length) d.merge_holds = held;
+else if (!('merge_holds' in d)) process.exit(0);
+else delete d.merge_holds;
+writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
+if (held.length) console.log(`[triage] ${d.ticket}  needs your merge: ${held.flatMap((h) => h.files).join(', ')}`);
+HOLDS_END
+
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`[triage] ${d.ticket}  lane ${d.lane}  ${(d.files_in_scope??[]).length} files  ${(d.unknowns??[]).length} unknowns`)' "$OUT"
 rm -f "$EARLIER"

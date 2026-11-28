@@ -135,6 +135,16 @@ const BENCH_RULES = Object.freeze({
     'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset'),
   [JOB_TOKENS_KEY]: onOffRule(JOB_TOKENS_KEY,
     'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset'),
+  // The person-in-use rows (person-use.mjs): each unset reads as its default, worked out from the
+  // profile's memory-gb and cpu-cores.
+  'person-use': onOffRule('person-use',
+    'on drops the local cap to person-use-floor while the person uses this computer, and sends cloud-able tickets only to the cloud; on when unset'),
+  'person-baseline-gb': { ok: (n) => n >= 0, want: 'a number of GB', why: 'GB that processes other than desk workers hold with nobody using this computer' },
+  'person-baseline-cpu': { ok: (n) => n >= 0, want: 'a number of CPU cores', why: 'CPU cores that processes other than desk workers keep busy with nobody using this computer' },
+  'person-use-gb': { ok: (n) => n > 0, want: 'a number of GB over 0', why: 'GB over person-baseline-gb that reads as the person using this computer' },
+  'person-use-cpu': { ok: (n) => n > 0, want: 'a number of CPU cores over 0', why: 'CPU cores over person-baseline-cpu that read as the person using this computer' },
+  'person-use-floor': { ok: (n) => Number.isInteger(n) && n >= 0, want: 'a whole number of local workers', why: 'the local cap while the person uses this computer, for local-only tickets' },
+  'person-use-calm-min': { ok: (n) => n >= 0, want: 'a number of minutes', why: 'minutes the person\'s use must stay under the threshold before the local cap comes back' },
 });
 // The lever rows profileProblems checks, each with what reads as off when its row is wrong.
 const LEVER_ROWS = Object.freeze([[EXPRESS_LANE_KEY, 'the express lane stays off'], [JOB_TOKENS_KEY, 'job tokens stay off']]);
@@ -454,6 +464,17 @@ export function sizingWarnings(rows, hw, r = RULES) {
   const { counted } = countedCores(hw, r);
   if (!Number.isFinite(workers) || workers <= 2 * counted) return [];
   return [`(\`test-lock-max\` ${v['test-lock-max']} + \`light-lock-max\` ${v['light-lock-max']}) x \`test-cap\` ${v['test-cap']} is ${workers} test workers at the ceilings, more than twice the ${counted} counted cores (efficiency cores at ${r.efficiencyCoreWeight})`];
+}
+
+// ---- days ------------------------------------------------------------------------------------
+// This machine's local date as YYYY-MM-DD.
+export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Whether `s` is a YYYY-MM-DD that names a real calendar day (not 2026-02-30).
+export function isRealDay(s) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s ?? ''));
+  if (!d) return false;
+  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
+  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]);
 }
 
 // ---- the file --------------------------------------------------------------------------------

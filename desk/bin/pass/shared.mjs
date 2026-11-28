@@ -210,14 +210,103 @@ export const liveReadsUnparsed = (readRow) => (readRow.errors.length
 
 // A review try (kind rereview) reviews its PR's head and changes no file.
 export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
-// A cloud ticket runs in the cloud only until its PR is read (advanceCloud records result.pr and
-// cloud.pr_at): the session is then over, and its branch is on origin with no session pushing to it.
-// Any work after that, a fix try of any kind or a rework, is a local worker's on that branch at
-// origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there; nothing reads it
-// for a cloud session again. cloud.pr_at outlives the local spawn, which clears result; a new cloud
-// start resets it.
+// A cloud ticket runs in the cloud until its PR is read (advanceCloud records result.pr and
+// cloud.pr_at), and its branch is then on origin. A fix try of a kind the session can work from what
+// the PR shows (CLOUD_FIX_KINDS) goes back to that session (cloudFixRoute), or to a new cloud session
+// on the PR's branch where it is gone, and runs in the cloud while it is out (`cloud.fix`, fixInCloud).
+// Any other work after the PR, another kind of fix try or a rework, is a local worker's on that branch
+// at origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there. cloud.pr_at
+// outlives the local spawn, which clears result; a new cloud start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
-export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// The fix tries a cloud session takes on its own PR: review findings and gaps, red checks and a
+// reviewer's threads, each of which the PR shows it. A conflict, a sync, a person's call and the
+// review and capture tries need this computer.
+export const CLOUD_FIX_KINDS = ['review', 'checks', 'feedback'];
+// A fix try out to a cloud session: `cloud.fix`, on a session not recorded abandoned. A stopped session
+// (queue.mjs stopCloud) keeps its `cloud.fix`, which a requeue keeps too, and a local worker started on
+// the try after it must not count as running in the cloud.
+export const fixInCloud = (t) => t?.location === 'cloud' && Boolean(t.cloud?.fix) && !t.cloud.abandoned_at;
+export const runsInCloud = (t) => t?.location === 'cloud' && (!cloudPrHere(t) || fixInCloud(t));
+// A cloud session that may still push to its PR's branch: recorded, and not recorded abandoned.
+export const cloudSessionLive = (t) => Boolean(t?.cloud?.session) && !t.cloud.abandoned_at;
+// The session a local start of ticket `t` must wait on, or null: an unfinished fix try that writes to its
+// cloud PR's branch (any but a review or capture try), while that PR's session is not among `archived`
+// (cloud-worker.mjs readArchived). Recorded abandoned is not enough: nothing here can end a cloud
+// session, so until the person archives it, it may still push to the branch. -> its URL or id
+export function cloudArchiveWait(t, archived) {
+  const f = t?.fix, s = t?.cloud?.session;
+  if (!cloudPrHere(t) || !f || f.finished || ['rereview', 'capture'].includes(f.kind) || !s || archived.has(s)) return null;
+  return t.cloud.url ?? s;
+}
+// Where a cloud ticket's unfinished fix try on its PR goes, decided as its turn in the spawn loop comes:
+// 'send' to its live session (cloud-worker.mjs sendCloud), 'new' for a new cloud session on the PR's
+// branch where it has none, or null for a local worker: not a cloud PR's, a kind no session takes, a
+// resume or handoff (which run here), or with the effort lever on (`effort`), which no cloud session
+// can be given.
+export function cloudFixRoute(t, { effort = false } = {}) {
+  const f = t?.fix;
+  if (!cloudPrHere(t) || !f || f.finished || !CLOUD_FIX_KINDS.includes(f.kind)) return null;
+  if (toResume(t) || toHandoff(t) || effort) return null;
+  return cloudSessionLive(t) ? 'send' : 'new';
+}
+// A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so it holds
+// no local slot and the maintenance window neither waits for one nor stops it, in any repo, a fix try
+// sent to one included; a review try on a cloud ticket's PR runs here.
+export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
+// A killed worker waiting to resume, and a session handed off to its next stage (both run here).
+export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
+export const toHandoff = (r) => r.handoff === 'pending';
+// A ticket that can run in a cloud session: its triage record needs nothing this computer has (admission
+// writes cloud_ok; a ticket admitted before that carries location=cloud), no PR of its is read yet, and
+// it has not started on this computer (its work is then in a local worktree, and stays there). Where it
+// runs is decided when it starts (placeAtStart), not at admission.
+export const cloudAble = (t) => (t?.cloud_ok === true || t?.location === 'cloud') && !cloudPrHere(t)
+  && t.result?.pr == null && t.start_place?.where !== 'local';
+// A ticket the spawn loop may start in a cloud session, taking one of §3b "Cloud sessions at once" and
+// no local slot: a resume or handoff of one runs here.
+export const startsInCloud = (t) => cloudAble(t) && !toResume(t) && !toHandoff(t);
+
+// Where a ticket starts, decided as its turn in the spawn loop comes: -> { where, why }, where 'cloud',
+// 'local' or null (it waits; `full` then says which kind it waits for).
+//   able        it may start in the cloud (startsInCloud)
+//   cloudRoom   a cloud session is free this pass; cloudRunning / cloudLimit the count it says
+//   localRoom   a local slot is free this pass
+//   localSpare  a local slot stayed free for the whole of the last pass (the batch's local_free_at)
+//   reserve     local-only tickets still to come in this pass's order: the local slots they would take
+//   free        local slots still free this pass (slots - attempts)
+//   personUse   the person is using this computer (person-use.mjs)
+// Cloud first: a cloud-able ticket goes to the cloud while its cap has room. Local slots go first to
+// local-only tickets: a cloud-able one takes one only with the cloud full, a local slot free for the
+// whole last pass, one free now beyond those the local-only tickets still to come want, and the person
+// not using the computer.
+export function placeAtStart({ able, cloudRoom, localRoom, localSpare = false, reserve = 0, free = 0, personUse = false, cloudRunning = null, cloudLimit = null }) {
+  if (!able) return localRoom ? { where: 'local', why: 'it must run on this computer' } : { where: null, why: 'waits for a local slot', full: 'local' };
+  const count = cloudLimit != null ? ` (${cloudRunning} of ${cloudLimit} running, §3b "Cloud sessions at once")` : '';
+  if (cloudRoom) return { where: 'cloud', why: `cloud first: a cloud session is free${count}` };
+  if (personUse) return { where: null, why: `you're using this computer, so it goes only to the cloud, which is full${count}`, full: 'cloud' };
+  if (localRoom && localSpare && free > reserve) return { where: 'local', why: `the cloud is full${count}, and a local slot stayed free all last pass` };
+  return { where: null, why: `waits for a cloud session${count}; local slots go first to tickets that must run here`, full: 'cloud' };
+}
+// The slot a fresh ticket's priority hold weighs (spawn-order.mjs priorityHold), as placeAtStart places
+// it now: -> { where, free, pending }, or null where it starts nowhere this pass (decideSpawn says so, and
+// priority holds nothing that would not start anyway). `ahead` the tickets the spawn loop has still to
+// read; `local` and `cloud` the local slots and cloud sessions still free; `localSpare` and `personUse`
+// as placeAtStart's. `pending` the fresh tickets ahead that may want that slot: for a cloud start the
+// cloud-able ones, for a local start any, as a cloud-able one may fall back to it. One counted that then
+// goes elsewhere costs only a deferral (spawn-order.mjs deferringOrder). `able` and `slotless` are the
+// pass's own reads, as decideSpawn's: `able` a ticket placed as cloud-able (startsInCloud, and in the pass
+// a fix try whose cloud session is gone), `slotless` one that takes no slot of either kind (in the pass a
+// fix try sent to its live session, or one waiting on that session's archive), so neither the reserve nor
+// `pending` counts it, and a slotless `t` weighs no slot.
+export function priorityPool(t, ahead, { local, cloud, localSpare = false, personUse = false, able = startsInCloud, slotless = () => false }) {
+  if (slotless(t)) return null;
+  const place = placeAtStart({ able: able(t), cloudRoom: cloud > 0, localRoom: local > 0, localSpare,
+    reserve: ahead.filter((x) => !able(x) && !slotless(x)).length, free: local, personUse });
+  if (place.where == null) return null;
+  const toCloud = place.where === 'cloud';
+  const pending = ahead.filter((x) => x.key !== t.key && !toResume(x) && !toHandoff(x) && !slotless(x) && (!toCloud || able(x)));
+  return { where: place.where, free: toCloud ? cloud : local, pending: new Set(pending.map((x) => x.key)) };
+}
 // The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its
 // session ended with where there is one, which the ticket ledger's failed event records.
 export const failedField = (why, { subtype = null, at = new Date().toISOString() } = {}) =>

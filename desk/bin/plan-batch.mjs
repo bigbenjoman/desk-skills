@@ -24,7 +24,7 @@ import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { leverOnFor } from './lever-pin.mjs';
-import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE, bySpawnOrder } from './spawn-order.mjs';
+import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE, bySpawnOrder, blockersFirst, reach, plannedFiles } from './spawn-order.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 // --keep-order: spawn in the order the tickets were named (blockers still first), not by what they gate.
@@ -430,31 +430,16 @@ const heldUntil = (t) => {
 const depsArg = Object.entries(preds).filter(([t]) => liveKeys.has(t)).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
 
 // Blockers before what they block; otherwise the order given.
-const topo = (list) => {
-  const out = []; const done = new Set(); const pending = [...list];
-  while (pending.length) {
-    const i = pending.findIndex((r) => (preds[r.ticket] ?? []).every((p) => done.has(p)));
-    const [r] = pending.splice(i < 0 ? 0 : i, 1);
-    out.push(r); done.add(r.ticket);
-  }
-  return out;
-};
+const topo = (list) => blockersFirst(list, (r) => preds[r.ticket] ?? [], (r) => r.ticket);
 // How many tickets in the batch each one holds, directly or through another (preds, transitively).
 const gates = (() => {
   const succ = {};
   for (const [t, ps] of Object.entries(preds)) for (const p of ps) (succ[p] ??= []).push(t);
-  const out = {};
-  for (const r of ours) {
-    const seen = new Set(); const stack = [...(succ[r.ticket] ?? [])];
-    while (stack.length) { const t = stack.pop(); if (seen.has(t) || t === r.ticket) continue; seen.add(t); stack.push(...(succ[t] ?? [])); }
-    out[r.ticket] = seen.size;
-  }
-  return out;
+  return Object.fromEntries(ours.map((r) => [r.ticket, reach(r.ticket, succ[r.ticket] ?? [], succ).size]));
 })();
-const filesOf = (r) => (Array.isArray(r.files_in_scope) ? r.files_in_scope.length : 0);
 // Spawn order is SPAWN_ORDER_RULE (KEEP_ORDER_RULE with --keep-order); topo puts blockers first. The
 // merge order puts the larger blast radius first; the holds keep the two consistent where it matters.
-const order = topo(KEEP_ORDER ? ours : ours.slice().sort(bySpawnOrder(gates, filesOf, named)));
+const order = topo(KEEP_ORDER ? ours : ours.slice().sort(bySpawnOrder(gates, plannedFiles, named)));
 const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
 // What a ticket that needs a database will actually get.
@@ -470,9 +455,9 @@ const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blockin
 // Admits `r` into the repo its Jira Repository names (desk-env.mjs admitInRepo).
 const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' });
 
-// Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer
-// runs in a cloud session (cloud-worker.mjs placement), and the plan says where each runs, and why a
-// ticket stays local, before any worker starts. A cloud session takes no budget flag.
+// Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer can
+// run in a cloud session (cloud-worker.mjs placement), and the plan says which can, and why a ticket
+// stays local, before any worker starts. Where a cloud-able one runs is decided when it starts. A cloud session takes no budget flag.
 let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
@@ -488,7 +473,7 @@ const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, loc
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {
   const n = admitted.filter((r) => placed[r.ticket].where === 'cloud').length;
-  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) in a cloud session, the rest local (config §3b "Worker location")`);
+  say(`workers: cloud — ${n} of ${admitted.length} admitted ticket(s) can run in a cloud session, placed when each starts; the rest local (config §3b "Worker location")`);
   say(`budget: ${budget.off ? 'no cap' : `$${budget.usd}`} per local worker (config §3b "Autopilot per-worker budget (USD)"); a cloud session takes no budget, and its tokens and cost are not reported`);
 } else say('workers: local');
 if (notOurs.length) {
@@ -516,6 +501,8 @@ for (const r of order) {
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
   // A step only the person can take is its own blocker ticket, not the ticket's lane.
   for (const s of Array.isArray(r.ben_steps) ? r.ben_steps : []) say(`  ! your step: ${s.step} — proposed blocker: ${s.blocker}`);
+  // A planned file under a §4 Merge holds path (triage.sh merge_holds): the driver leaves the PR to the person.
+  for (const h of Array.isArray(r.merge_holds) ? r.merge_holds : []) say(`  ! needs your merge: ${(h.files ?? []).join(', ')} — its PR touches \`${h.glob}\` (${h.why}), so the merge driver leaves the merge to you`);
   for (const f of lintBlocking(r)) say(`  ! lint (blocking): ${f.message}`);
   if (r.lint_error) say(`  ! lint did not run: ${r.lint_error}`);
   if (r.lane_original) say(`  ~ lane ${r.lane_original} -> ${r.lane} at challenge: ${r.lane_challenge?.reason ?? ''}`);
@@ -607,7 +594,7 @@ if (appendOnly.bad) say(`\ncollisions: ${appendOnly.bad} — read as none`);
 const spawning = order.filter((r) => admitted.includes(r));
 if (spawning.length > 1) {
   say(`\nSPAWN ORDER — ${KEEP_ORDER ? KEEP_ORDER_RULE : SPAWN_ORDER_RULE}`);
-  spawning.forEach((r, i) => say(`  ${i + 1}. ${r.ticket}  gates ${gates[r.ticket] ?? 0}, ${filesOf(r)} planned file(s)`));
+  spawning.forEach((r, i) => say(`  ${i + 1}. ${r.ticket}  gates ${gates[r.ticket] ?? 0}, ${plannedFiles(r)} planned file(s)`));
 }
 if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
@@ -679,7 +666,9 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
       `merge_after=${mergeAfter[t]?.length ? mergeAfter[t].join('|') : 'null'}`,
-      `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
+      // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs placeAtStart).
+      'location=null',
+      `cloud_ok=${placed[t].where === 'cloud' ? 'true' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
     const park = stepPark(r) ?? lanePark(r)
@@ -691,7 +680,8 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
   }
   // add leaves a ticket already queued (an epic's admitted children) where it was, so the order is laid over them too.
-  execFileSync('node', [QUEUE, 'order', ...order.filter((r) => !elsewhere(r)).map((r) => r.ticket)], { stdio: 'ignore' });
+  // With --keep-order the user named the order, so each ticket is placed and the pass's re-sort keeps it.
+  execFileSync('node', [QUEUE, 'order', ...order.filter((r) => !elsewhere(r)).map((r) => r.ticket), ...(KEEP_ORDER ? ['--placed'] : [])], { stdio: 'ignore' });
   // Seeding admits the batch, so the calls taken on triage's judgement are logged now, as intake logs
   // a record's calls when it admits the ticket.
   if (taken.length) {

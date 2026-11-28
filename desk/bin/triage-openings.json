@@ -1,0 +1,4 @@
+{
+  "_comment": "How triage.sh's first pass and its challenge pass start their prompts. cache-report.mjs and desk-checkout's claude_activity.py both read this to tell a triage session.",
+  "openings": ["Triage ticket ", "A first triage pass put ticket "]
+}

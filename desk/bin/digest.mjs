@@ -28,13 +28,16 @@ import { jiraSearch, keySearch } from './jira-search.mjs';
 import { describeCond } from './clears-when.mjs';
 import { isHeld, heldBehindOf, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
-import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
+import { stalledPrs as stalledOf, STALL_FOR, newHoldPrs } from './desk-q.mjs';
+import { followChecks, followCheckText } from './needs-you.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
-import { readWarnings } from './pass-metrics.mjs';
+import { readWarnings, readQueueMoves } from './pass-metrics.mjs';
+import { unreadableFollowOn } from './harvest.mjs';
+import { attachArchive, everyTicket } from './queue-store.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
@@ -281,6 +284,8 @@ export const previousSlot = (times, slot) => (slot ? latestSlot(times, new Date(
 
 // One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
 const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
+// One repo's PRs a change pushed after they opened put under §4 Merge holds, as desk-q words them.
+const newHolds = (r) => newHoldPrs(readJson(r.queue, null));
 
 // The Levers page the digest's Levers section links.
 export const leversPageUrl = (dir = leversDir()) => `file://${join(dir, 'index.html')}`;
@@ -358,8 +363,10 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
   const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
+  const nh = groups.reduce((n, g) => n + (g.held?.length ?? 0), 0);
   const nw = groups.reduce((n, g) => n + (g.warnings?.length ?? 0), 0);
   const nwait = groups.reduce((n, g) => n + (g.waiting?.length ?? 0), 0);
+  const nmv = groups.reduce((n, g) => n + (g.moves?.length ?? 0), 0);
   const npr = groups.filter((g) => g.promotion?.key).length;
   const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
   const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
@@ -371,11 +378,12 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nl = levers.length;
   const nlc = levers.filter((l) => l.slug).length;
   const nses = groups.reduce((n, g) => n + (g.sessions?.length ?? 0), 0);
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl && !nses && !nwait) {
+  const nf = groups.reduce((n, g) => n + (g.follows?.length ?? 0), 0);
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nh && !nw && !nl && !nses && !nwait && !nmv && !nf) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}${nf ? `, ${nf} check(s) after merge` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nh ? `; ${nh} PR(s) that now need your merge` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nmv ? `; ${nmv} placed ticket(s) moved` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -386,7 +394,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.waiting?.length || x.warnings?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.follows?.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.held?.length || x.waiting?.length || x.warnings?.length || x.moves?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -437,6 +445,27 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       for (const s of g.stalled) lines.push(`- \`${s.ticket}\` ${s.url ? `[#${s.pr}](${s.url})` : `#${s.pr}`}: ${s.check} · no change for ${s.for}`);
       lines.push('');
     }
+    if (g.held?.length) {
+      lines.push('### Now needs your merge', '');
+      for (const h of g.held) lines.push(`- \`${h.ticket}\` ${h.url ? `[#${h.pr}](${h.url})` : `#${h.pr}`}: ${h.text}, changed after it opened under §4 Merge holds`);
+      lines.push('');
+    }
+    // Follow steps after everything that needs the person (questions, decisions, merges): each is a check
+    // after a merge, so it is listed apart; one a session has claimed (needs-you.mjs claim) says which
+    // session is checking it.
+    if (g.follows?.length) {
+      lines.push('### Checks after merge', '');
+      for (const f of g.follows) {
+        lines.push(`- [ ] \`${f.ticket}\`: ${f.claim ? `checking (${f.claim}) · ` : ''}${f.text}`);
+        lines.push(`  once it has run, say done on \`${f.key}\` in /desk-needs-you`);
+      }
+      lines.push('');
+    }
+    if (g.moves?.length) {
+      lines.push('### Placed tickets moved', '');
+      for (const m of g.moves) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: \`${m.key}\` moved ${m.text} (§3b Queue order: placed tickets is move-and-say)`);
+      lines.push('');
+    }
     if (g.waiting?.length) {
       lines.push('### Waiting since before the last check-in, with tickets held behind', '');
       for (const w of g.waiting) lines.push(`- \`${w.ticket}\`: waiting on ${w.on} since ${String(w.since).slice(0, 16).replace('T', ' ')} · ${w.behind} ticket(s) held behind it`);
@@ -463,6 +492,19 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 // A repo's promotion for the day's last slot: {why} (no Promotion ref, or unreadable), {empty: true}
 // (nothing merged since it) or {range, prs, page}. Tests pass their own.
 const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
+// Each ticket whose worker's follow_on= field no step could be read from, as a warning dated when the pass read it.
+// Archived tickets too: one whose PR merged before the check-in has left the live queue.
+const followOnWarnings = (r) => Object.values(everyTicket(attachArchive(readJson(r.queue, null) ?? { tickets: {} }, r.queue)))
+  .filter((t) => t?.follow_on_unreadable?.at)
+  .map((t) => ({ at: t.follow_on_unreadable.at, text: `${t.key}: ${unreadableFollowOn(t.follow_on_unreadable.raw)}` }));
+
+// The batch's follow steps listed in needs-you (followChecks): {key, ticket, text, claim}, `text` from
+// its first check on, `claim` the session checking it or null. One that cannot be read lists none.
+export function followsOf(r, register = readRegister(r.state), checks = followChecks) {
+  let fs;
+  try { fs = checks({ slug: r.slug, stateDir: r.state, q: readJson(r.queue, null) }, register); } catch { return []; }
+  return fs.map(({ t, item }) => ({ key: t.key, ticket: item.ticket, text: followCheckText(item).replace(/ Then say done\.$/, ''), claim: item.claim?.session ?? null }));
+}
 
 export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {
   const slot = latestSlot(times, now);
@@ -505,6 +547,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         slug: r.slug,
         batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
+        follows: followsOf(r, register),
         sessions: sessionWork(r).filter((s) => !done.has(s.ticket)),
         // A lever's adopt or revert is listed with its evidence under Levers instead.
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id) && !d.lever),
@@ -513,8 +556,10 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         promotion: promotionOf(r),
         jira,
         stalled: stalledPrs(r, now),
+        held: newHolds(r),
         waiting: waitingBehind(r, prev?.at).filter((w) => !done.has(w.ticket)),
-        warnings: readWarnings(r.state).filter(inWindow),
+        warnings: [...readWarnings(r.state), ...followOnWarnings(r)].filter(inWindow),
+        moves: readQueueMoves(r.state).filter(inWindow),
       };
     });
     const maintenance = digestNotes().filter(inWindow);
@@ -531,18 +576,19 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const nm = maintenance.length;
     const nw = groups.reduce((n, g) => n + g.warnings.length, 0);
     const nwait = groups.reduce((n, g) => n + g.waiting.length, 0);
+    const nmv = groups.reduce((n, g) => n + g.moves.length, 0);
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const pushed = pushedQuestions(list, groups);
     const repoCount = new Set([
-      ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.waiting.length || g.promotion?.key).map((g) => g.slug),
+      ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.waiting.length || g.moves.length || g.promotion?.key).map((g) => g.slug),
       ...levers.filter((l) => l.slug).map((l) => l.slug),
     ]).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const nl = levers.filter((l) => l.slug).length;
-    const push = nd || nm || nw || nl || nwait || fresh.some((k) => !pushed.has(k))
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''}${nwait ? `, ${nwait} wait(s) holding tickets` : ''} across ${repoCount} repo(s). ${page}` }
+    const push = nd || nm || nw || nl || nwait || nmv || fresh.some((k) => !pushed.has(k))
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''}${nwait ? `, ${nwait} wait(s) holding tickets` : ''}${nmv ? `, ${nmv} placed ticket(s) moved` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
     const ledger = presentAsks({ list, groups, fresh, pushed, page, push, now });

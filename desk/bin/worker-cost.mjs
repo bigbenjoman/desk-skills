@@ -6,7 +6,7 @@
 import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
-import { cloudWall } from './cloud-worker.mjs';
+import { cloudWall, CLOUD_COST_UNKNOWN } from './cloud-worker.mjs';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { NO_EFFORT } from './desk-env.mjs';
@@ -316,11 +316,12 @@ export function costTable(rows) {
   const preOf = (p = noPre) => (!p.n ? 'none' : p.unknown === p.n ? 'unknown'
     : `${usd(p.cost)}${p.unknown ? ` + ${p.unknown} unknown` : ''}`);
   const cells = (r, u, p = r.preflight ?? noPre) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost + p.cost), preOf(p), wallTime(u.ms), firstOf(r)];
-  const NR = 'not reported for cloud';
+  // Tokens a cloud session never reports, and its cost: unknown (cloud), never $0.
+  const NR = 'unknown (cloud)';
   // A cloud row with nothing local: nothing in it was reported. One with a local run, or a local
   // preflight alone, shows what was.
   const cloudOnly = (r) => Boolean(r.cloud) && !r.usage && !(r.sessions ?? []).some((x) => !x.cloud);
-  const table = rows.map((r) => (cloudOnly(r) ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
+  const table = rows.map((r) => (cloudOnly(r) ? [r.key, String(r.runs), NR, NR, CLOUD_COST_UNKNOWN, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
     : r.usage ? cells(r, r.usage)
       : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
   const firstKnown = rows.filter((r) => r.first != null);
@@ -331,7 +332,7 @@ export function costTable(rows) {
   // Each worker's sessions sit under its row, then its stages in the order its runs reached them.
   const startOf = (s) => `start ${s.stage}, model ${s.model}, effort ${s.effort}`;
   const sessionLines = (r) => (r.sessions ?? []).map((s) =>
-    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${s.cloud ? 'cost not reported for cloud' : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
+    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${s.cloud ? CLOUD_COST_UNKNOWN : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
   const stageLines = (r) => {
     const url = r.cloud ? [`      cloud session: ${r.cloud.url ?? 'unknown'}`] : [];
     if (cloudOnly(r)) return url;
@@ -351,7 +352,7 @@ export function costTable(rows) {
   const partly = rows.filter((r) => r.cloud && r.usage).length;
   const leftFirst = rows.length - cloud - firstKnown.length;
   if (leftFirst) notes.push(`first-turn input leaves out ${leftFirst} worker(s) with no usage`);
-  if (cloud) notes.push(`${cloud} cloud worker(s) not counted: Claude Code does not report a cloud session's tokens or cost`);
+  if (cloud) notes.push(`${cloud} cloud worker(s) not counted, ${CLOUD_COST_UNKNOWN}: Claude Code does not report a cloud session's tokens or cost, and no OpenTelemetry collector is set up for one`);
   if (partly) notes.push(`${partly} cloud worker(s) counted for their local review runs only, not their cloud session`);
   const left = rows.length - cloud - known.length;
   if (left) notes.push(`${left} unknown worker(s) not counted`);

@@ -92,6 +92,10 @@ export function markersIn(texts) {
 
 export const workerMarkers = (logText) => markersIn(readLog(logText).said);
 
+// Whether one parsed log or transcript event is an assistant message that marks a stage, in its text
+// or echoed at the start of a Bash command.
+export const marksStage = (d) => d?.type === 'assistant' && (d.message?.content ?? []).some((c) => markersIn([saidIn(c) ?? '']).some(([k, v]) => k === 'AUTOPILOT_STAGE' && v.trim()));
+
 // The last stage the worker said, through saidBy and markersIn as readLog's `said` is, so desk-q and
 // pass.mjs never disagree: `stage` is the marker's first word, as pass.mjs stores it ("4/9"),
 // `label` the whole marker ("4/9 verify"), `at` the time of the event that said it (or null).
@@ -125,7 +129,8 @@ export function tailText(path, bytes, size = statSync(path).size) {
 }
 
 // Whether the worker said it finished, read as lastStage reads stages: an AUTOPILOT_DONE marker.
-function saidDone(logText) {
+// pass.mjs's respawn guard and desk-q's stalled handoff read the whole log through it.
+export function saidDone(logText) {
   for (const line of logText.split('\n')) {
     if (!line.includes('AUTOPILOT_DONE')) continue;
     let d;
@@ -243,38 +248,65 @@ export function prBodyIn(texts) {
 // The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
 // {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>", "wait_days": <n>} (row null
 // where none says; wait_days, the days after the merge it falls due, only where it waits),
-// before any said=, which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and
-// with an error naming why where one is there but does not read.
+// before any said=, which runs to the line's end. -> { steps, error, repaired, raw }: steps [] with no
+// follow_on=, and with an error naming why where one is there but does not read. A bare word or a
+// comma-separated list of them in place of the array is kept as one step per name with no row,
+// `repaired` saying so; an empty field or a word for nothing (`none`, `null`, `n/a`, `-`) keeps no step,
+// `repaired` saying that; `raw` is the field as written wherever there is one.
 export const FOLLOW_ON_MAX = 500;
 // What a step waits on before needs-you lists it: the merge (the default, kept as no `after`), its merge
 // commit on the default branch (`main`), or on config §4 "Promotion ref" (`production`).
 const FOLLOW_GATES = ['merge', 'main', 'production'];
 const gateOf = (after) => (after == null || after === 'merge' ? {} : { after });
+const unquote = (x) => x.trim().replace(/^(["'`])(.*)\1$/s, '$2').trim();
+// The names a field that is not an array lists, or null where it is not plain names (a JSON object, say).
+// Each name may carry its own quotes (`"a", "b"`), or the whole list one pair (`"a, b"`).
+const namesIn = (raw) => {
+  const plain = (x) => {
+    const names = x.split(',').map(unquote).filter(Boolean);
+    return names.length && names.every((n) => !/[[\]{}"'`]/.test(n)) ? names : null;
+  };
+  return plain(raw) ?? plain(unquote(raw));
+};
+const NOTHING = /^(none|null|n\/a|-)?$/i;
 export function followOnIn(done) {
   const s = String(done ?? '');
   const at = s.search(/\bfollow_on=/);
-  if (at < 0) return { steps: [], error: null };
+  if (at < 0) return { steps: [], error: null, repaired: null, raw: null };
   const rest = s.slice(at + 'follow_on='.length);
-  if (!rest.startsWith('[')) return { steps: [], error: 'not a JSON array' };
-  let list = null;
+  const fail = (error, raw) => ({ steps: [], error, repaired: null, raw });
+  const checked = (steps, raw, repaired = null) => {
+    // A step is known by its text and gate (sameStep), so two alike would be settled and checked as one.
+    const twin = steps.find((x, i) => steps.findIndex((y) => sameStep(x, y)) !== i);
+    if (twin !== undefined) return fail(`two entries have the same "step" and "after": ${JSON.stringify(twin.step)}`, raw);
+    return { steps, error: null, repaired, raw };
+  };
+  if (!rest.startsWith('[')) {
+    // A plain field runs to the next ` <name>=` (said= and the rest) or the line's end.
+    const raw = rest.split(/\s+[a-z_]+=/)[0].trim();
+    if (NOTHING.test(unquote(raw))) return { steps: [], error: null, repaired: `${JSON.stringify(raw)} names no step, read as none`, raw };
+    const names = namesIn(raw);
+    if (!names) return fail('not a JSON array', raw);
+    const steps = names.map((n) => ({ step: n.slice(0, FOLLOW_ON_MAX), row: null }));
+    return checked(steps, raw, `not a JSON array, read as ${JSON.stringify(steps)}`);
+  }
+  let list = null, raw = rest.replace(/\s+said=.*$/s, '').trim();
   // The array ends at the first `]` that closes a whole JSON value.
   for (let i = rest.indexOf(']'); i >= 0 && list == null; i = rest.indexOf(']', i + 1)) {
-    try { list = JSON.parse(rest.slice(0, i + 1)); } catch { /* not closed yet */ }
+    try { list = JSON.parse(rest.slice(0, i + 1)); raw = rest.slice(0, i + 1); } catch { /* not closed yet */ }
   }
-  if (!Array.isArray(list)) return { steps: [], error: 'not a JSON array' };
+  if (!Array.isArray(list)) return fail('not a JSON array', raw);
   const bad = list.find((x) => typeof x?.step !== 'string' || !x.step.trim() || (x.row != null && typeof x.row !== 'string'));
-  if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
+  if (bad !== undefined) return fail(`an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}`, raw);
   const badGate = list.find((x) => x.after != null && !FOLLOW_GATES.includes(x.after));
-  if (badGate !== undefined) return { steps: [], error: `an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}` };
+  if (badGate !== undefined) return fail(`an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}`, raw);
   const badWait = list.find((x) => x.wait_days != null && !(typeof x.wait_days === 'number' && x.wait_days > 0 && Number.isFinite(x.wait_days)));
-  if (badWait !== undefined) return { steps: [], error: `an entry's "wait_days" is not a positive number: ${JSON.stringify(badWait)}` };
-  const steps = list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
-    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) }));
-  // A step is known by its text and gate (sameStep), so two alike would be settled and checked as one.
-  const twin = steps.find((x, i) => steps.findIndex((y) => sameStep(x, y)) !== i);
-  if (twin !== undefined) return { steps: [], error: `two entries have the same "step" and "after": ${JSON.stringify(twin.step)}` };
-  return { steps, error: null };
+  if (badWait !== undefined) return fail(`an entry's "wait_days" is not a positive number: ${JSON.stringify(badWait)}`, raw);
+  return checked(list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
+    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) })), raw);
 }
+// What the status table and the digest say of a follow-on field no step could be read from.
+export const unreadableFollowOn = (raw) => `follow-on unreadable: ${raw}`;
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 // Two follow-on steps are the same step by their text and gate (`after`, none for the merge).
 export const sameStep = (a, b) => a?.step === b?.step && (a?.after ?? 'merge') === (b?.after ?? 'merge');
@@ -302,6 +334,18 @@ const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
+
+if (isMain && process.argv[2] === '--check-done') {
+  // A worker's check on its DONE line before printing it: its follow_on= must be the exact JSON array,
+  // since a field the pass has to repair or cannot read loses each step's row and gate. Exit 0 or 1.
+  const line = process.argv.slice(3).join(' ');
+  const f = followOnIn(line);
+  const why = f.error ?? (!f.repaired ? null : f.steps.length ? `follow_on= is ${f.repaired}; write it as the JSON array`
+    : `follow_on= ${f.repaired}; with no steps leave follow_on= out, else write it as the JSON array`);
+  if (why) { console.error(`${why}: follow_on=[{"step": "<one line>", "row": "<§3 key or null>"}]`); process.exit(1); }
+  console.log(f.steps.length ? `reads as ${f.steps.length} follow-on step(s)` : 'no follow_on=');
+  process.exit(0);
+}
 
 if (isMain) {
   const log = process.argv[2];

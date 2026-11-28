@@ -14,6 +14,9 @@ unset DATABASE_URL DIRECT_DATABASE_URL
 # The pass's test lock gate reads this machine's real lock queue, which a suite run from a worker is
 # itself part of: every suite's passes run without it, and the suites that test it turn it back on.
 export AUTOPILOT_LOCK_QUEUE=off
+# So does its person-in-use reading (person-use.mjs), which reads this machine's real processes: the
+# suites that test it set a fixture with AUTOPILOT_PERSON_USE_PS and turn it back on.
+export AUTOPILOT_PERSON_USE=off
 # Every bash suite runs under the bash running the caller, so `/bin/bash tests/run.sh` tests 3.2.
 # shellcheck disable=SC2034  # read by the caller
 SH="${BASH:-bash}"

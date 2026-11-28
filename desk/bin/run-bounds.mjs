@@ -83,10 +83,15 @@ export const flagFor = (tool, n) => (tool === 'jest' ? `--maxWorkers=${n}` : `--
 // `ws` with its bound added, where it needs one and `limits` ({ jest, turbo }, each a whole number or
 // null) gives it. A `sh -c '<string>'` whose string is one simple command is bounded inside the string;
 // where the bound goes in before a `--` there, a string holding a quote or backslash is left alone,
-// since its words cannot be rejoined as written.
+// since its words cannot be rejoined as written. A command run-for.mjs times
+// (`node run-for.mjs <ms> -- <command...>`) is bounded inside it.
 // -> { words, added: [{ tool, flag }] }.
 export function bound(ws, limits, opts = {}) {
   const none = { words: ws, added: [] };
+  if (basename(ws[1] ?? '') === 'run-for.mjs' && ws[3] === '--') {
+    const r = bound(ws.slice(4), limits, opts);
+    return { words: [...ws.slice(0, 4), ...r.words], added: r.added };
+  }
   if (ws.length === 3 && ws[1] === '-c' && /^(?:ba|z|da)?sh$/.test(basename(ws[0]))) {
     const inner = words(ws[2]);
     if (COMPOUND.test(ws[2])) return none;

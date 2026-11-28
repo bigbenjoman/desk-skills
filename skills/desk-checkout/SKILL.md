@@ -23,18 +23,23 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read `desk-env show rules 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
-which slug was looked up and offer `/desk-setup`.
-§1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
-§4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
-**§4 Check-out destination** says where the draft goes:
+`EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`. Otherwise read
+only these rows, never the `CONFIG` file:
+
+```bash
+desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own read-others slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
+```
+
+Name any row printed `UNSET` (a `TODO`, or missing) and offer `/desk-setup`; an unset §3 row is a
+`no`. §3 says which sources you may read, §4 People who's who (never ask a former member), §5 binds
+the draft as any message, and **§4 Check-out destination** says where it goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
-| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as §5 says. **Never sent** |
+| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as step 5 says. **Never sent** |
 | a file path | Written to that file (a directory gets `<YYYY-MM-DD>.md` inside it). If the file already exists, show what is there and ask before replacing or appending |
 | `none` | Printed and copied. Nothing is written anywhere |
-| `TODO` or missing | Ask where it goes, print it meanwhile, and offer `/desk-setup` |
+| `UNSET` | Ask where it goes and print it meanwhile |
 
 Then read `references/style.md` before drafting.
 
@@ -51,36 +56,38 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
-**A check-out starts where the previous one ended.** Step 2 reads the destination back (the
-channel's, or the file's, previous check-out). Run the collectors again with `--since <the time it
+**A check-out starts where the last one ended: find that one before any collector runs.**
+Read the destination's last check-out, then give each collector `--since <the time it
 was posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or
 date names it>`: their window then starts where that check-out stopped, the evening before
-included, so nothing posted between it and midnight drops out, and their headers say from when. One
-written the next morning for its own day covered only that day, so the window starts at midnight.
-A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
-read again for its state now (step 3).
-Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
-day and say so. Say the window in your one line to the user, never in the post (step 4).
+included, so nothing posted between it and midnight drops out. One written the next morning for
+its own day covered only that day, so the window starts at midnight. A draft never sent moves
+nothing. Every item it called in review or WIP is read again for its state now (step 3).
+Where none can be found (no connector or permission, none posted, `none`),
+leave both flags out to cover the whole day, and say so. Each collector runs once
+either way. Say the window in your one line to the user, never in the post (step 4).
 
 ## 2. Gather
 
-Run the three collectors in one Bash call, from inside the repo (they use its config to decide
-scope). They take about 10s in total, and running them one after another keeps their output
-readable:
+Run the three collectors once, with step 1's window, in one Bash call from inside the repo (its
+config scopes them):
 
 ```bash
 S=~/.claude/skills/desk-checkout/scripts; D=auto   # or today / yesterday / friday / 2026-09-23
-python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; python3 $S/claude_activity.py --day $D
+W="--since <its ISO time> --since-for <its day>"  # W= if none
+python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W
 ```
 
-`claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself, and nor does the one that drafted an earlier check-out that
-day.
+`references/sources.md` covers the newer collectors: `worklog_activity.py`,
+`claude_activity.py --window-turns`, issues in `github_activity.py`.
+
+`claude_activity.py` cuts each session off where it loads this skill, so neither the drafting
+session nor one that drafted an earlier check-out that day reports itself.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
 | **Jira** | `jira_activity.py`: REST through `desk-jira api` once per in-scope repo whose §4 Tracker is `jira`, so it uses that repo's desk-jira credentials and never sees the token. Tracker `none`: skipped, and says so | `read-own-work` | Tickets raised (bulk batches grouped by label), status moves, reassignments, §4 Priority and other field changes, the user's comments, and what others did to their tickets the same day |
-| **GitHub** | `github_activity.py` via `gh` | `read-own-work` | PRs opened, merged, closed or pushed to, with review decision and failing checks for open ones; reviews given. Grouped by scope |
+| **GitHub** | `github_activity.py` via `gh` | `read-own-work` | PRs opened, merged, closed or pushed to, with review decision and failing checks (with why) and §4 Merge holds for open ones; reviews given. Grouped by scope. Merged counts per repo, yours and everyone's |
 | **Claude Code** | `claude_activity.py` over `~/.claude/projects/*/*.jsonl`, every project | `read-transcripts` | The *why* and the story: what they were chasing, what got found, work that never became a PR |
 | **Calendar** | Google Calendar connector: events that day on their primary calendar | `read-calendar` | The candidate meetings (step 3) |
 | **Meeting notes** | Gmail connector: `from:gemini-notes@google.com after:<day> before:<day+1>` (dates as `YYYY/MM/DD`) | `read-calendar` | Decisions and actions from each meeting, and whether the notes record the user saying anything. Gemini's email has a Summary and Next steps. Open the linked Doc through the Drive connector only if the email is too thin |
@@ -89,32 +96,27 @@ day.
 **Permissions.** A source whose row is not `yes` is skipped (or asked about, for `ask`), and the
 draft says so under **Missing sources**. The collectors apply each repo's own row and print what
 they skipped: for an `ask` row, ask the user once, then re-run that collector with
-`--include <slug>`. With `read-slack-public` alone, use `slack_search_public` and search only
+the flag the note names. With `read-slack-public` alone, use `slack_search_public` and search only
 channels.
 
 **When the Claude summary isn't enough.** A session's `ended with` line is truncated. For the
 two or three sessions that carry the day's main items, read their last replies in full:
-`python3 $S/claude_activity.py --day $D --session <8-char id> --tail 4`. That's where
-the conclusion usually is: the root cause, the status or the drafted announcement. Skip it for
+`python3 $S/claude_activity.py --day $D --session <8-char id> --tail 4`. The conclusion
+is usually there: the root cause, the status or the drafted announcement. Skip it for
 small sessions.
 
 **Connectors.** They're deferred tools, so search with a required term: `+gmail`, `+calendar`,
-`+slack` (e.g. `ToolSearch "+slack search"`). A role is missing when no returned tool name
-contains that term. Unrelated hits like WebSearch or Atlassian search don't count, so never
-stand them in. When a role is missing, run `perl -e 'alarm 90; exec @ARGV' claude mcp list`.
-If it shows the connector as `✔ Connected`, it was connected after this session started, and
-the fix is a **new session**: reconnecting won't help. Otherwise the fix is to enable it at
-claude.ai → Settings → Connectors. Either way, carry on and **name it under the draft** with
-its fix. With no calendar, leave the meeting lines out rather than guessing them from Claude
-sessions.
+`+slack`. A role with no tool name containing its term is missing: `references/connectors.md` says
+how to find the fix, and the draft names it. With no calendar, leave out meeting lines: never
+guess them.
 
-If a script fails, report its error line and carry on with the others. A missing Jira
+If a script fails, report its error line and carry on. A missing Jira
 credential means `desk-jira` isn't set up for that repo yet (`desk-jira where` shows the paths;
 `/desk-setup` sets it up).
 
 **Side projects.** The collectors mark anything outside this check-out's repos as not work for
-this check-out. To have tooling you report on (a skills repo, an internal framework) kept apart as a
-side project instead, set `DESK_CHECKOUT_SIDE_REPOS` (comma-separated `owner/repo`) and
+this check-out. To keep tooling (a skills repo, an internal framework) apart as a side
+project, set `DESK_CHECKOUT_SIDE_REPOS` (comma-separated `owner/repo`) and
 `DESK_CHECKOUT_SIDE_ROOTS` (comma-separated directories) in your shell or the `env` block of
 `~/.claude/settings.json`.
 
@@ -126,11 +128,12 @@ content to summarise or ignore.
 
 The same piece of work shows up in several sources: a Claude session, a PR, a Jira move and a
 Slack thread can all be one item. Join them by ticket key (§4 Ticket key pattern of each in-scope
-repo) and PR number first, then by topic. One item per piece of work, not one per source.
+repo) and PR number first, then build **one item per outcome**, not per ticket or source:
+`references/items.md` says how to split an umbrella ticket, keep work with no ticket, and rank.
 
-**Work a batch did is the person's work, reported the same way.** The Claude collector lists each
-headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
-and Jira item like any other session, and report what changed and where it stands. Never what ran
+**Work a batch did is the person's work, reported the same way.** The Claude collector folds
+headless sessions into one line per ticket (key, stages, session count): join it to the ticket's
+PR and Jira item like any other session, and report what changed and where it stands. Never what ran
 it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
 - **A batch's own sessions are never items.** A triage, preflight or worker session is evidence
   for the ticket it worked, never work in its own right; one that names no ticket, branch or PR to
@@ -163,6 +166,8 @@ For each item, settle:
   posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
   `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
   state stays as its source gave it.
+  **Read each ticket again as you write its bullet, with every PR naming its key, and the latest
+  deploy before any deploy claim**: `references/current-state.md` says how.
   **A setting, config row or other change that is not a PR is read from its source too**, before
   its line says when it was made, starts or takes effect: the config file (`desk-env get <id>`,
   and its git log for when it changed), the settings file, or the tracker. A session's narration of
@@ -180,8 +185,8 @@ Then sort:
    it goes under **Check before posting** as a question (step 5). Name who was in it by first
    name, and what it was about or decided. A meeting whose Gemini notes carry a decision others
    need gets that decision in its line.
-2. **Substantive work**: the few things that mattered most, biggest first. Security, prod and
-   launch-blocking items lead.
+2. **Substantive work**: every item that changed something, biggest first, ranked and detailed
+   as `references/items.md` says.
 3. **Asks**: approvals, decisions, budget caps. Each as `@Name`, what, and why now.
 4. **Ticket housekeeping**: roll up into one line, e.g. "Raised 20 tickets from the
    production-readiness audit and triaged them". Don't list twenty keys.
@@ -206,7 +211,7 @@ Then sort:
 
 ## 4. Draft
 
-Write it in the user's voice. Their previous check-out (gathered in step 2 when the destination is a
+Write it in the user's voice. Their previous check-out (read in step 1 when the destination is a
 channel, or the previous entry in the destination file) is the model for register, header and
 layout; `references/style.md` has the conventions and a worked example for when there is none. The
 short version:
@@ -220,13 +225,14 @@ short version:
   midnight is in the counts as well as the items. Compute each one from its source, with timestamps
   filtered on the window start (the collectors' `--since` output, or a `gh` or Jira query from that
   time), and name it under **Check before posting** with its query and window (step 5).
+- **A merged-PR count is the user's own** (the collector's `mine`); `references/style.md` says when
+  it may include others or say "more".
 - Lead each item with the problem in plain words, then the fix and its state.
   Use `(merged)`, `(in review)`, `(raised)`, `WIP`, `waiting on @Name`.
 - Name tickets by their key (`ABC-1891`) and PRs as `#1533`. Slack auto-links neither, so don't add
   URLs. With §4 Tracker `none`, PR numbers alone.
 - Only say what the sources support. Where you inferred a status or a cause, don't hedge
   inside the post. Put the claim in the checklist below instead.
-- Stay as long as the day warrants. A quiet day is five lines, and that's fine.
 - Leave out what the previous check-out already said, unless its state has moved since (a PR it
   called in review that has merged is news; the same merge again is not).
 
@@ -258,7 +264,7 @@ says, and give the path. Under it, briefly:
   was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
   narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
   read again when its line was written ("#1534's state is from the collectors, read earlier in the
-  run"). Each count or figure in the post, with the query and window behind it, so the user can
+  run"), each ticket or deploy claim no read settled. Each count or figure in the post, with the query and window behind it, so the user can
   check it ("27 merged: merged PRs since yesterday 19:02, from the GitHub collector"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".

@@ -34,23 +34,46 @@ SCOPE_LABELS = {
 SCOPE_ORDER = {"this": 0, "side": 1, "other": 2, "none": 3}
 
 
+def desk_file(name):
+    """Path of desk/bin/<name>: beside $DESK_ENV_MJS, else ~/.claude/desk/bin, else this checkout's
+    desk/bin; None when none holds it."""
+    env_mjs = os.environ.get("DESK_ENV_MJS")
+    for d in (os.path.dirname(env_mjs) if env_mjs else None,
+              os.path.join(HOME, ".claude", "desk", "bin"),
+              os.path.normpath(os.path.join(_HERE, "..", "..", "..", "desk", "bin"))):
+        if d and os.path.isfile(os.path.join(d, name)):
+            return os.path.join(d, name)
+    return None
+
+
+def desk_script(name):
+    """argv prefix that runs desk/bin/<name> with node (desk_file finds it); None when none holds it."""
+    path = desk_file(name)
+    return ["node", path] if path and shutil.which("node") else None
+
+
 def desk_env_cmd():
     """argv prefix that runs desk-env, or None."""
-    for cand in (os.environ.get("DESK_ENV_MJS"),
-                 os.path.join(HOME, ".claude", "desk", "bin", "desk-env.mjs"),
-                 os.path.normpath(os.path.join(_HERE, "..", "..", "..", "desk", "bin", "desk-env.mjs"))):
-        if cand and os.path.isfile(cand) and shutil.which("node"):
-            return ["node", cand]
     exe = shutil.which("desk-env")
-    return [exe] if exe else None
+    return desk_script("desk-env.mjs") or ([exe] if exe else None)
 
 
-def _run(argv, env_extra=None, cwd=None):
+def run_for(repo, script, *args, timeout=60):
+    """stdout of desk/bin/<script> <args> read against repo's own config, or None when the repo has
+    no config file, the script cannot be found, or it fails."""
+    cmd = desk_script(script)
+    if not cmd or repo is None or not repo.config_path:
+        return None
+    out, rc = _run(cmd + list(args), {"DESK_CONFIG": repo.config_path, "DESK_SLUG": repo.slug}, timeout=timeout)
+    return out if rc == 0 else None
+
+
+def _run(argv, env_extra=None, cwd=None, timeout=30):
     env = dict(os.environ)
     env.pop("DESK_CONFIG", None)
     env.update(env_extra or {})
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd, timeout=30)
+        out = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None, 1
     return out.stdout, out.returncode
@@ -207,17 +230,20 @@ def scope_for_repo_name(gh_repo, repos):
     return ("side" if name in side else "none"), None
 
 
-def allowed(repo, perm_key):
-    """(ok, note). `yes`, or `ask` the user agreed to via --include, reads; anything else is skipped."""
-    if repo is None:
-        return True, ""
-    if repo.config_path is None:
-        return True, ""  # the cwd's repo with no config: the skill already stopped for /desk-setup
+def allowed(repo, perm_key, include=None, flag="--include", unconfigured=True):
+    """(ok, note). `yes`, or `ask` the user agreed to, reads; anything else is skipped.
+
+    The user's agreement is --include's (`included_by_user`) unless `include` names the slugs a
+    row's own flag agreed to; `flag` is the flag the ask note tells them to pass. A repo with no
+    desk config reads as `unconfigured`, with no note."""
+    if repo is None or repo.config_path is None:
+        return unconfigured, ""  # the cwd's repo with no config: the skill already stopped for /desk-setup
     v = repo.perm(perm_key)
-    if v == "yes" or (v == "ask" and getattr(repo, "included_by_user", False)):
+    agreed = repo.slug in include if include is not None else getattr(repo, "included_by_user", False)
+    if v == "yes" or (v == "ask" and agreed):
         return True, ""
     if v == "ask":
-        return False, f"{repo.slug}: §3 {perm_key} is ask - pass --include {repo.slug} once the user agrees"
+        return False, f"{repo.slug}: §3 {perm_key} is ask - pass {flag} {repo.slug} once the user agrees"
     return False, f"{repo.slug}: §3 {perm_key} is {v} - skipped"
 
 

@@ -13,12 +13,20 @@
 //   at         the pass's start time, an ISO string
 //   dry        a dry run: nothing recorded where the loop records nothing on one
 //   stop       the loop is stopped: the batch base holds it, or the usage limit was met this pass
-//   attempts   the slots taken so far this pass, and `slots` how many it has
+//   attempts   the local slots taken so far this pass, and `slots` how many it has
+//   cloudAttempts  the cloud sessions taken so far this pass, and `cloudSlots` how many it has: a ticket
+//              that starts in a cloud session takes one of these and no local slot (§3b "Cloud sessions
+//              at once"); `cloudRunning` the cloud sessions running with those taken, of `cloudLimit`;
+//              `cloudHeld` a hold on every spawn (or the row unreadable) set cloudSlots to 0, not the limit
 //   rerun      t is named in AUTOPILOT_RERUN, so a PR shipped elsewhere does not count
 //   resume     t is a killed worker waiting to resume, and `handoff` a session handed off to its next stage
 //   dbDown     a worktree setup earlier this pass found the local database down
 //   dbUp       the database health check answered on this pass
 //   fetchLimit the seconds a worktree setup's git fetch is given
+//   cloudFix   where its unfinished fix try on a cloud PR goes (pass/shared.mjs cloudFixRoute): 'send'
+//              to its live session, 'new' for a new cloud session on the PR's branch, or null
+//   archiveWait the cloud session a local start must wait for the person to archive, or null
+//              (pass/shared.mjs cloudArchiveWait)
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
 //   file-budget {key}    -> true where a file it names is at its per-file budget, counting the tickets
@@ -35,29 +43,71 @@
 //   claim-upload {key}   -> { ok: true, up }: up its last round's upload still running, else null and the
 //                           job dropped; { ok: false, why } where the upload queue could not be read
 //   read-repos {}        -> the read-only repos that could not be refreshed, once a pass: [{ repo, why }]
-//   login {key}          -> the login a new session starts on (pass.mjs repoLogin), or null
-//   take-slot {key}      one of the pass's slots is taken
+//   login {key, cloud?}  -> the login a new session starts on (pass.mjs repoLogin), or null; a cloud one never the fallback
+//   take-slot {key}      one of the pass's local slots is taken
+//   take-cloud-slot {key} one of the pass's cloud sessions is taken
 //   setup {key}          -> the worktree setup: { wt, kept, renamed, hung } where origin was found hung
 //                           before it, else { wt, kept, renamed, ok, exitOk, out, retried }
 //   remote-hung {why}    origin is marked hung for the rest of the pass
 //   db-down {why}        the local database's health check is marked failing
 // The verdict, last:
-//   skip {key, stop?}                         nothing more for it; `stop` ends the loop
+//   skip {key, stop?, full?, cloud?}          nothing more for it; `stop` ends the loop, and `full` says
+//                                             its slots are spent (`cloud` its cloud sessions), so a later
+//                                             ticket on the other kind may still start
 //   record-done {key, how, pr, mergedAt, line, dropStatus?} record it done, shipped outside its worker;
 //                                             dropStatus: its PR status is another repo's PR of that number
 //   park {key, line}                          park it
 //   park-ask {key, line}                      park it with a question for the person, no slot taken
 //   hand-away {key, placement}                admit it in the repo its code is in
-//   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
+//   cloud-archive-wait {key} -> what was recorded: its cloud PR's session recorded abandoned and on
+//                        needs-you's archive list, where it is not already
+//   start {key, how, pick?, setup?, place?}   start it: `how` is resume, handoff, send (its fix try to its
+//                                             cloud session), cloud or local; a local one carries its
+//                                             place ({where, why}), recorded once it runs
 
-import { set, say, runsInCloud } from './shared.mjs';
+import { set, say, runsInCloud, startsInCloud, placeAtStart } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
   const key = t.key;
   const skip = { type: 'skip', key };
   const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
-  if (s.stop || !(s.attempts < s.slots)) return yield { ...skip, stop: true };
+  if (s.stop) return yield { ...skip, stop: true };
+  // A fix try on a cloud PR sent to its live session takes no slot of either kind: that session is
+  // running already. The checks that stop any fix try's spawn stop the send too.
+  if (s.cloudFix === 'send') {
+    if (yield { type: 'file-budget', key }) return yield skip;
+    if (yield { type: 'fix-try-stale', key }) return yield skip;
+    return yield { type: 'start', key, how: 'send' };
+  }
+  // Any other try that writes to a cloud PR's branch, a local worker's or a new cloud session's, waits,
+  // taking no slot, until the person has archived that PR's session, which is recorded abandoned and put
+  // on needs-you's archive list first: until then the old session may still push there, and two writers
+  // race each other's pushes, or its late push is read as the new session's. A try its PR no longer needs
+  // (merged, closed, or moved past its head) is ended first, as at any spawn, and abandons nothing.
+  if (s.archiveWait) {
+    if (yield { type: 'fix-try-stale', key }) return yield skip;
+    const done = yield { type: 'cloud-archive-wait', key };
+    yield wait(`its fix try on PR #${t.fix.pr} writes to the PR's branch, which cloud session ${s.archiveWait} may still push to: ${done}. It starts once that session is archived (needs-you: done on its cloud-archive item)`);
+    return yield skip;
+  }
+  // Where it starts is decided now, not at admission (pass/shared.mjs placeAtStart): a cloud-able ticket
+  // goes to the cloud while §3b "Cloud sessions at once" has room, and takes a local slot only as that
+  // says; a local-only one, and a resume or handoff (which run here), takes a local slot. A fix try on
+  // a cloud PR whose session is gone (cloudFix 'new') is placed as a cloud-able ticket is.
+  const place = placeAtStart({
+    able: startsInCloud(t) || s.cloudFix === 'new', cloudRoom: (s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0), localRoom: s.attempts < s.slots,
+    localSpare: !!s.localSpare, reserve: s.reserve ?? 0, free: s.slots - s.attempts, personUse: !!s.personUse,
+    ...(s.cloudLimit != null && !s.cloudHeld ? { cloudRunning: s.cloudRunning, cloudLimit: s.cloudLimit } : {}),
+  });
+  if (place.where == null) {
+    // Held by a hold on every spawn, the pass says that hold; only the limit itself is said here.
+    if (place.full === 'cloud' && !s.cloudHeld && s.cloudLimit != null) yield say(key, 'waits', `${key}: ${place.why}. The next pass looks again`);
+    return yield { ...skip, full: true, ...(place.full === 'cloud' ? { cloud: true } : {}) };
+  }
+  const cloud = place.where === 'cloud';
+  // A resume or handoff of a ticket whose cloud session is over runs here, as before.
+  const offHere = cloud || ((s.resume || s.handoff) && runsInCloud(t));
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (yield { type: 'file-budget', key }) return yield skip;
   if (yield { type: 'fix-try-stale', key }) return yield skip;
@@ -85,14 +135,15 @@ export function* decideSpawn(s) {
     return yield skip;
   }
   // Held without taking a slot: a resume at a stage that runs no suite may still start in its place.
-  if (yield { type: 'lock-queue', key }) {
+  // A ticket placed in the cloud runs no suite on this computer, so this computer's test lock never holds it.
+  if (!cloud && (yield { type: 'lock-queue', key })) {
     yield { type: 'lock-queue-held', key };
     return yield skip;
   }
   // Its last round's upload running in the machine's upload queue (another repo's pass may be running
   // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
   // the job is dropped by the claim, in the same locked step, so no pump can start it before the worker runs.
-  if (!s.resume && !s.handoff && !runsInCloud(t)) {
+  if (!s.resume && !s.handoff && !offHere) {
     const claim = yield { type: 'claim-upload', key };
     if (!claim.ok) {
       yield wait(`the machine's upload queue could not be read to drop its last round's upload (${claim.why}), so no worker was spawned. The next pass looks again`);
@@ -104,7 +155,7 @@ export function* decideSpawn(s) {
       return yield skip;
     }
   }
-  if (!runsInCloud(t)) {
+  if (!offHere) {
     const failures = yield { type: 'read-repos' };
     if (failures.length) {
       const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${failures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
@@ -119,24 +170,31 @@ export function* decideSpawn(s) {
       return yield { type: 'park', key, line: `${failure}. Once it is reachable: queue.mjs requeue ${key}` };
     }
   }
-  // A new session starts on the repo's subscription; a resumed one has its own, so it still goes ahead.
-  const needsLogin = !s.resume && (s.handoff || !runsInCloud(t));
-  const pick = needsLogin ? yield { type: 'login', key } : null;
-  if (needsLogin && !pick) return yield skip;
-  yield { type: 'take-slot', key };
+  // A new session starts on the repo's subscription, a cloud one too (never its fallback); a resumed one
+  // has its own, so it still goes ahead.
+  const pick = s.resume ? null : yield { type: 'login', key, ...(cloud ? { cloud } : {}) };
+  if (!s.resume && !pick) return yield skip;
+  // Its place at start, with why: recorded on the ticket for desk-q, and location set to match. A new
+  // local session does not record it here: its `start` verdict carries it, and pass.mjs records it
+  // once spawn-worker.sh has started the worker. A place 'local' ends its cloud eligibility
+  // (shared.mjs cloudAble), so a start that stops before then (the database down, origin hung, the
+  // memory share or the preflight refused) must leave the ticket as cloud-able as it was.
+  const placed = { where: place.where, why: s.resume || s.handoff ? 'a resumed or handed-off session runs on this computer' : place.why };
+  if (cloud || s.resume || s.handoff) yield { type: 'place', key, ...placed };
+  yield { type: cloud ? 'take-cloud-slot' : 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
-  if (runsInCloud(t)) return yield { type: 'start', key, how: 'cloud' };
+  if (cloud) return yield { type: 'start', key, how: 'cloud', pick };
   // An earlier setup in this pass found the local database down: no other worktree is set up on it.
   if (s.dbDown) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');
     return yield skip;
   }
-  return yield* afterSetup(s, pick, yield { type: 'setup', key });
+  return yield* afterSetup(s, pick, yield { type: 'setup', key }, placed);
 }
 
 // The verdict on a local ticket once its worktree setup has run.
-function* afterSetup(s, pick, setup) {
+function* afterSetup(s, pick, setup, placed) {
   const { t } = s;
   const key = t.key;
   const skip = { type: 'skip', key };
@@ -169,7 +227,7 @@ function* afterSetup(s, pick, setup) {
     return yield { type: 'park', key, line: `worktree setup failed, not spawned — ${why}${answered}` };
   }
   if (t.db_wait && !s.dry) yield set(key, 'db_wait=null');
-  return yield { type: 'start', key, how: 'local', pick, setup };
+  return yield { type: 'start', key, how: 'local', pick, setup, place: placed };
 }
 
 // The lines of setup-worktree.sh's output that say why it failed, else its tail.

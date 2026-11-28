@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, bareHold, bareHoldText, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, checksRerun, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -21,17 +21,17 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { markRearmed } from './loop-tick.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey } from './desk-env.mjs';
-import { placement, featureRole, runsText } from './cloud-worker.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey, recordStop } from './desk-env.mjs';
+import { placement, featureRole, runsText, handOver } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
-import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
+import { processRows, workerProcs, endProcs, targetPids } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs, recordedPr } from './queue-store.mjs';
 import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { isSha } from './ticket-ledger.mjs';
-import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
+import { newPark, parkArgs, FINISHED, unfinished, toFront, layOrder, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps, unreadableFollowOn } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -190,6 +190,18 @@ function refuseLeft(t, key, what) {
   throw new Error(`${key} was left in finished batch ${name} (${t.park.question}), so it is not ${what} there: move it (node queue.mjs --batch ${name} transfer ${key} standing) or drop it`);
 }
 
+// Whether running ticket `t` is paused at a usage limit with no worker left: a session recorded, no live
+// recorded pid, and no process running that session (workerProcs, the test stop uses). A ps that cannot be
+// read is never taken as the worker being gone.
+function pausedGone(t) {
+  if (!t.usage_paused || !t.session_id || t.location === 'cloud') return false;
+  if (t.pid != null && alive(Number(t.pid))) return false;
+  try {
+    const target = workerProcs(t.session_id, processRows());
+    return !target.groups.length && !target.pids.length;
+  } catch { return false; }
+}
+
 // A ticket still recorded running whose worker has exited on a park, before a pass harvested it:
 // { question, since, stage, markers, notes } from its log, or null. Its worker is gone when a recorded
 // pid is dead and the agent registry, read across every login, lacks its session; a registry that
@@ -342,18 +354,38 @@ function requeue(q, key, { handedBack = false } = {}) {
   let harvested = '';
   let calls = null;
   let p = null;
+  let pausedWip = null;
   if (t.state === 'running') {
     // Read again under the lock: a resume of the same session since appends to the log, and a pass
     // started since would harvest it too.
     p = exitedPark?.key === key && exitedPark.session === (t.session_id ?? null) ? exitedPark.park : null;
     if (p && (logStamp(p.log) !== p.logStamp || passRunning())) p = null;
-    if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+    if (!p && t.location === 'cloud' && t.cloud && !t.session_id) throw new Error(`${key} is running in a cloud session: queue.mjs stop ${key} first, which records the session abandoned, or it gets a second one`);
+    // A worker paused at a usage limit whose process is gone: no pass records how it ended, as it waits to
+    // resume on its own login, and stop finds nothing to end. The person sends it to a fresh worker on
+    // whichever login the next spawn picks, its worktree committed first as stop commits it.
+    if (!p && pausedGone(t)) {
+      // The pass lock, held until this process exits (after the save), so no pass starts meanwhile and
+      // resumes the old session over this requeue. Never waited for under the queue lock, which a pass
+      // may be waiting on: a pass running now refuses it. One that ran this requeue itself holds it.
+      const holder = tryLockFile(join(stateDir(), 'orchestrator.lock'), { by: `queue.mjs requeue ${key}` });
+      if (holder !== true && holder !== process.ppid) throw new Error(`${key} is paused at a usage limit with no worker process, but a pass is running now and may resume it: requeue it again once the pass has finished`);
+      pausedWip = commitStopped(t.worktree ?? join(worktreesDir(), key), key, t.branch, 'its worker, paused at a usage limit, was gone and queue.mjs requeue sent it to a new one');
+    } else if (!p && t.usage_paused && t.session_id && t.location !== 'cloud') {
+      throw new Error(`${key} is paused at a usage limit, but its worker is still live (a process runs its session ${t.session_id}, or none could be checked): stop it first (queue.mjs stop ${key}), or it gets a second one`);
+    } else if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+  }
+  if (t.state === 'running' && p) {
     calls = workerCalls(p.markers, { ticket: key, run: t.session_id, repo: ghRepo(), pr: null });
     Object.assign(t, { state: 'parked', park: newPark(p.question, p.since), last_round: { stage: p.stage, question: p.question, at: p.since } });
     harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
       + `${calls.unreadable.map((u) => `; unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`).join('')}`;
   }
-  if (isHeld(t)) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
+  // A cloud ticket stopped by queue.mjs stop has no worker or worktree here: a requeue is the person
+  // letting it start again with a new session, as needs-you's start does (stopCloud).
+  const cloudStopped = t.location === 'cloud' && t.cloud?.abandoned_at && stoppedHold(t);
+  if (bareHold(t)) throw new Error(`${key} is ${bareHoldText(key)}, rather than requeue it`);
+  if (isHeld(t) && !cloudStopped) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
@@ -416,12 +448,19 @@ function requeue(q, key, { handedBack = false } = {}) {
     // Done by another's PR no longer, once sent back for work of its own.
     spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null,
     // A red-base repair the pass closed as needless is owed its own work again, so what it commits next is pushed.
-    ...(t.closed_superseded ? { closed_superseded: null } : {}), updated_at: new Date().toISOString() });
+    ...(t.closed_superseded ? { closed_superseded: null } : {}),
+    // A cloud ticket with no PR from its session starts a new one: the old session, abandoned when it was
+    // stopped, is on the finished-session list (stopCloud), not this ticket.
+    ...(t.location === 'cloud' && t.cloud && t.cloud.pr_at == null && t.result?.pr == null ? { cloud: null } : {}),
+    // When it came back: desk-q's no-progress clock counts this ticket from here, not from added_at.
+    requeued_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
   save(q);
-  return `${key} requeued: ${placed}${harvested}${repointed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  if (pausedWip?.error) process.exitCode = EXIT.SHOW_PERSON;
+  const wip = !pausedWip ? '' : `; its worker, paused at a usage limit, was gone: its work so far is ${keptText(pausedWip)}, and a new worker starts on whichever login the next spawn picks`;
+  return `${key} requeued: ${placed}${wip}${harvested}${repointed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 // A lane C or D park whose step the person has done (desk-needs-you's resume on a session item), handed
@@ -508,7 +547,7 @@ class NoTicket extends Error { exit = 2; }
 // Commit everything in worktree `wt` but desk's own `.claude/` files (setup-worktree.sh leaves agent links
 // and a disabled settings file there); ignored files stay out, as git add leaves them.
 // -> { sha } | { nothing: why } | { error: why }
-function commitStopped(wt, key, branch) {
+function commitStopped(wt, key, branch, why = 'queue.mjs stop ended its worker') {
   if (!wt || !existsSync(wt)) return { nothing: `it has no worktree${wt ? ` at ${wt}` : ''}` };
   const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
@@ -518,12 +557,15 @@ function commitStopped(wt, key, branch) {
     if (mid || /^(DD|AU|UD|UA|DU|AA|UU) /m.test(status)) return { error: `its worktree ${wt} is mid ${mid ? mid.replace(/_HEAD$|-.*$/, '').toLowerCase() : 'merge'} with conflicts or an operation in progress, so nothing was committed: its changes are left in place` };
     git('add', '-A', '--', '.', ':(exclude).claude');
     try { git('diff', '--cached', '--quiet'); return { nothing: 'its worktree held only desk\'s own .claude files' }; } catch { /* staged changes to commit */ }
-    git('commit', '--no-verify', '-q', '-m', `wip(${key}): work in progress when queue.mjs stop ended its worker`);
+    git('commit', '--no-verify', '-q', '-m', `wip(${key}): work in progress when ${why}`);
     return { sha: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD') || branch };
   } catch (e) {
     return { error: `committing in ${wt} failed (${String(e.stderr || e.message).trim().split('\n').pop()}): its changes are left in place` };
   }
 }
+
+// What commitStopped's result `c` kept, for the line that reports it.
+const keptText = (c) => (c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`);
 
 function stop(key) {
   claimPassLock(key);
@@ -532,6 +574,7 @@ function stop(key) {
   const t = load().tickets[key];
   if (!t) throw new NoTicket(`no such ticket in the queue: ${key}. Nothing was changed`);
   if (t.state !== 'running') throw new Error(`${key} has no running worker (it is ${t.state}): nothing was changed`);
+  if (t.location === 'cloud' && t.cloud && !t.session_id) return stopCloud(key, t);
   if (!t.session_id) throw new Error(`${key} has no running worker that can be found: it records no session id. Nothing was changed`);
   const target = workerProcs(t.session_id, processRows());
   if (!target.groups.length && !target.pids.length) throw new Error(`${key} has no running worker: no process runs its session ${t.session_id}, so the next pass records how it ended. Nothing was changed`);
@@ -542,12 +585,16 @@ function stop(key) {
     round = lines.slice(lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"')) + 1).join('\n');
   } catch { /* no log: the stage recorded on the ticket */ }
   if (workerMarkers(round).some(([k]) => k === 'AUTOPILOT_DONE')) throw new Error(`${key}'s worker has already printed AUTOPILOT_DONE, so the next pass records it done and stops its session: nothing was changed`);
+  // Recorded before any signal goes, so the memory watch never reads the exit 137 its SIGKILL leaves in
+  // the worker's log as an OOM kill (desk-env.mjs harmStep); a record that cannot be written stops nothing.
+  const pids = targetPids(target, processRows());
+  try { recordStop(stateDir(), { key, at: Date.now(), pids }); } catch (e) { console.error(`queue.mjs stop ${key}: the stop could not be recorded for the memory watch (${e.message}), so it may read the stopped worker as killed for memory and hold spawns for 10m`); }
   const ended = endProcs(target, { graceMs: STOP_GRACE_MS });
   if (ended.left.length) throw new Error(`${key}'s worker did not end: pid ${ended.left.join(', ')} still alive after SIGTERM and SIGKILL. Nothing in the queue was changed`);
   const wt = t.worktree ?? join(worktreesDir(), key);
   const c = commitStopped(wt, key, t.branch);
   const at = new Date().toISOString();
-  const kept = c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`;
+  const kept = keptText(c);
   const stage = lastStage(round)?.stage ?? t.stage ?? null;
   // The worker is gone and no pass can start, so the hold must land: wait for the queue lock as long as
   // its holder lives (dir-lock clears a dead one's).
@@ -565,6 +612,34 @@ function stop(key) {
   save(q);
   if (c.error) process.exitCode = EXIT.SHOW_PERSON;
   return `${key} stopped: its worker (pid ${ended.ended.join(', ')}) ended; ${kept}; ${key} is held, and starts again only once you let it (needs-you: start)`;
+}
+
+// A ticket worked in a cloud session has no process here to end: nothing on this computer can end or
+// archive a cloud session either (cloud-worker.mjs), so its session is recorded abandoned
+// (`cloud.abandoned_at`) and handed to the repo's finished-session list (handOver), where needs-you asks
+// the person to archive it, and the ticket is held as a stopped local worker is. A requeue then starts it
+// with a new session (requeue). Whatever the session pushes after this is on its branch for that one.
+function stopCloud(key, t) {
+  const c = t.cloud ?? {};
+  const where = c.url ?? c.session ?? '(its session URL was not recorded)';
+  takeDirLock(LOCK, { waitMs: Infinity });
+  const q = load();
+  const now = q.tickets[key];
+  if (now?.state !== 'running' || now.location !== 'cloud' || now.session_id || JSON.stringify(now.cloud ?? null) !== JSON.stringify(t.cloud)) {
+    unlock();
+    throw new Error(`${key} changed while it was being stopped (it is now ${now?.state ?? 'not in the queue'}), so its record was left as it is. Nothing was changed`);
+  }
+  const at = new Date().toISOString();
+  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its cloud session ${where} is recorded abandoned (nothing here can end a cloud session: archive it in claude.ai/code). Starts again only once you let it`, at, 'stopped'),
+    cloud: { ...c, abandoned_at: at }, held_by: null, held_outside: null,
+    last_round: { stage: now.stage ?? 'cloud', question: `stopped by queue.mjs stop; its cloud session ${where} recorded abandoned`, at },
+    resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
+  save(q);
+  let listed = '';
+  if (c.session && c.url) {
+    try { handOver(stateDir(), [{ key, session: c.session, name: c.name ?? null, url: c.url, at }]); listed = '; needs-you asks you to archive it'; } catch (e) { listed = `; it could not be put on needs-you's archive list (${e.message})`; process.exitCode = EXIT.SHOW_PERSON; }
+  }
+  return `${key} stopped: its cloud session ${where} is recorded abandoned, as nothing here can end one${listed}; ${key} is held, and starts again only once you let it (needs-you: start), with a new session`;
 }
 
 // A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:
@@ -642,7 +717,8 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
     ...(pin ? { levers: pin } : {}),
-    ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
+    // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs placeAtStart).
+    ...(placed.where === 'cloud' ? { cloud_ok: true } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
@@ -1148,9 +1224,9 @@ switch (cmd) {
       if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
     }
     const held = unmergedBlockers(q, t, blockersOf(t));
-    applySet(t, pairs);
+    const freed = applySet(t, pairs);
     save(q);
-    console.log(`${key}: ${pairs.join(' ')}`);
+    console.log(`${key}: ${pairs.join(' ')}${freed}`);
     // A release still goes ahead past blockers that have not merged; it names them.
     const open = confirmed ? [] : held.filter((p) => !blockersOf(t).includes(p));
     if (open.length) console.error(`warning: ${key} is no longer held behind ${open.join(', ')}, which ${open.length === 1 ? 'has' : 'have'} not merged yet`);
@@ -1332,13 +1408,15 @@ switch (cmd) {
   }
 
   // pass.mjs spawns eligible tickets in `.tickets` key order, so a released chain head has to move
-  // to the front or it waits behind every independent ticket. A ticket the user placed stays put.
+  // to the front or it waits behind every independent ticket. A ticket the user placed stays put. With
+  // --placed (the user's own --front) it is placed from then on, so the pass's re-sort leaves it there.
   case 'front': {
-    const key = args[0];
-    ticket(q, key);
+    const key = args.find((a) => a !== '--placed');
+    const t = ticket(q, key);
     const msg = toFront(q, key);
+    // Placed by the user, it no longer carries the pass's note of moving it (pass.mjs placed_move).
+    if (args.includes('--placed') && t.state !== 'running' && !FINISHED.includes(t.state)) { t.placed = true; delete t.placed_move; }
     save(q);
-    const t = q.tickets[key];
     const open = questionsOpen(t);
     console.log(`${key} ${msg}${open > 0 ? `; it still has ${open} question(s) open and will not spawn until they are answered: ${answerWith(t)}` : ''}`);
     break;
@@ -1358,6 +1436,7 @@ switch (cmd) {
     const rest = order.filter((k) => k !== key);
     reorder(q, [...rest.slice(0, n - 1), key, ...rest.slice(n - 1)]);
     t.placed = true;
+    delete t.placed_move;
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} moved to position ${n} of ${order.length} in the spawn order and marked placed: front and requeue leave it there`);
@@ -1366,13 +1445,12 @@ switch (cmd) {
 
   // plan-batch's spawn order, laid over the slots these tickets already hold: an epic's children are
   // admitted before its plan seeds them, and add leaves a queued ticket where it is. Every other
-  // ticket keeps its slot, and so does one running, finished or placed by the user (move).
+  // ticket keeps its slot, and so does one running, finished or placed by the user (move). With
+  // --placed (plan-batch --keep-order: the user named the order) each ticket laid is placed from then
+  // on, so the pass's re-sort keeps the order named.
   case 'order': {
-    const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
-    const keys = [...new Set(args)].filter(free);
-    const slots = new Set(keys);
-    const next = keys[Symbol.iterator]();
-    reorder(q, unfinished(q).map((k) => (slots.has(k) ? next.next().value : k)));
+    const keys = layOrder(q, args.filter((a) => a !== '--placed'));
+    if (args.includes('--placed')) for (const k of keys) { q.tickets[k].placed = true; delete q.tickets[k].placed_move; }
     save(q);
     console.log(`spawn order: ${keys.join(' ') || 'nothing to reorder'}`);
     break;
@@ -1605,11 +1683,12 @@ function tableChanges(before, after) {
 }
 
 // A done ticket is DONE only once its PR has merged, or it finished with no PR: one whose PR is still
-// open is PR OPEN, and one whose PR was closed unmerged CLOSED.
+// open is PR OPEN, and one whose PR was closed unmerged CLOSED. One whose draft's checks are re-run
+// once, as their failed logs name no file it changes (checksRerun), is ON CHECKS until they finish.
 function doneLabel(t) {
   if (t.result?.pr == null || t.merged_at) return 'DONE';
   const ps = prStatusOf(t)?.state ?? null;
-  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : 'PR OPEN';
+  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : checksRerun(t) ? 'ON CHECKS' : 'PR OPEN';
 }
 
 // The table's parts: the batch heading, one row per ticket in shown order, and how many wait on you.
@@ -1629,13 +1708,16 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const day = dateHeld(t);
-    const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
+    // A bare hold (bareHold) is released by the next pass, so it is held, not stuck.
+    const bare = bareHold(t);
+    const stuck = !day && !bare && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
     const by = blockersOf(t);
     const byText = by.join(', ') || '?';
     const spines = by.filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
+      : bare ? bareHoldText(t.key)
       : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
       : stuck ? `held behind ${byText}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${byText} merge`
@@ -1644,13 +1726,15 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : t.state === 'parked' ? t.park?.question ?? ''
       : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
+      : t.state === 'done' && label === 'ON CHECKS' ? `PR #${t.result.pr} draft, waiting on checks: re-run once as their failed logs name no file it changes`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
       : handingOff(t) ? `starting Stage ${t.handoff_stage ?? '?'}`
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
-    out.push({ key: t.key, label, tail: `${tail}${modelNote}` });
+    const followNote = t.follow_on_unreadable ? `  ${unreadableFollowOn(t.follow_on_unreadable.raw)}` : '';
+    out.push({ key: t.key, label, tail: `${tail}${modelNote}${followNote}` });
   }
   const parked = rows.filter((t) => t.state === 'parked' && !(isHeld(t) && (waitingOnMerge(q, t) || waitingOnPark(q, t)))).length;
   return { head, rows: out, parked };

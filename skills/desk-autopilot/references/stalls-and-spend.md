@@ -107,20 +107,65 @@ of tickets. There, compare each lowered start with that all-`medium` stretch ins
 
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
 `cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
-and `budget:` lines say how many tickets run in a cloud session and that a cloud session takes no
-per-worker budget, and each admitted ticket's `runs:` line says where it runs. A ticket stays local,
+and `budget:` lines say how many tickets can run in a cloud session and that a cloud session takes no
+per-worker budget, and each admitted ticket's `runs:` line says where it can run. A ticket stays local,
 with the reason, when its triage record says it renders (the browser lock and a dev server), needs a
 database, or names in `needs_local` anything else only this computer has (stub binaries, a local
-service), and when the record predates `needs_local`. A cloud ticket (`location: cloud` on the queue)
-gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
+service), and when the record predates `needs_local`. Admission records only that a ticket can run in
+the cloud (`cloud_ok: true` on the queue); the pass places it when it starts. Cloud first: a cloud-able
+ticket goes to a cloud session while "Cloud sessions at once" has room. Local slots go first to
+local-only tickets: a cloud-able one takes a local slot only with the cloud full, a local slot left free
+for the whole last pass, and one free now beyond those the local-only tickets behind it want. The
+ticket records where it started and why (`start_place`), which desk-q's ticket screen shows as Place.
+**While you use this computer** (processes that are not desk workers, their dev servers or test runs,
+or desk itself, hold more memory or CPU than the machine profile's `person-baseline-gb` and
+`person-baseline-cpu` by `person-use-gb` or `person-use-cpu`), the local cap drops to
+`person-use-floor` (1 unset), for local-only tickets, and cloud-able tickets go only to the cloud. No
+running worker is stopped. The cap comes back once your use has stayed under the threshold for
+`person-use-calm-min` minutes (10 unset). Unset, the baseline is 15% of `memory-gb` and 5% of
+`cpu-cores`, and the threshold 10% of `memory-gb` and 25% of `cpu-cores`; `person-use=off` turns it
+off, and no machine profile means it never reads. Set any of them with `desk-env machine set`. desk-q
+and the pass say "you're using this computer: local cap 1, cloud first" while it is on.
+A ticket started in the cloud (`location: cloud` on the queue) gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
 prompt carrying the ticket's text, and the session pushes a branch and opens a draft PR. The pass
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
-left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+left for you. A PR the session marked unfinished (WIP in its title or body, "what is left", or "could
+not finish", as the prompt's step 5 asks of a session that cannot finish) is not recorded done: the
+ticket stays running at stage `cloud`, recorded as `cloud.unfinished`, the pass reads the PR again
+each pass, and desk-q shows it as "cloud session idle since <time>, PR #n unfinished". Once CI on its
+head has finished (or an hour passes with no checks), the pass sends the session one follow-up with the
+check results; with no push an hour after that, a second; and an hour after the second, still with no
+push, it parks on the PR's branch naming the session URL. A push starts the count over. The session starts on the login a local worker for the repo would get, its §3b
+Subscription row and never the fallback, and the spawn line and the desk-q row name its account.
+A start that fails parks with the CLI's error and is never run locally without asking; one that does
+not answer within its timeout parks naming the login and the one-time `claude --cloud` to run on it
+in a terminal, since a first start on a login asks a question nothing answers in the background.
+Cloud starts have their own limit, §3b "Cloud sessions at once" (unset is 4): a cloud session takes
+no local slot and is not counted in the repo or machine cap or the memory pool, so it starts beside the
+local workers; pacing, the usage limit and maintenance still hold it.
 Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
 kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
-PR, and its tokens and cost as "not reported for cloud".
+PR, and its tokens as "unknown (cloud)" and its cost as "cost unknown (cloud)". Claude Code reports
+no tokens or cost for a cloud session, and no OpenTelemetry collector is set up for one. desk-q's
+Costs view (and `--json costs`) lists each queued cloud ticket the same way, with its session URL.
+Its Timeline and By-day views date a cloud ticket with the local ones and put `cloud ·` before its
+title. Nothing reads a cloud session's state back, so a session that stopped on "Claude Code hit an
+error" looks the same as a quiet one: no PR and no push. Past its start plus the ticket's ETA, with
+no push to its branch for half that ETA, the pass sends it one retry follow-up (`claude -p <msg>
+--cloud <session>`, recorded as `cloud.retried_at`), which restarts an errored session. Past its start
+plus the ETA plus half that again, with no push since that retry, it is reported **possibly stuck**
+with its session URL; a retry that cannot be sent reports it at once. A push after the retry starts
+it over. Its ETA is
+its saved first estimate's span from start to ship (`eta.jsonl`), or with none the forecast's
+typical slot time for its size; with no history either, it is not called stuck. To start a stuck one
+again, `queue.mjs stop <KEY>` records its session abandoned (`cloud.abandoned_at`), puts it on the
+finished-session list below and holds the ticket as a stopped worker; `queue.mjs requeue <KEY>` (or
+needs-you's start) then gives it a new session. A requeue refuses a running cloud ticket until it is
+stopped. A cloud spawn is held by weekly
+usage pacing like a local one. Since a cloud session writes no usage reading here, a held pass
+still makes its probe call while only cloud workers run.
 The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR
 merges: nothing here can archive it. So the batch's finished cloud sessions are one desk-needs-you
 item, naming each with its URL, which the person archives by hand; its done records them so none is
@@ -167,10 +212,14 @@ starts from Stage 0.
 
 **A worker also hands off partway through a stage on context.** From Stage 3 on, once a worker's
 context passes its threshold (the ticket's `handoff-threshold` value, else config §2's Handoff at
-context % rows), `hooks/desk-handoff.py` has it commit, write a briefing with what is left of the
-stage, and print `AUTOPILOT_HANDOFF: <that stage>`. The next pass starts a fresh session at that
-same stage (`handed off partway through Stage 5 on context (31% used; handoff-threshold 30)`). The
-third such handoff in a row at one stage parks the ticket instead, naming the stage.
+context % rows) and has grown 30,000 tokens since the session started, `hooks/desk-handoff.py` has
+it commit, write a briefing with what is left of the stage, and print `AUTOPILOT_HANDOFF: <that
+stage>`. The next pass starts a fresh session at that same stage (`handed off partway through Stage
+5 on context (31% used; handoff-threshold 30)`). When two sessions in a row hand off partway through
+the stage they started at with no new commit, the pass raises the ticket's threshold once, to the
+one they ran on plus 25 points (at most 80), and says so on that line. The third such handoff in a
+row at one stage parks the ticket instead, naming the stage. `desk-env drift` names a §2 row that a
+fresh worker's measured start-up use already reaches (`STARTUP`).
 
 **A requeue after a park at Stage 3 or later resumes that round.** When a worker parks, the pass
 records the stage it reached and its question on the ticket (`last_round`). The fresh spawn after a
@@ -192,4 +241,6 @@ Decisions entry dated after PR #<n>'s last review`). The spawn records the time 
 session's own handoff to 4b, and a requeue after a session that found every entry met and pushed
 nothing, do not restart again. A round whose worktree or resume file is refused starts at Stage 0
 with the entries instead. An unfinished fix try keeps its own task, and a PR gh cannot read is said in
-the report and resumes as before.
+the report and resumes as before. For a GitHub issue (`issue-<n>`), the spawn first refreshes the
+ticket file from the issue when its updated time is after the last read, and a criterion or comment
+change with the PR open is written in as such an entry (`refreshed from issue #<n>` on the spawn line).

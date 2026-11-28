@@ -5,7 +5,7 @@
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -103,7 +103,6 @@ function put(name, r) {
     // Plan-first work is listed at once unless a world sets its own wait.
     `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
-    (r.fileBudget ? `| Per-file collision budget | \`3 over 1000 lines, else 2; serial: none\` | \`${r.fileBudget}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.holds ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Merge holds | ${r.holds.map((h) => `\`${h}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
@@ -1240,32 +1239,41 @@ writeFileSync(join(env.DESK_HOME, 'repos', 'acme__ypsilon', 'queue.json'), JSON.
 t('a put-off item comes back once its worktree is held for a new reason', 'Y-1' in yItems(), true);
 
 // ---- A ready ticket held back by a collision with a running one says so, fix try or not.
-// A budget of one place a file, so a single running ticket fills each file it names.
-put('phi', { port: 5000, beat: 1, supervised: true, fileBudget: '1', tickets: {
+put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-1': { state: 'running', lane: 'A', stage: '4/9', collides_with: 'F-2|F-3' },
   'F-2': { state: 'triaged', lane: 'A', collides_with: 'F-1', fix: { try: 1, of: 2, pr: 131, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
   'F-3': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-4': { state: 'triaged', lane: 'A', fix: { try: 1, of: 2, pr: 132, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint' }], not_mine: [] } },
-  // F-5's admission snapshot names F-1, but its triage record shares no file with it; F-6's names
-  // nothing, but it shares F-1's file.
+  // DS-1033: F-5's admission snapshot names F-1, but the pass did not hold it; F-6's names nothing, but
+  // the pass held it on two files, one of them with another batch's ticket; F-7's pass line is from
+  // before holds were recorded.
   'F-5': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-6': { state: 'triaged', lane: 'A' },
-}, triage: { 'F-1': { files_in_scope: ['src/f.ts', 'src/one.ts'] }, 'F-2': { files_in_scope: ['src/f.ts'] }, 'F-3': { files_in_scope: ['./src/f.ts'] },
-  'F-4': { files_in_scope: ['src/g.ts'] }, 'F-5': { files_in_scope: ['src/other.ts'] }, 'F-6': { files_in_scope: ['src/one.ts', 'src/f.ts'] } } });
+  'F-7': { state: 'triaged', lane: 'A' },
+} });
+// The last pass held F-2, F-3, F-6 and F-7 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
+const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
+mkdirSync(phiState, { recursive: true });
+const phiHold = (key, holds) => ({ key, with: [...new Set(holds.flatMap((h) => h.with.map((w) => w.split(' in ')[0])))], files: holds.map((h) => h.file), holds });
+writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), collisions: [
+  phiHold('F-2', [{ file: 'a.mjs', k: 1, with: ['F-1'] }]), phiHold('F-3', [{ file: 'a.mjs', k: 1, with: ['F-1'] }]),
+  phiHold('F-6', [{ file: 'src/one.ts', k: 1, with: ['F-1'] }, { file: 'src/big.ts', k: 2, with: ['F-1', 'X-9 in batch X'] }]),
+  { key: 'F-7', with: ['F-1'], files: ['a.mjs'] },
+] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
 const phi = strip(repoScreen(phr));
-const phiWait = 'waits for F-1 (collides on src/f.ts, 1 running of 1 place)';
+const phiWait = 'waits for F-1 (collides on a.mjs, 1 of 1 place taken)';
 t('a fix try held back by a collision waits for the running ticket, not the next free worker, in Ready',
   `${phiText('F-2')} ${/F-2 +○ ready +#131/.test(phi)}`, `#131 · 1 check failed · ${phiWait}, then a worker repairs it, try 1 of 2 true`);
-t('a ticket held back by a collision names the running holder, the file and its places', `${phiText('F-3')} ${/F-3 +○ ready +waits for F-1 \(collides/.test(phi)}`, `${phiWait} true`);
+t('a ticket held back by a collision names the holder, the file and its places', `${phiText('F-3')} ${/F-3 +○ ready +waits for F-1 \(collides/.test(phi)}`, `${phiWait} true`);
 t('a fix try with nothing holding it back still goes to the next free worker', phiText('F-4'), '#132 · 1 check failed · next free worker repairs it, try 1 of 2');
-// The page wraps its "Moves without you" text onto ▌-led lines, so join them before matching.
 t('its ticket page says the same', strip(ticketScreen(phr, 'F-2', { width: 200 })).replace(/\n▌ /g, ' ').includes(`${phiWait}, then a worker repairs it`), true);
-t('DS-1033 AC2 a ready ticket whose collides_with names a running one, but which the file budget would spawn, starts at the next pass',
+t('DS-1033 AC2 a ready ticket whose collides_with names a running one, but which the pass did not hold, starts at the next pass',
   `${phiText('F-5')} ${/F-5 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
-t('DS-1033 AC1 a ready ticket the file budget holds says so with every file at its budget, whatever its collides_with',
-  phiText('F-6'), 'waits for F-1 (collides on src/one.ts, 1 running of 1 place; src/f.ts, 1 running of 1 place)');
+t('DS-1033 AC1 a ready ticket the pass held names every file at its budget, its places and the holders, whatever its collides_with',
+  phiText('F-6'), 'waits for F-1, X-9 in batch X (collides on src/one.ts, 1 of 1 place taken; src/big.ts, 2 of 2 places taken)');
+t('DS-1033 a pass line from before holds were recorded still says the ticket shares files', phiText('F-7'), 'waits for F-1 (shared files)');
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.
@@ -2346,7 +2354,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 only the merged ticket with steps not yet run is listed', f1.map((i) => i.t.key).join(), 'follow:F-1');
   t('DS-509 AC5 DS-788 AC2 AC4 AC6 it says the code is on the default branch since the merge, and names the step and its §3 row and value once',
     `${/^F-1 is on main since \d{4}-\d\d-\d\d\. Check: run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)\. Then say done\.$/.test(f1[0]?.need ?? '')} ${(f1[0]?.need ?? '').split('§3').length - 1}`, 'true 1');
-  t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
+  const nc509 = N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509'));
+  t('DS-509 AC5 issue-1687 AC1 desk-q counts it as a check after merge, not as needing the person', `${nc509.shown} ${nc509.follows.map((f) => f.t.key).join()} ${nc509.checking.length}`, '0 follow:F-1 0');
   const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
@@ -2358,8 +2367,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'P-1': merged(71, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
   } });
   const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
-  t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
-    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+  t('DS-934 issue-1687 AC1 every ticket done: the follow item is a Checks after merge row, not counted as needing you, and the Queue does not say there is nothing',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Checks after merge · 1\b/.test(scr())} ${/Needs you ·/.test(scr())} ${/P-1 +▹ check +(\d+[dhm]( \d+[hm])? +)?Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '0 true false true false');
   N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
   t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
     `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
@@ -2371,7 +2380,47 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'P-1': merged(71, { follow_on: [{ step: 'check the refund totals look right', row: null }] }),
   } });
   t('issue-1419 a dropped item comes back once what it keys to changes, as a put-off one does',
-    `${phiCount().shown} ${/P-1 +◆ needs you .*Check: check the refund totals/.test(scr())}`, '1 true');
+    `${phiCount().follows.length} ${/P-1 +▹ check .*Check: check the refund totals/.test(scr())}`, '1 true');
+  // issue-1687 AC2: a session takes the check on (claim <item> --by <session>): it shows as checking
+  // (<session>), counted in `checking`, not `follows`; it lapses once the session's transcript is gone or
+  // idle past §3b Release idle claims after (12 hours unset), and done clears it.
+  const TR1687 = join(env.HOME, '.claude', 'projects', '-x', 'sess-1687.jsonl');
+  const badId = N.claim({ word: 'phi934', item: 'follow:P-1', session: 'not a session' });
+  t('issue-1687 AC2 claim refuses a --by that is not a session id', `${badId.ok} ${/--by wants a session id/.test(badId.line)}`, 'false true');
+  const noTr = N.claim({ word: 'phi934', item: 'follow:P-1', session: 'sess-1687' });
+  t('issue-1687 AC2 claim refuses a session with no transcript here, and claims nothing',
+    `${noTr.ok} ${/no transcript for session sess-1687/.test(noTr.line)} ${phiCount().checking.length} ${phiCount().follows.length}`, 'false true 0 1');
+  const noItem = N.claim({ word: 'phi934', item: 'follow:P-9', session: 'sess-1687' });
+  t('issue-1687 AC2 claim refuses an item that is not a listed check after merge', `${noItem.ok} ${/no check after merge in \S+ is listed as follow:P-9/.test(noItem.line)}`, 'false true');
+  mkdirSync(dirname(TR1687), { recursive: true });
+  writeFileSync(TR1687, '{}\n');
+  const claimed = cli('claim', 'phi934', 'follow:P-1', '--by', 'sess-1687');
+  t('issue-1687 AC2 claim <item> --by <session> records it, and says it is out of the count until done or idle',
+    `${claimed.code} ${/follow:P-1: claimed by session sess-1687\. desk-q shows it as checking \(sess-1687\) and leaves it out of your count until it is done, or session sess-1687 has been idle past §3b Release idle claims after \(12 hours\)\.$/.test(claimed.out.trim())}`, '0 true');
+  t('issue-1687 AC2 claimed, it is in checking, not follows, and not shown',
+    `${phiCount().shown} ${phiCount().follows.length} ${phiCount().checking.map((f) => `${f.t.key} ${f.item.claim.session}`).join()}`, '0 0 follow:P-1 sess-1687');
+  t('issue-1687 AC2 its Queue row says checking (<session>), still under Checks after merge',
+    `${/Checks after merge · 1\b/.test(scr())} ${/P-1 +▹ check .*checking \(sess-1687\) · Check: /.test(scr())}`, 'true true');
+  const listed1687 = here('list', 'phi934');
+  t('issue-1687 AC2 needs-you list leaves a claimed check out of the items and names who is checking it',
+    `${N.collect({ word: 'phi934' }).items.some((i) => i.t.key === 'follow:P-1')} ${/Checking \(sess-1687\): follow:P-1/.test(listed1687.out)}`, 'false true');
+  t('issue-1687 AC2 the not-now list leaves the claim entry out', spawnSync(process.execPath, [join(REAL_BIN, 'not-now.mjs'), 'list'], { encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: join(env.HOME, '.desk-autopilot', 'acme__phi934') } }).stdout.includes('claim'), false);
+  // Idle past 12 hours, the claim lapses: the check needs the person again.
+  const old = (NOW - 13 * 3600e3) / 1000;
+  NN.addClaim({ item: 'follow:P-1', session: 'sess-1687', ticket: 'P-1', at: new Date(NOW - 13 * 3600e3).toISOString() }, join(env.HOME, '.desk-autopilot', 'acme__phi934'));
+  utimesSync(TR1687, old, old);
+  t('issue-1687 AC2 a claim whose session is idle past §3b Release idle claims after lapses', `${phiCount().checking.length} ${phiCount().follows.length}`, '0 1');
+  // A fresh claim, live while its transcript is there, lapses once the transcript is gone, whatever its age.
+  writeFileSync(TR1687, '{}\n');
+  NN.addClaim({ item: 'follow:P-1', session: 'sess-1687', ticket: 'P-1', at: new Date().toISOString() }, join(env.HOME, '.desk-autopilot', 'acme__phi934'));
+  t('issue-1687 AC2 a fresh claim with its transcript there is live', phiCount().checking.length, 1);
+  rmSync(TR1687);
+  t('issue-1687 AC2 a claim whose session has no transcript lapses', `${phiCount().checking.length} ${phiCount().follows.length}`, '0 1');
+  writeFileSync(TR1687, '{}\n');
+  t('issue-1687 AC2 claimed again', N.claim({ word: 'phi934', item: 'P-1', session: 'sess-1687' }).ok && phiCount().checking.length, 1);
+  const done1687 = N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'done' });
+  t('issue-1687 AC2 done on a claimed check records it and clears the claim',
+    `${done1687.ok} ${phiCount().checking.length} ${phiCount().follows.length} ${NN.claimOf(NN.readRegister(join(env.HOME, '.desk-autopilot', 'acme__phi934')), 'follow:P-1')}`, 'true 0 0 null');
   // A batch's base-push item is the repo's, not a ticket's, and is a Needs you row all the same.
   put('chi934', { port: 4411, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
     tickets: { 'C-1': { state: 'triaged', lane: 'A' } } });
@@ -2619,7 +2668,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const gateDirs = new Set();
   N.collect({ word: 'prod785', reads: { ...STUB, git: (dir) => { gateDirs.add(dir); return null; } } });
   t('DS-929 AC1 a collect reads the gates through the git read it is given, in the repo root', [...gateDirs].join(), c.root);
-  t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
+  t('DS-785 issue-1687 desk-q counts only the listed items, as checks after merge', ((n) => `${n.shown} ${n.follows.length}`)(N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785'))), '0 2');
   const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
   const g1 = queueOf('prod785').tickets['G-1'];
   t('DS-785 done on the merge item records its step run and keeps the main and production ones',
@@ -2795,7 +2844,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const feature = (word, port, promotion, tickets) => put(word, { port, beat: 1, supervised: true,
     batch: { base: 'feat/P-1-portal', feature: true, epic: 'P-1', promotion }, tickets });
   const follows = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
-  const count = (word) => N.needsCount(loadRepos().find((r) => r.slug === `acme__${word}`)).shown;
+  // A follow item counts as a check after merge (issue-1687), never in `shown`.
+  const count = (word) => ((n) => n.shown + n.follows.length)(N.needsCount(loadRepos().find((r) => r.slug === `acme__${word}`)));
 
   feature('psi784', 4784, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-2': child(97, 1200), 'P-3': child(100, 1000) });
   t('DS-784 AC1 no follow item while the promotion PR is open', follows('psi784').length, 0);
@@ -4345,7 +4395,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
-t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,ask-status,left,list,record');
+t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,ask-status,claim,left,list,record');
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

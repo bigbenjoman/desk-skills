@@ -375,6 +375,14 @@ export function poolFor(slot, size, step = sizeStep(slot)) {
   return { v: slot, own: false, n, from: [] };
 }
 
+// The forecast's typical slot time for a ticket of `size`, in hours: the weighted median of the pool
+// poolFor gives it from `history` (recentHistory lines) and `stages` (as forecast takes them). null with
+// no history.
+export function typicalSlotHours({ history, stages = [], size, now }) {
+  const { slot } = splitHistory(history ?? [], stages, now);
+  return wquantile(poolFor(slot, size).v, 0.5);
+}
+
 // Local calendar arithmetic, so "today" and a weekday are the user's own: `days` after the day `t`
 // falls on, at `hours` past its midnight; and how many calendar days `t` is after `now`.
 export const dayAt = (t, days = 0, hours = 0) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, hours).getTime(); };

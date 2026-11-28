@@ -163,7 +163,7 @@ record T-8 src/g.txt A S; record T-9 src/h.txt B S; record T-10 src/i.txt A M
 printf 'WAIT\nAUTOPILOT_STAGE: 3/9 implement\n' > "$T/scripts/T-8.1"
 printf 'WAIT\nAUTOPILOT_DONE: pr=108 jira=none\n' > "$T/scripts/T-8.2"
 printf 'WAIT\nAUTOPILOT_DONE: pr=109 jira=none\n' > "$T/scripts/T-9.1"
-printf 'WAIT\nAUTOPILOT_DONE: pr=110 jira=none\n' > "$T/scripts/T-10.1"
+printf 'WAIT\nAUTOPILOT_DONE: pr=110 jira=none follow_on={"x": 1}\n' > "$T/scripts/T-10.1"
 q admit T-8; q admit T-9; q admit T-10
 pass
 check "a lane A ticket sized S runs on the standard model, and so does its preflight" '[ "$(ran_on T-8 1)" = sonnet ] && [ "$(field T-8 model_tier)" = "\"standard\"" ] && grep -q "^claude preflight model=sonnet$" "$T/calls.log"'
@@ -173,6 +173,9 @@ check "the status table shows each running worker's model"      'echo "$out" | g
 finish T-8; finish T-9; finish T-10
 pass
 check "the standard-model worker with no marker is failed"      '[ "$(state T-8)" = failed ]'
+check "issue-1549 AC2 a follow_on= that does not read is kept on the ticket" '[ "$(state T-10)" = done ] && [ "$(field T-10 follow_on_unreadable.error)" = "\"not a JSON array\"" ] && field T-10 follow_on_unreadable.raw | grep -qF "\"x\\\": 1" && [ "$(field T-10 follow_on)" = null ]'
+out=$(node "$B/queue.mjs" render 2>&1)
+check "issue-1549 AC2 and the status table says it on the ticket's row" 'echo "$out" | grep -qF "follow-on unreadable: {\"x\": 1}" && echo "$out" | grep "follow-on unreadable" | grep -q "T-10"'
 out=$(node "$B/queue.mjs" requeue T-8 2>&1)
 check "requeueing a failed standard-model ticket raises it to high" '[ "$(field T-8 model_tier)" = "\"high\"" ] && echo "$out" | grep -q "runs on the high model"'
 out=$(node "$B/queue.mjs" render 2>&1)

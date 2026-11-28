@@ -66,7 +66,8 @@ import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
 const SHA = /^[0-9a-f]{40}$/;
-// The hidden tests' ceiling, wait for the test lock included.
+// The hidden tests' ceiling for each test command, counted from when it holds the test lock: the
+// wait for the lock is not the run's, and is not bounded.
 const SCORE_TIMEOUT_MS = 60 * 60 * 1000;
 
 // argv -> options. Throws, naming the flag, on anything missing or malformed.
@@ -315,7 +316,7 @@ export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
   for (const { dir: d, cmd, files } of testRuns(repo.items, runFiles(task)).runs) {
     const cap = repo.cap && takesFiles(cmd) ? ` --maxWorkers=${repo.cap}` : '';
     const line = `${cmd}${cap} ${files.map(shq).join(' ')}`;
-    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), timeout });
+    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), runFor: timeout });
     log.push(`$ ${line}\n${r.out}\nexit ${r.code}\n`);
     writeFileSync(join(dir, 'test-output.log'), log.join('\n'));
     if (r.stopped) return added({ status: 'failed', why: `the hidden tests did not finish: ${line}` });
@@ -325,27 +326,40 @@ export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
 }
 
 // One task on one arm, start to tidy-up. Whatever goes wrong is this run's failure, with the reason.
-function runOne(repo, task, arm, order, opts, out, dir, secrets) {
+// `charge` takes the result once the session ends and returns its quota, before the hidden tests are
+// scored: scoring can wait long for the test lock, and use of the account during that wait is not
+// the run's. A charge that throws (an unwritable ledger) is rethrown only once the run is scored and
+// saved, so a resumed bench reuses it rather than paying for the session again.
+function runOne(repo, task, arm, order, opts, out, dir, secrets, charge = () => null) {
   mkdirSync(dir, { recursive: true });
   const result = { task: task.id, arm: arm.name, repo: task.repo, base: task.base, model: arm.model, effort: arm.effort, order: order.map((a) => a.name),
     status: 'failed', why: null, cost: null, tokens: null, attempts: [], ran_at: null, at: new Date().toISOString() };
   const parent = mkdtempSync(join(realpathSync(tmpdir()), 'desk-bench-'));
   const wt = join(parent, 'checkout');
+  let charged = false, chargeError = null;
+  const end = () => {
+    if (charged) return;
+    charged = true;
+    try { result.quota = charge(result); } catch (e) { chargeError = e; }
+  };
   try {
     makeCheckout(repo, task, wt);
     const settings = join(parent, 'settings.json');
     writeSettings(repo, task, wt, settings, secrets);
     const run = (arm.runner ?? runClaude)(task, arm, wt, settings, opts, dir);
     Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, ran_at: run.ranAt, why: run.why ?? null, ...run.extra, ...(run.stopArm ? { stop_arm: run.stopArm } : {}) });
+    end();
     saveDiff(wt, task.base, join(dir, 'diff.patch'));
     if (run.ok) Object.assign(result, score(repo, task, wt, dir));
   } catch (e) {
     result.status = 'failed';
     result.why = e.message;
   } finally {
+    end();
     rmSync(parent, { recursive: true, force: true });
   }
   writeFileSync(join(dir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
+  if (chargeError) throw chargeError;
   return result;
 }
 
@@ -423,8 +437,7 @@ export function runBench(opts, log = () => {}) {
       const paid = guard.begin({ vendor: Q.armVendor(arm), env, id: `${dir}@${new Date().toISOString()}`, label: `${task.id} (${arm.name})`, fields: { task: task.id, arm: arm.name }, arm });
       if (paid.notRun) return { arm: arm.name, ...paid.notRun };
       log(`run ${task.id} (${arm.name})`);
-      const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
-      r.quota = guard.end(paid, r.cost, r);
+      const r = runOne(repo, task, arm, order, opts, out, dir, secrets, (res) => guard.end(paid, res.cost, res));
       writeFileSync(join(dir, 'result.json'), `${JSON.stringify(r, null, 2)}\n`);
       log(`  ${r.status}${r.why ? `: ${r.why}` : ''}${r.quota.points == null ? '' : ` (${r.quota.points} quota points)`}`);
       guard.logStop(paid);
