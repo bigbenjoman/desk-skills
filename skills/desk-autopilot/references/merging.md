@@ -287,7 +287,10 @@ resolving each thread an earlier desk-review by that handle opened, once the lat
 verdict reads as §4 Clean review verdict at the head; anyone else's thread stays), skips
 a PR under a §4 Merge holds glob (logging `HELD` and the reason), disarming any auto-merge armed on
 either, merges with §4 Merge method and `--match-head-commit <sha>` when the head is green, updates
-a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, skips a `DIRTY` PR,
+a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, updates a green PR the
+same way where the base changed a §4 Stale-check paths glob since its merge base (GitHub reports no
+`BEHIND` where the base need not be up to date; the person updates it where §3 does not grant it, and
+it merges once green at the new head), skips a `DIRTY` PR,
 holds a green one that fails §4 Merged-tree check once merged into the base's head (run last before
 the merge, in a throwaway checkout; recorded on the ticket as `tree_check`, which the pass sends to a
 conflict fix worker under the same §3 conflict rows as a `DIRTY` PR, not to the person; an epic PR's

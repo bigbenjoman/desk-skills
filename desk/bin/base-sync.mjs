@@ -195,6 +195,30 @@ export function prTreeCheck({ repo, cache, dir, base, pr, head, check = mergedTr
   return r;
 }
 
+// §4 Stale-check paths: the base paths (globs) whose change since a PR's branch point leaves its checks
+// stale. [] with the row unset, TODO or `none`.
+export function staleCheckPaths() {
+  return rowItems('stale-check-paths').filter((p) => p && !/^todo\b/i.test(p));
+}
+
+// Which §4 Stale-check paths origin's <base> changed since PR <pr>'s <head> branched from it: the diff
+// from their merge base to origin's <base>, so a PR's own change to a listed path never counts.
+//   -> { result: 'none' } | { result: 'current' | 'stale', merge_base, files } | { result: 'error', why }
+export function prStalePaths({ repo, base, pr, head, paths = staleCheckPaths() }) {
+  if (!paths.length) return { result: 'none' };
+  const f = git(repo, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`]);
+  if (!f.ok) return { result: 'error', why: `could not fetch ${base} from origin: ${firstLine(f.out)}` };
+  if (!git(repo, ['cat-file', '-e', `${head}^{commit}`]).ok && !git(repo, ['fetch', '-q', 'origin', `pull/${pr}/head`]).ok) {
+    return { result: 'error', why: `its head ${String(head).slice(0, 9)} could not be fetched` };
+  }
+  const mb = git(repo, ['merge-base', head, `origin/${base}`]);
+  if (!mb.ok || !mb.out) return { result: 'error', why: `no merge base of its head and ${base}: ${firstLine(mb.out)}` };
+  const d = git(repo, ['diff', '--name-only', mb.out, `origin/${base}`, '--', ...paths.map((p) => `:(glob)${p}`)]);
+  if (!d.ok) return { result: 'error', why: `could not diff ${base} since its merge base: ${firstLine(d.out)}` };
+  const files = d.out ? d.out.split('\n') : [];
+  return { result: files.length ? 'stale' : 'current', merge_base: mb.out, files };
+}
+
 // Puts the base worktree back at origin's base, for a fix try that ended without pushing what it merged
 // (keepUnpushed first keeps what it committed).
 export function dropUnpushed({ path, base }) {

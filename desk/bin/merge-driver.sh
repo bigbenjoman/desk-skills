@@ -67,6 +67,11 @@
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
+#   - its checks are stale                   green, but the base changed a §4 Stale-check paths glob since
+#                                            the PR's merge base, which GitHub reports as no BEHIND where the
+#                                            base need not be up to date: updated as BEHIND is, so it merges
+#                                            once green at the new head (checks_current); with the row unset
+#                                            or `none` it merges as it stands
 #   - UNKNOWN past the limit                 no mergeability answer (a wedged merge ref): updated once with
 #                                            `gh pr update-branch` where §3 pr-update-branch is yes, then
 #                                            noted for the person (unknown_age)
@@ -1093,6 +1098,43 @@ NODE
   esac
 }
 
+# checks_current <n> <sha> <key> -> 0 when no §4 Stale-check path changed on the base since #n branched
+# from it (or none is set), so its checks ran against them. Otherwise the branch is updated once per head
+# where §3 pr-update-branch is yes, and its new head merges once green; else the person updates it. A
+# base that could not be read holds the merge. The epic PR's base is synced by the pass, so it is not asked.
+checks_current(){
+  [ -n "$EPIC_KEY" ] && return 0
+  local r res files mb rc=0
+  r=$(node --input-type=module - "$DESK_RUN_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$BASE_BRANCH" "$1" "$2" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const [mod, repo, base, pr, head] = process.argv.slice(2);
+const { prStalePaths } = await import(pathToFileURL(mod).href);
+console.log(JSON.stringify(prStalePaths({ repo, base, pr, head })));
+NODE
+) || r='{"result":"error","why":"the read could not be started"}'
+  res=$(printf '%s' "$r" | jq -r '.result // "error"' 2>/dev/null)
+  case "$res" in
+    none|current) blocked_clear "$3" "stale checks:"; return 0 ;;
+    stale) ;;
+    *) log "#$1 could not tell whether §4 Stale-check paths changed on $BASE_BRANCH: $(printf '%s' "$r" | jq -r '.why // "no result"' 2>/dev/null) — not merging it this loop"; return 1 ;;
+  esac
+  files=$(printf '%s' "$r" | jq -r '.files | if length > 3 then (.[:3] | join(", ")) + " and \(length - 3) more" else join(", ") end')
+  mb=$(printf '%s' "$r" | jq -r '.merge_base[:9]')
+  # The green mark stays: it is keyed by head, so the updated head confirms afresh on its own.
+  if [ "$UPDATE_PERM" != yes ]; then
+    log "#$1 green at ${2:0:9}, but $BASE_BRANCH changed $files since it branched at $mb, so its checks are stale; §3 pr-update-branch is $UPDATE_PERM — parked for a person to update"
+    queue_note "$3" "stale checks: $BASE_BRANCH changed $files since #$1 branched at $mb; §3 pr-update-branch is $UPDATE_PERM, so a person updates its branch"
+    return 1
+  fi
+  if [ -f "$SD/updated-$1-$2" ]; then log "#$1 its checks are stale ($BASE_BRANCH changed $files); update already requested at ${2:0:9} — waiting for it"; return 1; fi
+  update_branch "$1" "stale checks" || rc=$?
+  if [ "$rc" = 0 ]; then
+    touch "$SD/updated-$1-$2"; blocked_clear "$3" "stale checks:"
+    log "#$1 green at ${2:0:9}, but $BASE_BRANCH changed $files since it branched at $mb -> gh pr update-branch (it merges once green at the new head)"
+  elif [ "$rc" = 1 ]; then log "#$1 its checks are stale ($BASE_BRANCH changed $files) and update-branch was refused: $(printf '%s' "$UPDATE_OUT" | tail -1)"; back_off "$1"; fi
+  return 1
+}
+
 # A ready PR GitHub has no mergeability answer for (UNKNOWN) is aged from the loop that first saw it at
 # that head (`unknown-<n>`: the head and that time). A merge ref can wedge: no answer for hours, and no
 # run started for the head. Past UNKNOWN_LIMIT_SECS its branch is updated from its base once where §3
@@ -1369,6 +1411,7 @@ EOF_RESOLVE
   if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then confirm_due "$n" $((green_at + GREEN_HOLD_SECS)); log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
   if [ -z "$EPIC_KEY" ] && repair_held "$n" "$g"; then return 1; fi
+  checks_current "$n" "$sha" "$key" || return 1
   # The epic PR too: §0 Default branch may have gained a migration since the base's last sync.
   if ! tree_checked "$n" "$sha" "$key" "$want"; then return 1; fi
 
