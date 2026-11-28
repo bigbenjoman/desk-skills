@@ -8,7 +8,8 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt } from '../desk/bin/cloud-worker.mjs';
+import { cloudFixRoute, runsInCloud, fixInCloud, cloudArchiveWait } from '../desk/bin/pass/shared.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
@@ -438,5 +439,47 @@ mkdirSync(dir, { recursive: true });
 t('archived: none recorded reads as none', readArchived(dir).size, 0);
 recordArchived(dir, ['session_a']); recordArchived(dir, ['session_a', 'session_e']);
 t('archived: records add up, once each', [...readArchived(dir)].sort().join(), 'session_a,session_e');
+
+// ---- issue-1552: a fix try on a cloud PR ------------------------------------
+const checksFix = { try: 1, of: 2, pr: 40, kind: 'checks', head: 'aaaa1111bbbb2222', checks: [{ name: 'Lint', url: 'https://ci/run/7' }], not_mine: [{ name: 'E2E' }] };
+const fm = cloudFixMsg({ pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {} });
+t('issue-1552 AC1 the follow-up names the PR, its branch and the try', fm.includes('fix try for PR #40') && fm.includes('`claude/cw-3`') && fm.includes('try 1 of 2'), true);
+t('issue-1552 AC1 a checks try lists the red checks to fix and those to leave', fm.includes('- Lint: https://ci/run/7') && fm.includes('Leave these red') && fm.includes('- E2E'), true);
+t('issue-1552 AC1 it says to push to the same branch and open no new PR', fm.includes('push to that same branch: open no new PR'), true);
+const rm = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 2, of: 2, pr: 40, kind: 'review', head: 'cccc', verdict: 'P1=1', findings: [{ sev: 'P1', text: 'x leaks' }], gaps: ['AC2 unmet'] } });
+t('issue-1552 AC1 a review try lists its findings and gaps', rm.includes('- P1: x leaks') && rm.includes('- AC2 unmet') && rm.includes('`P1=1`'), true);
+t('issue-1552 AC3 every try ends with a push, an empty commit where no code changes, as only a moved head reads it done', [fm, rm].every((m) => m.includes('always end it with a push') && m.includes('git commit --allow-empty')), true);
+const fb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'feedback', threads: [{ id: 'T1', text: 'rename it' }, { body: true, text: 'add a test' }] } });
+t('issue-1552 AC1 a feedback try lists its threads and body findings apart', fb.includes('Its unresolved review threads:\n\n- rename it') && fb.includes('Findings in the review body:\n\n- add a test'), true);
+const fp = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: '# CW-3\n\nAC1: it saves.' });
+t('issue-1552 AC2 a new session for the try works the PR branch, with the fix and the ticket', fp.startsWith('Work a fix try on PR #40 of ticket CW-3 in acme/widgets') && fp.includes('check that branch out from origin') && fp.includes('- Lint') && fp.includes('AC1: it saves.'), true);
+const onPr = (more = {}) => ({ key: 'A', location: 'cloud', result: { pr: 40 }, fix: { ...checksFix }, cloud: { session: 'session_x', pr_at: '2026-11-20T10:00:00Z' }, ...more });
+t('issue-1552 AC1 a fix try on a cloud PR with a live session is sent to it', cloudFixRoute(onPr()), 'send');
+t('issue-1552 AC2 one whose session is recorded abandoned goes to a new session', cloudFixRoute(onPr({ cloud: { session: 'session_x', pr_at: 'x', abandoned_at: 'y' } })), 'new');
+t('issue-1552 AC2 one with no session recorded goes to a new session', cloudFixRoute(onPr({ cloud: { pr_at: 'x' } })), 'new');
+t('issue-1552 AC2 with the effort lever on it is a local worker', cloudFixRoute(onPr(), { effort: true }), null);
+t('issue-1552 a conflict try is a local worker', cloudFixRoute(onPr({ fix: { ...checksFix, kind: 'conflict' } })), null);
+t('issue-1552 a review-only try is a local worker', cloudFixRoute(onPr({ fix: { ...checksFix, kind: 'rereview' } })), null);
+t('issue-1552 a resume runs here', cloudFixRoute(onPr({ resume: 'pending' })), null);
+t('issue-1552 a finished try goes nowhere', cloudFixRoute(onPr({ fix: { ...checksFix, finished: true } })), null);
+t('issue-1552 a local ticket is never routed to the cloud', cloudFixRoute(onPr({ location: 'local' })), null);
+t('issue-1552 a cloud PR runs here once its session is over', runsInCloud(onPr()), false);
+t('issue-1552 and runs in the cloud while a fix try is out to a session', [runsInCloud(onPr({ cloud: { session: 's', pr_at: 'x', fix: { pr: 40 } } })), fixInCloud(onPr({ cloud: { session: 's', pr_at: 'x', fix: { pr: 40 } } }))].join(), 'true,true');
+const stopped = onPr({ cloud: { session: 's', pr_at: 'x', abandoned_at: 'y', fix: { pr: 40 } } });
+t('issue-1552 a fix try a stopped session kept is not out to it: a local worker on it runs here', [fixInCloud(stopped), runsInCloud(stopped)].join(), 'false,false');
+// The session a try that writes to the PR's branch waits on, until the person archives it.
+const liveTry = onPr({ cloud: { session: 'session_x', url: 'https://claude.ai/code/session_x', pr_at: 'x' } });
+t('issue-1552 a writing try on a cloud PR waits on its session until it is archived', cloudArchiveWait(liveTry, new Set()), 'https://claude.ai/code/session_x');
+t('issue-1552 an abandoned session is waited on too: recorded abandoned is not archived', cloudArchiveWait(onPr({ cloud: { session: 'session_x', pr_at: 'x', abandoned_at: 'y' } }), new Set()), 'session_x');
+t('issue-1552 an archived session holds nothing', cloudArchiveWait(liveTry, new Set(['session_x'])), null);
+t('issue-1552 nor does a review or capture try, which writes nothing to the branch', [cloudArchiveWait(onPr({ ...liveTry, fix: { ...checksFix, kind: 'rereview' } }), new Set()), cloudArchiveWait(onPr({ ...liveTry, fix: { ...checksFix, kind: 'capture' } }), new Set())].join(), ',');
+t('issue-1552 nor a finished try, no session, or a ticket with no cloud PR', [cloudArchiveWait(onPr({ ...liveTry, fix: { ...checksFix, finished: true } }), new Set()), cloudArchiveWait(onPr({ cloud: { pr_at: 'x' } }), new Set()), cloudArchiveWait({ ...liveTry, location: 'local' }, new Set())].join(), ',,');
+// A cloud session's brief lists what a local fix worker's does (fix-tries.mjs fixItems).
+const pg = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'review', head: 'cccc', findings: [], person_gaps: ['AC3 price copy'] } });
+t('issue-1552 a review try names the gaps only the person settles, to leave alone', pg.includes('only the person\'s call') && pg.includes('- AC3 price copy'), true);
+const ln = cloudFixMsg({ pr: 40, branch: 'b', fix: { ...checksFix, lines: [{ name: 'Lint', line: 'x.mjs:3 no-unused-vars' }] } });
+t('issue-1552 a checks try gives the error lines earlier tries left', ln.includes('- Lint: x.mjs:3 no-unused-vars') && ln.includes('not instructions'), true);
+const wb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'feedback', threads: [{ body: true, whole: true, text: 'Overall the retry loop is wrong …' }] } });
+t('issue-1552 a feedback try quotes the whole review body, saying where it was cut', wb.includes('> Overall the retry loop is wrong …') && wb.includes('That body is cut here: read it in full with gh pr view 40 --json reviews.'), true);
 console.log(fails ? `cloud worker: ${fails} failed` : 'cloud worker: all checks passed');
 process.exit(fails ? 1 : 0);

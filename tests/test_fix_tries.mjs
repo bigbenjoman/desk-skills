@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync, writeFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT, fixItems } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -1504,6 +1504,16 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const spent = resumeConflict({ ...seven, fix_tries: [{ kind: 'conflict', head: HEAD, try: 1 }] }, conflicting, { base: 'main', files, notes: [] });
   t('issue-1669 with a conflict try already at this head it is stuck, naming the conflict', JSON.stringify([spent?.call, /^PR #1655 conflicts with main, and it is still in conflict with main after/.test(spent?.why)]), '["stuck",true]');
   t('issue-1669 the advance step\'s park is told apart from any other', JSON.stringify([stageSevenConflictPark({ state: 'parked', park: { question: `${STAGE7_CONFLICT} PR #1 conflicts with main` } }), stageSevenConflictPark({ state: 'parked', park: { question: 'which colour?' } }), stageSevenConflictPark({ state: 'triaged', park: { question: `${STAGE7_CONFLICT} x` } })]), '[true,false,false]');
+}
+
+// issue-1552: what every fix brief lists, read once (fixBrief, and a cloud session's cloudFixMsg).
+{
+  const it = fixItems({ findings: [{ sev: 'P1', text: 'leaks' }], not_mine: [{ name: 'E2E' }], builds: ['Vercel'], base_red: ['Lint'],
+    threads: [{ id: 'T1', text: 'rename' }, { text: 'no body flag' }, { body: true, text: 'a.mjs:3 off by one' }, { body: true, whole: true, text: 'Overall …' }] });
+  t('issue-1552 fixItems: findings as sev: text', JSON.stringify(it.findings), JSON.stringify(['P1: leaks']));
+  t('issue-1552 fixItems: the checks left red, not its to fix', it.leaveRed.join(), 'E2E,Vercel,Lint');
+  t('issue-1552 fixItems: threads, body findings with a file:line, and the body itself apart', [it.threads.map((x) => x.text).join('|'), it.listed.map((x) => x.text).join(), it.whole.map((x) => x.text).join(), it.cut].join(' / '), 'rename|no body flag / a.mjs:3 off by one / Overall … / true');
+  t('issue-1552 fixItems: an empty record lists nothing', JSON.stringify(fixItems({})), JSON.stringify({ findings: [], leaveRed: [], threads: [], listed: [], whole: [], cut: false }));
 }
 
 process.exit(fails ? 1 : 0);

@@ -131,9 +131,9 @@ Slack thread can all be one item. Join them by ticket key (§4 Ticket key patter
 repo) and PR number first, then build **one item per outcome**, not per ticket or source:
 `references/items.md` says how to split an umbrella ticket, keep work with no ticket, and rank.
 
-**Work a batch did is the person's work, reported the same way.** The Claude collector lists each
-headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
-and Jira item like any other session, and report what changed and where it stands. Never what ran
+**Work a batch did is the person's work, reported the same way.** The Claude collector folds
+headless sessions into one line per ticket (key, stages, session count): join it to the ticket's
+PR and Jira item like any other session, and report what changed and where it stands. Never what ran
 it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
 - **A batch's own sessions are never items.** A triage, preflight or worker session is evidence
   for the ticket it worked, never work in its own right; one that names no ticket, branch or PR to
