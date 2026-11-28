@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage, ownPr } from './batch-state.mjs';
+import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, bareHold, bareHoldText, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage, ownPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -6943,7 +6943,9 @@ const onBadLabel = heldNow.filter((t) => dateHeld(t)?.bad);
 // Held behind a failed or parked ticket waits on the person's answer there, which is asked once.
 const parksOf = new Map(heldNow.map((t) => [t, waitingOnPark(qNow, t, prState)]).filter(([, p]) => p));
 const onPark = [...parksOf.keys()];
-const stuck = heldNow.filter((t) => !dateHeld(t) && !waitingOnMerge(qNow, t, prState) && !parksOf.has(t));
+// Held behind no blocker, for no other reason (bareHold): released below, never STUCK.
+const bareNow = heldNow.filter(bareHold);
+const stuck = heldNow.filter((t) => !dateHeld(t) && !bareHold(t) && !waitingOnMerge(qNow, t, prState) && !parksOf.has(t));
 if (onDate.length) out.push(`HELD: ${onDate.map((t) => `${t.key} (until ${dateHeld(t).until})`).join(', ')}`);
 for (const t of onBadLabel) report.waiting.push(`${t.key}: HELD — ${badLabelText(dateHeld(t).label)} (${E.releaseCommand(t.key)})`);
 if (onPark.length) out.push(`WAITING ON A PARK: ${onPark.map((t) => `${t.key} (${parksOf.get(t).join(', ')})`).join(', ')}: answered there, not asked again`);
@@ -7014,6 +7016,17 @@ for (const t of releaseDue) {
       out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
     } else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running, but the release was refused (${set.out.split('\n').pop()}): release it (${E.releaseCommand(t.key)})`);
   }
+}
+// A bare hold names no blocker for the merge driver to wait on, so the pass releases it, driver or not.
+for (const t of bareNow) {
+  if (DRY) { out.push(`release due (dry run): ${t.key} would be released, held behind no blocker`); continue; }
+  const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
+  const set = qTry(setArgs);
+  const front = set.ok ? qTry(frontArgs) : null;
+  if (set.ok) {
+    releasedNow.push(t);
+    out.push(`released: ${t.key}, held behind no blocker${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
+  } else report.waiting.push(`${t.key}: HELD — ${bareHoldText(t.key)}; the release was refused (${set.out.split('\n').pop()})`);
 }
 // The merge driver releases only "held by orchestrator" parks, so the pass lifts each merged blocker
 // from a triage park's holds itself, leaving its park, and so its state, as they were.

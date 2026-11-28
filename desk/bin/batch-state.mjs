@@ -328,6 +328,11 @@ export function dateHoldOf(labels) {
 // reads its label again once they release it. A stopped ticket is held on no date: the held_label a
 // release left behind stays, so its start is not held again on that label, but never starts it.
 export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label && !blockersOf(t).length ? dateHoldOf([t.held_label]) : null);
+// Held behind blockers, with none left in its held_by and no other reason to hold it (not stopped, no
+// date): nothing will ever release it but a release, so `set held_by=null` and the pass both release it.
+export const bareHold = (t) => isHeld(t) && parkKind(t) === 'hold' && !blockersOf(t).length && !dateHeld(t);
+// The words for a bare hold (bareHold) wherever one is shown.
+export const bareHoldText = (key) => `held, no blocker: release with queue.mjs set ${key} state=triaged`;
 // What the person is told about a blocked-until label whose date cannot be read.
 export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 

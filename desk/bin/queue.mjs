@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, checksRerun, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, bareHold, bareHoldText, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, checksRerun, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -1223,9 +1223,9 @@ switch (cmd) {
       if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
     }
     const held = unmergedBlockers(q, t, blockersOf(t));
-    applySet(t, pairs);
+    const freed = applySet(t, pairs);
     save(q);
-    console.log(`${key}: ${pairs.join(' ')}`);
+    console.log(`${key}: ${pairs.join(' ')}${freed}`);
     // A release still goes ahead past blockers that have not merged; it names them.
     const open = confirmed ? [] : held.filter((p) => !blockersOf(t).includes(p));
     if (open.length) console.error(`warning: ${key} is no longer held behind ${open.join(', ')}, which ${open.length === 1 ? 'has' : 'have'} not merged yet`);
@@ -1707,13 +1707,16 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const day = dateHeld(t);
-    const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
+    // A bare hold (bareHold) is released by the next pass, so it is held, not stuck.
+    const bare = bareHold(t);
+    const stuck = !day && !bare && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
     const by = blockersOf(t);
     const byText = by.join(', ') || '?';
     const spines = by.filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
+      : bare ? bareHoldText(t.key)
       : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
       : stuck ? `held behind ${byText}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${byText} merge`
