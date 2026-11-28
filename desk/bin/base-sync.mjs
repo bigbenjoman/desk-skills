@@ -214,10 +214,12 @@ export function prStalePaths({ repo, base, pr, head, paths = rowItems('stale-che
   if (fetched) return fetched;
   const mb = git(repo, ['merge-base', head, `origin/${base}`]);
   if (!mb.ok || !mb.out) return { result: 'error', why: `no merge base of its head and ${base}: ${firstLine(mb.out)}` };
-  const d = git(repo, ['diff', '--name-only', mb.out, `origin/${base}`]);
+  // No rename pairing, so a listed file moved away still counts by its old name; NUL-separated, so a
+  // path git would quote (a non-ASCII byte) reads as it is.
+  const d = git(repo, ['diff', '--name-only', '--no-renames', '-z', mb.out, `origin/${base}`]);
   if (!d.ok) return { result: 'error', why: `could not diff ${base} since its merge base: ${firstLine(d.out)}` };
   const res = paths.map(globToRegExp);
-  const files = (d.out ? d.out.split('\n') : []).filter((f) => res.some((re) => re.test(f)));
+  const files = d.out.split('\0').filter((f) => f && res.some((re) => re.test(f)));
   return { result: files.length ? 'stale' : 'current', merge_base: mb.out, files };
 }
 
