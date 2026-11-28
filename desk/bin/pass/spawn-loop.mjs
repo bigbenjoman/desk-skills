@@ -83,8 +83,10 @@ export function* decideSpawn(s) {
   // Any other try that writes to a cloud PR's branch, a local worker's or a new cloud session's, waits,
   // taking no slot, until the person has archived that PR's session, which is recorded abandoned and put
   // on needs-you's archive list first: until then the old session may still push there, and two writers
-  // race each other's pushes, or its late push is read as the new session's.
+  // race each other's pushes, or its late push is read as the new session's. A try its PR no longer needs
+  // (merged, closed, or moved past its head) is ended first, as at any spawn, and abandons nothing.
   if (s.archiveWait) {
+    if (yield { type: 'fix-try-stale', key }) return yield skip;
     const done = yield { type: 'cloud-archive-wait', key };
     yield wait(`its fix try on PR #${t.fix.pr} writes to the PR's branch, which cloud session ${s.archiveWait} may still push to: ${done}. It starts once that session is archived (needs-you: done on its cloud-archive item)`);
     return yield skip;

@@ -216,6 +216,8 @@ const { threw, calls } = withNoIo(() => {
       t(`issue-1552 ${what} waits, taking no slot, until the PR's session is archived`, j([held.verdict.type, types(held.actions).filter((x) => /slot|setup|login|place|start/.test(x)), types(held.actions).includes('cloud-archive-wait')]), j(['skip', [], true]));
       t(`issue-1552 and ${what} says why and what clears it`, /cloud session https:\/\/claude\.ai\/code\/session_x may still push to: its session is recorded abandoned\. It starts once that session is archived/.test(lines(held.actions).join()), true);
     }
+    const stale = step(snap(onPr, { cloudFix: null, archiveWait: 'session_x' }), { 'fix-try-stale': true });
+    t('issue-1552 a try its PR no longer needs is ended before the wait, and abandons no session', j([stale.verdict.type, types(stale.actions).includes('fix-try-stale'), types(stale.actions).includes('cloud-archive-wait')]), j(['skip', true, false]));
     t('issue-1552 a send to the live session is not held by it', step(snap(onPr, { cloudFix: 'send', archiveWait: 'session_x' })).verdict.how, 'send');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
   }

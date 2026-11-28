@@ -448,6 +448,7 @@ t('issue-1552 AC1 a checks try lists the red checks to fix and those to leave', 
 t('issue-1552 AC1 it says to push to the same branch and open no new PR', fm.includes('push to that same branch: open no new PR'), true);
 const rm = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 2, of: 2, pr: 40, kind: 'review', head: 'cccc', verdict: 'P1=1', findings: [{ sev: 'P1', text: 'x leaks' }], gaps: ['AC2 unmet'] } });
 t('issue-1552 AC1 a review try lists its findings and gaps', rm.includes('- P1: x leaks') && rm.includes('- AC2 unmet') && rm.includes('`P1=1`'), true);
+t('issue-1552 AC3 every try ends with a push, an empty commit where no code changes, as only a moved head reads it done', [fm, rm].every((m) => m.includes('always end it with a push') && m.includes('git commit --allow-empty')), true);
 const fb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'feedback', threads: [{ id: 'T1', text: 'rename it' }, { body: true, text: 'add a test' }] } });
 t('issue-1552 AC1 a feedback try lists its threads and body findings apart', fb.includes('Its unresolved review threads:\n\n- rename it') && fb.includes('Findings in the review body:\n\n- add a test'), true);
 const fp = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: '# CW-3\n\nAC1: it saves.' });

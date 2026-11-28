@@ -460,6 +460,8 @@ export function cloudFixMsg({ pr, branch, fix, rules }) {
     '',
     `Fix these on \`${branch}\` and push to that same branch: open no new PR, and leave the PR's draft state as it is. ` +
       'Run the tests for what you change before you push. Anything you cannot fix, say in a PR comment, with why.',
+    'desk reads this try as done only once the PR\'s head moves, so always end it with a push: where you change no code (every item answered as standing), ' +
+      'push one commit made with git commit --allow-empty, saying what you settled and why, as its message.',
     ...rulesSection(rules),
   ].join('\n');
 }
