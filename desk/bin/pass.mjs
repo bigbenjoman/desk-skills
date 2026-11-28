@@ -2579,7 +2579,8 @@ const linkLines = [];
     const cycles = keysOf(t.cycle_link);
     if (!cycles.length) continue;
     const linked = blockerKeys(triageRec(t.key));
-    const behind = heldBehindOf(qR, t.key);
+    // Counted as the check that raised it counts (merge_order too), or a cycle through a merge order is cleared the pass it is raised.
+    const behind = heldBehindOf(qR, t.key, { merges: true });
     const left = cycles.filter((k) => linked.includes(k) && behind.has(k));
     if (left.length !== cycles.length && !DRY) q('set', t.key, `cycle_link=${left.join('|') || 'null'}`);
   }

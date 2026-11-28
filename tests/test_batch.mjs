@@ -540,6 +540,8 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'P-1': { key: 'P-1', state: 'triaged' },
     'O-1': { key: 'O-1', state: 'triaged', merge_order: 'P-1' },
     'O-2': { key: 'O-2', state: 'triaged', merge_order: 'P-1|B-2' },
+    'P-2': { key: 'P-2', state: 'triaged' },
+    'O-3': { key: 'O-3', state: 'triaged', merge_order: 'P-2' },
   } });
   const yState = (...p) => join(namedS('Y-1'), ...p);
   mkdirSync(yState('triage'), { recursive: true });
@@ -550,9 +552,11 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-15': { blockers: [{ key: 'S-6', category: 'done' }], blocker_needs: { 'S-6': { needs: 'merge', why: 'the rollout flag must land first' } } },
     'T-16': { blockers: [{ key: 'S-6', category: 'done' }], blocker_needs: { 'S-6': { needs: 'none', why: 'independent' } } },
     'O-1': { blockers: [{ key: 'P-1', category: 'indeterminate' }], blocker_needs: { 'P-1': { needs: 'merge', why: 'both add a line to one list' } } } };
-  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10', 'T-11', 'T-12', 'T-13', 'T-14', 'T-15', 'T-16', 'P-1', 'O-1', 'O-2']) {
+  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10', 'T-11', 'T-12', 'T-13', 'T-14', 'T-15', 'T-16', 'P-1', 'O-1', 'O-2', 'P-2']) {
     writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...recs[k] }));
   }
+  // A record caught mid-rewrite: the move must refuse before writing either queue.
+  writeFileSync(yState('triage', 'O-3.json'), '{"ticket": "O-3", "blockers": [');
   const answer = (text) => `\n## Answer from the user (2026-11-14T10:00:00Z)\n\n${text}\n`;
   mkdirSync(yState('briefings'), { recursive: true });
   mkdirSync(yState('answers'), { recursive: true });
@@ -584,6 +588,10 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     `${r.code} ${yq['O-1'].merge_order} ${yq['O-1'].merge_after} ${r.out.includes('O-1 still merges only once P-1 is Done and landed')}`, '0 null P-1 true');
   t('DS-1031 one merge-ordered behind it for a shared file alone keeps only its other merge order',
     `${yq['O-2'].merge_order} ${yq['O-2'].merge_after ?? null}`, 'B-2 null');
+  const beforeP2 = `${readFileSync(standingQ, 'utf8')}\n${readFileSync(namedQ('Y-1'), 'utf8')}`;
+  r = moveTo('P-2');
+  t('DS-1031 a move whose merge-ordered ticket has a triage record that cannot be read refuses, and neither queue changes',
+    `${r.code !== 0} ${`${readFileSync(standingQ, 'utf8')}\n${readFileSync(namedQ('Y-1'), 'utf8')}` === beforeP2}`, 'true true');
 
   r = moveTo('T-3');
   const t3 = sq()['T-3'] ?? {};

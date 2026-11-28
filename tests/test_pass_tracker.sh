@@ -526,6 +526,7 @@ links J-68 J-69 new Open
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-1031 a late link that would hold a ticket behind one merge-ordered behind it adds no hold, and the report names the cycle" \
   '[ "$(field J-68 held_by)" = null ] && [ "$(field J-68 state)" = "\"triaged\"" ] && echo "$out" | grep -q "blocker link: J-68: linked as blocked by J-69, which waits behind it: not held, as that is a cycle"'
+check "DS-1031 that cycle stays raised after the pass, so the ticket does not start while it stands" '[ "$(field J-68 cycle_link)" = "\"J-69\"" ]'
 q drop J-68; q drop J-69
 q add J-67; q set J-67 state=parked held_by=J-61 'park={"question":"held by orchestrator: blocked by J-61 — starts once their PRs merge"}'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"J-61","category":"new"}]}' > "$T/state-j/triage/J-67.json"
