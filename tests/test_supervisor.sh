@@ -590,6 +590,17 @@ out=$(DESK_RUN_RECHECK_MS=300000 tick)
 check "DS-852 AC6 an idle batch with no park on a run or checks keeps the idle interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b11
 
+# ---- #1681 AC2: an idle batch holding a hold with no blocker left rechecks on the shorter interval --
+# Its held_by is not in the idle fingerprint, and only a pass releases it.
+queue true '{}' '{"H":{"key":"H","state":"parked","lane":"A","held_by":null,"park":{"question":"held by orchestrator","kind":"hold"}}}' b1681
+: > "$T/pass.calls"
+out=$(tick)
+check "#1681 AC2 the idle line names the shorter interval while a hold has no blocker left" 'grep -q "(2 minutes while a hold has no blocker left, which a pass releases)" "$LOG"'
+backdate 600
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
+check "#1681 AC2 once that interval has passed, the idle batch runs the pass that releases it" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' "$DONE" b1681b
+
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)

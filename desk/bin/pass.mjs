@@ -7004,29 +7004,30 @@ if (!merger.driver && undrafted.length) {
 // it would, every blocker's PR having merged, and only one the queue refuses needs you.
 const driverLive = E.mergeDriverHolder(STATE) != null;
 const releasedNow = [];
+// Releases `t` as releaseCommand does and moves it to the front, saying `why` it was released.
+// -> null once released, or the queue's refusal of the release.
+const releaseNow = (t, why) => {
+  const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
+  const set = qTry(setArgs);
+  if (!set.ok) return set.out.split('\n').pop();
+  const front = qTry(frontArgs);
+  releasedNow.push(t);
+  out.push(`released: ${t.key}, ${why}${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
+  return null;
+};
 for (const t of releaseDue) {
   if (driverLive) out.push(`release due: ${t.key} (every blocker merged; the merge driver releases it on its next loop)`);
   else if (DRY) out.push(`release due (dry run): ${t.key} would be released, every blocker merged (${predsOf(t).join(', ')})`);
   else {
-    const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-    const set = qTry(setArgs);
-    const front = set.ok ? qTry(frontArgs) : null;
-    if (set.ok) {
-      releasedNow.push(t);
-      out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
-    } else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running, but the release was refused (${set.out.split('\n').pop()}): release it (${E.releaseCommand(t.key)})`);
+    const refused = releaseNow(t, `every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running`);
+    if (refused != null) report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running, but the release was refused (${refused}): release it (${E.releaseCommand(t.key)})`);
   }
 }
 // A bare hold names no blocker for the merge driver to wait on, so the pass releases it, driver or not.
 for (const t of bareNow) {
   if (DRY) { out.push(`release due (dry run): ${t.key} would be released, held behind no blocker`); continue; }
-  const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-  const set = qTry(setArgs);
-  const front = set.ok ? qTry(frontArgs) : null;
-  if (set.ok) {
-    releasedNow.push(t);
-    out.push(`released: ${t.key}, held behind no blocker${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
-  } else report.waiting.push(`${t.key}: HELD — ${bareHoldText(t.key)}; the release was refused (${set.out.split('\n').pop()})`);
+  const refused = releaseNow(t, 'held behind no blocker');
+  if (refused != null) report.waiting.push(`${t.key}: HELD — ${bareHoldText(t.key)}; the release was refused (${refused})`);
 }
 // The merge driver releases only "held by orchestrator" parks, so the pass lifts each merged blocker
 // from a triage park's holds itself, leaving its park, and so its state, as they were.
