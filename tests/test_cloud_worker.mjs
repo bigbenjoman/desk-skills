@@ -43,7 +43,7 @@ const leverOnAt = (loc) => { const p = placement(rec({}), loc, { effort: true })
 t('DS-450 AC1 with the effort lever on, a ticket that could run in the cloud runs locally, and says why', leverOnAt('cloud'), `local: ${CLOUD_NO_EFFORT}`);
 t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 'local: null');
 
-// ---- issue-1550: config §3b "Cloud environment" -------------------------------
+// ---- config §3b "Cloud environment": parsing it, and placement against it ------
 const envOf = (raw) => { try { return JSON.stringify(parseCloudEnv(raw)); } catch (e) { return `refused: ${/is "/.test(e.message)}`; } };
 t('issue-1550 AC1 the row reads as the environment and what it provides', envOf('widgets: db browser services:redis,mailpit'),
   JSON.stringify({ name: 'widgets', db: true, browser: true, services: ['redis', 'mailpit'] }));
@@ -113,7 +113,7 @@ t('issue-1555 the repo\'s settings enabling the desk plugin make desk-review ava
 t('issue-1555 disabled, missing, another value, another plugin, no file or bad JSON: not available',
   [settings({ [CLOUD_REVIEW_PLUGIN]: false }), settings({}), settings({ [CLOUD_REVIEW_PLUGIN]: 'true' }), settings({ 'other@x': true }), '{}', '', '{nope', null, '[]'].map(deskReviewEnabled).some(Boolean), false);
 
-// ---- issue-1550: a cloud ticket that needs the database or a browser (AC2, AC6) --
+// ---- a cloud ticket that needs the database or a browser: its prompt ----------
 const widgets = parseCloudEnv('widgets: db browser services:redis');
 const setup = { services: ['redis :6379', 'typesense :8108', 'mailpit:8025'], migrate: ['pnpm db:migrate'], seed: ['apps/api: pnpm db:seed'], dev: ['pnpm dev'], dbVars: ['DATABASE_URL'] };
 const shots = shotsRef('feat/K-1-x', '2026-11-28T10:20:30.000Z');

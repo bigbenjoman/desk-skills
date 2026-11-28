@@ -350,7 +350,7 @@ printf '%s\n' '{"body":"Done.\n\n🤖 Generated with [Claude Code](https://claud
 : > "$T/gh-calls"
 out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC2 a PR that still carries it after one scrub parks, and is not edited again" '[ "$(field CW-9 state)" = "\"parked\"" ] && field CW-9 park.question | grep -q "It still does after the pass removed what it found once" && ! grep -q "pr edit" "$T/gh-calls"'
-# issue-1550 AC4: a cloud session pushes its screenshots to desk-shots/<branch> on origin. Once its PR
+# A cloud session pushes its screenshots to desk-shots/<branch> on origin. Once its PR
 # is found, the pass copies the screenshots at that ref's root into images/<KEY>/ for the undraft upload,
 # and deletes the ref on origin only where config §3 branch-delete is yes.
 node -e 'const fs = require("fs"); const [i, o] = process.argv.slice(1); fs.writeFileSync(o, fs.readFileSync(i, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `branch-delete` | Delete branches | `ask` | `yes` |"))' "$T/config.md" "$T/config-bd.md"

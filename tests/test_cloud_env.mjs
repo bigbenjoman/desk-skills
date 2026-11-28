@@ -135,7 +135,7 @@ for (const k of Object.keys(env)) if (k.startsWith('DESK_')) delete env[k];
 r = spawnSync(process.execPath, [join(dirname(new URL(import.meta.url).pathname), '../desk/bin/cloud-smoke.mjs')], { cwd: noOrigin, encoding: 'utf8', env });
 t('AC5 cloud-smoke.mjs runs the smoke (no origin: it says so and exits 1)', [r.status, r.stderr.trim()], [1, 'cloud-env: run this inside the repo (no GitHub origin here)']);
 
-// ---- issue-1550: config §3b "Cloud environment" in `hosts` (AC5) ----------------------------------
+// ---- config §3b "Cloud environment" in `hosts`: its setup script and variable names ---------------
 const fileNames = envHosts({ '.env': '# c\nDATABASE_URL=postgres://secret@db.example.com/x\nexport CLERK_SECRET_KEY="sk_live_x"\nNOT A VAR\n' }).names;
 const proposed = cloudEnvVars({ names: fileNames, env: parseCloudEnv('widgets: db browser'), dbVars: ['DATABASE_URL', 'DIRECT_URL'] });
 t('issue-1550 AC5 the environment\'s name is the one value desk writes', proposed.set, `${CLOUD_ENV_VAR}=widgets`);
