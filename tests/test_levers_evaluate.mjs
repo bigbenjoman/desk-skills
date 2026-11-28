@@ -920,10 +920,26 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const item = eventsOf(RV, 'needs_you');
   t('DS-1065 AC6 one needs-you item, naming the lever, its old and new counts, and both choices', [item.length, item[0]?.lever, item[0]?.reason_code, item[0]?.reason],
     [1, 'wrappers', 'recount_review', 'wrappers was turned off in recountoff (reverted) on 5 on and 5 off tickets; counted again on the code each ran on, it has 35 on and 35 off. Keep it off (levers decide recountoff wrappers off) or test it again (levers decide recountoff wrappers trial)']);
+  // Run again before any evaluation re-reads the evidence, as after a recount stopped part way: the
+  // counts still differ, so only the waiting item keeps it from asking twice.
+  rmSync(join(rvRoot, 'levers', 'fp-map.json'), { force: true });
+  recount({ ...args(rv, rvRoot), dryRun: false });
+  t('DS-1065 AC6 a recount run again asks once: the item still waiting gets no second', [eventsOf(RV, 'needs_you').length, eventsOf(RV, 'recount').length], [1, 2]);
   evalAt(rv, rvRoot, NOW + DAY);
   t('DS-1065 AC6 the evaluation holds it for Ben, and turns nothing back on', [wrappersRow(RV).state, wrappersRow(RV).decision, wrappersRow(RV).reason_code, transitionOf(RV).length], ['reverted', 'hold', 'recount_review', 1]);
-  recount({ ...args(rv, rvRoot), dryRun: false });
-  t('DS-1065 AC6 a recount run again asks once: the item still waiting gets no second', eventsOf(RV, 'needs_you').length, 1);
+
+  // A frozen lever is not evaluated, so its rows from then on carry its last evidence forward in the
+  // frozen state: the recount splits that evidence in the state the row that wrote it read it in.
+  const RF = 'acme__recountfrz';
+  const rfRoot = join(T, 'recount-frozen-root');
+  append(RF, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'reverted', eval_id: 'evl_f1', evidence_file: 'levers-evidence/evl_f1.jsonl', at: at(-5) });
+  const rf = fixture(RF);
+  evalAt(rf, rfRoot, NOW);
+  append(RF, { kind: 'transition', lever: 'wrappers', from: 'reverted', to: 'frozen', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'frozen', eval_id: 'evl_f2', evidence_file: 'levers-evidence/evl_f2.jsonl', at: at(0.5) });
+  evalAt(rf, rfRoot, NOW + DAY);
+  t('DS-1065 the fixture: the frozen lever\'s newest row carries its evidence forward', [wrappersRow(RF).state, !!wrappersRow(RF).evidence_from], ['frozen', true]);
+  t('DS-1065 AC6 a frozen lever is recounted on both arms, and Ben is asked', recount({ ...args(rf, rfRoot), now: NOW + DAY + 60_000, dryRun: true }).lines.filter((l) => l.startsWith('recountfrz wrappers')),
+    ['recountfrz wrappers: on 5 → 35, off 5 → 35 (frozen: not judged again, Ben decides)']);
 
   // While an evaluation holds its lock the recount writes nothing, so no evaluation reads the map
   // without the holds it needs.
