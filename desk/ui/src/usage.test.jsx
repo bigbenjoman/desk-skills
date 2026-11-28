@@ -116,6 +116,18 @@ describe('Usage & costs', () => {
       .toBe("✕ The subscription on this computer signed in to ben@personal.example, work-3, is off, so studia-reports can't start work. Turn work-3 back on, or pick another subscription for it.");
   });
 
+  it('a repo whose Subscription row could not be read shows a dash, and no alert naming an account', () => {
+    const subs = subscriptions();
+    subs.repos.push(repo('studia-new', null, { source: null, known: false, unread: true, off: null }));
+    draw(subs);
+    const row = document.querySelector('[data-repo="studia-new"]');
+    expect(row.children[1].textContent).toBe('—');
+    expect(row.children[3].textContent).toBe('nothing running');
+    expect(document.querySelector('[data-unknown="studia-new"]')).toBe(null);
+    expect(document.body.textContent).not.toMatch(/null/);
+    expect(screen.getAllByRole('alert').map((a) => a.getAttribute('data-unknown'))).toEqual(['studia-reports']);
+  });
+
   it('a repo on the default with no default at all is told to set one, not to turn it back on', () => {
     const subs = subscriptions();
     subs.claude = subs.claude.slice(1);

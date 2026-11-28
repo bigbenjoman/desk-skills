@@ -86,6 +86,11 @@ t('AC2 ops@studia.example is pinned by studia-web and ai-agents', [byEmail(s.cla
 t('AC2 each repo names the account it runs on', s.repos.map((r) => [r.name, r.email, r.source, r.known]), [
   ['ai-agents', 'ops@studia.example', 'row', true], ['desk-skills', 'ben@studia.example', 'default', true],
   ['studia-reports', 'old@studia.example', 'unknown email', false], ['studia-web', 'ops@studia.example', 'row', true]]);
+t('a repo with a Subscription row is not unread', s.repos.map((r) => r.unread), [false, false, false, false]);
+// A repo whose Subscription row could not be read (the rows failed, so usageTable gives it `sub` null).
+t('a repo whose Subscription row cannot be read is unread, naming no account',
+  (({ email, source, known, unread, off }) => ({ email, source, known, unread, off }))(Q.repoSubJson({ slug: 'studia__x', name: 'x', sub: null, workers: 0, ready: 0 })),
+  { email: null, source: null, known: false, unread: true, off: null });
 t('a subscription set off reads off', byEmail(s.claude, 'ben@personal.example').state, 'off');
 t('nothing waits while no subscription is at its limit', s.waiting, []);
 t('the probe interval goes with the figures', s.probe_every_ms, 5 * MIN);

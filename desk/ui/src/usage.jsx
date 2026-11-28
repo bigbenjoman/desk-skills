@@ -161,8 +161,10 @@ function SubCard({ s, codex = false, now }) {
   );
 }
 
-// A repo's "Runs on" cell: the default, the account it is pinned to, or an account no subscription here has.
+// A repo's "Runs on" cell: the default, the account it is pinned to, or an account no subscription here
+// has; a dash when its Subscription row could not be read, so nothing is known about it.
 function RunsOn({ r }) {
+  if (r.unread) return <span className="text-muted-fg" data-unread="">—</span>;
   if (r.source === 'default') return <span className={r.known ? '' : 'text-fail'}>{`Default (${r.email ?? 'not set'})`}</span>;
   if (!r.known) return <span className="inline-flex items-center gap-1.5 text-fail"><Icon name="pin" size={13} />{r.email}</span>;
   return <span className="inline-flex items-center gap-1.5"><Icon name="pin" size={13} />{r.email}</span>;
@@ -180,7 +182,8 @@ function ReposTable({ subs, now }) {
     const week = s?.reading?.seven_day ?? null;
     const pct = w?.type === 'seven_day' || weekLimit(s) ? 100 : week?.pct ?? null;
     const tone = pct == null ? null : level(pct, false).tone;
-    const now_ = !r.known ? <span className="font-medium text-fail">✕ can't start work</span>
+    const cannot = !r.known && !r.unread;
+    const now_ = cannot ? <span className="font-medium text-fail">✕ can't start work</span>
       : w ? <span className="text-needs">{`⧗ waits for the reset${r.ready ? '' : ' · 0 ready'}`}</span>
         : r.workers ? <span className="text-run">{`● ${r.workers} running`}</span>
           : <span className="text-muted-fg">nothing running</span>;
@@ -204,7 +207,7 @@ function ReposTable({ subs, now }) {
         </tr>,
       );
     }
-    if (!r.known) {
+    if (cannot) {
       rows.push(
         <tr key={`${r.slug} unknown`} className="border-t border-border">
           <td colSpan={4} className="px-3 py-2.5">

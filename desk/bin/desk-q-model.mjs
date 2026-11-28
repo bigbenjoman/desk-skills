@@ -4472,20 +4472,23 @@ const windowJson = (w, now) => (w ? ((u) => ({ pct: u.pct, resets_at: w.resetsAt
 const readingJson = (r, now) => (r?.at == null ? null : { five_hour: windowJson(r.five_hour, now), seven_day: windowJson(r.seven_day, now), at: r.at, none: r.none ?? [] });
 // An off default is off: no repo runs on it, so it is never labelled the default.
 const subState = (x) => (x.login.rule === 'off' ? 'off' : x.use?.isDefault ? 'default' : x.use?.pinned?.length ? 'pinned' : 'unused');
+// One repo of usageTable's `repos` as the screen reads it. `known`: it has a login to start work on (a
+// repo on the default while the default is off has none, logins.mjs repoSubscription). `unread`: its
+// Subscription row could not be read (`sub` null: the rows failed), so nothing is known about where it
+// runs, and the screen draws a dash, as desk-q's Usage table does, never an account named null.
+export const repoSubJson = (r) => ({ slug: r.slug, name: r.name, email: subLabel(r.sub), source: r.sub?.source ?? null, known: !!r.sub?.login, unread: !r.sub,
+  on: r.sub?.login?.name ?? null, off: r.sub?.off ? loginLabel(r.sub.off) : null, workers: r.workers, ready: r.ready });
 export function subscriptionsJson(repos, { now = Date.now() } = {}) {
   const u = usageTable(repos, now);
   const email = (x) => accountOf(x.login).email ?? x.login.account ?? null;
   const sub = (x) => ({ name: x.login.name, email: email(x), label: loginLabel(x.login), plan: x.plan ?? null, folder: x.login.folder ?? null, state: subState(x), is_default: !!x.use?.isDefault,
     pinned: x.use?.pinned ?? [], workers: x.workers ?? null, reading: readingJson(x.reading, now), limit: limitJson(x.limit ?? (x.tool === 'codex' ? x.out : null)) });
   const def = u.claude.find((x) => x.use?.isDefault && x.login.rule !== 'off') ?? null;
-  // A repo on the default while the default is off has no login (logins.mjs repoSubscription): it can't start work.
-  const known = (s) => !!s?.login;
   return {
     claude: u.claude.map(sub),
     codex: u.codex.map(sub),
     default_email: def ? email(def) ?? loginLabel(def.login) : null,
-    repos: u.repos.map((r) => ({ slug: r.slug, name: r.name, email: subLabel(r.sub), source: r.sub?.source ?? null, known: known(r.sub),
-      on: r.sub?.login?.name ?? null, off: r.sub?.off ? loginLabel(r.sub.off) : null, workers: r.workers, ready: r.ready })),
+    repos: u.repos.map(repoSubJson),
     waiting: waitingFor(u, u.repos).map((w) => ({ email: email(w.x) ?? loginLabel(w.x.login), name: w.x.login.name, type: w.limit.type, at: secMs(w.limit.at),
       repos: w.repos.map((r) => ({ name: r.name, ready: r.ready })) })),
     probe_every_ms: PROBE_EVERY_MS,
