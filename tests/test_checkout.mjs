@@ -327,6 +327,38 @@ has('#1646 a short session is still summarised by its end', wt, 'ended with: Ope
 const small = script('claude_activity.py', '--day', DAY, '--window-turns', '--turn-threshold', '10').stdout;
 t('#1646 a session over the size threshold is listed turn by turn too', small.includes('asked: Please fix APP-12, the login redirect loop\n    replied: Opened'), true);
 
+// #1536: a batch's headless sessions fold into one line per ticket; interactive ones keep their blocks.
+const tools3 = [{ name: 'Bash', input: { command: 'ls' } }, { name: 'Read', input: {} }, { name: 'Edit', input: {} }];
+const headless = (id, wt, branch, prompt, h, reply = 'Done.') => session(id, join(R, 'acme__app-worktrees', wt),
+  [{ ...user(at(h), prompt), entrypoint: 'sdk-cli', ...(branch && { gitBranch: branch }) }, { ...said(at(h, 10), reply, tools3), entrypoint: 'sdk-cli' }]);
+headless('nnnn0001-triage', 'APP-300', null, 'Triage ticket APP-300 against the repo and print the lane', 18, 'TRIAGE-BLOCK lane A for APP-300');
+headless('nnnn0002-worker', 'APP-300', 'fix/APP-300-totals', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-300. Work the ticket.', 19, 'WORKER-BLOCK opened the PR');
+headless('nnnn0003-fixtry', 'APP-300', 'fix/APP-300-totals', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-300. Your task is fix try 1 of 2 on PR #400.', 20);
+headless('nnnn0004-branch', 'APP-301', 'fix/APP-301-dates', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-301, near APP-999, APP-999 and APP-999.', 19);
+headless('nnnn0005-mention', 'scratch', null, 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-302, see APP-302 and APP-303.', 19);
+headless('nnnn0006-noticket', 'scratch2', null, 'Plan the next batch for this repo please', 19, 'NOTICKET-BLOCK');
+const folded = script('claude_activity.py', '--day', DAY);
+t('#1536 claude: exits 0', folded.status, 0);
+const fo = folded.stdout;
+has('#1536 AC1 a ticket\'s triage, worker and fix try fold into one line: key, stages and session count', fo, '- APP-300: triage, worker, fix try (3 sessions)');
+lacks('#1536 AC1 with no full block for any of them', fo, 'TRIAGE-BLOCK');
+lacks('#1536 AC1 nor the worker\'s', fo, 'WORKER-BLOCK');
+lacks('#1536 AC1 nor a session header', fo, 'session nnnn0002');
+has('#1536 a session folds under the ticket in its branch name, over one mentioned more', fo, '- APP-301: worker (1 session)');
+lacks('#1536 so not under that one', fo, '- APP-999');
+has('#1536 with no ticket in its branch, under its most-mentioned key', fo, '- APP-302: worker (1 session)');
+has('#1536 the fold lists every batch session', fo, '## Headless batch sessions, one line per ticket (5 sessions)');
+lacks('#1536 a session naming no ticket stays out', fo, 'NOTICKET-BLOCK');
+has('#1536 and is counted as left out', fo, '(1 headless session naming no ticket omitted)');
+has('#1536 AC2 an interactive session keeps its full block', fo, 'asked:\n  - Please fix APP-12, the login redirect loop');
+t('#1536 AC2 and the session count in the heading is still the blocks\' alone', fo.split('\n')[0], plain.split('\n')[0]);
+const blocksBefore = plain.split('\n').filter((l) => l.startsWith('## ')).length;
+t('#1536 AC3 six batch sessions add one heading and three lines, not six blocks', fo.split('\n').filter((l) => l.startsWith('## ')).length - blocksBefore, 1);
+const stage = probe(`import claude_activity as c
+s = lambda p: c.batch_stage({'prompts': [p] if p else []})
+print(json.dumps([s('A first triage pass put ticket APP-1 in lane B'), s('Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-1. This session starts at Stage 7'), s('Run the orchestrator'), s(None)]))`);
+t('#1536 a challenge triage pass is triage, a handed-off session a worker, anything else batch', JSON.stringify(stage), JSON.stringify(['triage', 'worker', 'batch', 'batch']));
+
 // github_activity.py: the user's PRs that moved on the day, grouped by scope.
 const pr = (repo, number, title, extra = {}) => ({ repository_url: `https://api.github.com/repos/${repo}`, number, title, state: 'open', created_at: before, user: { login: 'me' }, pull_request: {}, ...extra });
 put('mine', { items: [
