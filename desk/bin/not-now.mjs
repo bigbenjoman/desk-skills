@@ -13,6 +13,7 @@
 // and closing punctuation ignored. Each pass re-reads a put-off park's `pr-head` and `config:<id>`
 // inputs (refreshInputs), so those bring the question back when they change.
 // An unreadable register reads as empty, so the question is asked as it would be without one.
+// It also holds sessions' claims on needs-you items (addClaim), which `list` leaves out.
 import { readFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -124,6 +125,25 @@ export function clearPutOff(question, dir = stateDir(), at = new Date().toISOStr
   return { ok: true, key };
 }
 
+// A session's claim on a needs-you item (a follow step it runs): an entry of its own key, `<item> claim`,
+// which no question is asked under, so it never reads as put off. Done on the item clears it.
+const claimQuestion = (item) => `${item} claim`;
+export function addClaim({ item, session, ticket = null, at = new Date().toISOString() }, dir = stateDir()) {
+  const question = claimQuestion(item);
+  return addPutOff({ key: questionKey(question), question, ticket, at, claim: { item, session } }, dir);
+}
+// The item's claim, { item, session, at }, or null.
+export function claimOf(register, item) {
+  const e = register?.ok ? register.entries.get(questionKey(claimQuestion(item))) : null;
+  return e?.claim ? { ...e.claim, at: e.at } : null;
+}
+export function clearClaim(item, dir = stateDir(), at = new Date().toISOString()) {
+  const reg = readRegister(dir);
+  if (!claimOf(reg, item)) return false;
+  appendFileSync(notNowPath(dir), `${JSON.stringify({ key: questionKey(claimQuestion(item)), cleared: at })}\n`);
+  return true;
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -171,7 +191,7 @@ if (isMain) (async () => {
   if (cmd === 'list') {
     const reg = readRegister();
     if (!reg.ok) refuse(`register unreadable: ${reg.why}`);
-    for (const e of reg.entries.values()) console.log(`${day(e.at)} ${e.ticket ?? '-'} ${e.question}  ${JSON.stringify(e.inputs)}${e.dismissed ? '  (dismissed)' : ''}`);
+    for (const e of [...reg.entries.values()].filter((x) => !x.claim)) console.log(`${day(e.at)} ${e.ticket ?? '-'} ${e.question}  ${JSON.stringify(e.inputs)}${e.dismissed ? '  (dismissed)' : ''}`);
     process.exit(0);
   }
   refuse(usage);
