@@ -45,12 +45,33 @@ def desk_env_cmd():
     return [exe] if exe else None
 
 
-def _run(argv, env_extra=None, cwd=None):
+def desk_script(name):
+    """argv prefix that runs desk/bin/<name> with node, from where desk-env.mjs is found, or None."""
+    env_mjs = os.environ.get("DESK_ENV_MJS")
+    for d in (os.path.dirname(env_mjs) if env_mjs else None,
+              os.path.join(HOME, ".claude", "desk", "bin"),
+              os.path.normpath(os.path.join(_HERE, "..", "..", "..", "desk", "bin"))):
+        if d and os.path.isfile(os.path.join(d, name)) and shutil.which("node"):
+            return ["node", os.path.join(d, name)]
+    return None
+
+
+def run_for(repo, script, *args, timeout=60):
+    """stdout of desk/bin/<script> <args> read against repo's own config, or None when the repo has
+    no config file, the script cannot be found, or it fails."""
+    cmd = desk_script(script)
+    if not cmd or repo is None or not repo.config_path:
+        return None
+    out, rc = _run(cmd + list(args), {"DESK_CONFIG": repo.config_path, "DESK_SLUG": repo.slug}, timeout=timeout)
+    return out if rc == 0 else None
+
+
+def _run(argv, env_extra=None, cwd=None, timeout=30):
     env = dict(os.environ)
     env.pop("DESK_CONFIG", None)
     env.update(env_extra or {})
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd, timeout=30)
+        out = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None, 1
     return out.stdout, out.returncode

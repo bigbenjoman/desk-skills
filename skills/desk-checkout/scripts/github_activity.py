@@ -4,7 +4,8 @@
 Uses the `gh` CLI (already authenticated), so no token handling here. Lists PRs you
 opened, merged, closed or pushed to, and other people's PRs you reviewed, across every
 repo. Open PRs carry their review decision and check state, which is what "waiting on
-approval" claims need. For each repo it also counts the PRs merged in the window, yours and
+approval" claims need, the reason each red §4 State check gives, and any §4 Merge holds path that
+leaves the merge to the person (both read against that repo's own config). For each repo it also counts the PRs merged in the window, yours and
 everyone's (the latter only for a configured repo whose own §3 read-others is `yes`, or `ask`
 and passed with --include-others <slug>), so a post's merged count says whose PRs it means.
 
@@ -202,21 +203,80 @@ def merged_counts(repo, login, since, until, day, everyone):
     return mine, (total if everyone else None), cap_note(len(items), found, capped)
 
 
-def pr_state(repo, number):
-    """Review decision and a one-word check summary for an open PR."""
+_STATE_CHECKS = {}
+
+
+def state_checks(cfg):
+    """The names of a configured repo's §4 State checks, as gate.mjs reads the row; empty when the
+    repo has no config or the row does not parse."""
+    if cfg is None:
+        return frozenset()
+    if cfg.slug not in _STATE_CHECKS:
+        out = desk_repos.run_for(cfg, "gate.mjs", "state")
+        _STATE_CHECKS[cfg.slug] = frozenset(line.split("\t")[0] for line in (out or "").splitlines() if line.strip())
+    return _STATE_CHECKS[cfg.slug]
+
+
+EXIT_LINE = re.compile(r"^Process completed with exit code \d+\.?$")
+
+
+def failure_reason(repo, check):
+    """Why a failing check is red: a status's own description, else the first failure annotation of
+    its job (gate.mjs failureMessage's line, the step's exit-code line aside), or None."""
+    if check.get("description"):
+        return check["description"].strip()
+    job = re.search(r"/job/(\d+)", check.get("detailsUrl") or "")
+    raw = job and gh("api", f"repos/{repo}/check-runs/{job.group(1)}/annotations?per_page=100")
+    try:
+        notes = json.loads(raw) if raw else []
+    except ValueError:
+        return None
+    for n in notes if isinstance(notes, list) else []:
+        msg = str(n.get("message") or "").split("\n")[0].strip()
+        if n.get("annotation_level") == "failure" and msg and not EXIT_LINE.match(msg):
+            return msg[:300]
+    return None
+
+
+def merge_holds(repo, number, cfg):
+    """`merge hold: <files>, the person merges it` for an open PR whose files fall under a §4 Merge holds
+    item that leaves its merge to a person (gate.mjs held, the merge driver's test), "merge holds not
+    checked" when that could not be read, else None."""
+    holds = (cfg.get("merge-holds") or "").strip() if cfg else ""
+    if not holds or holds.lower() == "none":
+        return None
+    raw = desk_repos.run_for(cfg, "gate.mjs", "held", str(number), "--repo", repo)
+    try:
+        held = json.loads(raw)["holds"]
+    except (TypeError, ValueError, KeyError):
+        return "merge holds not checked (gate.mjs held could not read the PR)"
+    files = list(dict.fromkeys(f for h in held for f in h.get("files") or [h.get("glob") or "?"]))
+    if not files:
+        return None
+    named = ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else "")
+    return f"merge hold: {named}, the person merges it"
+
+
+def pr_state(repo, number, cfg=None):
+    """Review decision and a one-word check summary for an open PR, with the reason each red §4 State
+    check gives and any merge hold."""
     raw = gh("pr", "view", str(number), "-R", repo, "--json", "reviewDecision,statusCheckRollup,isDraft")
     if not raw:
         return ""
     data = json.loads(raw)
-    failing = sorted({
-        c.get("name") or c.get("context") or "?"
-        for c in data.get("statusCheckRollup") or []
-        if (c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED")
-    })
+    stated = state_checks(cfg)
+    failing = {}
+    for c in data.get("statusCheckRollup") or []:
+        if (c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED"):
+            name = c.get("name") or c.get("context") or "?"
+            why = failure_reason(repo, c) if name in stated else None
+            if why or name not in failing:
+                failing[name] = f"{name} ({why})" if why else name
     pending = any((c.get("status") or "").upper() in ("IN_PROGRESS", "QUEUED", "PENDING") for c in data.get("statusCheckRollup") or [])
-    checks = f"failing: {', '.join(failing)}" if failing else ("checks running" if pending else "checks green")
+    checks = f"failing: {', '.join(failing[n] for n in sorted(failing))}" if failing else ("checks running" if pending else "checks green")
     review = (data.get("reviewDecision") or "no review decision").lower().replace("_", " ")
-    return f"{'draft, ' if data.get('isDraft') else ''}{review}, {checks}"
+    hold = merge_holds(repo, number, cfg)
+    return f"{'draft, ' if data.get('isDraft') else ''}{review}, {checks}" + (f"; {hold}" if hold else "")
 
 
 def my_commits_in_window(repo, number, login, since, until):
@@ -345,7 +405,7 @@ def main():
             if pushed:
                 events.append(f"{pushed} commit{'s' if pushed > 1 else ''} pushed")
             if events:
-                events.append(pr_state(repo, pr["number"]))
+                events.append(pr_state(repo, pr["number"], desk_repos.scope_for_repo_name(repo, repos)[1]))
         if not events:
             return None  # touched only by bots, CI, title edits or branch syncs
         return sc, f"- {repo}#{pr['number']} {pr['title']} — {'; '.join(events)}"
