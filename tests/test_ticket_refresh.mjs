@@ -8,6 +8,7 @@ const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringi
 t('AC3 an issue updated before the file was written has not changed', issueChanged({ updatedAt: '2026-11-20T10:00:00Z', fileAt: '2026-11-21T10:00:00Z' }), false);
 t('AC1 an issue updated after the file was written has changed', issueChanged({ updatedAt: '2026-11-22T10:00:00Z', fileAt: '2026-11-21T10:00:00Z' }), true);
 t('a recorded read later than the update is not a change, though the file is older', issueChanged({ updatedAt: '2026-11-22T10:00:00Z', readAt: '2026-11-22T10:00:00Z', fileAt: '2026-11-21T10:00:00Z' }), false);
+t('issue-1694 a recorded read wins over a later file write: an edit after the read is a change', issueChanged({ updatedAt: '2026-11-22T10:00:00Z', readAt: '2026-11-21T10:00:00Z', fileAt: '2026-11-23T10:00:00Z' }), true);
 t('an unreadable update time is no change', issueChanged({ updatedAt: '', fileAt: '2026-11-21T10:00:00Z' }), false);
 
 const body = '## Problem\nThe badge is missing.\n\n## Acceptance criteria\n- AC1: the badge shows on the card\n\n## Design\nNo UI.';

@@ -5,12 +5,15 @@ import { sections } from './desk-design.mjs';
 import { ticketDecisions, withDecisions, ANSWER_BY } from './decisions-change.mjs';
 
 // Whether the issue changed since its text was last read: its `updatedAt` after the time recorded
-// for the last read (the queue's `issue_read`), else after the ticket file was written.
+// for the last read (the queue's `issue_read`), else, with none recorded, after the ticket file was
+// written. A recorded read wins over the file's time: desk writes the file for other reasons too (an
+// answer's Decisions entry, answer.mjs), and a write is not a read of the issue.
 export function issueChanged({ updatedAt, readAt, fileAt }) {
   const u = Date.parse(updatedAt ?? '');
   if (Number.isNaN(u)) return false;
-  const seen = [readAt, fileAt].map((x) => Date.parse(x ?? '')).filter((x) => !Number.isNaN(x));
-  return !seen.length || u > Math.max(...seen);
+  const read = Date.parse(readAt ?? '');
+  const seen = Number.isNaN(read) ? Date.parse(fileAt ?? '') : read;
+  return Number.isNaN(seen) || u > seen;
 }
 
 // The issue as a ticket file, in the layout desk-autopilot's batch-arguments gives it: key, source,

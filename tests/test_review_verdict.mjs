@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, settledSection, settlingEntry, methodLine, CLEAN, VerdictError, gateRejects, validateResults, checkAnchors, anchorLine } from '../skills/desk-review/bin/verdict.mjs'
-import { reviewGaps, reviewFix, personGapsCall, personGapsIn, measureOf } from '../desk/bin/fix-tries.mjs'
+import { reviewGaps, reviewFix, personGapsCall, personGapsIn, measureOf, personGapLines, ANSWERED_ITEM } from '../desk/bin/fix-tries.mjs'
 import { settledCriteria, answerEntry, ticketDecisions } from '../desk/bin/decisions-change.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
 import { scratch } from './scratch.mjs';
@@ -610,6 +610,33 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('issue-1694 AC3 a measurement on a criterion nothing settles is still asked', personGapsCall(review, { judgement: 'yes', settled: () => ['AC4'] })?.call, 'stuck')
   t('issue-1694 a gap with no MEASURE command is not a measurement', measureOf("PERSON'S CALL · AC2: \"x\" — pick one. Recommended: A"), null)
   t('issue-1694 the Decisions entry is in the file where the restart reads it', ticketDecisions(file).length, 1)
+
+  // A DoD criterion, as the ticket numbers it: asked as DoD2, and not asked again once settled.
+  const dod = `PERSON'S CALL · DoD2: "the feature runs end to end in under a minute" — MEASURE: \`${CMD}\`: Python is refused for workers`
+  const dodReview = { ...review, body: `### Requirement gaps\n- ${dod}\n` }
+  const dodAsk = personGapsIn(personGapsCall(dodReview, { judgement: 'yes', settled: [] })?.why)[0] ?? ''
+  t('issue-1694 AC3 a DoD measurement asks for DoD2 by its label', dodAsk.includes('naming DoD2 ("DoD2: <number>")'), true)
+  const dodFile = ['# e', '', '## Decisions', answerEntry({ text: 'DoD2: 41 seconds', who: 'ben', today: '2026-11-28' }), ''].join('\n')
+  t('issue-1694 AC3 a settled DoD measurement is never put to the person again', JSON.stringify([settledCriteria(dodFile), personGapsCall(dodReview, { judgement: 'yes', settled: () => settledCriteria(dodFile) })]), JSON.stringify([['DOD2'], null]))
+
+  // A draft's gaps, as needs-you quotes them: the measurement's ask, or answered and untagged.
+  const lines = personGapLines([gap, 'AC5: "x" — the badge is missing on the list'], { settled: [] })
+  t('issue-1694 AC3 on a draft a measurement is quoted with its ask, and any other gap as written', [lines[0].includes(`run \`${CMD}\` and reply with the number`), lines[1]].join(' | '), 'true | AC5: "x" — the badge is missing on the list')
+  const done = personGapLines([gap], { settled })
+  t('issue-1694 AC3 on a draft an answered measurement is untagged and marked answered, not asked again', [done[0].endsWith(ANSWERED_ITEM), /PERSON'S CALL/.test(done[0]), /reply with the number/.test(done[0])].join(' '), 'true false false')
+}
+
+// ---- issue-1694: the pass's settled criteria are desk-review's own reading, entry by entry
+{
+  const entries = [
+    '2026-11-26 ben: AC3 measured at 212 lines', '2026-11-26 ben: AC3 and DoD2 both measured: 212 lines, 41 s', '2026-11-26 ben: AC3',
+    '2026-11-26 ben: AC3.', 'ben: AC3 measured', '2026-11-26 AC3 measured', '2026-11-27 desk pass: issue #1 changed: "AC5: x"',
+    '2026-11-28 ben (answer.mjs): DoD1: 7', '2026-11-28 ben: dod4 ruled met by the call on the 27th',
+  ]
+  const review = (e) => [...new Set((e.match(/\b(?:AC|DoD)\s?\d+\b/gi) ?? []).map((c) => c.replace(/\s+/g, '').toUpperCase()))].filter((c) => settlingEntry(e, c))
+  const pass = (e) => settledCriteria(`## Decisions\n* ${e}\n`)
+  t('issue-1694 the pass and the review read every entry alike', entries.filter((e) => JSON.stringify(review(e)) !== JSON.stringify(pass(e))).join(' / '), '')
+  t('issue-1694 and they settle what the rule says', JSON.stringify(entries.map(pass)), JSON.stringify([['AC3'], ['AC3', 'DOD2'], [], [], [], [], [], ['DOD1'], ['DOD4']]))
 }
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')

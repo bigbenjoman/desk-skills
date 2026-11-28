@@ -283,6 +283,32 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('issue-1694 AC2 a "not now" is no decision', ticketDecisions(c.text).length, 1);
   const df = (() => { const f = fixture(parkedQ('M-5')); const state = join(dirname(f), 'state'); mkdirSync(join(state, 'tickets'), { recursive: true }); writeFileSync(join(state, 'tickets', 'M-5.md'), '# M-5\n\n## Decisions\n* 2026-11-20 ben: x\n'); const r = spawnSync(process.execPath, [join(B, 'answer.mjs'), 'M-5', 'accept AC3 as built'], { cwd: join(T, 'repo'), encoding: 'utf8', env: { ...process.env, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: state, [A.ASK_BY_ENV]: 'default' } }); return { r, text: readFileSync(join(state, 'tickets', 'M-5.md'), 'utf8') }; })();
   t('issue-1694 AC2 a default\'s take naming a criterion is not the person\'s ruling, so it settles nothing', j([df.r.status, ticketDecisions(df.text).length, /not the person's ruling/.test(df.r.stdout)]), j([0, 1, true]));
+  // An issue's ticket file: the write keeps the last read of the issue, so an issue edit made before the
+  // answer still reads as new to the refresh (ticket-refresh.mjs issueChanged).
+  {
+    const { utimesSync, statSync } = await import('node:fs');
+    const { issueChanged } = await import('../desk/bin/ticket-refresh.mjs');
+    const NONE = join(T, 'config-none.md');
+    writeFileSync(NONE, `${REPO}\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | \`none\` |\n`);
+    const issueRun = (key, inQueue) => {
+      const f = fixture(inQueue ? parkedQ(key) : { version: 1, batch: 'b', tickets: {} });
+      const state = join(dirname(f), 'state');
+      mkdirSync(join(state, 'tickets'), { recursive: true });
+      const file = join(state, 'tickets', `${key}.md`);
+      writeFileSync(file, `# ${key}\n\n## Decisions\n* 2026-11-20 ben: x\n`);
+      const written = new Date('2026-11-21T10:00:00Z');
+      utimesSync(file, written, written);
+      const r = spawnSync(process.execPath, [join(B, 'answer.mjs'), key, 'AC3: 212'], { cwd: join(T, 'repo'), encoding: 'utf8', env: { ...process.env, DESK_CONFIG: NONE, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: state } });
+      const t0 = JSON.parse(readFileSync(f, 'utf8')).tickets[key] ?? null;
+      // The issue was edited after the file was written and before the answer.
+      const changed = issueChanged({ updatedAt: '2026-11-22T10:00:00Z', readAt: t0?.issue_read, fileAt: statSync(file).mtime.toISOString() });
+      return { r, t0, changed, entries: ticketDecisions(readFileSync(file, 'utf8')).length };
+    };
+    const q = issueRun('issue-41', true);
+    t('issue-1694 an answer into a queued issue\'s ticket file records the file\'s last read, so an earlier issue edit still reads as new', j([q.r.status, q.entries, q.t0?.issue_read, q.changed]), j([0, 2, '2026-11-21T10:00:00.000Z', true]));
+    const o = issueRun('issue-42', false);
+    t('issue-1694 with the issue not in the queue, the file\'s time is put back instead', j([o.r.status, o.entries, o.changed]), j([0, 2, true]));
+  }
   const d = run('M-4', 'AC3: 212', false);
   t('issue-1694 AC2 with no ticket file desk keeps, nothing is written and it says where to record it', j([d.r.status, d.text, /keeps no ticket file for it/.test(d.r.stdout)]), j([0, null, true]));
 }

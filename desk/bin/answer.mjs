@@ -8,10 +8,10 @@
 // unattended at all, and un-parking here once sent exactly such a ticket to a headless worker.
 // Exits 0 once the answer is recorded, or 11 (show the person) on any refusal or error: EXIT in
 // batch-state.mjs.
-import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, runBin, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
+import { stateDir, runBin, queueFile, configValue, ticketKind, SAFE_ID } from './desk-env.mjs';
 import { isHeld, EXIT, crashShowsPerson, readQueue, readTriage, unknownsOf, openUnknowns, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
@@ -216,7 +216,11 @@ if (!putOffAnswer && by !== 'person' && criteriaNamed(text).length) {
   if (entry && existsSync(file)) {
     try {
       const old = readFileSync(file, 'utf8');
-      if (!old.includes(entry.slice(2))) writeFileSync(file, `${withDecisions(old.trimEnd(), [entry])}\n`);
+      if (!old.includes(entry.slice(2))) {
+        const before = statSync(file);
+        writeFileSync(file, `${withDecisions(old.trimEnd(), [entry])}\n`);
+        keepIssueRead(ticket, file, before);
+      }
       console.log(`${ticket}: it names ${criteriaNamed(text).join(', ')}, so it is in its ticket file's Decisions (${file}), which desk-review reads as settling ${criteriaNamed(text).length === 1 ? 'it' : 'them'}.`);
     } catch (e) {
       console.error(`${ticket}: answer recorded in the briefing, but not in its ticket file's Decisions: ${e.message}`);
@@ -308,6 +312,26 @@ try {
 } catch (e) {
   console.error(`answer recorded, but the queue could not be updated: ${e.message}`);
   process.exit(EXIT.SHOW_PERSON);
+}
+
+// An issue's ticket file is refreshed from the issue only when the issue changed since it was last read:
+// its queue `issue_read`, else the file's mtime (ticket-refresh.mjs issueChanged). Writing the answer
+// moves that mtime, so an issue edited before the answer would read as already in the file and never
+// reach it. So the last read stays what it was: recorded as `issue_read` where the queue holds the
+// ticket with none yet, else the file's mtime is put back.
+function keepIssueRead(ticket, file, before) {
+  let kind = null;
+  try { kind = ticketKind(ticket).kind; } catch { /* no config: not an issue desk refreshes */ }
+  if (kind !== 'issue') return;
+  let t = null;
+  try { t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null; } catch { /* no queue */ }
+  if (t?.issue_read) return;
+  if (t) {
+    try { execFileSync('node', [QUEUE, 'set', ticket, `issue_read=${before.mtime.toISOString()}`], { stdio: 'ignore' }); return; } catch { /* the mtime is put back instead */ }
+  }
+  try { utimesSync(file, before.atime, before.mtime); } catch (e) {
+    console.error(`${ticket}: its ticket file's time could not be put back (${e.message}), so an issue edit made before this answer may not reach it until the issue changes again`);
+  }
 }
 
 // What an answer does to the ticket's park, where it holds one: an answer given now, or one given before

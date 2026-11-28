@@ -886,20 +886,31 @@ export const measureOf = (gap) => (personsCall(gap) ? /\bMEASURE:\s*`([^`\r\n]+)
 // decisions-change.mjs settledCriteria reads, or a function returning them): it was asked and answered,
 // so it is never put to the person again. A worker posts the verdict again, citing the entry, and its
 // gap goes to that worker untagged, so if it outlasts the try it is not read back as the person's.
+// The criterion a measurement gap names before its command, as the ticket numbers it (AC3, DoD2), or null.
+const measuredCriterion = (gap) => {
+  const m = /\b(AC|DoD)\s?(\d+)\b/i.exec(String(gap ?? '').split(/\bMEASURE:/)[0]);
+  return m ? `${/^dod$/i.test(m[1]) ? 'DoD' : 'AC'}${m[2]}` : null;
+};
 const answeredMeasure = (gap, settled) => {
   if (!measureOf(gap) || settled == null) return false;
-  const ac = gapAc(gap);
+  const c = measuredCriterion(gap);
   const have = typeof settled === 'function' ? settled() : settled;
-  return ac != null && Array.isArray(have) && have.includes(`AC${ac}`);
+  return c != null && Array.isArray(have) && have.map((x) => String(x).toUpperCase()).includes(c.toUpperCase());
 };
 const ANSWERED_NOTE = ' [answered: the ticket\'s Decisions settle it, so post the verdict again with it under settled, citing the entry]';
+const untagged = (g) => g.replace(/PERSON['’]S CALL\s*·?\s*/, '');
+// How a draft's review gap reads to the person (needs-you.mjs): a measurement asks for its command's
+// number as the stuck reason does (personGapText), and one the ticket's Decisions already settle is
+// untagged and marked answered, so it is never asked again. Any other gap as the review wrote it.
+export const ANSWERED_ITEM = ' [answered: the ticket\'s Decisions settle it, so it is not asked again: send the PR back to a worker, which posts the verdict again citing the entry]';
+export const personGapLines = (gaps, { settled, workerMay } = {}) => (gaps ?? []).map((g) => (answeredMeasure(g, settled) ? `${untagged(g)}${ANSWERED_ITEM}` : measureOf(g) ? personGapText(g, workerMay) : g));
 // A tagged gap as the person's item names: with a recommendation no worker may carry out, the action
 // and the row, so the person, or a session §3 grants it, does it without asking anyone else; a
 // measurement, the command and the one reply that settles it.
 const personGapText = (gap, workerMay) => {
   const cmd = measureOf(gap);
-  const ac = gapAc(gap);
-  if (cmd) return `${gap} [no worker can run this measurement: run \`${cmd}\` and reply with the number${ac ? `, naming AC${ac} ("AC${ac}: <number>")` : ''}; answer.mjs writes it into the ticket's Decisions, which settles it, so it is not asked again]`;
+  const c = measuredCriterion(gap);
+  if (cmd) return `${gap} [no worker can run this measurement: run \`${cmd}\` and reply with the number${c ? `, naming ${c} ("${c}: <number>")` : ''}; answer.mjs writes it into the ticket's Decisions, which settles it, so it is not asked again]`;
   const r = deniedRoute(gap, workerMay);
   return r ? `${gap} [no fix try: its recommendation, "${recommendedOf(gap)}", needs config §3 ${r.row}, which workers are not granted: ${r.action} on the PR's branch yourself, or from a session allowed to, or take the other option]` : gap;
 };
@@ -970,7 +981,7 @@ export function reviewFix(t, review, opts = {}) {
   const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)).map((g) => (answeredMeasure(g, opts.settled) ? `${g.replace(/PERSON['’]S CALL\s*·?\s*/, '')}${ANSWERED_NOTE}` : g)) : [];
+  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)).map((g) => (answeredMeasure(g, opts.settled) ? `${untagged(g)}${ANSWERED_NOTE}` : g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
   const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;

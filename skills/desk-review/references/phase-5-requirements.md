@@ -130,8 +130,9 @@ them the comment to post.
 worker may run (refused for workers, and not in §4 Worker measuring commands, `desk-env cmds worker-measure-cmds`) is `settled_by: person`,
 and names the command after `MEASURE:` in backticks, with no `Recommended:`:
 `- PERSON'S CALL · AC3: "<criterion>" — MEASURE: \`<command>\`: <why no worker can run it>`.
-The pass puts it to the person once, as a needs-you item reading "run this and reply with the number"
-(`desk/bin/fix-tries.mjs` `measureOf`); their answer, naming the criterion, goes into the ticket's
+The pass puts it to the person once, as a needs-you item reading "run this and reply with the number",
+on a draft as on a ready PR (`desk/bin/fix-tries.mjs` `measureOf`, `personGapLines`); their answer,
+naming the criterion by its label (`AC3`, `DoD2`), goes into the ticket's
 Decisions through `answer.mjs`, which settles it (above). So once a Decisions entry or a recorded
 answer settles that criterion, it is **never raised again**: not as a gap, not as a request to run the
 command and post the count on the PR. Where a review raises it anyway, the pass sends it to a worker to

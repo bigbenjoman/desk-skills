@@ -1,7 +1,19 @@
 // A ticket file's Decisions entries added since its PR's last review. A requeued ticket whose ticket
 // file gained one restarts at Stage 3 for it, not at the PR stage, where the worker would see the open
 // PR and its review and take the ticket as done. Pure: pass.mjs reads the file and the PR.
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sections } from './desk-design.mjs';
+import { skillsDir } from './desk-env.mjs';
+
+// desk-review's own reading of a Decisions entry (verdict.mjs settlingEntry), so the pass and the review
+// apply one rule: from this checkout's skills beside desk/bin, else the installed skills. With neither,
+// nothing reads as settled, so a gap is still put to the person rather than dropped.
+const VERDICT = [join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills'), skillsDir()]
+  .map((d) => join(d, 'desk-review', 'bin', 'verdict.mjs')).find((f) => existsSync(f));
+let settlingEntry = () => null;
+try { if (VERDICT) ({ settlingEntry } = await import(pathToFileURL(VERDICT).href)); } catch { /* read as nothing settled */ }
 
 // The entries under a ticket's `## Decisions` heading, as desk-jira's ticket template writes them
 // (`* <yyyy-mm-dd> <who>: <what>`, or a `-` bullet), each { date, line }. A line with no date is left out.
@@ -47,17 +59,10 @@ export function answerEntry({ text, who, today }) {
   return `* ${today} ${String(who ?? '').replace(/[:\s]+/g, ' ').trim() || 'the person'} ${ANSWER_BY} ${one}`;
 }
 
-// The criteria a ticket's Decisions entries settle, as desk-review reads them (verdict.mjs
-// settlingEntry, the same rule): each entry dated, naming who decided before its colon, naming the
-// criterion, and saying more than its label; never the desk pass's own refresh entry. Upper-cased labels,
-// once each.
+// The criteria a ticket's Decisions entries settle, as desk-review reads them: each label an entry names
+// that verdict.mjs settlingEntry reads it as settling. Upper-cased labels (AC3, DOD2), once each.
 export function settledCriteria(text) {
-  return [...new Set(ticketDecisions(text).flatMap(({ line }) => {
-    const m = /^\d{4}-\d{2}-\d{2}\s+([^:\r\n]*[^\s:])\s*:\s*(.+)$/.exec(line);
-    if (!m || /^desk pass$/i.test(m[1].trim())) return [];
-    const evidence = m[2].replace(/\b(?:AC|DoD)\s?\d+\b/gi, ' ').replace(/[\s:;,.()"'`—–-]+/g, ' ').trim();
-    return evidence ? criteriaNamed(m[2]) : [];
-  }))];
+  return [...new Set(ticketDecisions(text).flatMap(({ line }) => criteriaNamed(line).filter((c) => settlingEntry(line, c))))];
 }
 
 // When the PR was last reviewed: the latest of the person's desk reviews (a review whose body carries a
