@@ -122,9 +122,9 @@ const ownPark = (r) => (laneUnchecked(r) ? `lane ${r.lane}, UNCHECKED — the ch
   : designParked(r) ? designPark(r)
   : null);
 
-// Collision detection. Two tickets that touch the same file cannot run concurrently:
-// they would conflict on the file, and worse, each is blind to a helper the other just
-// added — a duplicate by this repo's own rules. A file §4 Append-only paths covers is only added to,
+// Collision detection. Two tickets that touch the same file conflict on it, and each is blind to a
+// helper the other just added, so their merges are ordered (the merge chain, below), and at §3b
+// "Overlap holds" `start` the later one does not start until the earlier one's PR merges. A file §4 Append-only paths covers is only added to,
 // so sharing it is no collision; a row that is not a list of globs reads as none and is said below.
 const appendOnly = appendOnlyFrom(() => configValues('append-only-paths'));
 const collisions = [];
@@ -177,12 +177,24 @@ const admittedKeys = new Set(admitted.map((r) => r.ticket));
 const added = {};      // ticket -> questions plan-batch adds
 const notes = {};      // ticket -> plan lines
 const preds = {};      // ticket -> in-batch blockers it is held behind
+const mergeOrder = {}; // ticket -> in-batch tickets whose PRs it merges after, starting meanwhile (merge_order)
 const holdWhy = {};    // ticket -> blocker -> what makes it one (a Jira link, or the feature plan)
+const because = (t, p, why) => { const w = (holdWhy[t] ??= {}); w[p] = w[p] ? `${w[p]}; ${why}` : why; };
+// A start hold carries the merge order with it, so it replaces a merge-order hold on the same pair.
 const holdBehind = (t, p, why) => {
   if (t === p) return;
-  const w = (holdWhy[t] ??= {});
-  if (!w[p]) (preds[t] ??= []).push(p);
-  w[p] = w[p] ? `${w[p]}; ${why}` : why;
+  if (!preds[t]?.includes(p)) (preds[t] ??= []).push(p);
+  if (mergeOrder[t]?.includes(p)) mergeOrder[t] = mergeOrder[t].filter((x) => x !== p);
+  because(t, p, why);
+};
+// Config §3b "Overlap holds": at `merge` (the default) a shared file, or an in-batch Jira blocker
+// triage judged needs only to merge, orders the merges (merge_order, held by the merge driver and
+// lifted by the pass once the named ticket's PR merges) rather than holding the start.
+const OVERLAP_START = (() => { try { return String(configValue('overlap-holds') ?? '').trim().replace(/^`|`$/g, '').toLowerCase() === 'start'; } catch { return false; } })();
+const mergeBehind = (t, p, why) => {
+  if (t === p) return;
+  if (!preds[t]?.includes(p) && !mergeOrder[t]?.includes(p)) (mergeOrder[t] ??= []).push(p);
+  because(t, p, why);
 };
 const ask = (t, q) => (added[t] ??= []).push(q);
 const note = (t, n) => (notes[t] ??= []).push(n);
@@ -220,7 +232,9 @@ for (const r of planned) {
       const own = r.blockers.find((x) => x?.key === k);
       const call = own ? blockerHold(own, r, STEP_LABELS, INPUT_LABELS) : null;
       const buildCall = call?.by === 'triage' && call.needs === 'build';
-      if (br && plannedKeys.has(k)) holdBehind(t, k, 'Jira link');
+      // One triage judged it needs only to merge orders the merges, as one in no batch does below.
+      if (br && plannedKeys.has(k) && !OVERLAP_START && call?.by === 'triage' && call.needs === 'merge') mergeBehind(t, k, `Jira link; triage: ${call.why}`);
+      else if (br && plannedKeys.has(k)) holdBehind(t, k, 'Jira link');
       else if (direct?.category === 'done') note(t, `blocker ${k} is done (${awayWhy(br)})`);
       else if (direct) {
         (outsideHolds[t] ??= []).push(k);
@@ -319,12 +333,14 @@ if (feature?.on && feature.plan) {
 // A cycle can never release, so everything on one is parked for the user to fix the links. Every
 // strongly connected group of two or more (Tarjan) is a cycle; a plain depth-first search misses a
 // ticket that reaches the cycle only through a node it has already finished.
+// A merge-order hold counts: one each way, or one against a start hold, waits forever as well.
+const after = (t) => [...(preds[t] ?? []), ...(mergeOrder[t] ?? [])];
 const onCycle = new Map();
 {
   let n = 0; const idx = {}; const low = {}; const on = new Set(); const stack = [];
   const strong = (t) => {
     idx[t] = low[t] = n++; stack.push(t); on.add(t);
-    for (const p of preds[t] ?? []) {
+    for (const p of after(t)) {
       if (idx[p] === undefined) { strong(p); low[t] = Math.min(low[t], low[p]); }
       else if (on.has(p)) low[t] = Math.min(low[t], idx[p]);
     }
@@ -353,12 +369,14 @@ for (const label of spineCycles) {
   if (!tableCycles.has(label)) featureQs.push(`the spine ${feature.spine} is on a dependency cycle (${label}) through its Jira links to a child: drop the link, or choose another spine`);
 }
 const cycleFix = (label) => (tableCycles.has(label) ? 'fix the owner table in feature.json, or the Jira links' : 'fix the Jira links');
-for (const [t] of onCycle) delete preds[t];
-for (const [t, ps] of Object.entries(preds)) {
-  const bad = ps.filter((p) => onCycle.has(p));
-  for (const p of bad) ask(t, `${t} is blocked by ${p}, which is on a dependency cycle: ${cycleFix(onCycle.get(p))} first`);
-  preds[t] = ps.filter((p) => !onCycle.has(p));
-  if (!preds[t].length) delete preds[t];
+for (const [t] of onCycle) { delete preds[t]; delete mergeOrder[t]; }
+for (const holds of [preds, mergeOrder]) {
+  for (const [t, ps] of Object.entries(holds)) {
+    const bad = ps.filter((p) => onCycle.has(p));
+    for (const p of bad) ask(t, `${t} is blocked by ${p}, which is on a dependency cycle: ${cycleFix(onCycle.get(p))} first`);
+    holds[t] = ps.filter((p) => !onCycle.has(p));
+    if (!holds[t].length) delete holds[t];
+  }
 }
 admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 
@@ -368,11 +386,12 @@ admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 // feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds,
 // except the spine hold, which every child has by design.
 // A pair one of which already waits on the other is held in that order, and any other pair in the
-// order the kinds give, so the chain cannot close a cycle.
+// order the kinds give, so the chain cannot close a cycle. At §3b "Overlap holds" `merge` the chain
+// orders only the merges (merge_order): both start, and the later one's PR waits for the earlier one's.
 const waitsOn = (t, p) => {
   const seen = new Set(); const stack = [t];
   while (stack.length) {
-    for (const x of preds[stack.pop()] ?? []) {
+    for (const x of after(stack.pop())) {
       if (x === p) return true;
       if (!seen.has(x)) { seen.add(x); stack.push(x); }
     }
@@ -384,7 +403,7 @@ const contradicts = (first, then, how) => {
   if (radius(then) < radius(first)) contradictions.push(`${then.ticket} (${kindLabel(then)}) merges after ${first.ticket} (${kindLabel(first)}): ${how}`);
 };
 for (const r of admitted) {
-  for (const p of preds[r.ticket] ?? []) {
+  for (const p of after(r.ticket)) {
     const why = holdWhy[r.ticket][p];
     if (why === 'feature spine') continue;  // every child waits on the spine by design
     contradicts(byKey[p], r, /Jira link/.test(why) ? `${r.ticket} is blocked by ${p} through a Jira link, and the link wins`
@@ -392,6 +411,7 @@ for (const r of admitted) {
   }
 }
 const liveKeys = new Set(admitted.map((r) => r.ticket));
+const overlapBehind = OVERLAP_START ? holdBehind : mergeBehind;
 // Each ticket is held behind every earlier one it shares a file with, not only the one just before it,
 // even where another hold already implies the order. The holds a person changes are one ticket's own:
 // with C sharing a file with A and B and held behind B alone, dropping B (queue.mjs drop) or freeing
@@ -403,9 +423,9 @@ for (const c of collisions) {
   const files = `shares ${c.shared.join(', ')}`;
   if (waitsOn(c.a, c.b) || waitsOn(c.b, c.a)) {
     const [first, then] = waitsOn(c.a, c.b) ? [b, a] : [a, b];
-    if (!preds[then.ticket]?.includes(first.ticket)) {
+    if (!after(then.ticket).includes(first.ticket)) {
       contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
-      holdBehind(then.ticket, first.ticket, `${files}; its other holds already put ${first.ticket} first`);
+      overlapBehind(then.ticket, first.ticket, `${files}; its other holds already put ${first.ticket} first`);
     }
     continue;
   }
@@ -413,8 +433,9 @@ for (const c of collisions) {
   const why = radius(first) !== radius(then) ? `${kindOf(first)} before ${kindLabel(then)}`
     : sizeRank(first) !== sizeRank(then) ? `both ${kindLabel(first)}, ${first.ticket} is smaller`
       : `both ${kindLabel(first)}, ${first.ticket} named first`;
-  holdBehind(then.ticket, first.ticket, `${files}; ${why}`);
+  overlapBehind(then.ticket, first.ticket, `${files}; ${why}`);
 }
+const mergesAfter = (t) => (mergeOrder[t] ?? []).map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
 const holdsOf = (t) => [...(preds[t] ?? []), ...(outsideHolds[t] ?? [])];
 const held = (t) => holdsOf(t).length > 0;
 const heldBy = (t) => holdsOf(t).map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
@@ -440,7 +461,7 @@ const gates = (() => {
 // Spawn order is SPAWN_ORDER_RULE (KEEP_ORDER_RULE with --keep-order); topo puts blockers first. The
 // merge order puts the larger blast radius first; the holds keep the two consistent where it matters.
 const order = topo(KEEP_ORDER ? ours : ours.slice().sort(bySpawnOrder(gates, plannedFiles, named)));
-const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
+const merging = blockersFirst(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)), (r) => after(r.ticket), (r) => r.ticket);
 
 // What a ticket that needs a database will actually get.
 const noDb = perTicketDb().none;
@@ -498,7 +519,8 @@ for (const r of order) {
   if (elsewhere(r) && !elsewhere(r).unknown) say(`  ~ ${awayWhy(r)}: admitted there, not here, when the queue is seeded`);
   if (location === 'cloud' && admitted.includes(r)) say(`  ${runsText(placed[r.ticket])}`);
   if (r.needs_db) say(`  ! needs a database — ${location === 'cloud' && placed[r.ticket].where === 'cloud' ? `its session starts cloud environment ${cloudEnv.name}'s PostgreSQL` : DB_NOTE}`);
-  if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
+  if (co.length) say(`  ! collides with ${co.join(', ')} — ${OVERLAP_START ? 'must run sequentially' : 'runs beside them, and they merge one at a time'}`);
+  if (mergeOrder[r.ticket]?.length) say(`  ~ starts now; merges only after ${mergesAfter(r.ticket)}`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
   // A step only the person can take is its own blocker ticket, not the ticket's lane.
   for (const s of Array.isArray(r.ben_steps) ? r.ben_steps : []) say(`  ! your step: ${s.step} — proposed blocker: ${s.blocker}`);
@@ -601,7 +623,8 @@ if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
   merging.forEach((r, i) => {
     say(`  ${i + 1}. ${r.ticket}  ${kindLabel(r)}: ${KINDS[kindOf(r) ?? 'surface']}${r.change_kind_reason ? ` (${r.change_kind_reason})` : ''}`);
-    if (held(r.ticket)) say(`       after ${heldBy(r.ticket)}`);
+    const behind = [held(r.ticket) && heldBy(r.ticket), mergesAfter(r.ticket)].filter(Boolean).join(', ');
+    if (behind) say(`       after ${behind}`);
   });
 }
 if (contradictions.length) {
@@ -616,6 +639,10 @@ if (Object.keys(preds).length) {
     say(`--deps "${depsArg}"`);
     say('Pass it to merge-driver.sh as it stands: it already carries the merge chain (one entry per successor, predecessors unioned).');
   }
+}
+if (Object.keys(mergeOrder).length) {
+  say('\nMERGE-ORDER HOLDS — from shared files and Jira links triage judged need only to merge (config §3b "Overlap holds"): each starts now, and the merge driver merges it only once every PR named has merged:');
+  for (const [t] of Object.entries(mergeOrder)) say(`  ${t} merges after ${mergesAfter(t)}`);
 }
 const unkinded = here.filter((r) => laneOk(r) && !kindOf(r)).map((r) => r.ticket);
 if (unkinded.length) say(`\n! no change kind on ${unkinded.length} ticket(s): ${unkinded.join(', ')} — ordered as surface work; re-run triage.sh to record one`);
@@ -667,6 +694,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
       `merge_after=${mergeAfter[t]?.length ? mergeAfter[t].join('|') : 'null'}`,
+      `merge_order=${mergeOrder[t]?.length ? mergeOrder[t].join('|') : 'null'}`,
       // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs
       // placeAtStart). A pin to this computer (location=local) is the person's, kept until location=auto.
       ...(queued[t]?.location === 'local' ? [] : ['location=auto']),

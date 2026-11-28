@@ -43,14 +43,18 @@ cat > "$T/config.md" <<EOF
 | Ticket key pattern | \`KAN-[0-9]+\` |
 | Local database | \`none\` |
 EOF
+# Every check above the merge-order section reads the start holds, as a batch did before that row.
+cp "$T/config.md" "$T/config-default.md"
+printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Overlap holds | x | `start` |\n' >> "$T/config.md"
 export DESK_CONFIG="$T/config.md" DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json"
 cd "$T/repo" || exit 1
 
-# rec <KEY> <change_kind, or - for none> <file>[,<file>...] [blockers json, default []] [size, default S]
-rec(){ local kind="" files; [ "$2" = - ] || kind="\"change_kind\": \"$2\", \"change_kind_reason\": \"why $1\", "
+# rec <KEY> <change_kind, or - for none> <file>[,<file>...] [blockers json, default []] [size, default S] [blocker_needs json]
+rec(){ local kind="" files needs=""; [ "$2" = - ] || kind="\"change_kind\": \"$2\", \"change_kind_reason\": \"why $1\", "
   files=$(printf '%s' "$3" | tr ',' '\n' | jq -R . | jq -sc .)
-  printf '{"ticket": "%s", "type": "Task", "lane": "A", "size": "%s", "summary": "s", "branch": "feat/%s", %s"files_in_scope": %s, "unknowns": [], "blockers": %s}\n' \
-    "$1" "${5:-S}" "$1" "$kind" "$files" "${4:-[]}" > "$T/state/triage/$1.json"; }
+  [ -z "${6:-}" ] || needs=", \"blocker_needs\": $6"
+  printf '{"ticket": "%s", "type": "Task", "lane": "A", "size": "%s", "summary": "s", "branch": "feat/%s", %s"files_in_scope": %s, "unknowns": [], "blockers": %s%s}\n' \
+    "$1" "${5:-S}" "$1" "$kind" "$files" "${4:-[]}" "$needs" > "$T/state/triage/$1.json"; }
 nb(){ printf '[{"key": "%s", "category": "new"}]' "$1"; }
 plan(){ node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" "$@" 2>&1); rc=$?; }
 qg(){ jq -r ".tickets[\"$1\"]$2" "$DESK_QUEUE"; }
@@ -138,5 +142,55 @@ check "the plan shows the spawn order with what each gates" \
   'printf "%s\n" "$out" | grep -q "^SPAWN ORDER — Blockers start first, then the tickets that gate the most others" && printf "%s\n" "$out" | grep -q "^  1\. KAN-63  gates 2, 1 planned file(s)$" && printf "%s\n" "$out" | grep -q "^  5\. KAN-65  gates 0, 3 planned file(s)$"'
 plan --keep-order KAN-65 KAN-66 KAN-62 KAN-64 KAN-63
 check "--keep-order keeps the order named, blockers still first" '[ "$(seeded)" = "KAN-65 KAN-66 KAN-63 KAN-62 KAN-64" ] && printf "%s\n" "$out" | grep -q "^SPAWN ORDER — With --keep-order, tickets start in the order named"'
+
+# ---- §3b "Overlap holds" merge: a shared file orders the merges, not the starts --------------------
+# The start-hold fixture above: three tickets sharing src/k, each held from starting under `start`.
+rec KAN-61 shared src/k; rec KAN-62 shared src/k; rec KAN-63 shared src/k
+for row in default merge; do
+  if [ "$row" = default ]; then export DESK_CONFIG="$T/config-default.md"; else
+    { cat "$T/config-default.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Overlap holds | x | `merge` |\n'; } > "$T/config-merge.md"
+    export DESK_CONFIG="$T/config-merge.md"; fi
+  plan KAN-61 KAN-62 KAN-63
+  check "DS-1031 AC1 ($row): tickets sharing only files all start, with no held_by and no --deps" \
+    '[ "$(jq -r "[.tickets[].state] | unique | join(\",\")" "$DESK_QUEUE")" = triaged ] && [ "$(jq -r "[.tickets[].held_by] | unique | join(\",\")" "$DESK_QUEUE")" = "" ] && ! printf "%s" "$out" | grep -q -- "--deps"'
+  check "DS-1031 AC1 ($row): the later ones carry a merge-order hold naming each earlier one" \
+    '[ "$(qg KAN-61 .merge_order)" = null ] && [ "$(qg KAN-62 .merge_order)" = KAN-61 ] && [ "$(qg KAN-63 .merge_order)" = "KAN-61|KAN-62" ] && printf "%s\n" "$out" | grep -q "^  KAN-63 merges after KAN-61 (shares src/k; both shared, KAN-61 named first), KAN-62"'
+done
+check "DS-1031 AC1: the merge order still puts the earlier ticket first" '[ "$(merge_order)" = "KAN-61 KAN-62 KAN-63" ]'
+
+# AC3: an in-batch blocker triage judged needs only to merge is a merge-order hold.
+rec KAN-81 surface src/a81 "$(nb KAN-82)" S '{"KAN-82": {"needs": "merge", "why": "both add a line to one list"}}'; rec KAN-82 surface src/a82
+plan KAN-81 KAN-82
+check "DS-1031 AC3: a Jira blocker in the batch that triage judged needs: merge holds the merge, not the start" \
+  '[ "$(qg KAN-81 .held_by)" = null ] && [ "$(qg KAN-81 .state)" = triaged ] && [ "$(qg KAN-81 .merge_order)" = KAN-82 ] && printf "%s\n" "$out" | grep -q "^  KAN-81 merges after KAN-82 (Jira link; triage: both add a line to one list)"'
+
+# AC4: needs: build, or no verdict at all, holds the start as before.
+rec KAN-81 surface src/a81 "$(nb KAN-82)" S '{"KAN-82": {"needs": "build", "why": "it reads the new table"}}'
+plan KAN-81 KAN-82
+check "DS-1031 AC4: a blocker triage judged needs: build holds the start" \
+  '[ "$(qg KAN-81 .held_by)" = KAN-82 ] && [ "$(qg KAN-81 .state)" = parked ] && [ "$(qg KAN-81 .merge_order)" = null ]'
+rec KAN-81 surface src/a81 "$(nb KAN-82)"
+plan KAN-81 KAN-82
+check "DS-1031 AC4: a Jira link with no triage verdict holds the start" \
+  '[ "$(qg KAN-81 .held_by)" = KAN-82 ] && [ "$(qg KAN-81 .state)" = parked ] && [ "$(qg KAN-81 .merge_order)" = null ]'
+
+# A merge-order hold one way and a start hold the other can never release, so it is a cycle.
+rec KAN-91 surface src/a91 "$(nb KAN-92)" S '{"KAN-92": {"needs": "merge", "why": "x"}}'
+rec KAN-92 surface src/a92 "$(nb KAN-91)" S '{"KAN-91": {"needs": "build", "why": "y"}}'
+plan KAN-91 KAN-92
+check "DS-1031 a merge-order hold against a start hold is a dependency cycle" \
+  'printf "%s" "$out" | grep -q "dependency cycle" && [ "$(qg KAN-91 .merge_order)" = null ] && [ "$(qg KAN-92 .held_by)" = null ]'
+
+# A file shared with a ticket held behind the other already: the merge order follows that hold.
+rec KAN-95 surface src/s95 "$(nb KAN-96)"; rec KAN-96 relocate src/s95
+plan KAN-95 KAN-96
+check "DS-1031 a start hold already ordering a pair that shares a file adds no merge-order hold" \
+  '[ "$(qg KAN-95 .held_by)" = KAN-96 ] && [ "$(qg KAN-95 .merge_order)" = null ] && [ "$(qg KAN-96 .merge_order)" = null ]'
+
+# AC5: at start, the same three tickets are held from starting as before, and nothing is merge-ordered.
+export DESK_CONFIG="$T/config.md"
+plan KAN-61 KAN-62 KAN-63
+check "DS-1031 AC5: Overlap holds start holds the starts as before, with no merge-order hold" \
+  '[ "$(qg KAN-63 .held_by)" = "KAN-61|KAN-62" ] && [ "$(jq -r "[.tickets[].merge_order] | unique | join(\",\")" "$DESK_QUEUE")" = "" ] && ! printf "%s" "$out" | grep -q "MERGE-ORDER" && printf "%s\n" "$out" | grep -q "must run sequentially"'
 
 echo "blast radius: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

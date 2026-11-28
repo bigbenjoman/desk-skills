@@ -100,6 +100,10 @@
 #   - waits on the person's step             its ticket's merge_after names blockers in no batch that are
 #                                            steps only the person takes: held, green or not, until
 #                                            pass.mjs reads each Done in Jira and lifts it
+#   - merges after another ticket's PR       its ticket's merge_order names tickets in the batch it shares
+#                                            files with (or that triage judged it needs only to merge
+#                                            after): held, green or not, until pass.mjs reads each one's
+#                                            PR merged and lifts it
 #   - waits on the person's instruction      its ticket's fix is the person's instruction (needs-you
 #                                            resume) or a migration rename try, and
 #                                            pass.mjs has not closed it: held before any
@@ -1221,7 +1225,7 @@ stale_base(){ # stale_base <n> <sha> <gate json> <key>
 CONFIRM_DUE=""; CONFIRM_PR=""
 confirm_due(){ if [ -z "$CONFIRM_DUE" ] || [ "$2" -lt "$CONFIRM_DUE" ]; then CONFIRM_DUE="$2"; CONFIRM_PR="$1"; fi; }
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head="" pbase=""
+  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" firsts="" mholds="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head="" pbase=""
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" --files-cache "$SD/pr-files.json" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -1351,15 +1355,18 @@ EOF_RESOLVE
   # A waived head is held like a green one: the same head, still only red on its known flakes, a loop later.
   label="green"; [ -n "$waived" ] && label="green but for WAIVED $waived"
 
-  # The person's steps in no batch (merge_after) hold the merge, not the build: pass.mjs lifts each once
-  # Jira has it Done. A queue that is there but cannot be read holds it too.
-  if [ -f "$DESK_QUEUE" ] && ! steps=$(jq -r --arg k "$key" '(.tickets[$k].merge_after // "") | split("|") | map(select(. != "")) | join(", ")' "$DESK_QUEUE" 2>/dev/null); then
+  # Two holds on the merge, not the build, which pass.mjs lifts: the person's steps in no batch
+  # (merge_after), each once Jira has it Done, and the batch's merge order (merge_order), each once that
+  # ticket's PR has merged. A queue that is there but cannot be read holds it too.
+  if [ -f "$DESK_QUEUE" ] && ! mholds=$(jq -r --arg k "$key" '[.tickets[$k].merge_after, .tickets[$k].merge_order] | map((. // "") | split("|") | map(select(. != "")) | join(", ")) | join("\t")' "$DESK_QUEUE" 2>/dev/null); then
     log "#$n could not read the queue for its merge holds — not merging it this loop"; return 1
   fi
-  if [ -n "${steps:-}" ]; then
+  steps=${mholds%%$'\t'*}; firsts=${mholds#*$'\t'}
+  if [ -n "$steps$firsts" ]; then
     disarm "$n" "$g"
     rm -f "$SD/green-$n"
-    log "#$n $label at ${sha:0:9}, HELD until the person's step $steps is Done in Jira — the pass lifts the hold then"
+    if [ -n "$steps" ]; then log "#$n $label at ${sha:0:9}, HELD until the person's step $steps is Done in Jira — the pass lifts the hold then"
+    else log "#$n $label at ${sha:0:9}, HELD until the PR of $firsts merges (merge order) — the pass lifts the hold then"; fi
     return 1
   fi
 

@@ -519,6 +519,15 @@ check "DS-656 AC5 a link that would hold a ticket behind one already held behind
   '[ "$(field J-65 held_by)" = null ] && [ "$(field J-65 state)" = "\"triaged\"" ] && echo "$out" | grep -q "blocker link: J-65: linked as blocked by J-66, which waits behind it: not held, as that is a cycle"'
 check "DS-656 AC5 the ticket already held keeps its hold, its link unchanged" '[ "$(field J-66 held_by)" = "\"J-65\"" ] && ! echo "$out" | grep -q "blocker link: J-66"'
 q drop J-65; q drop J-66
+# A ticket that merges after J-68 (merge_order) waits on it too: holding J-68 from starting behind it would never release.
+q add J-68; q set J-68 state=triaged; no_links J-68
+q add J-69; q set J-69 state=triaged merge_order=J-68; no_links J-69
+links J-68 J-69 new Open
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-1031 a late link that would hold a ticket behind one merge-ordered behind it adds no hold, and the report names the cycle" \
+  '[ "$(field J-68 held_by)" = null ] && [ "$(field J-68 state)" = "\"triaged\"" ] && echo "$out" | grep -q "blocker link: J-68: linked as blocked by J-69, which waits behind it: not held, as that is a cycle"'
+check "DS-1031 that cycle stays raised after the pass, so the ticket does not start while it stands" '[ "$(field J-68 cycle_link)" = "\"J-69\"" ]'
+q drop J-68; q drop J-69
 q add J-67; q set J-67 state=parked held_by=J-61 'park={"question":"held by orchestrator: blocked by J-61 — starts once their PRs merge"}'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"J-61","category":"new"}]}' > "$T/state-j/triage/J-67.json"
 links J-67

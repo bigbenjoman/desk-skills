@@ -105,7 +105,7 @@ import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
 import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
-import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
+import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds, decideMergeOrder } from './pass/parks.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, holdOf, heldText, lockHeldLine, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
@@ -2517,7 +2517,7 @@ const linkLines = [];
       if (gone.length) linkLines.push(`blocker link: ${key}: no longer linked as blocked by ${gone.join(', ')}, and still held behind ${gone.length === 1 ? 'it' : 'them'}, as the hold does not record whether it came from that link, a shared file or the spine: release it by hand if nothing else needs ${gone.length === 1 ? 'it' : 'them'}`);
       if (!added.length) return;
       const h = holdsFor(rec, view.tickets, DEFAULT_BRANCH);
-      const { holds, cycles, outside } = holdsAmong(key, [...h.held, ...h.outside].filter((k) => added.includes(k) && !by.includes(k)), view.tickets, heldBehindOf(view, key));
+      const { holds, cycles, outside } = holdsAmong(key, [...h.held, ...h.outside].filter((k) => added.includes(k) && !by.includes(k)), view.tickets, heldBehindOf(view, key, { merges: true }));
       const failed = h.failed.filter((k) => added.includes(k));
       const steps = h.merge.filter((k) => added.includes(k) && !keysOf(t.merge_after).includes(k));
       if (cycles.length) {
@@ -2579,7 +2579,8 @@ const linkLines = [];
     const cycles = keysOf(t.cycle_link);
     if (!cycles.length) continue;
     const linked = blockerKeys(triageRec(t.key));
-    const behind = heldBehindOf(qR, t.key);
+    // Counted as the check that raised it counts (merge_order too), or a cycle through a merge order is cleared the pass it is raised.
+    const behind = heldBehindOf(qR, t.key, { merges: true });
     const left = cycles.filter((k) => linked.includes(k) && behind.has(k));
     if (left.length !== cycles.length && !DRY) q('set', t.key, `cycle_link=${left.join('|') || 'null'}`);
   }
@@ -6089,6 +6090,11 @@ runSteps({
   report,
 });
 
+// ---- merge-order holds ---------------------------------------------------
+// The decision is pass/parks.mjs decideMergeOrder. After PR status, which records a merge made by hand,
+// so the pass that first reads the earlier PR merged frees the later one.
+runPhase({ name: 'merge-order holds', snapshot: () => holdsSnapshot(), decide: decideMergeOrder, handlers: OUT_HANDLERS, report });
+
 // ---- new merge holds -------------------------------------------------------
 // An open PR's files are read against §4 Merge holds once per head (new-holds.mjs). A file held at a
 // later head that the PR did not touch before means a change pushed since (a fix try, a later round)
@@ -7157,6 +7163,11 @@ if (!merger.driver && undrafted.length) {
     const steps = keysOf(t.merge_after);
     if (steps.length) {
       report.waiting.push(`${t.key}: MERGE HELD — PR #${s.pr} is out of draft and green, but it merges only after your step ${steps.join(', ')} is Done in Jira: do not merge it yet; the next pass that reads the step Done lifts the hold and puts it to you to merge`);
+      continue;
+    }
+    const firsts = keysOf(t.merge_order);
+    if (firsts.length) {
+      report.waiting.push(`${t.key}: MERGE HELD — PR #${s.pr} is out of draft and green, but it merges only after the PR of ${firsts.join(', ')} (merge order): do not merge it yet; the pass that reads that PR merged lifts the hold and puts it to you to merge`);
       continue;
     }
     if (feedbackFirst && s.reviewDecision === 'CHANGES_REQUESTED') {

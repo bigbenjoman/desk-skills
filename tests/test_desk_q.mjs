@@ -1376,9 +1376,9 @@ const prOpen = (checks) => ({ pr: 164, state: 'OPEN', url: 'https://github.com/a
 const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
 // LD-1 landing; LD-2 held by it alone; LD-3 by it and the running LD-4; LD-0 merged, LD-9 done unread.
 // Its supervisor runs the passes and config §3 lets green PRs merge, so a landing PR merges by itself.
-function landRepo(checks, { beat = 1, ps = prOpen(checks) } = {}) {
+function landRepo(checks, { beat = 1, ps = prOpen(checks), ld1 = {} } = {}) {
   put(I.T, I.env, 'land', { port: 4900, conc: '2 / 3', beat, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'land', concurrency: 2, supervised: true, tickets: {
-    'LD-1': { state: 'done', result: { pr: 164 }, pr_status: ps },
+    'LD-1': { state: 'done', result: { pr: 164 }, pr_status: ps, ...ld1 },
     'LD-2': heldBy('LD-1'), 'LD-3': heldBy('LD-1|LD-4'), 'LD-4': { state: 'running', stage: '3/9' },
     'LD-0': { state: 'done', result: { pr: 160 }, pr_status: { pr: 160, state: 'MERGED', url: null, checks: [], at: ago194(30) } },
     'LD-9': { state: 'done', result: { pr: 161 } },
@@ -1409,6 +1409,10 @@ t('DS-194 AC4 a running check reads its name and age', landRow(landQueue(landRep
 const red194 = await landingRaw([build, { name: 'e2e', status: 'completed', conclusion: 'failure', started: ago194(5), completed: ago194(2), runner: true }]);
 t('DS-194 AC4 (DS-279 AC9) a failed check leads the row, in red, with no pass count', `${coloured(red194.l).includes('38;5;210:1 check failed')} ${/passed/.test(red194.l.replace(ANSI, ''))}`, 'true false');
 t('DS-194 AC4 (DS-279 AC7) every check passed reads merges at the next pass, the count in green', `${coloured((await landingRaw([build])).l).includes('38;5;108:1 check passed')} ${landRow(landQueue(landRepo([build])), 'LD-1').includes('#164 · 1 check passed · merges at the next pass')}`, 'true true');
+const ordered1031 = landRow(landQueue(landRepo([build], { ld1: { merge_order: 'LD-4' } })), 'LD-1');
+landRepo([ubuntu, macos]);
+t('DS-1031 a green PR merge-ordered behind another ticket\'s PR reads held by the merge order, not merges at the next pass',
+  `${ordered1031.includes('#164 · merges after the PR of LD-4')} ${ordered1031.includes('merges at the next pass')}`, 'true false');
 // AC5: the header counts the merging PR, in cyan.
 t('DS-194 AC5 (DS-215, DS-279) the counts line counts the PRs merging and the merged tickets', lq[1], '◆ nothing needs you  ● 1 running  ▸ 1 merging  · 2 waiting │ ✓ 2 done, not shown');
 t('DS-194 AC5 the merging count is cyan', coloured(raw194.head).includes('38;5;73:▸ 1 merging'), true);

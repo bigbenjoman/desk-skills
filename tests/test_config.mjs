@@ -823,6 +823,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'move-threshold|3b|Queue order: move threshold', // #1625
     'cloud-env|3b|Cloud environment',
     'stale-check-paths|4|Stale-check paths', // DS-1055
+    'overlap-holds|3b|Overlap holds', // DS-1031
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');
@@ -866,7 +867,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['subagent-cap', 'no cap', 'lots', false], ['concurrency', '2 / 3', 'two', false], ['times', '08:00, 17:00', 'morning', false],
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false], ['queue-priority', 'strict', 'high', false],
-    ['placed-order', 'move-and-say', 'move', false],
+    ['placed-order', 'move-and-say', 'move', false], ['overlap-holds', 'start', 'starts', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
     ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['signin-permissions', 'apps/portal: HELP_ARTICLES, ADMIN', 'apps/portal: help articles', false],['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],

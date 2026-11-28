@@ -2,7 +2,7 @@
 // layer: L1
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
-  decideMergeHolds } from '../desk/bin/pass/parks.mjs';
+  decideMergeHolds, decideMergeOrder } from '../desk/bin/pass/parks.mjs';
 import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
 import { newPark, applySet } from '../desk/bin/queue-writer.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
@@ -367,6 +367,24 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   const free = drive(decideMergeHolds, s, { 'landed-here': true });
   t('both lifted frees the merge', lines(free, 'epic-line')[0], 'merge hold: A: P-1, G-2 Done; free to merge');
   t('a merged ticket waits on nothing', j(drive(decideMergeHolds, { ...s, tickets: byKey({ ...tk, merged_at: 'x' }) })), '[]');
+}
+
+// ---- merge-order holds ----
+{
+  const later = { key: 'B', state: 'done', result: { pr: 12 }, merge_order: 'A|C' };
+  const s = (a, c = { key: 'C', state: 'running' }) => ({ tickets: byKey(later, a, ...(c ? [c] : [])), dry: false });
+  const open = drive(decideMergeOrder, s({ key: 'A', state: 'done', result: { pr: 11 } }), {}, false);
+  t('DS-1031 AC2 while the earlier PR is unmerged the merge order holds', j(open), '[]');
+  const one = drive(decideMergeOrder, s({ key: 'A', state: 'done', result: { pr: 11 }, merged_at: '2026-11-28T10:00:00Z' }), {}, false);
+  t('DS-1031 AC2 the pass after it merges lifts that one, the rest still held', j([sets(one), lines(one, 'out')]), j([['merge_order=C'], ['merge order: B: A merged; still merges only after C']]));
+  const all = drive(decideMergeOrder, s({ key: 'A', state: 'done', merged_at: 'x' }, null), {}, false);
+  t('DS-1031 a ticket named that left the batch holds nothing', j([sets(all), lines(all, 'out')]), j([['merge_order=null'], ['merge order: B: A merged; C no longer in this batch; free to merge']]));
+  const noPr = drive(decideMergeOrder, s({ key: 'A', state: 'done', result: { pr: null } }, null), {}, false);
+  t('DS-1031 a ticket named that finished with no PR lands nothing, so it holds nothing', j([sets(noPr), lines(noPr, 'out')]), j([['merge_order=null'], ['merge order: B: A done with no PR; C no longer in this batch; free to merge']]));
+  const by = drive(decideMergeOrder, s({ key: 'A', state: 'done', done_by: 'Z' }), {}, false);
+  t('DS-1031 one done by another ticket\'s PR holds until that PR merges', j(by), '[]');
+  const dry = drive(decideMergeOrder, { ...s({ key: 'A', merged_at: 'x' }, null), dry: true }, {}, false);
+  t('DS-1031 a dry run writes nothing', j(sets(dry)), '[]');
 }
 
 // ---- DS-895: a park's kind ----

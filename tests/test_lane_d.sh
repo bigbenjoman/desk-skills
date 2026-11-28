@@ -119,7 +119,9 @@ check "DS-358 AC2: a lane A ticket with a snapshot runs" '[ "$(qg a-snapped .sta
 # A design-parked ticket is still planned: held behind what it collides with, recorded beside its park.
 ticket b-first A "Match $SNAP exactly."; ticket b-second A "Match $LOOSE exactly."
 for k in b-first b-second; do jq '.files_in_scope = ["src/shared.js"]' "$T/state/triage/$k.json" > "$T/fis.json" && mv "$T/fis.json" "$T/state/triage/$k.json"; done
-plan b-first b-second
+# The start hold is §3b "Overlap holds" `start`'s: at `merge` a shared file holds no start (DS-1031).
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Overlap holds | x | `start` |\n'; } > "$T/config-start.md"
+DESK_CONFIG="$T/config-start.md" plan b-first b-second
 check "DS-358: a design-parked ticket keeps its hold behind the ticket it collides with" '[ "$(qg b-second .state)" = parked ] && [[ "$(qg b-second .park.question)" == "design not snapshotted: $LOOSE"* ]] && [ "$(qg b-second .held_by)" = b-first ]'
 mkdir -p "$T/state/batches/EPIC-9/triage" "$T/state/batches/EPIC-9/tickets"
 cp "$T/state/tickets/a-snapped.md" "$T/state/batches/EPIC-9/tickets/"; cp "$T/state/triage/a-snapped.json" "$T/state/batches/EPIC-9/triage/"
