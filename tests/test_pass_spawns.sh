@@ -160,6 +160,8 @@ echo "\$*" >> "$T/gh-calls"
 [ "\$1" = api ] && [ -e "$T/cloud-push" ] && case "\$2" in */branches/*) cat "$T/cloud-push" ;; esac
 # A cloud PR's commits, body and comments: none of them, unless a test writes its own.
 case "\$*" in "pr view "*body,commits,comments*) if [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; else echo '{"body":"","commits":[],"comments":[]}'; fi ;; esac
+# issue-1552: the PR a fix try was sent for, read for its state and head.
+case "\$*" in "pr view "*"--json number,state,headRefOid"*) [ -e "$T/cloud-fixpr.json" ] && cat "$T/cloud-fixpr.json" ;; esac
 # Its body and comments read again just before they are edited: as first read, unless a test changes them.
 case "\$*" in "pr view "*"--json body,comments") if [ -e "$T/cloud-live.json" ]; then cat "$T/cloud-live.json"; elif [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; fi ;; esac
 exit 0
@@ -220,16 +222,34 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
 check "DS-752 a cloud start that fails keeps no start time for a session that never began" '[ "$(field CW-2 cloud)" = null ]'
-# Requeued for a fix try on the PR its session opened: the session is over, so a local worker takes the
-# try on its branch at origin's tip, never a new cloud session.
-rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
-q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red: Lint","checks":[{"name":"Lint","runId":"7"}]}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","pr_at":"2026-11-20T10:00:00Z"}'
+# issue-1552: requeued for a fix try on the PR its session opened. The try is sent to that session as a
+# follow-up, and the ticket runs in the cloud until the PR's head moves past the one the try was made for.
+rm -f "$T/cloud-fail" "$T/cloud-prompt" "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-fixpr.json"; cloud_ticket CW-3
+# Its head is "x", the head pass_setup.sh's stub gives a fix try's last read before it starts.
+cw3_fix='fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red: Lint","head":"x","checks":[{"name":"Lint","runId":"7"}]}'
+cw3_cloud='cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","url":"https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj","pr_at":"2026-11-20T10:00:00Z"}'
+q set CW-3 result.pr=40 "$cw3_fix" "$cw3_cloud"
 out=$(node "$B/pass.mjs" 2>&1)
-check "a cloud ticket back for a fix try on its PR runs as a local worker, not parked" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)"'
-check "and no new cloud session starts for it" '[ ! -e "$T/cloud-prompt" ]'
+check "issue-1552 AC1 a cloud ticket back for a fix try on its PR has the try sent to its session" '[ "$(cut -d"|" -f1 "$T/cloud-sent")" = "session_01Vy49H7Z4T3CSgAhSxsuhqj" ] && grep -qF "desk has a fix try for PR #40" "$T/cloud-sent-msg" && grep -qF "Lint" "$T/cloud-sent-msg"'
+check "issue-1552 AC1 the send is recorded: running at stage cloud, the try out to the session" '[ "$(field CW-3 state)" = "\"running\"" ] && [ "$(field CW-3 stage)" = "\"cloud\"" ] && [ "$(field CW-3 cloud.fix.try)" = 1 ] && [ "$(field CW-3 cloud.fix.head)" = "\"x\"" ] && echo "$out" | grep -qF "CW-3: fix try 1 of 2 on PR #40 sent to its cloud session"'
+check "issue-1552 AC1 no local worker and no new cloud session start for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+echo '{"number":40,"state":"OPEN","headRefOid":"x","headRefName":"feat/CW-3","title":"feat: CW-3","url":"u","createdAt":"2026-11-20T10:00:00Z"}' > "$T/cloud-fixpr.json"
 out=$(node "$B/pass.mjs" 2>&1)
-check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: .*PR #40 from cloud session"'
-q set CW-3 state=done
+check "issue-1552 AC3 with the head unmoved the next pass waits on the session" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 is out to cloud session" && echo "$out" | grep -qF "no push to PR #40 yet" && [ "$(wc -l < "$T/cloud-sent")" -eq 1 ]'
+echo '{"number":40,"state":"OPEN","headRefOid":"bbbb2222","headRefName":"feat/CW-3","title":"feat: CW-3","url":"u","createdAt":"2026-11-20T10:00:00Z"}' > "$T/cloud-fixpr.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC3 once its push lands the pass reads the new head and the ticket is done on its PR again" '[ "$(field CW-3 state)" = "\"done\"" ] && [ "$(field CW-3 result.pr)" = 40 ] && field CW-3 result.summary | grep -qF "pushed its fix try 1 of 2" && [ "$(field CW-3 cloud.fix)" = null ] && [ "$(field CW-3 cloud.pr_at)" = "\"2026-11-20T10:00:00Z\"" ]'
+check "issue-1552 AC4 the try is the one it was, of the same count" '[ "$(field CW-3 fix.try)" = 1 ] && [ "$(field CW-3 fix.of)" = 2 ]'
+# A send that fails: the session is recorded abandoned and the ticket stays queued, and the next pass
+# starts the try in a new cloud session on the PR's branch.
+rm -f "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-fixpr.json"; : > "$T/cloud-send-fail"
+q set CW-3 state=triaged stage=null result.pr=40 "$cw3_fix" "$cw3_cloud"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC2 a send that fails records the session abandoned and keeps the ticket queued" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ "$(field CW-3 cloud.abandoned_at)" != null ] && [ "$(field CW-3 cloud.fix)" = null ] && field CW-3 cloud.send_error | grep -q "does not support" && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 on PR #40 could not be sent to its cloud session"'
+rm -f "$T/cloud-send-fail" "$T/cloud-sent"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC2 the next pass starts the try in a new cloud session on the PR's branch" '[ "$(field CW-3 state)" = "\"running\"" ] && grep -qF "Work a fix try on PR #40 of ticket CW-3" "$T/cloud-prompt" && grep -qF "feat/CW-3" "$T/cloud-prompt" && [ "$(field CW-3 cloud.fix.pr)" = 40 ] && [ "$(field CW-3 cloud.pr_at)" = "\"2026-11-20T10:00:00Z\"" ] && [ "$(field CW-3 cloud.abandoned_at)" = null ] && [ ! -e "$T/cloud-sent" ]'
+q set CW-3 state=done; rm -f "$T/cloud-prompt"
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
 # Placed before pins too, so the pass reads the row for it.
@@ -241,6 +261,14 @@ check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$
 effort_cfg 0=turbo; cloud_ticket CW-5; q set CW-5 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
+# issue-1552 AC2 and its comment: with the effort lever on, no cloud session can take a fix try, so a
+# local worker does, and the ticket's session is recorded abandoned first so the two never both push.
+effort_cfg 0=low; rm -f "$T/cloud-sent" "$T/cloud-prompt"
+q set CW-3 state=triaged stage=null levers=null result.pr=40 "$cw3_fix" "$cw3_cloud"
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC2 with the effort lever on a fix try on a cloud PR runs as a local worker" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)" && [ ! -e "$T/cloud-sent" ] && [ ! -e "$T/cloud-prompt" ]'
+check "issue-1552 comment AC its live session is recorded abandoned before the local try, and the pass says so" '[ "$(field CW-3 cloud.abandoned_at)" != null ] && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 on PR #40 runs as a local worker, so its cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj is recorded abandoned"'
+q set CW-3 state=done
 # issue-1569: where §5 forbids AI attribution, the session is told so, and its PR is read for it before
 # the ticket is done: found, the pass removes it where config §3 lets it, and otherwise parks naming it
 # and the row, on the PR's branch.
