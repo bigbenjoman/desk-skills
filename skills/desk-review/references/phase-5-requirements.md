@@ -127,7 +127,7 @@ own comment accepts it (next), so no fix try, default or decider takes it, and d
 them the comment to post.
 
 **A measurement no worker can run.** A gap whose only missing piece is a number from a command no
-worker may run (refused for workers, and not in §4 Worker measuring commands) is `settled_by: person`,
+worker may run (refused for workers, and not in §4 Worker measuring commands, `desk-env cmds worker-measure-cmds`) is `settled_by: person`,
 and names the command after `MEASURE:` in backticks, with no `Recommended:`:
 `- PERSON'S CALL · AC3: "<criterion>" — MEASURE: \`<command>\`: <why no worker can run it>`.
 The pass puts it to the person once, as a needs-you item reading "run this and reply with the number"
