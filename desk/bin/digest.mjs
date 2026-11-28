@@ -29,6 +29,7 @@ import { describeCond } from './clears-when.mjs';
 import { isHeld, heldBehindOf, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR, newHoldPrs } from './desk-q.mjs';
+import { followChecks } from './needs-you.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
@@ -377,11 +378,12 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nl = levers.length;
   const nlc = levers.filter((l) => l.slug).length;
   const nses = groups.reduce((n, g) => n + (g.sessions?.length ?? 0), 0);
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nh && !nw && !nl && !nses && !nwait && !nmv) {
+  const nf = groups.reduce((n, g) => n + (g.follows?.length ?? 0), 0);
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nh && !nw && !nl && !nses && !nwait && !nmv && !nf) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nh ? `; ${nh} PR(s) that now need your merge` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nmv ? `; ${nmv} placed ticket(s) moved` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}${nf ? `, ${nf} check(s) after merge` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nh ? `; ${nh} PR(s) that now need your merge` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nmv ? `; ${nmv} placed ticket(s) moved` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -392,7 +394,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.held?.length || x.waiting?.length || x.warnings?.length || x.moves?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.follows?.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.held?.length || x.waiting?.length || x.warnings?.length || x.moves?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -417,6 +419,16 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
           : q.kind === 'archive' ? '  no answer to record: it clears once the PR is merged or closed'
           : q.kind === 'intake' ? `  fix the ticket, or run it in a desk-ticket session; to let intake try it again: \`DESK_AUTOPILOT_STATE=${q.state} node ${join(bin, 'intake.mjs')} forget ${q.ticket}\``
             : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
+      }
+      lines.push('');
+    }
+    // Follow steps after the questions: each is a check after a merge, not a question, so it is listed
+    // apart; one a session has claimed (needs-you.mjs claim) says which session is checking it.
+    if (g.follows?.length) {
+      lines.push('### Checks after merge', '');
+      for (const f of g.follows) {
+        lines.push(`- [ ] \`${f.ticket}\`: ${f.claim ? `checking (${f.claim}) · ` : ''}${f.text}`);
+        lines.push(`  once it has run, say done on \`${f.key}\` in /desk-needs-you`);
       }
       lines.push('');
     }
@@ -485,6 +497,17 @@ const followOnWarnings = (r) => Object.values(everyTicket(attachArchive(readJson
   .filter((t) => t?.follow_on_unreadable?.at)
   .map((t) => ({ at: t.follow_on_unreadable.at, text: `${t.key}: ${unreadableFollowOn(t.follow_on_unreadable.raw)}` }));
 
+// The batch's follow steps listed in needs-you (followChecks): {key, ticket, text, claim}, `text` from
+// its first check on, `claim` the session checking it or null. One that cannot be read lists none.
+export function followsOf(r, register = readRegister(r.state), checks = followChecks) {
+  let fs;
+  try { fs = checks({ slug: r.slug, stateDir: r.state, q: readJson(r.queue, null) }, register); } catch { return []; }
+  return fs.map(({ t, item }) => {
+    const need = String(item.need ?? '').replace(/\s+/g, ' ').trim().replace(/ Then say done\.$/, '');
+    return { key: t.key, ticket: item.ticket, text: need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need, claim: item.claim?.session ?? null };
+  });
+}
+
 export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {
   const slot = latestSlot(times, now);
   if (!slot) return { status: 'not_due', push: null };
@@ -526,6 +549,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         slug: r.slug,
         batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
+        follows: followsOf(r, register),
         sessions: sessionWork(r).filter((s) => !done.has(s.ticket)),
         // A lever's adopt or revert is listed with its evidence under Levers instead.
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id) && !d.lever),
