@@ -36,15 +36,20 @@
 // overridden lever is not evaluated. The pooled estimates go once a day to ~/.desk-autopilot/levers/pooled-evals.jsonl, by whichever
 // repo's pass takes the machine-wide lock first; that pass evaluates every `auto` repo.
 //
-//   import { evaluate, evaluateDue } from './levers-evaluate.mjs'
-//   node levers-auto.mjs evaluate      runs it now if today's has not run
+// A ticket's recorded fingerprints are read through the recount's map (lever-fp-history.mjs), so one
+// recorded before a lever's fingerprint covered only its part counts where that part is today's.
+//
+//   import { evaluate, evaluateDue, recount } from './levers-evaluate.mjs'
+//   node levers-auto.mjs evaluate                      runs it now if today's has not run
+//   node levers-evaluate.mjs --recount [--dry-run]     counts each lever's latest evidence again (recount)
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints, isValued } from './lever-registry.mjs';
-import { appendWith, isStateChange, read, stampAfter } from './lever-log.mjs';
+import { appendWith, isStateChange, read, stampAfter, spendsNeedsYou } from './lever-log.mjs';
 import { leverStatesIn, trialId, holdbackEnd, pairTrial, ACTOR } from './levers-auto.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
@@ -61,6 +66,8 @@ import { readAsks } from './ask-ledger.mjs';
 import { fold, ASK_TOKEN_STEPS } from './ticket-ledger.mjs';
 import { ledgerTarget } from './queue-ledger.mjs';
 import { quantile } from './quantile.mjs';
+import { readFpMap, mapFp, historyMap, writeFpMap } from './lever-fp-history.mjs';
+import { readInstalled } from './installed.mjs';
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -342,19 +349,19 @@ const armsOf = (l, state) => (isValued(l) && state !== 'adopted' ? l.values : AR
 // current round finishes: merged_at keeps only its first merge.
 export const outcomeIn = (r) => !r.reworked && (!!r.merged_at || OUTCOME_STATES.includes(r.state));
 
-// The fingerprints of a lever's code a row ran on: its starts' records, else its pin's at admission.
-function rowFps(r, lever) {
+// The fingerprints of a lever's code a row ran on: its starts' records, else its pin's at admission,
+// each read through the recount's map (lever-fp-history.mjs) as that code's part-only fingerprint.
+function rowFps(r, lever, map) {
   const starts = (r.start_records ?? []).map((s) => s.lever_fp?.[lever]).filter(Boolean);
-  if (starts.length) return starts;
   const p = r.pin?.fp?.[lever];
-  return p ? [p] : [];
+  return (starts.length ? starts : p ? [p] : []).map((x) => mapFp(map, lever, x));
 }
 
-// Why a row is left out of a lever's evidence, or null.
-export function excludedWhy(r, lever, fp) {
+// Why a row is left out of a lever's evidence, or null. `map` is the recount's fingerprint map.
+export function excludedWhy(r, lever, fp, map = null) {
   if (r.pin_mismatch) return 'pin_mismatch';
   if (r.cost_complete !== true || !Number.isFinite(r.cost)) return 'cost_incomplete';
-  if (fp && rowFps(r, lever).some((x) => x !== fp)) return 'fp_reset';
+  if (fp && rowFps(r, lever, map).some((x) => x !== fp)) return 'fp_reset';
   return null;
 }
 
@@ -362,7 +369,7 @@ export function excludedWhy(r, lever, fp) {
 // state's arms under its trial id and whose outcome is in, each with `on` and `excluded`. A valued
 // lever's row carries its `arm` too, and is `on` on any value but the baseline; valueRows pairs each
 // value with the baseline.
-export function leverRows(rows, slug, lever, s, fp, registry = REGISTRY) {
+export function leverRows(rows, slug, lever, s, fp, registry = REGISTRY, map = null) {
   const arms = armsOf(registry[lever], s.state);
   const valued = isValued(registry[lever]) && s.state !== 'adopted';
   const off = valued ? registry[lever].baseline : arms[1];
@@ -374,7 +381,7 @@ export function leverRows(rows, slug, lever, s, fp, registry = REGISTRY) {
     id = [...drew].sort((a, b) => Date.parse(a.admitted_at) - Date.parse(b.admitted_at)).at(-1)?.pin?.trial_ids?.[lever] ?? null;
   } else id = trialId(slug, lever, s);
   return drew.filter((r) => r.pin?.trial_ids?.[lever] === id && outcomeIn(r))
-    .map((r) => ({ ...r, slug: r.slug ?? slug, on: r.pin.arms[lever] !== off, ...(valued ? { arm: r.pin.arms[lever] } : {}), excluded: excludedWhy(r, lever, fp) }));
+    .map((r) => ({ ...r, slug: r.slug ?? slug, on: r.pin.arms[lever] !== off, ...(valued ? { arm: r.pin.arms[lever] } : {}), excluded: excludedWhy(r, lever, fp, map) }));
 }
 // A valued lever's rows on `value` against its `baseline`, `on` marking the value's.
 const valueRows = (rows, value, baseline) => rows.filter((r) => r.arm === value || r.arm === baseline).map((r) => ({ ...r, on: r.arm === value }));
@@ -456,6 +463,15 @@ const noFigure = (g) => g.est == null && ['too_early', 'no_data'].includes(g.sta
 export const priorRevertsOf = (events, lever) => (events ?? [])
   .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && ['reverted', 'frozen'].includes(e.to) && !voidedBy(e)).length;
 export const revertTarget = (priorReverts) => (priorReverts >= 1 ? 'frozen' : 'reverted');
+// The states of a lever desk turned off. A recount never turns one back on: it asks Ben instead.
+export const TURNED_OFF = Object.freeze(['reverted', 'frozen']);
+// The recount's needs-you item for `lever` among a repo's log `events` that no later change has
+// answered, or null.
+function recountWaiting(events, lever) {
+  const es = events ?? [];
+  return es.filter((e, i) => e.kind === 'needs_you' && e.lever === lever && e.reason_code === 'recount_review'
+    && !es.slice(i + 1).some((x) => spendsNeedsYou(e, x))).at(-1) ?? null;
+}
 // The needs-you item a freeze raises, for `lever` in repo `name`, `why` being what reverted it.
 export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} after its second revert (${why}): it stays off there until you set it by hand`;
 // The needs-you item a void revert `e` raises, for `lever` in repo `name`, `g` the guardrail it named.
@@ -590,7 +606,7 @@ const excludedCounts = (rows) => {
 //   -> { day, rows: [eval row], events: [event], pooled: [pooled row] }
 export function evaluate({
   repos, now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, root = autopilotRoot(),
-  frozen = !!E.leversFrozen(), fingerprints = leverFingerprints().fp, registry = REGISTRY,
+  frozen = !!E.leversFrozen(), fingerprints = leverFingerprints().fp, registry = REGISTRY, fpMap = readFpMap(root),
 }) {
   const today = dayOf(now, tz);
   const at = new Date(now).toISOString();
@@ -617,7 +633,7 @@ export function evaluate({
       if (r.states[lever] !== 'auto') continue;
       const s = r.byLever[lever];
       if (!EVALUATED.includes(s.state)) continue;
-      plan.push({ r, lever, s, rows: leverRows(r.outcomes.rows, r.slug, lever, s, fingerprints[lever] ?? null, registry) });
+      plan.push({ r, lever, s, rows: leverRows(r.outcomes.rows, r.slug, lever, s, fingerprints[lever] ?? null, registry, fpMap) });
     }
   }
   const pooledBy = {};
@@ -705,6 +721,11 @@ export function evaluate({
         // A valued lever keeps the value it was adopted on when it settles.
         if (isValued(reg) && s.value) d = { ...d, value: s.value };
       }
+      // A lever desk turned off whose evidence a recount changed is not judged again: Ben decides.
+      const waiting = TURNED_OFF.includes(s.state) ? recountWaiting(r.log.events, lever) : null;
+      if (waiting) {
+        d = { decision: 'hold', to: null, reason_code: 'recount_review', reason: waiting.reason, next: { earliest_change: null, needs: 'your call: keep it off or test it again (levers decide)' }, ...(d.value ? { value: d.value } : {}) };
+      }
       const { mechanism, cost, guardrails, n } = w;
 
       // The evidence this evaluation used: the pooled rows for a lever on trial, else the repo's.
@@ -720,7 +741,7 @@ export function evaluate({
 
       // The lever's own code changed since its last evaluation here.
       const last = r.prior.filter((x) => x.lever === lever && x.lever_fp).sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).at(-1);
-      if (last && fingerprints[lever] && last.lever_fp !== fingerprints[lever]) {
+      if (last && fingerprints[lever] && mapFp(fpMap, lever, last.lever_fp) !== fingerprints[lever]) {
         append({ kind: 'fp_reset', lever, actor: ACTOR, reason_code: 'fp_reset', at, ...evidence, from_fp: last.lever_fp, to_fp: fingerprints[lever],
           dropped: n.excluded.fp_reset, reason: `${lever}'s code fingerprint changed from ${last.lever_fp} to ${fingerprints[lever]}: ${n.excluded.fp_reset} ticket(s) run on the old code are left out and the count restarts` });
       }
@@ -907,4 +928,82 @@ export function evaluateDue({ now = Date.now(), root = autopilotRoot(), configRo
     const changes = w.events.filter((e) => e.kind === 'transition').map((e) => `${e.lever} ${e.from} → ${e.to} in ${e.repo}`);
     return { status: 'ran', line: `levers evaluate: ${w.rows.length} lever row(s) across ${full.length} repo(s)${changes.length ? `; ${changes.join(', ')}` : '; no change'}` };
   } finally { unlock(lock); }
+}
+
+// ---- the recount -------------------------------------------------------------------------------------------
+// Each repo's latest evidence for every lever counted again, its tickets read through the fingerprint map
+// the source checkout's history gives (lever-fp-history.mjs historyMap): a ticket whose recorded
+// fingerprint is that of code whose own part is today's counts. Each lever's on and off counts before
+// (as its evidence file recorded them) and after. A dry run writes nothing; otherwise the map is written,
+// which every evaluation from then on reads, and each repo's lever log gets one `recount` event with its
+// counts, and one needs_you event for each lever desk turned off whose counts changed, which the
+// evaluation then holds until Ben keeps it off or tests it again.
+//   -> { lines: [text], repos: [{ slug, name, counts: { <lever>: { before, after, state } }, events }], notes, file }
+export function recount({ repos, checkout, dryRun = true, root = autopilotRoot(), fingerprints = leverFingerprints().fp, registry = REGISTRY, now = Date.now(), history = historyMap }) {
+  const { levers: map, notes } = history({ checkout, registry });
+  const at = new Date(now).toISOString();
+  const lines = notes.map((n) => `note: ${n}`);
+  const out = [];
+  const arms = (rows, lever) => {
+    const reg = registry[lever];
+    const off = ['off', 'holdback', ...(isValued(reg) ? [reg.baseline] : [])];
+    const n = { on: 0, off: 0 };
+    for (const x of rows) n[off.includes(x.pin?.arms?.[lever]) ? 'off' : 'on'] += 1;
+    return n;
+  };
+  for (const r of repos) {
+    const prior = readJsonl(evalsFile(r.state)).rows;
+    let events = [];
+    try { events = read(r.slug).events; } catch { /* no log: every lever reads as never trialled */ }
+    const states = leverStatesIn(events, registry);
+    const counts = {};
+    for (const lever of Object.keys(registry)) {
+      const last = prior.filter((x) => x.lever === lever && x.evidence_file).sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).at(-1);
+      if (!last) continue;
+      if (!fingerprints[lever]) { lines.push(`${r.name} ${lever}: not counted again, as its code installed now has no fingerprint`); continue; }
+      const rows = readJsonl(join(r.state, last.evidence_file)).rows.filter((x) => (x.slug ?? r.slug) === r.slug && weighable(registry[lever])(x));
+      const before = arms(rows.filter((x) => !x.excluded), lever);
+      const after = arms(rows.filter((x) => !excludedWhy(x, lever, fingerprints[lever] ?? null, map)), lever);
+      counts[lever] = { before, after, state: states[lever]?.state ?? null };
+      const ask = TURNED_OFF.includes(counts[lever].state) && (before.on !== after.on || before.off !== after.off);
+      lines.push(`${r.name} ${lever}: on ${before.on} → ${after.on}, off ${before.off} → ${after.off}${ask ? ` (${counts[lever].state}: not judged again, Ben decides)` : ''}`);
+    }
+    out.push({ slug: r.slug, name: r.name, counts, events: [] });
+  }
+  if (dryRun) return { lines: [...lines, 'dry run: nothing written'], repos: out, notes, file: null };
+  const file = writeFpMap(map, { root, at });
+  for (const r of out) {
+    if (!Object.keys(r.counts).length) continue;
+    const changed = Object.entries(r.counts).filter(([, c]) => TURNED_OFF.includes(c.state) && (c.before.on !== c.after.on || c.before.off !== c.after.off));
+    const written = appendWith(r.slug, () => {
+      const stamp = stampAfter(read(r.slug).events, at);
+      return [
+        { kind: 'recount', actor: ACTOR, reason_code: 'recount', at: stamp, fp_map: file,
+          counts: Object.fromEntries(Object.entries(r.counts).map(([l, c]) => [l, { before: c.before, after: c.after }])),
+          reason: `${Object.keys(r.counts).length} lever(s)' latest evidence counted again on the code each ticket ran on, read through ${file}` },
+        ...changed.map(([lever, c]) => ({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'recount_review', at: stamp, reason: recountText(lever, r.name, c, registry) })),
+      ];
+    });
+    r.events = written ?? [];
+  }
+  return { lines: [...lines, `fingerprint map written: ${file}`, ...out.filter((r) => r.events.length).map((r) => `${r.name}: ${r.events.length} event(s) in its lever log`)], repos: out, notes, file };
+}
+// The needs-you item for `lever` in repo `name`, turned off on `c.before` and recounted to `c.after`.
+export function recountText(lever, name, c, registry = REGISTRY) {
+  const keep = isValued(registry[lever]) ? registry[lever].baseline : 'off';
+  return `${lever} was turned off in ${name} (${c.state}) on ${c.before.on} on and ${c.before.off} off tickets; counted again on the code each ran on, it has ${c.after.on} on and ${c.after.off} off. Keep it off (levers decide ${name} ${lever} ${keep}) or test it again (levers decide ${name} ${lever} trial)`;
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+if (isMain) {
+  const args = process.argv.slice(2);
+  if (args[0] !== '--recount' || args.slice(1).some((a) => a !== '--dry-run')) { console.error('usage: levers-evaluate.mjs --recount [--dry-run]'); process.exit(2); }
+  const checkout = readInstalled()?.from ?? null;
+  if (!checkout) { console.error('levers-evaluate: no source checkout is recorded in installed.json, so the fingerprint history cannot be read; run install.sh'); process.exit(1); }
+  try {
+    const repos = E.configuredRepos(E.deskConfigRoot()).map((c) => ({ slug: c.slug, name: (c.ghRepo ?? c.slug).split('/').pop(), state: join(autopilotRoot(), c.slug) }));
+    for (const l of recount({ repos, checkout, dryRun: args.includes('--dry-run') }).lines) console.log(l);
+  } catch (e) { console.error(`levers-evaluate: ${e.message}`); process.exit(1); }
 }

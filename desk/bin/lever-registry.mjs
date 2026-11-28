@@ -6,7 +6,7 @@
 // desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
 //   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording,
-//            leverFingerprints, isValued } from './lever-registry.mjs'
+//            leverFingerprints, codeFingerprint, partOf, isValued } from './lever-registry.mjs'
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -62,6 +62,8 @@ const AUDIT_P0 = Object.freeze({ id: 'audit-p0', by: 'levers-audit.mjs', when: '
 const CODEX_DEAD_SEATS = Object.freeze({ id: 'codex-dead-seats', exits: Object.freeze([124, 75]), calls: 10, rate: 0.2, when: 'more than 20% of the last 10 desk-codex calls on on-arm tickets died (exit 124 or 75)' });
 const ownStepError = (step) => Object.freeze({ id: 'own-step-error', step, when: `a start on an on-arm ticket records ${step} exiting non-zero` });
 
+// A lever's code: a whole file, or with `part` only the lines its file marks for that part (partBlocks),
+// where the file is shared with code that is not the lever's.
 const code = (path, part) => Object.freeze(part ? { path, part } : { path });
 const metric = (name, minimum) => Object.freeze({ metric: name, direction: 'down', minimum, minimum_set: minimum != null });
 
@@ -85,7 +87,7 @@ export const ENTRIES = Object.freeze({
     layer: 'low-risk', trialled: true,
     mechanism: metric('permission denials per start', 0.25),
     trips: [POST_MERGE_REVERT, ownStepError('desk-env lines')],
-    code: [code('hooks/desk-worker-hints.py'), code('desk/bin/worker-settings.mjs')],
+    code: [code('hooks/desk-worker-hints.py'), code('desk/bin/worker-settings.mjs', 'wrappers')],
     preconditions: [],
   },
   memory: {
@@ -113,7 +115,7 @@ export const ENTRIES = Object.freeze({
     layer: 'quality-risk', trialled: true,
     mechanism: metric('review runs per ticket', null),
     trips: [POST_MERGE_REVERT, ownStepError('undraft.mjs'), AUDIT_P0],
-    code: [code('desk/bin/undraft.mjs'), code('desk/bin/review-threads.mjs')],
+    code: [code('desk/bin/undraft.mjs', 'review reuse'), code('desk/bin/review-threads.mjs', 'review reuse')],
     preconditions: [],
   },
   effort: {
@@ -209,6 +211,8 @@ export const REASON_CODES = Object.freeze({
   holdback_running: 'the lever is adopted and its holdback is still running',
   not_evaluated: 'the lever is settled, frozen, overridden or off here, so it is not weighed',
   fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
+  recount: 'the evidence already recorded was counted again on the code each ticket ran on',
+  recount_review: 'the lever was turned off, and counting its evidence again changed it, so Ben decides whether to test it again',
   evidence_incomplete: 'some outcomes the evaluation reads weren’t recorded',
   frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',
   no_figure_yet: 'a guardrail has no figure yet, so the maximum sample holds rather than reverts',
@@ -335,24 +339,63 @@ export function repoValuesOf(slug, root) {
 // under ~/.claude.
 export const installedPath = (path) => (path.startsWith('desk/') ? join(deskHome(), path.slice(5)) : join(HOME, '.claude', path));
 
-// A hash per lever of the installed copies of the code files it declares, whole files in registry order,
-// so evidence from before a lever's code changed can be told from evidence after. A listed file that
-// cannot be read is left out of its lever's hash and named in `missing`; a lever with none readable is
-// null.
+// A code entry's part is marked in its file by a comment line naming `lever-part: <part> start` and one
+// naming `lever-part: <part> end`, in the file's own comment syntax. A file may mark a part in more than
+// one place: its text is every marked block's lines, in order, without the marker lines (any part's).
+const MARKER = /lever-part:\s+(.+?)\s+(start|end)\s*(?:\*\/)?\s*$/;
+// The part's blocks, each an array of lines, or null where its markers are missing, unpaired or nested.
+export function partBlocks(text, part) {
+  const blocks = [];
+  let open = null;
+  for (const line of String(text).split('\n')) {
+    const m = MARKER.exec(line);
+    if (m && m[1] === part) {
+      if ((m[2] === 'start') === (open != null)) return null;
+      if (m[2] === 'start') open = [];
+      else { blocks.push(open); open = null; }
+    } else if (open && !m) open.push(line);
+  }
+  return open || !blocks.length ? null : blocks;
+}
+export const partText = (blocks) => blocks.map((b) => b.join('\n')).join('\n');
+export const partOf = (text, part) => { const b = partBlocks(text, part); return b ? partText(b) : null; };
+
+// One lever's hash over its `code` entries in registry order: a whole file's bytes, or a part's text
+// alone, so an edit outside a declared part leaves it unchanged. `read(path)` gives a file's bytes (null
+// when it cannot be read) and `part(path, part, text)` a part's text (null when its markers are
+// missing). A file that cannot be read is left out of the hash; a part that cannot be found makes the
+// lever null, never a hash of the whole file. Either is named in `missing`. `whole` hashes every entry
+// as a whole file, as fingerprints were taken before parts were.
+//   -> { fp: hex | null, missing: [path] }
+export function codeFingerprint(code, read, { part = (path, p, text) => partOf(text, p), whole = false } = {}) {
+  const h = createHash('sha256');
+  const missing = [];
+  let hashed = 0;
+  let lost = false;
+  for (const c of code) {
+    const body = read(c.path);
+    if (body == null) { missing.push(c.path); if (c.part && !whole) lost = true; continue; }
+    if (c.part && !whole) {
+      const text = part(c.path, c.part, body.toString('utf8'));
+      if (text == null) { missing.push(c.path); lost = true; continue; }
+      h.update(`${c.path}\0${c.part}\0${Buffer.byteLength(text)}\0`).update(text);
+    } else h.update(`${c.path}\0${body.length}\0`).update(body);
+    hashed++;
+  }
+  return { fp: lost || !hashed ? null : h.digest('hex').slice(0, 16), missing };
+}
+
+// A hash per lever of the installed copies of the code it declares (codeFingerprint), so evidence from
+// before a lever's own code changed can be told from evidence after.
 //   -> { fp: { <lever>: hex | null }, missing: [path] }
 export function leverFingerprints(registry = REGISTRY, resolve = installedPath) {
   const fp = {};
   const missing = [];
+  const read = (path) => { try { return readFileSync(resolve(path)); } catch { return null; } };
   for (const [name, l] of Object.entries(registry)) {
-    const h = createHash('sha256');
-    let read = 0;
-    for (const { path } of l.code) {
-      let body;
-      try { body = readFileSync(resolve(path)); } catch { if (!missing.includes(path)) missing.push(path); continue; }
-      h.update(`${path}\0${body.length}\0`).update(body);
-      read++;
-    }
-    fp[name] = read ? h.digest('hex').slice(0, 16) : null;
+    const r = codeFingerprint(l.code, read);
+    fp[name] = r.fp;
+    for (const p of r.missing) if (!missing.includes(p)) missing.push(p);
   }
   return { fp, missing };
 }

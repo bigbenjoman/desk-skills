@@ -1,9 +1,13 @@
 // suite: lever registry (each lever's layer, metrics, trips, code and preconditions in one place)
 // layer: L1
-import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES, isValued } from '../desk/bin/lever-registry.mjs';
+import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES, isValued, codeFingerprint, partOf, leverFingerprints } from '../desk/bin/lever-registry.mjs';
+import { historyMap, mapFp } from '../desk/bin/lever-fp-history.mjs';
 import { LEVERS, FINDER_MODEL_LEVER, parseLevers, parseWorkerModels } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -127,6 +131,52 @@ const ownGuard = (g) => ({ ...ENTRIES, memory: { ...ENTRIES.memory, guardrails: 
 t('a guardrail of a lever\'s own may not reuse a shared key', loadError(ownGuard({ acceptance: { metric: 'x', margin: { max_rate_ratio: 1.1 } } })), 'lever-registry: lever "memory" has guardrail "acceptance", which is a shared one');
 t('a guardrail of a lever\'s own needs a margin', loadError(ownGuard({ pings: { metric: 'pings per ticket' } })), 'lever-registry: lever "memory" has guardrail "pings" with no metric or rate-ratio margin');
 t('rows that name nothing fail loading', loadError({ ...ENTRIES, memory: { ...ENTRIES.memory, rows: '' } }), 'lever-registry: lever "memory" is missing "rows"');
+
+// A part's fingerprint covers only the lines its markers hold.
+const files = (o) => (p) => (Object.hasOwn(o, p) ? Buffer.from(o[p]) : null);
+const PART = [{ path: 'a.sh', part: 'p' }];
+const marked = (inside, outside = 'echo before') => `${outside}\n# lever-part: p start\n${inside}\n# lever-part: p end\necho after\n`;
+const fpOf = (o, code = PART) => codeFingerprint(code, files(o));
+t('DS-1065 AC1 only the part is hashed: an edit outside it leaves the fingerprint', fpOf({ 'a.sh': marked('run it') }).fp, fpOf({ 'a.sh': marked('run it', 'echo something else') }).fp);
+t('DS-1065 AC1 an edit inside the part changes it', fpOf({ 'a.sh': marked('run it') }).fp === fpOf({ 'a.sh': marked('run it twice') }).fp, false);
+t('DS-1065 AC1 the part is the lines between its markers', partOf(marked('one\ntwo'), 'p'), 'one\ntwo');
+t('DS-1065 a part marked in two places is both blocks, in order', partOf('# lever-part: p start\na\n# lever-part: p end\nx\n// lever-part: p start\nb\n// lever-part: p end\n', 'p'), 'a\nb');
+t('DS-1065 another part\'s markers are not its text', partOf('# lever-part: p start\na\n# lever-part: q start\nb\n# lever-part: q end\n# lever-part: p end\n', 'p'), 'a\nb');
+t('DS-1065 an end with no start, or a start never ended, is no part', [partOf('a\n# lever-part: p end\n', 'p'), partOf('# lever-part: p start\na\n', 'p'), partOf('# lever-part: p start\n# lever-part: p start\na\n# lever-part: p end\n', 'p')].join(' '), '  ');
+const unmarked = fpOf({ 'a.sh': 'echo before\nrun it\n' });
+t('DS-1065 AC2 a part whose markers are missing makes the lever null, never a whole-file hash', `${unmarked.fp} ${unmarked.missing.join(' ')}`, 'null a.sh');
+const mixed = fpOf({ 'a.sh': 'no markers\n', 'b.mjs': 'whole\n' }, [...PART, { path: 'b.mjs' }]);
+t('DS-1065 AC2 even beside a whole file that reads', `${mixed.fp} ${mixed.missing.join(' ')}`, 'null a.sh');
+const asBefore = createHash('sha256').update(`b.mjs\0${6}\0`).update('whole\n').digest('hex').slice(0, 16);
+t('DS-1065 a whole file hashes as it always has, so a lever with no part keeps its fingerprint', fpOf({ 'b.mjs': 'whole\n' }, [{ path: 'b.mjs' }]).fp, asBefore);
+t('DS-1065 AC3 every declared part has its markers in its file', Object.values(REGISTRY).flatMap((l) => l.code).filter((c) => c.part && partOf(readFileSync(join(ROOT, c.path), 'utf8'), c.part) == null).map((c) => `${c.path} (${c.part})`).join(', '), '');
+t('DS-1065 AC3 the parts declared: the preflight block, effort, model finder, wrappers and review reuse', Object.values(REGISTRY).flatMap((l) => l.code).filter((c) => c.part).map((c) => `${c.path}:${c.part}`).join(' '),
+  'desk/bin/spawn-worker.sh:preflight block desk/bin/worker-settings.mjs:wrappers desk/bin/undraft.mjs:review reuse desk/bin/review-threads.mjs:review reuse desk/bin/desk-env.mjs:effort desk/bin/desk-env.mjs:model finder');
+const inTree = (p) => join(ROOT, p);
+t('DS-1065 AC3 every lever has a fingerprint of the code in this tree', Object.entries(leverFingerprints(REGISTRY, inTree).fp).filter(([, v]) => !v).map(([k]) => k).join(' '), '');
+
+// The recount's map: each version of the file in git whose part was today's maps to today's fingerprint.
+const G = mkdtempSync(join(tmpdir(), 'lever-fp-history-'));
+const git = (...a) => execFileSync('git', ['-C', G, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+git('init', '-q');
+const commit = (body, msg) => { writeFileSync(join(G, 'a.sh'), body); git('add', 'a.sh'); git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', msg); };
+const v1 = 'echo before\nrun it\necho after\n';
+const v2 = 'echo something else\nrun it\necho after\n';
+const v3 = 'echo something else\nrun it twice\necho after\n';
+[v1, v2, v3].forEach((b, i) => commit(b, `v${i + 1}`));
+const INSTALLED = join(G, 'installed');
+mkdirSync(INSTALLED);
+writeFileSync(join(INSTALLED, 'a.sh'), marked('run it', 'echo moved on'));
+const reg = { lv: { code: PART }, plain: { code: [{ path: 'a.sh' }] } };
+const hm = historyMap({ checkout: G, registry: reg, resolve: (p) => join(INSTALLED, p) });
+const whole = (body) => codeFingerprint(PART, files({ 'a.sh': body }), { whole: true }).fp;
+t('DS-1065 AC5 the versions whose part is today\'s map to today\'s part-only fingerprint', JSON.stringify(hm.levers.lv), JSON.stringify({ fp: fpOf({ 'a.sh': marked('run it') }).fp, from: [whole(v1), whole(v2)].sort() }));
+t('DS-1065 AC5 a version whose part differs is not mapped', hm.levers.lv.from.includes(whole(v3)), false);
+t('DS-1065 a lever with no part is left out of the map', 'plain' in hm.levers, false);
+t('DS-1065 an old fingerprint reads through the map; any other as recorded', [mapFp(hm.levers, 'lv', whole(v1)), mapFp(hm.levers, 'lv', whole(v3))].join(' '), `${hm.levers.lv.fp} ${whole(v3)}`);
+const noGit = historyMap({ checkout: join(G, 'nowhere'), registry: reg, resolve: (p) => join(INSTALLED, p) });
+t('DS-1065 a checkout whose history cannot be read maps nothing, and says so', `${Object.keys(noGit.levers).length} ${/lv: the git history of a\.sh cannot be read/.test(noGit.notes[0] ?? '')}`, '0 true');
+rmSync(G, { recursive: true, force: true });
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all checks passed');

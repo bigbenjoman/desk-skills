@@ -113,7 +113,9 @@ t('the spawn line reads default with no effort passed', line.effort, 'default');
 const TREE = join(T, 'tree');
 const put = (p, body) => { mkdirSync(dirname(join(TREE, p)), { recursive: true }); writeFileSync(join(TREE, p), body); };
 const paths = [...new Set(Object.values(REGISTRY).flatMap((l) => l.code.map((c) => c.path)))];
-for (const p of paths) put(p, `${p} v1\n`);
+// A file a lever declares a part of carries that part's markers, as the real one does.
+const partsIn = (p) => [...new Set(Object.values(REGISTRY).flatMap((l) => l.code).filter((c) => c.path === p && c.part).map((c) => c.part))];
+for (const p of paths) put(p, [`${p} v1`, ...partsIn(p).flatMap((part) => [`# lever-part: ${part} start`, `${part} v1`, `# lever-part: ${part} end`])].join('\n') + '\n');
 const inTree = (p) => join(TREE, p);
 const fpLine = (o = {}) => JSON.parse(spawnLine({ ticket: 'F-1', session: 's', installed: null, levers: { on: [], unknown: [] },
   claude: '2.1.0 (Claude Code)', fingerprints: leverFingerprints(REGISTRY, inTree), ...o }));

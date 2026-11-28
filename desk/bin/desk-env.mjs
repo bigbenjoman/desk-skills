@@ -1128,6 +1128,7 @@ export function leverValue(name, env = process.env) {
   }
   return null;
 }
+// lever-part: model finder start
 // The model desk-review's Claude finder seats run on (`desk-env model finder`): the finder-model
 // lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset. The row
 // is parsed either way, so a malformed one is refused on both arms.
@@ -1135,6 +1136,7 @@ export function finderModel(l = levers()) {
   const { finder = null } = workerModels();
   return leverOn('finder-model', l) ? FINDER_MODEL_LEVER : finder;
 }
+// lever-part: model finder end
 
 // Where each lever's state comes from: `pinned` (named in the row, or in this ticket's pin), `auto`
 // (the row reads `auto` and does not name it) or `off`. `from` is `pin` inside a pinned worker, else
@@ -1183,11 +1185,13 @@ export function leversFrozen(file = freezeFile()) {
   return { at: statSync(file).mtime.toISOString(), reason: null };
 }
 
+// lever-part: effort start
 // §3b Worker effort is read by parseWorkerEffort (config-schema.mjs), only with the effort lever on.
 export const DEFAULT_EFFORT = 'medium';
 export const NO_EFFORT = 'default';
 // The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
 export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
+// lever-part: effort end
 
 // §3b Codex review, read by parseCodexReview (config-schema.mjs): every role with the codex lever on,
 // and only its timeout with it off (codex-exec.mjs review).
@@ -2932,6 +2936,7 @@ if (isMain) {
         if (!PERMISSION_KEYS[args[0]]) throw new Error(`desk-env: unknown permission id "${args[0]}"`);
         console.log(PERMISSION_KEYS[args[0]]);
         break;
+      // lever-part: model finder start
       case 'model': {
         // §3b Worker models' finder or text model; `none` when it is unset (no override). Exits 0
         // either way, so a worker reads the answer without a compound `; echo $?`. The finder model
@@ -2942,11 +2947,14 @@ if (isMain) {
         console.log((args[0] === 'finder' && !row ? finderModel() : workerModels()[args[0]]) || 'none');
         break;
       }
+      // lever-part: model finder end
+      // lever-part: effort start
       case 'effort':
         // What spawn-worker.sh launches a session at; a malformed §3b Worker effort row exits 4.
         if (!args[0]) throw new Error(`usage: desk-env.mjs effort ${EFFORT_STARTS.join('|')}`);
         console.log(workerEffort(args[0]));
         break;
+      // lever-part: effort end
       case 'budget':
         printRead(cmd, args[0]);
         break;
