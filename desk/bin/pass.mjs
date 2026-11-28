@@ -5682,6 +5682,19 @@ runSteps({
   report,
 });
 
+// One ticket through intake.mjs admit (/desk-admit's checks) with its --json result read: whether it
+// was admitted to any batch, whether a usage limit cut its triage off (`limited`), and `why`, intake's
+// last line naming it (else its last line, else the exit code).
+const intakeAdmit = (key, extra = []) => {
+  flushQueue();
+  const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'pass', '--json', ...extra]);
+  let res = null;
+  try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
+  const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
+  return { admitted: !!res?.admitted?.includes(key), limited: !!res?.limited?.includes(key),
+    why: said.filter((line) => line.includes(key)).pop() ?? said.pop() ?? `exit ${r.code}` };
+};
+
 // ---- outside blockers admitted --------------------------------------------
 // A held ticket's open blocker in no batch is worked by nobody, so in a batch the supervisor runs the
 // pass admits it (intake.mjs admit, /desk-admit's checks) into this batch: a named one by --into, the
@@ -5716,15 +5729,10 @@ runSteps({
     // tries again.
     const spent = [];
     for (const k of now) {
-      flushQueue();
-      const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', k, '--by', 'pass', '--json', ...(into ? ['--into', into] : [])]);
-      let res = null;
-      try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
-      const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
-      if (!res?.limited?.includes(k)) spent.push(k);
-      const why = said.filter((line) => line.includes(k)).pop() ?? said.pop() ?? `exit ${r.code}`;
+      const { admitted, limited, why } = intakeAdmit(k, into ? ['--into', into] : []);
+      if (!limited) spent.push(k);
       epicLines.push(queue().tickets[k] ? `outside blockers: ${k}, holding ${t.key}, admitted to this batch`
-        : res?.admitted?.includes(k) ? `outside blockers: ${k}, holding ${t.key}, admitted to another batch (${why})`
+        : admitted ? `outside blockers: ${k}, holding ${t.key}, admitted to another batch (${why})`
           : `outside blockers: ${k}, holding ${t.key}, not admitted to this batch (${why}): admit it with /desk-admit ${k}`);
     }
     const inQueue = queue().tickets;
@@ -5741,17 +5749,15 @@ runSteps({
 // admit, and assigns an unassigned one under §3 jira-assign-self (candidates.mjs admitRun).
 // The intake admit's own refusal, as its line naming the ticket.
 const admitCandidate = (key) => {
-  flushQueue();
-  const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'pass', '--json']);
-  let res = null;
-  try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
-  if (res?.admitted?.includes(key)) return { admitted: true };
-  const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
-  return { admitted: false, retry: !!res?.limited?.includes(key), why: said.filter((line) => line.includes(key)).pop() ?? said.pop() ?? `exit ${r.code}` };
+  const { admitted, limited, why } = intakeAdmit(key);
+  return admitted ? { admitted: true } : { admitted: false, retry: limited, why };
 };
+// desk-jira edit reads each field back, and one that reads back blank says the write did not stick.
 const assignCandidate = (key) => {
   const r = shOut('desk-jira', ['edit', key, 'assignee=me']);
-  return r.ok && !/assignment did not stick/.test(r.out) ? { ok: true } : { ok: false, why: r.out.split('\n').pop() || `desk-jira exited ${r.code}` };
+  const said = r.out.split('\n').filter(Boolean);
+  return r.ok && !said.some((line) => /did not stick/.test(line)) ? { ok: true }
+    : { ok: false, why: said.find((line) => /did not stick/.test(line))?.trim() ?? said.pop() ?? `desk-jira exited ${r.code}` };
 };
 if (onJira && !E.batchName() && queue().supervised === true && running.length < concurrency && !spawnable.length
   && !lowMemory && !MAINT.hold) {

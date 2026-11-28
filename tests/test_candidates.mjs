@@ -323,7 +323,12 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
     checks({ 'ACME-9': false }, { 'ACME-9': { branch: 'feat/ACME-100-epic', state: 'none' } })), 'blocker ACME-9 is merged into feat/ACME-100-epic, not main');
   t('#1710 AC1 a blocker GitHub could not be read for is refused', admitRefusal(cand('ACME-5', { blockers: [{ key: 'ACME-9', category: 'done' }] }), 'main', checks({ 'ACME-9': null })),
     'whether blocker ACME-9 is on main could not be read');
-  t('#1710 AC1 a PR naming it merged into a feature branch is refused', admitRefusal(cand('ACME-6'), 'main', checks({}, { 'ACME-6': { branch: 'feat/x', state: 'open' } })), 'a PR naming it is merged into feat/x, not main');
+  t('#1710 AC1 a PR naming it merged into a feature branch is refused', admitRefusal(cand('ACME-6'), 'main', checks({ 'ACME-6': false }, { 'ACME-6': { branch: 'feat/x', state: 'open' } })), 'a PR naming it is merged into feat/x, not main');
+  t('#1710 AC1 one whose own PRs GitHub could not be read for is refused, not passed', admitRefusal(cand('ACME-8'), 'main', checks({ 'ACME-8': null })),
+    'whether a PR naming it is on main could not be read');
+  t('#1710 AC1 one not landed on the base, the branch unnamed, is refused', admitRefusal(cand('ACME-8'), 'main', checks({ 'ACME-8': false })), 'a PR naming it is not on main');
+  t('#1710 AC1 a Done blocker not on the base, the branch unnamed, is refused', admitRefusal(cand('ACME-8', { blockers: [{ key: 'ACME-9', category: 'done' }] }), 'main', checks({ 'ACME-9': false })),
+    'blocker ACME-9 is not on main');
   t('#1710 AC1 one whose feature branch already merged into the base passes', admitRefusal(cand('ACME-7'), 'main', checks({}, { 'ACME-7': { branch: 'feat/x', state: 'merged' } })), null);
 
   // admitRun: the listing's offered entries, admit and assign stubbed.

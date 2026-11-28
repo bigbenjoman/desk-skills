@@ -373,22 +373,26 @@ export const ADMIT_RETRY_MS = 24 * 60 * 60 * 1000;
 
 // Why offered candidate `c` is not admitted unattended, or null: any flag on it (no Acceptance criteria
 // or Design section, an open PR to adopt, a read that failed), a blocker not Done or whose code is not
-// on `base`, or a PR naming it merged into a branch other than `base`. `checks`:
+// on `base`, or a PR naming it not landed on `base` (merged into another branch, say), and either read
+// failing refuses too. `checks`:
 //   landed(key, base)    -> true | false | null (unread), as intake.mjs landedOn
-//   elsewhere(key, base) -> {branch, state} | null, as intake.mjs unpromotedBase
+//   elsewhere(key, base) -> {branch, state} | null, as intake.mjs unpromotedBase, only to name the branch
 export function admitRefusal(c, base, { landed, elsewhere }) {
   if (c.flags?.length) return c.flags.join('; ');
-  const away = (key) => { const e = elsewhere(key, base); return e && e.state !== 'merged' ? e : null; };
+  // Why `key`'s PRs keep it off `base`, `who` naming it in the reason, or null once landedOn reads true.
+  const off = (key, who) => {
+    const on = landed(key, base);
+    if (on === true) return null;
+    if (on == null) return `whether ${who} is on ${base} could not be read`;
+    const e = elsewhere(key, base);
+    return e && e.state !== 'merged' ? `${who} is merged into ${e.branch}, not ${base}` : `${who} is not on ${base}`;
+  };
   for (const b of c.blockers ?? []) {
     if (b.category !== 'done') return `blocker ${b.key} is not Done`;
-    const on = landed(b.key, base);
-    if (on === true) continue;
-    if (on == null) return `whether blocker ${b.key} is on ${base} could not be read`;
-    const e = away(b.key);
-    return e ? `blocker ${b.key} is merged into ${e.branch}, not ${base}` : `blocker ${b.key}'s code is not on ${base}`;
+    const why = off(b.key, `blocker ${b.key}`);
+    if (why) return why;
   }
-  const own = away(c.key);
-  return own ? `a PR naming it is merged into ${own.branch}, not ${base}` : null;
+  return off(c.key, 'a PR naming it');
 }
 
 // A kept run as lines: what it admitted, what it refused and why, or why it admitted nothing.
