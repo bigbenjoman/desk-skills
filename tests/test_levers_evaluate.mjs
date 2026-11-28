@@ -817,6 +817,65 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('in a holdback, the report is keyed by the adopted value and the baseline, not on and off', JSON.stringify(held), JSON.stringify({ 30: { tickets: 1, usd_per_ticket: 6, handoffs_per_ticket: 2 }, config: { tickets: 1, usd_per_ticket: 8, handoffs_per_ticket: 1 } }));
 }
 
+// ---- a guardrail with no estimate reads too early and never reverts a lever ----------------------------------
+{
+  const { guardrailEstimates, priorRevertsOf } = await import('../desk/bin/levers-evaluate.mjs');
+  const { guardrailStatus } = await import('../desk/bin/levers-view.mjs');
+  const findings = (slug, r, p1) => writeFileSync(join(stateOf(slug), 'workers', `${r.key}.findings.jsonl`), `${JSON.stringify({ ticket: r.key, round: 1, reviewer: 'self', p0: 0, p1, p2: 0, fixed: 0 })}\n`);
+  const gRow = (on, review) => ({ slug: 'acme__g', on, review_p0_p1: review });
+  const noneOff = [...Array.from({ length: 20 }, (_, i) => gRow(true, i % 3 === 0 ? 1 : 0)), ...Array.from({ length: 20 }, () => gRow(false, 0))];
+  const [early] = guardrailEstimates(noneOff, { seed: 's', minN: 30, names: ['review-p0-p1'] });
+  t('AC1 an off side with no P0 or P1 findings reads too early, with no p_worse', [early.status, early.est, early.p_worse], ['too_early', null, null]);
+  const someOff = noneOff.map((r, i) => (!r.on && i % 4 === 0 ? { ...r, review_p0_p1: 1 } : r));
+  const [figured] = guardrailEstimates(someOff, { seed: 's', minN: 30, names: ['review-p0-p1'] });
+  t('AC3 a guardrail with an estimate keeps its figures and its status', [figured.est, Number.isFinite(figured.p_worse), figured.status === (figured.p_worse >= DECISION_RULE.probability ? 'breached' : 'too_early')], [1.4, true, true]);
+  t('AC3 a logged guardrail with an estimate and a sure probability still reads breached', guardrailStatus({ est: 1.6, p_worse: 0.95 }, 21, 40), 'breached');
+  t('AC1 a logged guardrail with no estimate but a probability reads too early, never breached', guardrailStatus({ est: null, p_worse: 0.9725 }, 21, 40), 'too_early');
+
+  // End to end: at the revert floor, with findings only on the lever's arm.
+  const G1 = 'acme__nofigure';
+  const g1rows = arms(G1, initial(G1), DECISION_RULE.revert_min_per_arm, better.on, better.off);
+  const g1 = repo(G1, g1rows);
+  g1rows.filter((r) => r.pin.arms.wrappers === 'on').forEach((r, i) => findings(G1, r, i % 2));
+  run([g1]);
+  const g1row = wrappersRow(G1);
+  t('AC1 the review guardrail reads too early in the evaluation', g1row.guardrails.find((g) => g.name === 'review-p0-p1')?.status, 'too_early');
+  t('AC2 and the lever holds rather than reverts', [g1row.decision, transitionOf(G1).length], ['hold', 0]);
+
+  const early2 = { name: 'review-p0-p1', est: null, lo90: null, hi90: null, p_worse: null, status: 'too_early' };
+  const atMax = decide({ ...base, ...good, n: { on: 150, off: 150 }, guardrails: [ok, early2] });
+  t('AC2 at the maximum sample a lever whose only failing guardrail has no figure holds', [atMax.decision, atMax.reason_code], ['hold', 'no_figure_yet']);
+  t('AC5 and its reason says no figure yet', /review-p0-p1 has no figure yet/.test(atMax.reason) && !/null/.test(atMax.reason), true);
+  const empty = { name: 'review-p0-p1', est: null, lo90: null, hi90: null, p_worse: null, status: 'no_data' };
+  const atMaxEmpty = decide({ ...base, ...good, n: { on: 150, off: 150 }, guardrails: [ok, empty] });
+  t('AC2 at the maximum sample a guardrail with no rows to measure holds too', [atMaxEmpty.decision, atMaxEmpty.reason_code, /review-p0-p1 has no figure yet/.test(atMaxEmpty.reason)], ['hold', 'no_figure_yet', true]);
+  const noBenefit = decide({ ...base, ...good, mechanism: { ...good.mechanism, p_benefit: 0.2 }, n: { on: 150, off: 150 }, guardrails: [ok, early2] });
+  t('AC2 one with no benefit at the maximum still reverts, for that', [noBenefit.decision, noBenefit.reason_code], ['revert', 'no_benefit_max_sample']);
+  t('AC5 a revert reason never says null', /null/.test(noBenefit.reason), false);
+  const breach = decide({ ...base, ...good, guardrails: [{ name: 'acceptance', status: 'breached', p_worse: 0.95, est: -0.2, margin: -0.05, lo90: -0.3, hi90: null }] });
+  t('AC5 a breach with a missing bound reads no figure yet', [breach.decision, /null/.test(breach.reason), /to no figure yet\)/.test(breach.reason)], ['revert', false, true]);
+
+  // AC4: a revert logged on a guardrail with no estimate raises one needs-you item, and no longer counts.
+  const voidRevert = (slug) => append(slug, { kind: 'transition', lever: 'failure-class', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_review_p0_p1',
+    reason: 'review P0 and P1 findings per ticket worse than its margin with 97% probability', eval_id: 'evl_v', evidence_file: 'levers-evidence/evl_v.jsonl', at: at(-1),
+    guardrails: [{ name: 'acceptance', est: 0.17, p_worse: 0.07, status: 'too_early' }, { name: 'review-p0-p1', scope: 'repo', est: null, lo90: null, hi90: null, margin: 1.25, p_worse: 0.9725, status: 'breached' }] });
+  const G2 = 'acme__voided';
+  const v = voidRevert(G2);
+  run([repo(G2, [])]);
+  const asks = () => eventsOf(G2, 'needs_you').filter((x) => x.reason_code === 'revert_no_figure');
+  t('AC4 the revert raises one needs-you item on its lever, naming it', [asks().length, asks()[0]?.lever, asks()[0]?.revert_id], [1, 'failure-class', v.id]);
+  t('AC4 it names the check and why the revert no longer counts, and asks keep off or test again',
+    [/review P0 and P1 findings per ticket/.test(asks()[0]?.reason), /no figure yet/.test(asks()[0]?.reason), /Keep failure-class off, or test it again\?/.test(asks()[0]?.reason), /null/.test(asks()[0]?.reason)], [true, true, true, false]);
+  run([repo(G2, [])], NOW + DAY);
+  t('AC4 it is raised once per revert', asks().length, 1);
+  t('the void revert does not count toward the second-revert freeze', priorRevertsOf(read(G2).events, 'failure-class'), 0);
+  const G3 = 'acme__voidedset';
+  voidRevert(G3);
+  append(G3, { kind: 'override', lever: 'failure-class', from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'put back on trial', at: at(-0.5) });
+  run([repo(G3, [])]);
+  t('AC4 a void revert Ben has already acted on raises nothing', eventsOf(G3, 'needs_you').filter((x) => x.reason_code === 'revert_no_figure').length, 0);
+}
+
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all checks passed');

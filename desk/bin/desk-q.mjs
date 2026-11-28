@@ -80,7 +80,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY } from './cloud-worker.mjs';
+import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY, ranInCloud } from './cloud-worker.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount, followCheckText } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
@@ -2006,7 +2006,7 @@ function useOnlyLines(repos, use, width) {
 // (cloud-worker.mjs CLOUD_COST_WHY), so it is listed as such with its session URL rather than left out
 // of what the list-price use counts. A ticket the queue has archived is no longer listed.
 const cloudCosts = (repos) => (repos ?? []).flatMap((r) => Object.values(r.q?.tickets ?? {})
-  .filter((t) => t?.location === 'cloud' && t.cloud?.started)
+  .filter((t) => ranInCloud(t) && t.cloud?.started)
   .map((t) => ({ repo: r.repo ?? r.name, key: t.key, cost: null, why: CLOUD_COST_UNKNOWN, url: t.cloud.url ?? null })));
 function cloudCostLines(repos, width) {
   const rows = cloudCosts(repos).map((x) => ({ name: `${x.repo} ${x.key}`, url: x.url ?? 'its session URL was not recorded' }));
@@ -3050,6 +3050,7 @@ function oldCodeNotes(shown) {
 // oldCodeNotes's, which batch carries the old desk code notes, and `drivers` which batch carries its
 // repo's stopped merge driver note: the driver is the repo's, so it is one note. With `allOut`, Home's note on the
 // Claude default's limit stands for the batch's hold on it.
+const BASE_FIX_WAIT_PASSES = 3;
 function stallNotes(r, quiet, old, drivers, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
@@ -3059,6 +3060,12 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
   const q = quiet.notes.get(r);
   if (q) out.push({ ...note(q.text), ...(q.hide ? { hide: q.hide } : {}) });
+  // A base conflict fix that has waited BASE_FIX_WAIT_PASSES passes in a row to start (base-fix.mjs
+  // notStarted), with no fix worker running, and why the last pass did not start it.
+  const bs = r.q?.base_fix?.start;
+  if (bs && (bs.passes ?? 0) >= BASE_FIX_WAIT_PASSES && !r.q.base_fix.running) {
+    out.push(note(`${r.batch != null ? `${batchName(r)}: ` : ''}${r.q.base ?? 'the base'}'s ${bs.check ? 'merged-tree' : 'conflict'} fix has not started for ${bs.passes} passes: ${String(bs.why ?? 'no reason recorded').replace(/\.$/, '')}.`));
+  }
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {
     const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;

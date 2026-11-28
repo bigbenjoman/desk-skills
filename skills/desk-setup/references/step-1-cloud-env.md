@@ -20,14 +20,20 @@ held (`local` for a new config), and you say so.
    adds its install above the block. Show the script, then say:
    - paste it into the environment's **Setup script** field, in claude.ai/code's environment
      settings, on the account this repo's Subscription row names (`desk-env subscription`);
-   - **one environment should serve every desk repo**: `claude --cloud` starts in the last-used
-     environment, not one matched to the repo. Where the environment already holds another repo's
-     block, add this one after it, guards and all; replace only the block between this repo's own
-     guard lines on a re-run. Each other repo's block is in its own `<config folder>/cloud-setup.sh`.
+   - **set the environment selector in claude.ai/code to Auto**: `claude --cloud` cannot name a
+     hosted environment, and Auto picks one by repository. One environment may still serve several
+     desk repos: where it already holds another repo's block, add this one after it, guards and all;
+     replace only the block between this repo's own guard lines on a re-run. Each other repo's block
+     is in its own `<config folder>/cloud-setup.sh`.
 2. **Network and variables.** Run `$CE hosts`. Name each `HOST` line's host and the variables that
    point at it: on Limited network access, the person adds those hosts (the Clerk API host among
    them) or the dev server and tests cannot reach them. Then name every `VARS` name as one the
-   environment needs set, by name only. Never read out or write a value. Then say the `NOTE` line
+   environment needs set, by name only (with §3b Cloud environment providing `db`, it holds §4
+   Database URL variable's names too). Never read out or write a value. A `SET` line, printed where
+   §3b Cloud environment names an environment, is the one variable desk gives a value: the person
+   sets it as printed, as each cloud prompt's first step checks it. `hosts` reads the row from the
+   written config, so before step 5 writes a new or changed row it prints no `SET` line, or the old
+   name: step 5 runs `hosts` again after the write for that line. Then say the `NOTE` line
    plainly: every variable in the one shared environment reaches every desk repo's sessions in it,
    so a secret set for this repo is readable by the others' sessions too.
 3. **The first start.** Run `$CE first-start`. It starts `claude --cloud` under this repo's

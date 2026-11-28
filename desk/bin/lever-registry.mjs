@@ -211,6 +211,8 @@ export const REASON_CODES = Object.freeze({
   fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
   evidence_incomplete: 'some outcomes the evaluation reads weren’t recorded',
   frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',
+  no_figure_yet: 'a guardrail has no figure yet, so the maximum sample holds rather than reverts',
+  revert_no_figure: 'the lever was reverted on a guardrail with no figure, so that revert no longer counts',
   audit_recorded: 'a blind audit of a merged PR was recorded',
   audit_p0: 'a blind audit found a P0 in a merged PR drawn on for the lever',
   state_unreadable: 'the repo\'s lever log could not be read, so its tickets cannot be assigned arms',

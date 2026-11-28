@@ -1,6 +1,6 @@
 // suite: base conflict fix (a batch base in conflict with the default branch goes to a worker, twice)
 // layer: L1
-import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, notStarted, FIX_TRIES_MAX, START_TRIES_MAX } from '../desk/bin/base-fix.mjs';
 import { epicDue, epicCarry } from '../desk/bin/batch-state.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -163,5 +163,22 @@ t('DS-786 the check briefing has its section', promotionChecksBrief(pctx).starts
 const ptask = promotionChecksTask(pctx);
 t('DS-786 the check task pushes HEAD to the base from its detached worktree', ptask.includes('push with git push origin HEAD:refs/heads/feat/x.') && ptask.includes('on a detached HEAD at origin/feat/x'), true);
 t('DS-786 the check task parks on a check no change on the base clears, and never undrafts or merges', ptask.includes('push nothing for it and park naming the check') && ptask.includes('Never mark the PR ready, merge it'), true);
+
+// DS-1034: a merge try that is due and does not start spends no try; START_TRIES_MAX failed starts are the person's.
+{
+  const fix = baseFixCall(null, c()).fix;
+  const AT = '2026-11-27T00:00:00Z', LATER = '2026-11-27T00:05:00Z';
+  const w1 = notStarted(null, fix, 'repo workers: 1 of the §3b cap of 1 running', { at: AT });
+  t('DS-1034 AC1 a try that waits for room is kept as a start, not a try', JSON.stringify([w1.tries, w1.start]),
+    JSON.stringify([[], { try: 1, files: ['a.txt'], since: AT, passes: 1, failed: 0, why: 'repo workers: 1 of the §3b cap of 1 running' }]));
+  const w2 = notStarted(w1, fix, 'spawn refused: no seat', { failed: true, at: LATER });
+  t('DS-1034 AC2 a refused spawn counts a failed start and keeps the first wait\'s time', `${w2.start.passes} ${w2.start.failed} ${w2.start.since} ${w2.start.why}`, `2 1 ${AT} spawn refused: no seat`);
+  t('DS-1034 AC2 and the next pass tries again, as try 1', `${baseFixCall(w2, c()).call} ${baseFixCall(w2, c()).fix?.try}`, 'spawn 1');
+  const w3 = notStarted(notStarted(w2, fix, 'spawn refused: no seat', { failed: true, at: LATER }), fix, 'spawn refused: no seat', { failed: true, at: LATER });
+  const stuck = baseFixCall(w3, c());
+  t(`DS-1034 AC2 after ${START_TRIES_MAX} failed starts it is the person's, naming why`, `${stuck.call}: ${stuck.why}`,
+    `stuck: its fix worker could not be started in ${START_TRIES_MAX} tries; the last: spawn refused: no seat`);
+  t('DS-1034 a start kept beside earlier tries keeps them', notStarted({ tries: [{ try: 1, head: H2 }], running: null, port: null }, fix, 'x', { at: AT }).tries.length, 1);
+}
 
 process.exit(fails ? 1 : 0);

@@ -119,7 +119,7 @@
 // offered, that offers none it did not offer then; one put off is listed anyway while three or more
 // held tickets wait behind it. Exits 0, or 11
 // (show the person) on anything it refuses.
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { runOnce, outOrNull } from './build-memo.mjs';
@@ -128,11 +128,13 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
-import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
+import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personGapLines, ANSWERED_ITEM, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
+import { settledCriteria } from './decisions-change.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
 import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
+import { START_TRIES_MAX } from './base-fix.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
@@ -245,7 +247,9 @@ function draftGapsOf(r, t, reads) {
   const { v } = reads.pr(r, t.result.pr, ',reviews');
   const review = verdictReviewAt(v?.reviews, logins, at);
   const gaps = review ? reviewGapLines(review.body) : [];
-  return gaps.length ? gaps : null;
+  // A measurement asks for its command's number, and one the ticket file's Decisions settle is not asked again.
+  const settled = () => { try { return settledCriteria(readFileSync(join(r.stateDir, 'tickets', `${t.key}.md`), 'utf8')); } catch { return []; } };
+  return gaps.length ? personGapLines(gaps, { settled }) : null;
 }
 // The evidence a PR's body already holds for each gap only the person accepts (accept-gaps.mjs
 // acceptNeed): the body's lines naming the gap's criterion label, keyed by label (`AC2`), at most
@@ -597,7 +601,9 @@ function draftPlain(r, n, u, gapLines = null, t = null, reads = null) {
       const toAccept = `${accepts.length === 1 ? 'The gap' : 'Gaps'} only you can accept: ${acceptNeed(t.result.pr, ghRepoOf(r), accepts.map(one), prEvidence(r, t, reads, accepts))}`;
       return `${n} is a draft, and its code review left ${what}${rest.length ? `: ${rest.join('; ')}. ${settle}` : '.'} ${toAccept}`;
     }
-    if (gaps && gapLines?.length) return `${n} is a draft, and its code review left ${what}: ${gapLines.map((g) => one(g).replace(/[.;]$/, '')).join('; ')}. ${settle}`;
+    // Gaps all answered already in the ticket's Decisions ask nothing: a worker posts the verdict again.
+    const answered = gapLines?.length && gapLines.every((g) => g.endsWith(ANSWERED_ITEM));
+    if (gaps && gapLines?.length) return `${n} is a draft, and its code review left ${what}: ${gapLines.map((g) => one(g).replace(/[.;]$/, '')).join('; ')}.${answered ? '' : ` ${settle}`}`;
     if (gaps) return `${n} is a draft, and its code review left ${what}. Desk could not read the review to quote ${gaps === 1 ? 'the gap' : 'the gaps'}, so read ${gaps === 1 ? 'it' : 'them'} on the PR. ${settle}`;
     // No fix try ran on these: one that did and ran out is stuck (stuckPlain), so the reason is the review's.
     const it = found.length === 1 && found[0].startsWith('1 ') ? 'it' : 'them';
@@ -837,10 +843,14 @@ const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITE
 // one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
 const BASE_SYNC_ITEM = 'base-sync';
 const baseSyncRow = (r) => (r.q?.base_sync_stuck?.base ? { t: { key: BASE_SYNC_ITEM }, baseSync: true } : null);
-const batchRows = (r) => [baseSyncRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
-// The base-sync, base-push and subscription-off items desk-q counts, one per batch of a repo row (each
-// keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
-const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
+// A batch whose base conflict fix worker could not be started in START_TRIES_MAX tries (base-fix.mjs
+// notStarted, base_fix.start) is one item, named by this: the conflict is the person's to resolve.
+const BASE_FIX_START_ITEM = 'base-fix-start';
+const baseFixStartRow = (r) => ((r.q?.base_fix?.start?.failed ?? 0) >= START_TRIES_MAX ? { t: { key: BASE_FIX_START_ITEM }, baseFixStart: true } : null);
+const batchRows = (r) => [baseSyncRow(r), baseFixStartRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
+// The base-sync, base-fix-start, base-push and subscription-off items desk-q counts, one per batch of a
+// repo row (each keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), baseFixStartRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -1863,6 +1873,15 @@ function itemOf(r, x, reads = null, finds = reads) {
         : `the base sync of ${b.base} failed, so ${frozen}. It clears once a pass syncs ${b.base}: fix what stopped it (a base missing on origin is restored or recreated there)`,
       actions: [['done', `once the base is ${b.cmd ? 'pushed' : 'fixed'}, the next pass finds it current, spawns again and drops this item`], ['not-now']] };
   }
+  if (x.baseFixStart) {
+    const s = r.q.base_fix.start;
+    const base = r.q.base ?? 'the batch base';
+    const files = s.files?.length ? s.files.join(', ') : 'files not listed';
+    const stays = s.check ? `merging ${defaultOf(r)} into ${base} still fails §4 Merged-tree check (${s.check})` : `${base} stays in conflict with ${defaultOf(r)} (${files})`;
+    const fixIt = s.check ? 'Merge it by hand in the base worktree, fix what the check fails' : 'Resolve the conflict by hand in the base worktree';
+    return { kind: 'base-fix-start', need: `the ${s.check ? 'merged-tree' : 'conflict'} fix worker for ${base} in ${r.name ?? r.slug} could not be started in ${s.failed} tries, so ${stays}. The last try: ${s.why}. ${fixIt} and push ${base}`,
+      actions: [['done', `once ${base} is pushed, the next pass finds it current and drops this item`], ['not-now']] };
+  }
   if (x.basePush) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
@@ -2235,7 +2254,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if (l.status === 'dismissed') continue;
       // A put-off batch-wide hold is no ticket row, so a drop finds it in `off` as a repo-level item.
       if (l.status === 'put_off') { putOff++; if (!r.q.tickets?.[x.t.key]) off.push({ r, t: x.t, ...item, putOffKey: putOffKey(r, x.t, item), putOffDir: r.stateDir }); continue; }
-      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
+      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.baseFixStart ? timeOf(r.q.base_fix.start.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -2750,6 +2769,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (item.kind === 'session') return sessionDone();
     if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
     if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
+    if (item.kind === 'base-fix-start') return say(true, 'noted: the next pass syncs the base again, and drops this item once it is current.');
     if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
     if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
     return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');

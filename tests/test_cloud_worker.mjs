@@ -8,13 +8,15 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt, cloudNeeds, shotsRef, CLOUD_ENV_VAR } from '../desk/bin/cloud-worker.mjs';
 import { cloudFixRoute, runsInCloud, fixInCloud, cloudArchiveWait } from '../desk/bin/pass/shared.mjs';
+import { parseCloudEnv } from '../desk/bin/config-schema.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
+import { ranInCloud } from '../desk/bin/cloud-worker.mjs';
 import { cloudStartCommand, cloudStartPark, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -41,6 +43,28 @@ t('AC3 a feature spine or spec owner runs locally, and says so', `${spine.where}
 const leverOnAt = (loc) => { const p = placement(rec({}), loc, { effort: true }); return `${p.where}: ${p.why}`; };
 t('DS-450 AC1 with the effort lever on, a ticket that could run in the cloud runs locally, and says why', leverOnAt('cloud'), `local: ${CLOUD_NO_EFFORT}`);
 t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 'local: null');
+
+// ---- config §3b "Cloud environment": parsing it, and placement against it ------
+const envOf = (raw) => { try { return JSON.stringify(parseCloudEnv(raw)); } catch (e) { return `refused: ${/is "/.test(e.message)}`; } };
+t('issue-1550 AC1 the row reads as the environment and what it provides', envOf('widgets: db browser services:redis,mailpit'),
+  JSON.stringify({ name: 'widgets', db: true, browser: true, services: ['redis', 'mailpit'] }));
+t('issue-1550 AC1 a name alone provides nothing', envOf('widgets'), JSON.stringify({ name: 'widgets', db: false, browser: false, services: [] }));
+t('issue-1550 AC3 unset, none and TODO are no environment', [envOf(''), envOf('none'), envOf('TODO'), envOf(null)].join(), 'null,null,null,null');
+t('issue-1550 a word it does not know refuses the row', envOf('widgets: db gpu'), 'refused: true');
+const dbAndBrowser = rec({ renders: true, needs_db: true });
+const atEnv = (o, raw) => { const p = placement(o, 'cloud', { env: parseCloudEnv(raw) }); return `${p.where}${p.why ? `: ${p.why}` : ''}`; };
+t('issue-1550 AC1 a ticket that renders and needs a database runs in the cloud where the row provides both', atEnv(dbAndBrowser, 'widgets: db browser'), 'cloud');
+t('issue-1550 AC3 with the row unset it stays local, as before', atEnv(dbAndBrowser, 'none'), at(dbAndBrowser));
+t('issue-1550 AC1 where the environment lacks one, it stays local naming the row', atEnv(dbAndBrowser, 'widgets: db'),
+  'local: it renders, and cloud environment widgets provides no browser (config §3b "Cloud environment")');
+t('issue-1550 AC1 a service the row names runs in the cloud', atEnv(rec({ needs_services: ['redis'] }), 'widgets: services:redis'), 'cloud');
+t('issue-1550 AC1 a service it does not name stays local', atEnv(rec({ needs_services: ['redis', 'typesense'] }), 'widgets: services:redis'),
+  'local: it needs the local service typesense, which cloud environment widgets does not provide (config §3b "Cloud environment")');
+t('issue-1550 AC1 needs_local still keeps it local', atEnv(rec({ renders: true, needs_local: 'stub binaries', needs_services: [] }), 'widgets: browser'), 'local: stub binaries');
+t('issue-1550 AC1 a needs_local triaged before needs_services says to re-triage against the environment', atEnv(rec({ needs_local: 'a local dev server and the browser' }), 'widgets: browser'),
+  'local: a local dev server and the browser (triaged before config §3b "Cloud environment": re-run triage.sh to place it against widgets)');
+t('issue-1550 AC3 with the row unset that needs_local reads as before', at(rec({ needs_local: 'a local dev server' })), 'local: a local dev server');
+t('issue-1550 a lane D ticket needs the browser', cloudNeeds(rec({ lane: 'D' })).browser, true);
 
 // ---- the maintenance window counts only workers on this computer --------------
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
@@ -90,6 +114,24 @@ t('issue-1555 the repo\'s settings enabling the desk plugin make desk-review ava
 t('issue-1555 disabled, missing, another value, another plugin, no file or bad JSON: not available',
   [settings({ [CLOUD_REVIEW_PLUGIN]: false }), settings({}), settings({ [CLOUD_REVIEW_PLUGIN]: 'true' }), settings({ 'other@x': true }), '{}', '', '{nope', null, '[]'].map(deskReviewEnabled).some(Boolean), false);
 
+// ---- a cloud ticket that needs the database or a browser: its prompt ----------
+const widgets = parseCloudEnv('widgets: db browser services:redis');
+const setup = { services: ['redis :6379', 'typesense :8108', 'mailpit:8025'], migrate: ['pnpm db:migrate'], seed: ['apps/api: pnpm db:seed'], dev: ['pnpm dev'], dbVars: ['DATABASE_URL'] };
+const shots = shotsRef('feat/K-1-x', '2026-11-28T10:20:30.000Z');
+const served = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup, shots });
+t('issue-1550 AC4 each session of a ticket has its own screenshot ref, under its branch', `${shots} ${shots === shotsRef('feat/K-1-x', '2026-11-28T11:00:00.000Z')}`, 'desk-shots/feat/K-1-x/20261128102030 false');
+t('issue-1550 AC2 a service item written service:port is matched by its name', cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ needs_services: ['mailpit'] })), setup }).includes('`mailpit:8025`'), true);
+t('issue-1550 AC2 the prompt starts the database, points its variable at it, then migrates and seeds',
+  ['service postgresql start', '`DATABASE_URL`', 'then run `pnpm db:migrate` and then `pnpm db:seed` in `apps/api`'].every((x) => served.includes(x)), true);
+t('issue-1550 AC2 it starts the services the ticket needs, and only those', served.includes('docker compose up -d redis') && !served.includes('typesense'), true);
+t('issue-1550 AC2 it takes its screenshots with the environment\'s Chrome, from the dev server', ['`pnpm dev`', 'Chrome for Testing', 'before-<view>.png', 'after-<view>.png'].every((x) => served.includes(x)), true);
+t('issue-1550 AC4 it pushes them to the side ref and leaves _drag cells naming them', served.includes(`push it to origin as \`${shots}\``) && served.includes('`_drag before-<view>.png_`'), true);
+t('issue-1550 AC6 its first step checks the environment, and stops naming the wrong one',
+  served.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && served.indexOf(`printenv ${CLOUD_ENV_VAR}`) < served.indexOf('1. Do the smallest change') && served.includes('`wrong cloud environment: <what it printed, or none>`'), true);
+const plain = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({})), setup });
+t('issue-1550 AC2 a ticket that needs none of them gets the check but no services section', plain.includes(CLOUD_ENV_VAR) && !plain.includes('What this ticket needs in your environment'), true);
+t('issue-1550 AC6 the retry follow-up keeps a session stopped in the wrong environment stopped', CLOUD_RETRY_MSG.includes('stay stopped'), true);
+t('issue-1550 AC3 with no environment the prompt is as before', prompt.includes(CLOUD_ENV_VAR) || prompt.includes('desk-shots/'), false);
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
 const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
 const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'b', text: 'T', tests: [], rules });
@@ -434,6 +476,17 @@ const archived = { E: { key: 'E', state: 'done', location: 'cloud', merged_at: '
 t('finished: merged live cloud tickets and archived ones with a session, oldest first',
   finishedCloud(live, archived).map((d) => `${d.key}:${d.name ?? '-'}`).join(), 'E:-,A:w-ticket-A');
 t('finished: a session recorded archived is left out', finishedCloud(live, archived, new Set(['session_e'])).map((d) => d.key).join(), 'A');
+const moved = (location) => ({ key: 'M', state: 'done', location, merged_at: '2026-11-03T10:00:00Z', cloud: cs('m', { pr_at: '2026-11-02T09:00:00Z', moved_local_at: '2026-11-02T12:00:00Z' }) });
+t('issue-1689 a ticket moved local keeps its session on the archive list, pinned or with its pin cleared (location=auto, stored as none)',
+  [finishedCloud({ M: moved('local') }, {}), finishedCloud({ M: moved(null) }, {})].map((r) => r.map((d) => d.session).join()).join(' '), 'session_m session_m');
+t('issue-1689 and its cloud session keeps its cost row with its pin cleared', ticketCost(S, { ...moved(null), key: 'M-1' })?.cloud?.url, 'https://claude.ai/code/session_m');
+// Stopped (queue.mjs stop records cloud.abandoned_at), then pinned or unpinned and requeued: requeue keeps
+// the record once location is not cloud, and its session's cost row stays.
+const stoppedAt = (location) => ({ key: 'S-1', state: 'triaged', location, cloud: cs('s', { abandoned_at: '2026-11-02T12:00:00Z' }) });
+t('issue-1689 a stopped cloud ticket pinned local or unpinned keeps its session as one that ran for it',
+  [ranInCloud(stoppedAt('local')), ranInCloud(stoppedAt(null)), ranInCloud({ key: 'X', location: null, cloud: cs('x') })].join(), 'true,true,false');
+t('issue-1689 and keeps its cost row, pinned or unpinned',
+  [ticketCost(S, stoppedAt('local'))?.cloud?.url, ticketCost(S, stoppedAt(null))?.cloud?.url].join(' '), 'https://claude.ai/code/session_s https://claude.ai/code/session_s');
 const dir = join(S, 'state-1311');
 mkdirSync(dir, { recursive: true });
 t('archived: none recorded reads as none', readArchived(dir).size, 0);
@@ -453,6 +506,13 @@ const fb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind
 t('issue-1552 AC1 a feedback try lists its threads and body findings apart', fb.includes('Its unresolved review threads:\n\n- rename it') && fb.includes('Findings in the review body:\n\n- add a test'), true);
 const fp = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: '# CW-3\n\nAC1: it saves.' });
 t('issue-1552 AC2 a new session for the try works the PR branch, with the fix and the ticket', fp.startsWith('Work a fix try on PR #40 of ticket CW-3 in acme/widgets') && fp.includes('check that branch out from origin') && fp.includes('- Lint') && fp.includes('AC1: it saves.'), true);
+const fpEnv = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: 'T', env: widgets,
+  needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup });
+t('issue-1550 AC6 a fix try\'s new session checks the environment first, and stops naming the wrong one',
+  fpEnv.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && fpEnv.indexOf(`printenv ${CLOUD_ENV_VAR}`) < fpEnv.indexOf('desk has a fix try') && fpEnv.includes('`wrong cloud environment: <what it printed, or none>`'), true);
+t('issue-1550 AC2 a fix try\'s new session starts the database and services, and is given no screenshot ref',
+  fpEnv.includes('service postgresql start') && fpEnv.includes('docker compose up -d redis') && !fpEnv.includes('desk-shots/') && !fpEnv.includes('_drag'), true);
+t('issue-1550 AC3 with no environment the fix try prompt is as before', fp.includes(CLOUD_ENV_VAR) || fp.includes('What this ticket needs'), false);
 const onPr = (more = {}) => ({ key: 'A', location: 'cloud', result: { pr: 40 }, fix: { ...checksFix }, cloud: { session: 'session_x', pr_at: '2026-11-20T10:00:00Z' }, ...more });
 t('issue-1552 AC1 a fix try on a cloud PR with a live session is sent to it', cloudFixRoute(onPr()), 'send');
 t('issue-1552 AC2 one whose session is recorded abandoned goes to a new session', cloudFixRoute(onPr({ cloud: { session: 'session_x', pr_at: 'x', abandoned_at: 'y' } })), 'new');

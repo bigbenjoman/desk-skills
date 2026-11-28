@@ -42,6 +42,9 @@ TRACKER="$(cfg_opt tracker '')"
 TRACKER="$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')"
 BRANCH_CONV="$(cfg_opt branch-names '<type>/<TICKET>-<kebab-slug>')"
 REPO_DESC="$(cfg_opt repo-description '')"
+# §4 Local services, for needs_services: cloud placement keeps a ticket local for a service config §3b
+# "Cloud environment" does not provide (cloud-worker.mjs placement).
+LOCAL_SERVICES="$(cfg_opt local-services none)"
 INSTRUCTIONS="$(cfg_opt repo-instructions 'CLAUDE.md or AGENTS.md, where they exist')"
 if [ "$KIND" = work-id ] || [ "$KIND" = slug ] || [ "$KIND" = issue ]; then
   if [ "$KIND" = issue ]; then
@@ -297,11 +300,12 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
   "needs_db": <true if verifying it needs a database, seed, or integration test>,
-  "needs_local": <null, or one clause naming what verifying it needs that only this computer has: a local dev server, the browser, local stub binaries, a local service, a clone of another repo to read. A cloud session has the repo from GitHub and nothing else>
+  "needs_services": [<the name of each of this repo's local services ($LOCAL_SERVICES) that verifying it needs running, the name only, without its port>],
+  "needs_local": <null, or one clause naming what verifying it needs that only this computer has, beyond the browser and dev server a rendered change's screenshots need, the database and the services the three fields above cover (never name those here): local stub binaries, a clone of another repo to read, anything else. A cloud session has the repo from GitHub, and only what config §3b "Cloud environment" says its environment provides>
 }
 
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
-unknowns and already_met are [] when there are none.
+unknowns, already_met and needs_services are [] when there are none.
 drafted_criteria is written into the ticket as desk's draft, so draft each from the ticket's own words:
 a value, name or number its text does not hold is never guessed, and an outcome it leaves open is not one.
 ben_steps is [] when the ticket needs no step only the user can take.

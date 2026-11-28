@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Repos: merge time and parking</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e6e6e9;color:#09090b;font-family:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#09090b}a:hover{color:#3f3f46}
+*{box-sizing:border-box}
+:root{--font-sans:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;--radius:6px;--background:#ffffff;--foreground:#09090b;--card:#ffffff;--popover:#ffffff;--muted:#f4f4f5;--muted-fg:#6b6b73;--subtle:#fafafa;--faint:#f4f4f5;--border:#e4e4e7;--input:#e4e4e7;--ring:#a1a1aa;--focus:#52525b;--primary:#18181b;--primary-fg:#fafafa;--secondary:#f4f4f5;--secondary-fg:#18181b;--sidebar:#fafafa;--sidebar-accent:#ececef;--sh-sm:0 1px 2px rgba(9,9,11,.06);--sh-md:0 4px 12px -2px rgba(9,9,11,.10),0 2px 4px -2px rgba(9,9,11,.06);--sh-lg:0 20px 48px -12px rgba(9,9,11,.28),0 6px 14px -6px rgba(9,9,11,.12);--win-edge:rgba(9,9,11,.14);--run:#2563eb;--run-bg:#eff6ff;--run-bd:#bfdbfe;--ready:#475569;--ready-bg:#f1f5f9;--ready-bd:#cbd5e1;--wait:#71717a;--needs:#b45309;--needs-solid:#f59e0b;--needs-bg:#fffbeb;--needs-bd:#fcd34d;--done:#15803d;--done-bg:#f0fdf4;--done-bd:#bbf7d0;--fail:#b91c1c;--fail-bg:#fef2f2;--fail-bd:#fecaca;--chart-now:#18181b;--chart-before:#a1a1aa;--chart-grid:#ececef;--chart-axis:#a1a1aa;--tl-red:#ff5f57;--tl-yel:#febc2e;--tl-grn:#28c840}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--background:#09090b;--foreground:#fafafa;--card:#0e0e10;--popover:#131316;--muted:#1d1d21;--muted-fg:#a1a1aa;--subtle:#0e0e10;--faint:#151518;--border:#27272a;--input:#34343a;--ring:#71717a;--focus:#a1a1aa;--primary:#fafafa;--primary-fg:#18181b;--secondary:#27272a;--secondary-fg:#fafafa;--sidebar:#0e0e10;--sidebar-accent:#1f1f23;--win-edge:rgba(255,255,255,.12);--run:#60a5fa;--run-bg:rgba(59,130,246,.12);--run-bd:rgba(96,165,250,.35);--ready:#94a3b8;--ready-bg:rgba(148,163,184,.10);--ready-bd:rgba(148,163,184,.3);--wait:#a1a1aa;--needs:#fbbf24;--needs-bg:rgba(245,158,11,.09);--needs-bd:rgba(251,191,36,.38);--done:#4ade80;--done-bg:rgba(34,197,94,.10);--done-bd:rgba(74,222,128,.32);--fail:#f87171;--fail-bg:rgba(239,68,68,.10);--fail-bd:rgba(248,113,113,.38);--chart-now:#fafafa;--chart-before:#71717a;--chart-grid:#1f1f23;--chart-axis:#71717a}}
+.board{width:100%;display:flex;flex-direction:column;gap:12px;padding:0 0 24px}
+.ann{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;padding:14px 4px 0;font:400 12px/18px var(--font-mono);color:#52525b}
+.ann b{font:600 15px/20px var(--font-sans);color:#18181b;letter-spacing:-.01em}
+.ann i{font-style:normal;color:#18181b}
+.win{width:100%;background:var(--background);color:var(--foreground);border-radius:10px;overflow:hidden;box-shadow:0 0 0 1px var(--win-edge),var(--sh-lg);display:flex;flex-direction:column;font:400 14px/20px var(--font-sans)}
+.tb{height:40px;flex:none;display:grid;grid-template-columns:1fr 360px 1fr;align-items:center;gap:12px;padding:0 12px 0 16px;background:var(--sidebar);border-bottom:1px solid var(--border)}
+.compact .tb{grid-template-columns:1fr auto 1fr}
+.tbxl,.tbxr{display:flex;align-items:center;gap:10px;min-width:0}
+.tbxr{justify-content:flex-end}
+.lights{display:flex;gap:8px;margin-right:10px}
+.lights i{width:12px;height:12px;border-radius:50%;display:block;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18)}
+.l1{background:var(--tl-red)}.l2{background:var(--tl-yel)}.l3{background:var(--tl-grn)}
+.wm{display:flex;align-items:center;gap:7px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+.mark{width:16px;height:16px;border-radius:4px;background:var(--primary);position:relative;flex:none;display:inline-block}
+.mark i{position:absolute;width:6px;height:6px;background:var(--needs-solid);transform:rotate(45deg);left:5px;top:5px}
+.pgname{color:var(--muted-fg);font-size:13px;white-space:nowrap;border-left:1px solid var(--border);padding-left:10px}
+.srch{height:28px;border:1px solid var(--border);border-radius:6px;background:var(--background);display:flex;align-items:center;gap:8px;padding:0 4px 0 10px;color:var(--muted-fg);font-size:13px;box-shadow:var(--sh-sm)}
+.srch span{flex:1;white-space:nowrap}
+.srch.icon{width:28px;padding:0;justify-content:center}
+.pill{height:24px;display:inline-flex;align-items:center;gap:5px;padding:0 8px;border-radius:999px;font:600 12px/1 var(--font-sans);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill.needs{background:var(--needs-bg);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs-bd)}
+.pill.ok{color:var(--muted-fg);font-weight:500}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--done);display:inline-block;flex:none}
+.dot.run{background:var(--run)}.dot.fail{background:var(--fail)}.dot.needs{background:var(--needs-solid)}.dot.off{background:var(--ring)}
+.ib{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--muted-fg);flex:none;border:0;background:transparent}
+.wmain{display:flex;min-height:0}
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.sbar{height:28px;flex:none;border-top:1px solid var(--border);background:var(--sidebar);display:flex;align-items:center;gap:6px;padding:0 12px;font-size:12px;color:var(--muted-fg);white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden}
+.sbar .seg{display:inline-flex;align-items:center;gap:6px;padding:0 6px;height:20px;border-radius:4px}
+.sbar .sep{width:1px;height:12px;background:var(--border);flex:none}
+.warn{color:var(--needs)}
+.side{width:232px;flex:none;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:10px 8px 8px;gap:1px;font-size:14px}
+.side.rail{width:56px;align-items:center;padding:10px 6px}
+.sbi{height:32px;display:flex;align-items:center;gap:9px;padding:0 8px;border-radius:6px;color:var(--foreground);position:relative;white-space:nowrap;text-decoration:none}
+.sbi:hover{background:var(--sidebar-accent);color:var(--foreground)}
+.sbi.on{background:var(--sidebar-accent);font-weight:500}
+.sbi.on::before{content:"";position:absolute;left:-8px;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--foreground)}
+.sbi .ic{color:var(--muted-fg)}
+.sbi.on .ic{color:var(--foreground)}
+.sbi .tr{margin-left:auto;font:500 12px/1 var(--font-sans);color:var(--muted-fg);display:flex;gap:6px;font-variant-numeric:tabular-nums}
+.sbi.sub{padding-left:16px;height:28px;font-size:13px}
+.slab{font-size:12px;font-weight:500;color:var(--muted-fg);padding:12px 8px 4px;display:flex;align-items:center;gap:4px}
+.foot{margin-top:auto;display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);padding-top:8px}
+.meter{display:grid;grid-template-columns:62px 1fr 34px;align-items:center;gap:8px;font-size:12px;color:var(--muted-fg);padding:3px 8px;font-variant-numeric:tabular-nums}
+.meter b{font-weight:500;text-align:right;color:var(--foreground)}
+.meter b.warn{color:var(--needs)}
+.bar{height:6px;border-radius:999px;background:var(--muted);overflow:hidden;position:relative;display:block}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:inherit;background:var(--foreground);display:block}
+.bar i.warn{background:var(--needs-solid)}.bar i.run{background:var(--run)}.bar i.ok{background:var(--done)}.bar i.bad{background:var(--fail)}.bar i.grey{background:var(--ring)}
+.rail .sbi{width:40px;height:36px;justify-content:center;padding:0}
+.rail .sbi.on::before{left:-6px}
+.rb{position:absolute;top:3px;right:1px;min-width:16px;height:16px;border-radius:8px;font:600 10px/16px var(--font-sans);text-align:center;padding:0 4px;background:var(--needs-solid);color:#1c1917}
+.rb.n{background:var(--muted);color:var(--foreground);box-shadow:inset 0 0 0 1px var(--border)}
+.rsep{width:24px;height:1px;background:var(--border);margin:6px 0}
+.ic{width:16px;height:16px;flex:none}
+.ic.sm{width:14px;height:14px}.ic.xs{width:12px;height:12px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--muted-fg)}
+.num{font-variant-numeric:tabular-nums}
+.ph{min-height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 24px;flex-wrap:wrap}
+.ph h1{font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.015em;margin:0;white-space:nowrap}
+.ph .sub{font-size:13px;color:var(--muted-fg)}
+.ph .end{margin-left:auto;display:flex;align-items:center;gap:8px}
+.crumb{font-size:13px;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
+.crumb a{color:var(--muted-fg);text-decoration:none}
+.crumb a:hover{color:var(--foreground);text-decoration:underline;text-underline-offset:3px}
+.stamp{font-size:12px;color:var(--muted-fg);display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sel{height:32px;display:inline-flex;align-items:center;gap:8px;padding:0 10px 0 12px;border:1px solid var(--border);border-radius:6px;background:var(--background);font:400 13px/1 var(--font-sans);color:var(--foreground);white-space:nowrap;box-shadow:var(--sh-sm)}
+.sel .ic{color:var(--muted-fg)}
+.utabs{display:flex;gap:20px;border-bottom:1px solid var(--border);padding:0 24px;flex:none}
+.utabs a{height:40px;display:inline-flex;align-items:center;gap:6px;font-size:13.5px;font-weight:500;color:var(--muted-fg);position:relative;white-space:nowrap;text-decoration:none}
+.utabs a:hover{color:var(--foreground)}
+.utabs a.on{color:var(--foreground)}
+.utabs a.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--foreground);border-radius:2px}
+.utabs .c{font-size:11.5px;color:var(--muted-fg);font-variant-numeric:tabular-nums;font-weight:500}
+.utabs .cn{height:18px;min-width:18px;padding:0 5px;border-radius:9px;background:var(--needs-bg);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs-bd);font:600 11px/18px var(--font-sans);text-align:center}
+.pb{padding:24px;display:flex;flex-direction:column;gap:24px;max-width:1048px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin:0 0 12px}
+.sec-h h2{font-size:15px;line-height:22px;font-weight:600;margin:0;letter-spacing:-.005em}
+.sec-h .sub{font-size:13px;color:var(--muted-fg)}
+.sec-h .end{margin-left:auto}
+.btn{height:36px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 14px;border-radius:var(--radius);font:500 14px/1 var(--font-sans);white-space:nowrap;flex:none;border:1px solid transparent;cursor:pointer;text-decoration:none}
+.btn.sm{height:32px;padding:0 12px;font-size:13px;gap:6px}
+.btn.xs{height:28px;padding:0 10px;font-size:12.5px;gap:6px}
+.btn.pri{background:var(--primary);color:var(--primary-fg);box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:#27272a;color:var(--primary-fg)}
+.btn.out{background:var(--background);border-color:var(--border);color:var(--foreground);box-shadow:var(--sh-sm)}
+.btn.out:hover{background:var(--muted)}
+.btn.ghost{background:transparent;color:var(--foreground)}
+.btn.ghost:hover{background:var(--muted)}
+.btn:focus-visible,.sbi:focus-visible,.utabs a:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.lnk{color:var(--foreground);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--ring);font-weight:500}
+.lnk:hover{text-decoration-color:var(--foreground)}
+kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font:500 11px/1 var(--font-mono);color:var(--muted-fg)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:var(--radius);font:500 12px/1 var(--font-sans);white-space:nowrap;border:1px solid transparent;font-variant-numeric:tabular-nums;flex:none}
+.b-out{border-color:var(--border);color:var(--foreground)}
+.b-grey{background:var(--muted);color:var(--muted-fg);border-color:var(--border)}
+.b-needs{background:var(--needs-bg);color:var(--needs);border-color:var(--needs-bd)}
+.b-run{background:var(--run-bg);color:var(--run);border-color:var(--run-bd)}
+.b-done{background:var(--done-bg);color:var(--done);border-color:var(--done-bd)}
+.b-fail{background:var(--fail-bg);color:var(--fail);border-color:var(--fail-bd)}
+.b-ready{background:var(--ready-bg);color:var(--ready);border-color:var(--ready-bd)}
+.g{font-family:var(--font-mono);font-weight:600}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px}
+.verdict{display:flex;flex-direction:column;gap:10px;padding:20px 20px 18px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.verdict .top{display:flex;align-items:center;gap:8px}
+.verdict h2{margin:0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.015em;max-width:62ch;text-wrap:pretty}
+.verdict p{margin:0;font-size:14px;line-height:21px;color:var(--muted-fg);max-width:72ch}
+.verdict .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.tile{padding:16px;display:flex;flex-direction:column;gap:6px;min-height:136px}
+.tile .lb{font-size:13px;font-weight:500;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
+.tile .v{font-size:30px;line-height:36px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.tile .v small{font-size:14px;font-weight:500;color:var(--muted-fg);letter-spacing:0;margin-left:4px}
+.tile .st{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500}
+.tile .cmp{font-size:12.5px;line-height:18px;color:var(--muted-fg);font-variant-numeric:tabular-nums}
+.tile.bad{border-color:var(--fail-bd);box-shadow:inset 3px 0 0 var(--fail)}
+.s-done{color:var(--done)}.s-fail{color:var(--fail)}.s-needs{color:var(--needs)}.s-grey{color:var(--muted-fg)}.s-run{color:var(--run)}
+.chart{padding:16px 16px 12px;display:flex;flex-direction:column;gap:8px}
+.chart .ch{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.chart .ch h3{margin:0;font-size:14px;line-height:20px;font-weight:600}
+.chart .ch .sub{font-size:12.5px;color:var(--muted-fg)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted-fg);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:18px;height:0;border-top:2px solid var(--chart-now);display:inline-block}
+.sw.before{border-top:1.5px solid var(--chart-before)}
+.sw.lim{border-top:1.5px dashed var(--fail)}
+.mk{min-width:20px;height:20px;padding:0 6px;border-radius:10px;border:1px solid #71717a;background:var(--background);display:inline-flex;align-items:center;justify-content:center;font:600 11px/1 var(--font-sans);color:#3f3f46;font-variant-numeric:tabular-nums;flex:none}
+.mk.lev{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+.mkl{display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);margin:4px -16px 0;padding:10px 16px 0}
+.mkl a{display:flex;align-items:center;gap:10px;font-size:13px;line-height:18px;padding:5px 6px;border-radius:6px;color:var(--foreground);text-decoration:none}
+.mkl a:hover{background:var(--muted)}
+.mkl .when{margin-left:auto;font-size:12px;color:var(--muted-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.list{display:flex;flex-direction:column}
+.li{display:grid;grid-template-columns:88px 96px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:44px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:13px;color:var(--foreground);text-decoration:none}
+.li:last-child{border-bottom:0}
+.li:hover{background:color-mix(in srgb,var(--muted) 60%,transparent);color:var(--foreground)}
+.li .t{font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li .w{font-size:12px;color:var(--muted-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.li .ef{font-size:12.5px;color:var(--muted-fg);white-space:nowrap;font-variant-numeric:tabular-nums}
+.kind{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font:500 11.5px/1 var(--font-sans);color:var(--muted-fg);background:var(--muted);justify-self:start}
+.fold{border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.fold summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:48px;padding:12px 16px;cursor:pointer;font-size:14px}
+.fold summary::-webkit-details-marker{display:none}
+.fold summary:hover{background:var(--subtle)}
+.fold summary .t{font-weight:600}
+.fold summary .hd{color:var(--muted-fg);font-size:13px}
+.fold summary .cue{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--muted-fg)}
+.fold .fb{padding:4px 16px 16px;font-size:13.5px;line-height:21px;color:var(--foreground);border-top:1px solid var(--border)}
+.banner{min-height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:8px 12px 8px 24px;font-size:13px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.banner.warn{background:var(--needs-bg);border-bottom-color:var(--needs-bd);color:var(--foreground)}
+.banner.warn .ic{color:var(--needs)}
+.banner.crit{background:var(--fail-bg);border-bottom-color:var(--fail-bd)}
+.banner.crit .ic{color:var(--fail)}
+.banner.info{background:var(--subtle)}
+.banner.info .ic{color:var(--muted-fg)}
+.banner .ba{margin-left:auto;display:flex;gap:6px;align-items:center}
+.skel{background:var(--muted);border-radius:4px;height:12px;display:block}
+.tt{background:var(--primary);color:var(--primary-fg);font-size:12px;line-height:17px;padding:8px 10px;border-radius:6px;box-shadow:var(--sh-md);display:flex;flex-direction:column;gap:3px;width:260px}
+.tt .k{color:#a1a1aa;font-size:11.5px}
+.tt b{font-weight:600;font-size:13px}
+.note{font-size:12.5px;line-height:18px;color:var(--muted-fg)}
+.fr{box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--focus)!important}
+</style>
+</helmet>
+<div class="board">
+  <div class="ann"><b>8 · Repos ⌘2, overview</b><span>route <i>/repos</i></span><span>reads <i>GET /api/repos</i> + <i>GET /api/levers/ops</i> = panels.merge_stages + panels.stuck_time</span><span>area <i>Merge time and parking move out of Levers</i>; asks and handoff tables are dropped from the app (they stay in desk-q)</span><span>folds closed on load; the headline is the summary line</span></div>
+  <div class="win">
+    <div class="tb">
+      <div class="tbxl"><div class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></div><div class="wm"><span class="mark"><i></i></span>Desk</div><span class="pgname">Repos</span></div>
+      <div class="srch"><svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><span>Search tickets, PRs, commands</span><kbd>⌘K</kbd></div>
+      <div class="tbxr"><span class="pill needs"><span class="g">◆</span>25</span><span class="pill ok"><span class="dot"></span>Healthy</span><button class="ib" aria-label="Settings"><svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
+    </div>
+    <div class="wmain">
+      <nav class="side" aria-label="Desk">
+        <a class="sbi" href="Inbox.dc.html"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>Inbox<span class="tr warn">25</span></a>
+        <div class="slab" style="color: var(--foreground)"><svg class="ic xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>Repos</div>
+        <a class="sbi sub" href="Repos.dc.html">desk-skills<span class="tr s-run">● 4</span></a>
+        <a class="sbi sub" href="Repos.dc.html">ai-agents<span class="tr s-needs">◆ 6</span></a>
+        <a class="sbi sub" href="Repos.dc.html">studia-web<span class="tr s-needs">◆ 14</span></a>
+        <a class="sbi sub" href="Repos.dc.html">studia-zendesk<span class="tr s-needs">◆ 5</span></a>
+        <div style="height: 8px"></div>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"></rect><rect width="6" height="6" x="9" y="9" rx="1"></rect><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"></path></svg>Workers<span class="tr">7</span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"></path><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"></path></svg>Conversations<span class="tr"><span class="dot"></span>1 live</span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg>Usage &amp; costs<span class="tr warn">88%</span></a>
+        <a class="sbi" href="Main.dc.html"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"></path></svg>Levers<span class="tr warn"><span class="g">◆</span>1</span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>Health<span class="tr"></span></a>
+        <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8"></path></svg>Decisions<span class="tr">12 new</span></a>
+        <div class="foot">
+          <a class="sbi" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>Settings<span class="tr"><kbd>⌘,</kbd></span></a>
+          <div class="meter"><span>Claude 5h</span><span class="bar"><i style="width: 32%"></i></span><b>32%</b></div>
+          <div class="meter"><span>7d</span><span class="bar"><i class="warn" style="width: 88%"></i></span><b class="warn">88%</b></div>
+        </div>
+      </nav>
+      <main class="content">
+        <header class="ph" style="border-bottom: 1px solid var(--border)"><h1>Repos</h1><span class="sub">4 repos · 7 workers running</span></header>
+        <div class="pb">
+          <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px">
+            <a class="card" href="#" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; color: inherit; text-decoration: none"><span style="font-weight: 600">desk-skills</span><span class="num" style="font-size: 13px"><span class="s-run">● 4 running</span> · <span class="muted">9 queued</span></span><span class="note">Levers: 7 being tested · 1 ready to decide</span></a>
+            <a class="card" href="#" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; color: inherit; text-decoration: none"><span style="font-weight: 600">ai-agents</span><span class="num" style="font-size: 13px"><span class="s-needs">◆ 6 need you</span> · <span class="s-run">● 3 running</span></span><span class="note">Levers: not enrolled</span></a>
+            <a class="card" href="#" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; color: inherit; text-decoration: none"><span style="font-weight: 600">studia-web</span><span class="num" style="font-size: 13px"><span class="s-needs">◆ 14 need you</span></span><span class="note">Levers: not enrolled</span></a>
+            <a class="card" href="#" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; color: inherit; text-decoration: none"><span style="font-weight: 600">studia-zendesk</span><span class="num" style="font-size: 13px"><span class="s-needs">◆ 5 need you</span></span><span class="note">Levers: not enrolled</span></a>
+          </div>
+
+          <section aria-labelledby="mt">
+            <div class="sec-h"><h2 id="mt">Merge time and parking</h2><span class="sub">all repos · last 30 days</span></div>
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <details class="fold" open="">
+                <summary><svg class="ic sm muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg><span style="display: flex; flex-direction: column; gap: 2px"><span class="t">Merge time by stage</span><span class="hd">desk-skills: desk's own work takes 2.3h at the median, over 66 merged PRs</span></span><span class="cue">Hide</span></summary>
+                <div class="fb" style="padding: 0; overflow-x: auto">
+                  <table style="width: 100%; min-width: 720px; border-collapse: collapse; font-size: 13px">
+                    <thead><tr style="height: 36px; text-align: left; color: var(--muted-fg); font-size: 12.5px"><th scope="col" style="font-weight: 500; padding: 0 16px; border-bottom: 1px solid var(--border)">Repo</th><th scope="col" style="font-weight: 500; padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">Merged PRs</th><th scope="col" style="font-weight: 500; padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">desk's work</th><th scope="col" style="font-weight: 500; padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">Out of draft</th><th scope="col" style="font-weight: 500; padding: 0 16px; border-bottom: 1px solid var(--border); text-align: right">Merge</th></tr></thead>
+                    <tbody>
+                      <tr style="height: 40px"><td style="padding: 0 16px; border-bottom: 1px solid var(--border); font-weight: 500">desk-skills</td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">66</td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">2.3h <span class="muted">· 5.5h</span></td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">8m <span class="muted">· 11m</span></td><td class="num" style="padding: 0 16px; border-bottom: 1px solid var(--border); text-align: right">5m <span class="muted">· 19m</span></td></tr>
+                      <tr style="height: 40px"><td style="padding: 0 16px; border-bottom: 1px solid var(--border); font-weight: 500">ai-agents</td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">47</td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">1.7h <span class="muted">· 3.2h</span></td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">23m <span class="muted">· 28m</span></td><td class="num" style="padding: 0 16px; border-bottom: 1px solid var(--border); text-align: right">5m <span class="muted">· 8m</span></td></tr>
+                      <tr style="height: 40px"><td style="padding: 0 16px; border-bottom: 1px solid var(--border); font-weight: 500">studia-web</td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">37</td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">2.6h <span class="muted">· 19.9h</span></td><td class="num" style="padding: 0 12px; border-bottom: 1px solid var(--border); text-align: right">28m <span class="muted">· 12.3h</span></td><td class="num" style="padding: 0 16px; border-bottom: 1px solid var(--border); text-align: right">4m <span class="muted">· 10m</span></td></tr>
+                      <tr style="height: 40px"><td style="padding: 0 16px; font-weight: 500">studia-zendesk</td><td class="num" style="padding: 0 12px; text-align: right">9</td><td class="num" style="padding: 0 12px; text-align: right">35m <span class="muted">· 1.2h</span></td><td class="num" style="padding: 0 12px; text-align: right">3m <span class="muted">· 4m</span></td><td class="num" style="padding: 0 16px; text-align: right">5m <span class="muted">· 6m</span></td></tr>
+                    </tbody>
+                  </table>
+                  <div class="note" style="padding: 10px 16px; border-top: 1px solid var(--border)">Each cell is the median, then (in grey) the time 3 in 4 PRs beat. No PR waited on an outside reviewer this month, so that stage is left out.</div>
+                </div>
+              </details>
+              <details class="fold">
+                <summary><svg class="ic sm muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg><span style="display: flex; flex-direction: column; gap: 2px"><span class="t">Time parked by cause</span><span class="hd">desk-skills this week: 4,286 hours parked over 80 tickets, 80% of it held on purpose</span></span><span class="cue">Show</span></summary>
+                <div class="fb">Open: one table per repo, causes in plain words: Held on purpose · Waiting on another ticket · Two tickets wanted the same file · Waiting for the test lock · Waiting on your answer. Hours and tickets right-aligned.</div>
+              </details>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <div class="sbar"><span class="seg"><span class="dot run"></span>7 workers · cap 30 · room for 7 more by memory · 27.5 GiB free</span><span class="sep"></span><span class="seg">Claude default <span class="warn">7d 88%</span> · 2 repos pinned</span><span class="sep"></span><span class="seg">Codex 7d 46%</span><span style="flex: 1"></span><span class="seg">Server 127.0.0.1:4823 <span class="dot"></span></span><span class="sep"></span><span class="seg num">09:58</span></div>
+  </div>
+  <div class="note" style="padding: 0 4px">Fold states: closed = chevron right + "Show"; open = chevron down + "Hide"; hover = --subtle background; focus = 2px --focus ring on the summary. The summary is a real &lt;summary&gt;, 48px min height.</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

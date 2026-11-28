@@ -177,6 +177,28 @@ check "issue-1553 the cloud ticket is held as a stopped worker is"          '[ "
 check "issue-1553 the abandoned session goes on needs-you's archive list"     '[[ "$out" == *"needs-you asks you to archive it"* ]] && node -e "import(process.argv[1]).then((m) => process.exit(m.readPending(process.argv[2]).some((d) => d.session === \"session_01abc\" && d.key === \"C-1\") ? 0 : 1))" "$B/cloud-worker.mjs" "$T/state"'
 q requeue C-1
 check "issue-1553 after the stop, requeue works with no local worker"         '[ $rc -eq 0 ] && [ "$(f C-1 state)" = "\"triaged\"" ] && [ "$(f C-1 location)" = "\"cloud\"" ] && [ "$(f C-1 cloud)" = null ]'
+# issue-1689: a ticket running in a cloud session is not pinned local while it runs there (no pass would
+# read its PR again, and stop and requeue would both refuse it): it is stopped first, then pinned, then
+# requeued to a local worker.
+q add C-2; q set C-2 state=triaged lane=A location=cloud branch=feat/C-2
+q set C-2 state=running stage=cloud 'cloud={"session":"session_02abc","url":"https://claude.ai/code/session_02abc","name":"widgets-ticket-C-2","started":"2026-11-27T02:29:00Z"}'
+before=$(sum); q local C-2
+check "issue-1689 queue.mjs local refuses a ticket running in a cloud session, naming stop, and writes nothing" '[ $rc -ne 0 ] && [[ "$out" == *"running in a cloud session"* ]] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q set C-2 location=local
+check "issue-1689 and so does set location=local"                            '[ $rc -ne 0 ] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q set C-2 location=auto
+check "issue-1689 and so does set location=auto, which would clear its cloud location as surely" '[ $rc -ne 0 ] && [[ "$out" == *"location=auto"* ]] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q set C-2 location=cloud location=auto
+check "issue-1689 the last location in one set is the one checked, as it is the one written" '[ $rc -ne 0 ] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q stop C-2; q local C-2
+check "issue-1689 once stopped it is pinned local"                           '[ $rc -eq 0 ] && [ "$(f C-2 location)" = "\"local\"" ]'
+q requeue C-2
+check "issue-1689 and requeue sends the stopped, pinned ticket to a local worker" '[ $rc -eq 0 ] && [ "$(f C-2 state)" = "\"triaged\"" ] && [ "$(f C-2 location)" = "\"local\"" ]'
+check "issue-1689 keeping its stopped cloud session, which still reads as one that ran for it (its cost row)" '[ "$(f C-2 cloud.session)" = "\"session_02abc\"" ] && node -e "import(process.argv[1]).then((m) => import(\"node:fs\").then((fs) => process.exit(m.ranInCloud(JSON.parse(fs.readFileSync(process.argv[2], \"utf8\")).tickets[\"C-2\"]) ? 0 : 1)))" "$B/cloud-worker.mjs" "$DESK_QUEUE"'
+q add C-3; q set C-3 state=triaged lane=A location=cloud branch=feat/C-3
+q set C-3 state=running stage=cloud 'cloud={"session":"session_03abc","url":"https://claude.ai/code/session_03abc","name":"widgets-ticket-C-3","started":"2026-11-27T02:29:00Z"}'
+q stop C-3; q set C-3 location=auto; q requeue C-3
+check "issue-1689 a stopped cloud ticket unpinned (location=auto) is requeued too, placement at start deciding" '[ $rc -eq 0 ] && [ "$(f C-3 state)" = "\"triaged\"" ] && [ "$(f C-3 location)" = null ] && [ "$(f C-3 cloud.session)" = "\"session_03abc\"" ]'
 
 # A worker paused at a usage limit whose process is gone: stop finds nothing to end and the pass waits
 # for its own login's limit, so requeue sends it to a new worker, its worktree committed first.

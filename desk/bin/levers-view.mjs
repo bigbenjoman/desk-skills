@@ -94,8 +94,10 @@ export function costView(c, n, minN, adopted = false) {
 }
 
 // A guardrail's status from its probability of being worse than its margin: breached may show before
-// the minimum sample, because the revert rule fires early; ok and watching may not.
+// the minimum sample, because the revert rule fires early; ok and watching may not. One with no
+// estimate but a probability, or recorded too early, has no figure yet: too early, never breached.
 export function guardrailStatus(g, n, minN) {
+  if (g && g.est == null && (g.p_worse != null || g.status === 'too_early')) return 'too_early';
   if (!g || (g.p_worse == null && g.est == null)) return 'no_data';
   if (g.p_worse != null && g.p_worse >= DECISION_RULE.probability) return 'breached';
   if (n == null || n < minN) return 'too_early';
