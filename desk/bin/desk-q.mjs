@@ -3510,8 +3510,9 @@ function countsLine(r, now = Date.now()) {
 // behind on a shared file's budget (passHolds, named with each file and its places), running or handed off and waiting for their next
 // session, whose hold outlasts a free worker, its batch's worker slots, or the machine cap, which every
 // repo's workers share. A holder this batch has since moved on from holds nothing; one from another
-// batch stays named until the next pass.
-const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
+// batch stays named until the next pass. A ticket placed at the front of the queue that has not started
+// still holds a handoff below it, as budgetHolds counts it (`front`).
+const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && (toHandoff(o) || !!o.placed));
 // A recorded holder is a key, or "key in batch x" for another batch's ticket.
 const holderHolds = (r, w) => stillHolds(r.q?.tickets?.[String(w).split(' in ')[0]]);
 // "waits for F-1 (collides on src/f.ts, 1 of 1 place taken; …)": each file the pass held the ticket on

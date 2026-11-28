@@ -1253,6 +1253,10 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   // F-8 was held on a file of two places behind F-1 and F-9, and F-9 has since finished.
   'F-8': { state: 'triaged', lane: 'A' },
   'F-9': { state: 'done', lane: 'A' },
+  // F-11 is a handoff held on a file of two places behind F-1 and F-10, a ticket placed at the front
+  // that has not started: the pass still holds it (budgetHolds `front`).
+  'F-10': { state: 'triaged', lane: 'A', placed: true },
+  'F-11': { state: 'triaged', lane: 'A', handoff: 'pending', handoff_stage: '4b' },
 } });
 // The last pass held F-2, F-3, F-6 and F-7 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
 const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
@@ -1263,6 +1267,7 @@ writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date()
   phiHold('F-6', [{ file: 'src/one.ts', k: 1, with: ['F-1'] }, { file: 'src/big.ts', k: 2, with: ['F-1', 'X-9 in batch X'] }]),
   { key: 'F-7', with: ['F-1'], files: ['a.mjs'] },
   phiHold('F-8', [{ file: 'src/two.ts', k: 2, with: ['F-1', 'F-9'] }]),
+  phiHold('F-11', [{ file: 'src/three.ts', k: 2, with: ['F-1', 'F-10'] }]),
 ] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
@@ -1280,6 +1285,8 @@ t('DS-1033 AC1 a ready ticket the pass held names every file at its budget, its 
 t('DS-1033 a pass line from before holds were recorded still says the ticket shares files', phiText('F-7'), 'waits for F-1 (shared files)');
 t('DS-1033 AC2 a ticket held on a file whose holder has since finished, freeing a place, starts at the next pass',
   `${phiText('F-8')} ${/F-8 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
+t('DS-1033 a handoff held on a file a running ticket and an unstarted front ticket fill still waits for both',
+  phiText('F-11').includes('waits for F-1, F-10 (collides on src/three.ts, 2 of 2 places taken)'), true);
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.
