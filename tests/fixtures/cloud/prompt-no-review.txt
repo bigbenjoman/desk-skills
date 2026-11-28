@@ -1,0 +1,14 @@
+Work ticket K-1 in acme/widgets, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.
+
+1. Do the smallest change that meets the ticket's acceptance criteria below. Run `bash tests/run.sh` before you push, and fix what fails.
+2. Before you push: where your change branches on a value an API or server state sets (a status, flag, enum or role read from a response or a stored record), read where that value is set, the endpoint, handler or service that assigns it, and check your branch against every value it can set, not only the one the ticket names. If that source is not in this repository, say so in the PR body as a premise: which value, and why it could not be read.
+3. Commit on a branch named exactly `feat/K-1-x`, cut from `main`, and push it to origin.
+4. Open a draft pull request from `feat/K-1-x` into `main` with K-1 in its title, and in its body what changed and how you tested it.
+5. If you cannot finish, push what you have and open the draft PR anyway, with WIP in its title and what is left in its body. When you do finish, take both out: the PR counts as finished only once neither is there.
+6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.
+
+## The ticket
+
+Fix the widget.
+
+AC1: it works

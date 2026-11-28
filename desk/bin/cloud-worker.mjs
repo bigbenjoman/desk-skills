@@ -149,8 +149,45 @@ function rulesSection(rules) {
   return lines.length ? ['', `## This repo's rules`, '', ...lines] : [];
 }
 
-// The cloud session's whole brief: it reads nothing from this computer.
-export function cloudPrompt({ key, repo, base, branch, text, tests, rules }) {
+// The desk plugin (plugin-build.mjs) that carries desk-review, as a repo's `.claude/settings.json`
+// enables it, and the review rounds a session runs before it stops and posts: desk-ticket Stage 4b's
+// "at most three rounds".
+export const CLOUD_REVIEW_PLUGIN = 'desk@desk-skills';
+export const CLOUD_REVIEW_ROUNDS = 3;
+
+// Whether a cloud session has desk-review: the repo's committed `.claude/settings.json` (its text, as
+// the session clones it) enables CLOUD_REVIEW_PLUGIN in `enabledPlugins`. Only `true` enables it:
+// `false`, a missing entry, any other value, or a file that is missing or not JSON is no.
+export function deskReviewEnabled(settingsText) {
+  try { return JSON.parse(String(settingsText ?? ''))?.enabledPlugins?.[CLOUD_REVIEW_PLUGIN] === true; } catch { return false; }
+}
+
+// The step that has the session review its own PR with desk-review, given `review` ({ config, post }:
+// the review rows it is to read, as DESK_CONFIG_FILE takes them, and whether this repo's config §3
+// `pr-self-review-comment` is `yes`), or [] with none. DESK_CONFIG_FILE carries no §3 permission
+// (desk-env.mjs), so the session has no §3 to read: the brief says which way that row reads, and
+// desk-review's plugin.md takes the brief's word for it.
+function reviewSteps(review) {
+  if (!review) return [];
+  const config = JSON.stringify(review.config ?? {});
+  const post = review.post === true;
+  const verdict = post ? 'post that round\'s verdict' : 'put that round\'s report in the PR body';
+  return [
+    `7. Once your draft PR is open, review it with desk-review (\`/desk:desk-review\`, from the \`${CLOUD_REVIEW_PLUGIN}\` plugin this repo enables) at your pushed head. ` +
+      `First save this JSON to a file outside the repository and set DESK_CONFIG_FILE to that file's path for every desk-review command: \`${config}\`. ` +
+      'Fix every P0 and P1 it confirms in this session, push, and review the new head again. ' +
+      `Run at most ${CLOUD_REVIEW_ROUNDS} review rounds: when round ${CLOUD_REVIEW_ROUNDS} still finds a P0 or P1, stop fixing, ${verdict}, and say in the PR body what it left. ` +
+      (post
+        ? 'This repo\'s desk config sets §3 `pr-self-review-comment` to `yes`, which that file cannot carry: so desk-review\'s post step is to post on your own PR. ' +
+          'Post the final verdict on the PR in desk\'s format, as desk-review\'s post step writes it, with the full SHA of the head it reviewed, and push nothing after it.'
+        : 'This repo\'s desk config does not set §3 `pr-self-review-comment` to `yes`, so post no review on the PR: desk-review\'s post step reports only. ' +
+          'Put the final report in the PR body instead, with the full SHA of the head it reviewed, and push nothing after it.'),
+  ];
+}
+
+// The cloud session's whole brief: it reads nothing from this computer. `review` is set where the session
+// has desk-review (deskReviewEnabled), and adds reviewSteps; null leaves the brief as it was.
+export function cloudPrompt({ key, repo, base, branch, text, tests, rules, review = null }) {
   const run = tests?.length ? `Run ${tests.map((c) => `\`${c}\``).join(' and ')} before you push, and fix what fails.` : 'Run the repo\'s tests for what you change before you push, and fix what fails.';
   return [
     `Work ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.`,
@@ -162,6 +199,7 @@ export function cloudPrompt({ key, repo, base, branch, text, tests, rules }) {
     `4. Open a draft pull request from \`${branch}\` into \`${base}\` with ${key} in its title, and in its body what changed and how you tested it.`,
     '5. If you cannot finish, push what you have and open the draft PR anyway, with WIP in its title and what is left in its body. When you do finish, take both out: the PR counts as finished only once neither is there.',
     `6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
+    ...reviewSteps(review),
     ...rulesSection(rules),
     '',
     `## The ticket`,
