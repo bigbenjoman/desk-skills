@@ -396,6 +396,11 @@ const cloudQ = join(PR_ROOT, 'cloud-queue.json');
 writeFileSync(cloudQ, JSON.stringify({ tickets: { 'C-1': { key: 'C-1', added_at: iso(DAY_MS), location: 'cloud', cloud: { url: 'https://claude.ai/code/s1', started_at: iso(DAY_MS) } } } }));
 const cloudRow = ticketRows({ queue: cloudQ, state: liveS, slug: 'o__r', since: SINCE }).rows[0];
 t('per-ticket AC4: a cloud worker\'s row is incomplete, not a complete zero', `${cloudRow.key} ${cloudRow.cost_complete} ${cloudRow.runs} ${cloudRow.cost}`, 'C-1 false 1 0');
+// issue-1689: moved local after its session went idle, then its pin cleared (location=auto, stored as none).
+const movedQ = join(PR_ROOT, 'moved-queue.json');
+writeFileSync(movedQ, JSON.stringify({ tickets: { 'C-2': { key: 'C-2', added_at: iso(DAY_MS), location: null, cloud: { url: 'https://claude.ai/code/s2', started_at: iso(DAY_MS), pr_at: iso(DAY_MS), moved_local_at: iso(DAY_MS) } } } }));
+const movedRow = ticketRows({ queue: movedQ, state: liveS, slug: 'o__r', since: SINCE }).rows[0];
+t('issue-1689 a ticket moved local keeps its cloud session\'s row once its pin is cleared', `${movedRow.key} ${movedRow.cost_complete} ${movedRow.runs}`, 'C-2 false 1');
 // A done, merged ticket moves to the queue's archive file (queue-store.mjs archiveDone): it still has a row.
 const archivedQ = join(PR_ROOT, 'archived-queue.json');
 writeFileSync(archivedQ, JSON.stringify({ tickets: { 'L-1': { key: 'L-1', added_at: iso(DAY_MS), state: 'parked' } } }));

@@ -62,7 +62,7 @@ function parity(text, list) {
   return out;
 }
 
-t('the switch handles every listed command (33)', Object.keys(QUEUE_COMMANDS).length, 33);
+t('the switch handles every listed command (34)', Object.keys(QUEUE_COMMANDS).length, 34);
 t('the switch and its flags equal QUEUE_COMMANDS', parity(source, QUEUE_COMMANDS), []);
 
 // A branch that adds a command, or a flag read, without the list fails naming it.
