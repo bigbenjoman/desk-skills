@@ -2947,20 +2947,55 @@ function fixNote(x) {
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
 // loaded, a session's loop that stopped, a loaded supervisor that cannot start, or passes that keep failing.
-// A session's loop stopped on an idle batch is a grey line instead: nothing is wrong.
+// A session's loop stopped on an idle batch is a grey line instead: nothing is wrong. Each band ends
+// with what to run.
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
+const errorsFix = (r) => (r.run?.by === 'supervisor' ? `Check it: desk-q ${r.repo} supervisor` : `Run /desk-autopilot in ${r.name} to see it.`);
 const bandsOf = (r) => [
   ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.repo} supervisor on`)] : []),
-  ...(sessionStalled(r) ? [band(`${r.name}: ${r.session ? `the loop in session ${r.session}` : "the session's loop"} has stopped, so no passes run. ${resumeLine(r)}`)] : []),
-  ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start (exit ${r.stall.cannotStart.code}): ${r.stall.cannotStart.why ?? 'it logged nothing'}`)] : []),
-  ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes errored: ${r.stall.errors.error}`)] : []),
-  ...(idleStopped(r) ? [segLine([[` · ${r.name}: idle, loop stopped.${movable(r) ? ` Tickets admitted since wait for its next pass: ${resumeOf(r)}.` : ''}`, GREY]])] : []),
+  ...(sessionStalled(r) ? [band(`${r.name}: ${r.session ? `the loop in session ${r.session}` : "the session's loop"} has stopped, so no passes run. ${resumeLine(r, '')}`)] : []),
+  ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start, so no passes run: ${String(r.stall.cannotStart.why ?? 'it logged nothing').replace(/\.$/, '')}. Check it: desk-q ${r.repo} supervisor`)] : []),
+  ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes errored: ${r.stall.errors.error.replace(/\.$/, '')}. ${errorsFix(r)}`)] : []),
+  ...(idleStopped(r) ? [segLine([[` · ${r.name}: idle, loop stopped.${movable(r) ? ` Tickets admitted since wait for its next pass: ${resumeOf(r, '')}.` : ' Nothing to do: the next /desk-autopilot run here starts it again.'}`, GREY]])] : []),
 ];
 
 // A pass's hold reason with the order of its listed batches and its "(this pass)" mark left out, so
 // two batches of a repo held for the same reason read the same.
 const holdKey = (held) => String(held).replace(/ \(this pass\)/g, '').split(/[,;:—] /).sort().join('\n');
-const batchName = (r) => (r.batch ? `batch ${r.batch}` : 'the standing batch');
+const batchName = (r) => (r.batch ? `batch ${r.batch}` : 'the default batch');
+// A path or a command with the home directory as ~.
+const tildeOf = (s) => { const h = process.env.HOME || homedir(); return String(s).replaceAll(`${h}/`, '~/'); };
+
+// What a pass's structured hold means for a person, after "nothing started or merged for <time>": what
+// is happening, then, where it clears by itself (`grey`), "Nothing to do: <when it clears>", else the
+// fix to run. A hold of no cause known here, or none (a pass from before holds were recorded), points at
+// the repo's own screen.   -> { what, grey, then }
+const NOTHING = 'Nothing to do: new workers start as running ones finish.';
+function holdCopy(h, r) {
+  const fixOf = (a) => (a?.cmd ? `Run: ${tildeOf(a.cmd)}` : null);
+  const gb = (v) => (Number.isFinite(v) ? `${Math.round(v * 10) / 10} GB` : null);
+  switch (h?.cause) {
+    case 'machine': return { what: 'every worker this computer allows is running.', grey: true, then: NOTHING };
+    case 'repo-cap': return { what: 'this repo is running as many workers as its cap allows.', grey: true, then: NOTHING };
+    case 'memory': {
+      const free = gb(h.numbers?.availGB), need = gb(h.numbers?.minAvailGB);
+      return { what: `the computer is low on memory${free && need ? ` (${free} free, ${need} needed to start a worker)` : ''}.`, grey: true, then: 'Nothing to do: workers start once memory frees up.' };
+    }
+    case 'harm': return { what: 'the computer is under strain.', grey: true, then: 'Nothing to do: workers start once it eases.' };
+    case 'maintenance': return { what: 'the maintenance window is on.', grey: true, then: 'Nothing to do: workers start when it ends.' };
+    case 'collision': return { what: 'the ready tickets change the same files as running ones.', grey: true, then: 'Nothing to do: they start as those merge.' };
+    case 'base':
+      return r.q?.base_fix?.running
+        ? { what: "the batch's base needs fixing before new work can start from it.", grey: true, then: 'Nothing to do: a worker is fixing it.' }
+        : { what: "the batch's base cannot take the latest changes, so no new work starts from it.", grey: false, then: 'Run /desk-needs-you in a Claude session.' };
+    case 'concurrency': return { what: "the batch's worker count is 0.", grey: false, then: `Run: desk-q ${r.repo} workers 1` };
+    case 'usage': return { what: 'a usage limit is reached.', grey: false, then: 'Press 6 to switch subscription.' };
+    case 'budget': return { what: 'the batch has spent its budget.', grey: false, then: fixOf(h.action) ?? 'Run /desk-autopilot to raise it.' };
+    case 'health': return { what: 'a health check is failing.', grey: false, then: 'Run /desk-needs-you in a Claude session.' };
+    case 'config': return { what: 'a config row stops new work.', grey: false, then: fixOf(h.action) ?? 'Run /desk-setup in a Claude session.' };
+    default: return { what: '', grey: false, then: fixOf(h?.action) ?? `See why: desk-q ${r.repo}` };
+  }
+}
 
 // The test lock is the one hold every repo's passes share: a batch's pass held by it, as its record's
 // structured hold says, or null.
@@ -2975,7 +3010,8 @@ const structured = (h) => !!(h?.cause && h.scope);
 // reason, timed from the repo's latest progress, its text the first batch's. Where a repo's batches
 // are held for different reasons, each note names its batches. A batch the test lock holds is in none
 // of those: every such batch, whatever its repo, is one grey note, `shared`, and `marked` holds the
-// slugs of the repos it names.   -> { notes: Map(batch -> { text, hide }), shared, marked }
+// slugs of the repos it names. Each note says what holdCopy says of its hold.
+//   -> { notes: Map(batch -> { text, grey, fix, hide }), shared, marked }
 function quietNotes(shown) {
   const groups = new Map(), throttled = [];
   for (const r of shown) {
@@ -2992,14 +3028,44 @@ function quietNotes(shown) {
     // stalling for another reason adds those, and must not show a hidden note again. A hold on a batch
     // (its base) is that batch's, so its key names the batches it holds whatever the text says.
     const hide = !structured(h) ? null : h.scope === 'batch' ? `${andList(g.map(batchName))} ${holdHide(h)}` : holdHide(h);
-    return [g[0], { text: `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`, hide }];
+    const c = holdCopy(structured(h) ? h : null, g[0]);
+    const quiet = `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}`;
+    const text = `${quiet}${c.what ? `: ${c.what}` : '.'} ${c.grey ? c.then : ''}`.trimEnd();
+    return [g[0], { text: c.grey ? text : `${text} `, grey: c.grey, fix: c.grey ? null : c.then, hide }];
   }));
   return { notes, shared: throttled.length ? throttleNote(throttled) : null, marked: new Set(throttled.map((r) => r.slug)) };
 }
 
+// A run holding a test slot past OVERRUN times its usual time is called out in the test-lock note.
+const OVERRUN = 2;
+// Who a lock holder (suite-wait.mjs holderOf) is, as a person reads it: a ticket's run by its worktree's
+// name, else the run in the directory it works in.
+function holderName(h, lock) {
+  const run = SLOT_RUN[lock] ?? 'test run';
+  const dir = /^pid \d+$/.test(h.where ?? '') ? null : String(h.where ?? '').split('/').filter(Boolean).pop();
+  if (!dir) return `a ${run}${h.repo ? ` in ${String(h.repo).split('/').pop()}` : ''}`;
+  return /^[A-Z][A-Z0-9]*-\d+$/.test(dir) ? `${dir}'s ${run}` : `the ${run} in ${dir}`;
+}
+// One amber line for each holder in `queues` that has held its slot more than OVERRUN times its usual
+// time: who, how long against that time, and how to stop it.
+function overrunLines(queues) {
+  const seen = new Set(), out = [];
+  for (const q of queues) {
+    for (const h of q.holders ?? []) {
+      if (!(Number.isFinite(h?.heldS) && Number.isFinite(h.expectedS) && h.expectedS > 0 && h.heldS > OVERRUN * h.expectedS)) continue;
+      if (h.pid != null && seen.has(h.pid)) continue;
+      seen.add(h.pid);
+      out.push([[`${capital(holderName(h, q.lock ?? 'test'))} has had a slot for ${span(h.heldS * 1000)}; it usually takes ${span(h.expectedS * 1000)}. `, WARN],
+        ...(Number.isInteger(h.pid) ? [['If it is stuck, stop it: ', WARN], [`kill ${h.pid}`, BOLD]] : [['If it is stuck, stop it in its own session.', WARN]])]);
+    }
+  }
+  return out;
+}
+
 // The one note for every batch the test lock holds: each lock queue the passes were held on (the test
 // lock or the light one, as each pass named them; a repo's suite weight picks which), at its latest
-// reading, then each repo with the tickets it keeps waiting.
+// reading, then the tickets it keeps waiting, that nothing needs doing, and an amber line for each run
+// holding a slot far past its usual time.
 function throttleNote(rs) {
   const latest = rs.reduce((a, r) => ((r.last ?? -Infinity) > (a.last ?? -Infinity) ? r : a));
   const s = (x) => (x === 1 ? '' : 's');
@@ -3007,7 +3073,7 @@ function throttleNote(rs) {
   for (const r of [...rs].sort((a, b) => (a.last ?? -Infinity) - (b.last ?? -Infinity))) {
     const n = r.stall.hold.numbers ?? {};
     if (!n.stall) continue;
-    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }]) {
+    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots, holders: r.stall.hold.holders }]) {
       if (Number.isFinite(q?.waiting) && Number.isFinite(q.slots)) byLock.set(q.lock ?? 'test', q);
     }
   }
@@ -3015,12 +3081,12 @@ function throttleNote(rs) {
   const queue = qs.length
     ? `${andList(qs.map((q) => `${q.waiting} run${s(q.waiting)} waiting for ${q.slots} ${q.lock ?? 'test'} slot${s(q.slots)}`))}, shared by all repos.`
     : 'Each pass starts only so many test runs, shared by all repos.';
-  const repos = new Map();
-  for (const r of rs) repos.set(r.repo, [...new Set([...(repos.get(r.repo) ?? []), ...(r.stall.hold.tickets ?? [])])]);
-  const each = [...repos].map(([repo, ts]) => (ts.length ? `${andList(ts)} in ${repo}` : repo));
-  const quiet = since(Math.min(...rs.map((r) => r.stall.noProgress)));
-  return { tag: `${THROTTLE_MARK} tests queued`, sgr: GREY, hide: holdHide(latest.stall.hold),
-    text: [[`${queue} Waiting for a slot: ${andList(each)}. Nothing started or merged for ${quiet}.`, null]] };
+  const tickets = [...new Set(rs.flatMap((r) => r.stall.hold.tickets ?? []))];
+  const over = overrunLines(qs);
+  return { tag: `${THROTTLE_MARK} tests queued`, sgr: GREY, hide: `${holdHide(latest.stall.hold)}${over.length ? ' overrun' : ''}`,
+    text: [[queue, null]],
+    more: [...(tickets.length ? [[[`${andList(tickets)} start${tickets.length === 1 ? 's' : ''} when a slot frees.`, null]]] : []),
+      [['Nothing to do: workers start as tests finish.', null]], ...over] };
 }
 
 // Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
@@ -3028,10 +3094,11 @@ function throttleNote(rs) {
 // several repos have it, one note naming them all, on the first one's batch.
 const OLD_CODE = [
   ['supervisor', 'the supervisor runs old desk code. ', (repos) => `the supervisors of ${repos} run old desk code. `, 'Run ./install.sh in desk-skills.'],
-  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
-  ['driver', 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.',
-    (repos) => `the merge drivers of ${repos} run old desk code. Each moves to the installed code when it next waits between loops.`, null],
+  // The supervisor restarts its driver on the installed code by itself, so the driver's note is grey.
+  ['driver', 'the merge driver runs old desk code. Nothing to do: it moves to the installed code when it next waits between loops.',
+    (repos) => `the merge drivers of ${repos} run old desk code. Nothing to do: each moves to the installed code when it next waits between loops.`, null],
 ];
+const greyNote = (tag, text) => ({ tag: `· ${tag}`, sgr: GREY, text: [[text, null]] });
 function oldCodeNotes(shown) {
   const at = new Map();
   for (const [kind, one, many, fix] of OLD_CODE) {
@@ -3039,7 +3106,8 @@ function oldCodeNotes(shown) {
     for (const r of shown) if (r.stall?.oldCode?.[kind] && !first.has(r.slug)) first.set(r.slug, r);
     const rs = [...first.values()];
     if (!rs.length) continue;
-    const note = rs.length === 1 ? warnNote(`▲ ${rs[0].repo}`, one, fix) : warnNote('▲ desk code', many(andList(rs.map((r) => r.repo))), fix);
+    const make = fix ? (tag, text) => warnNote(`▲ ${tag}`, text, fix) : greyNote;
+    const note = rs.length === 1 ? make(rs[0].repo, one) : make('desk code', many(andList(rs.map((r) => r.repo))));
     at.set(rs[0], [...(at.get(rs[0]) ?? []), note]);
   }
   return at;
@@ -3049,17 +3117,22 @@ function oldCodeNotes(shown) {
 // `quiet` is quietNotes's, whose `notes` say which batch carries its repo's no-progress note, and `old`
 // oldCodeNotes's, which batch carries the old desk code notes, and `drivers` which batch carries its
 // repo's stopped merge driver note: the driver is the repo's, so it is one note. With `allOut`, Home's note on the
-// Claude default's limit stands for the batch's hold on it.
+// Claude default's limit stands for the batch's hold on it. A merge driver stopped with no reason is
+// grey for DRIVER_WAIT_MS, while the supervisor's next round can start it again, then amber with its log.
 const BASE_FIX_WAIT_PASSES = 3;
-function stallNotes(r, quiet, old, drivers, allOut = false) {
+const DRIVER_WAIT_MS = 5 * 60e3;
+const RESTARTS = 'Nothing to do: the supervisor starts it again once a PR is ready to merge.';
+const logCmd = (r, file) => `tail -n 40 ${tildeOf(join(r.stateDir, file))}`;
+function stallNotes(r, quiet, old, drivers, allOut = false, now = Date.now()) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
   const note = (text, fix) => warnNote(tag, text, fix);
+  const logNote = (text, file) => ({ ...note(text), more: [[['Its log says why:', null]]], cmd: logCmd(r, file) });
   const out = [];
   const u = allOut ? null : usageHoldOf(r);
-  if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
+  if (u) out.push(note(`${u}. `, 'Press 6 to switch subscription and lift it sooner.'));
   const q = quiet.notes.get(r);
-  if (q) out.push({ ...note(q.text), ...(q.hide ? { hide: q.hide } : {}) });
+  if (q) out.push({ ...(q.grey ? greyNote(r.repo, q.text) : note(q.text, q.fix)), ...(q.hide ? { hide: q.hide } : {}) });
   // A base conflict fix that has waited BASE_FIX_WAIT_PASSES passes in a row to start (base-fix.mjs
   // notStarted), with no fix worker running, and why the last pass did not start it.
   const bs = r.q?.base_fix?.start;
@@ -3069,13 +3142,15 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {
     const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;
-    if (d.code === 143) out.push(note(`the merge driver was stopped${at} (exit 143) and is not running.`));
-    else if (d.reason == null) out.push(note(`the merge driver stopped${at} (${d.code == null ? 'no exit code logged' : `exit ${d.code}`}) and logged no failure.`));
-    else {
+    if (d.code === 143) out.push(greyNote(r.repo, `the merge driver was stopped${at} and has not started again yet. ${RESTARTS}`));
+    else if (d.reason == null) {
+      out.push(d.at != null && now - d.at < DRIVER_WAIT_MS ? greyNote(r.repo, `the merge driver stopped${at} without saying why. ${RESTARTS}`)
+        : logNote(`the merge driver stopped${at} without saying why, and has not started again.`, 'merge-driver.log'));
+    } else {
       const what = d.start ? 'the merge driver could not start' : `the merge driver stopped${at}`;
       const reason = d.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
-      const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
-      out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
+      if (/signed out/i.test(reason)) out.push(note(`${what}: ${reason}. `, 'Run gh auth login.'));
+      else out.push(logNote(`${what}: ${reason}.`, d.start ? 'supervisor.log' : 'merge-driver.log'));
     }
   }
   out.push(...(old.get(r) ?? []));
@@ -3162,7 +3237,7 @@ function withoutHidden(notes, hidden) {
 // over; stopped, how to resume it, which hands it over.
 function handOverNote(r) {
   const text = r.live ? 'set to the supervisor, but a session runs this batch. Its next batch hands over.'
-    : `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.repo}; it hands the batch to the supervisor at Stage 4.`;
+    : `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.repo}; it hands the batch to the supervisor.`;
   return warnNote(`▲ ${r.repo}`, text);
 }
 
@@ -3294,7 +3369,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const out = claude?.limit ? claude : null;
   const leases = leaseNotes(repos, now);
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...leases.warn, ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
-    ...(quiet.shared ? [quiet.shared] : []), ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+    ...(quiet.shared ? [quiet.shared] : []), ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug), now)), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
   if (pause) notes.unshift(warnNote('▲ uploads', uploadPauseText(pause)));
@@ -3307,7 +3382,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
-      notes.push(warnNote('▲ ports', `${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`));
+      notes.push(warnNote('▲ ports', `${pair.join(' + ')} both use ports ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`));
     }
   }
   notes.push(...cost.notes);
@@ -3457,11 +3532,12 @@ function passLines(r, now) {
 function stoppedLines(r) {
   return ['Running workers carry on, but nothing new starts and stages are not updated.', `To resume: ${resumeOf(r)}.`];
 }
-export const resumeOf = (r) => (supervisorOff(r) ? `desk-q ${r.repo} supervisor on`
+// `at` is when a session hands the batch over; the Queue view's notes leave it out ('').
+export const resumeOf = (r, at = ' at Stage 4') => (supervisorOff(r) ? `desk-q ${r.repo} supervisor on`
   : r.run?.by === 'supervisor' ? `check the supervisor with node ~/.claude/desk/bin/supervisor.mjs status, in ${r.name}`
-    : `run /desk-autopilot in ${r.name}${handsOver(r) ? '; it hands the batch to the supervisor at Stage 4' : ''}`);
+    : `run /desk-autopilot in ${r.name}${handsOver(r) ? `; it hands the batch to the supervisor${at}` : ''}`);
 // The same, as a sentence of its own: a bare command follows "Run:".
-const resumeLine = (r) => (supervisorOff(r) ? `Run: ${resumeOf(r)}` : capital(resumeOf(r)));
+const resumeLine = (r, at) => (supervisorOff(r) ? `Run: ${resumeOf(r, at)}` : capital(resumeOf(r, at)));
 
 // The supervisor log's last line, or null with no log: its last 4 KB is read.
 const supervisorLogLine = (r) => tailLines(join(r.stateDir, 'supervisor.log')).at(-1) ?? null;
