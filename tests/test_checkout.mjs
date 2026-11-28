@@ -501,7 +501,7 @@ put('api_3_search_jql', { issues: [issue('APP-1', 'A new bug', { created: jiraAt
 const history = (who, ts, field, from, to, extra = {}) => ({ author: { accountId: who, displayName: who === 'me-id' ? 'Me Person' : 'Sam Smith' }, created: jiraAt(ts), items: [{ field, fromString: from, toString: to, ...extra }] });
 put('api_3_issue_APP_1_changelog', { values: [], isLast: true });
 put('api_3_issue_APP_2_changelog', { values: [
-  history('me-id', at(9), 'status', 'To Do', 'In Progress'),
+  history('me-id', at(9), 'status', 'To Do', 'In Review'), history('me-id', at(9, 45), 'status', 'In Review', 'In Progress'),
   history('me-id', at(10), 'assignee', null, 'Me Person'), history('me-id', at(10, 5), 'assignee', 'Me Person', null),
   history('me-id', at(10, 10), 'Rank', 'a', 'b', { fieldtype: 'custom' }),
   history('sam-id', at(15), 'status', 'In Progress', 'Done'),
@@ -516,15 +516,19 @@ t('jira: exits 0', jiraOut.status, 0);
 const jo = jiraOut.stdout;
 has('jira: the header names the user, project and repo', jo, '# Jira activity for Me Person in APP (acme__app), Monday 26 October 2026');
 has('jira: a ticket raised on the day, with its grade', jo, '## Raised (1)\n### individually (1)\n- APP-1 [To Do · Me Person · P2] A new bug');
-has('jira: a status move', jo, '- APP-2 [In Progress · Me Person · P2] Started work\n    · status: To Do → In Progress');
+has('issue-1538 AC1 a status move names your account and the time', jo, '- APP-2 [In Progress · Me Person · P2] Started work\n    · status: To Do → In Progress, by Me Person (you) at 09:45');
 lacks('jira: an assign-then-unassign nets to nothing', jo, 'assignee:');
 lacks('jira: Rank moves are not reported', jo, 'Rank');
 has('jira: a comment on the day', jo, '    · commented: Looks good to me');
 lacks('jira: a comment from before the day is left out', jo, 'An old comment');
-has('jira: what someone else did after, on your ticket', jo, '    · then Sam: In Progress → Done');
+has('issue-1538 AC1 what someone else did after names their account and the time', jo, '    · then status: In Progress → Done, by Sam Smith at 15:00');
 lacks('jira: a ticket only others touched is left out', jo, 'Not mine');
 has('jira: a same-destination repo at ask is not read without --include', jo, '- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees');
 has('jira: a repo with a different destination is named, not queried', jo, '- not queried (different check-out destination): acme__other');
+{
+  const since = script('jira_activity.py', '--day', DAY, '--since', new Date(2026, 9, 25, 19).toISOString(), '--since-for', '2026-10-25').stdout;
+  has('issue-1538 AC1 a window across midnight puts the day on the time', since, 'status: To Do → In Progress, by Me Person (you) at Mon 09:45');
+}
 const calls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.startsWith('desk-jira '));
 t('jira: every request went through desk-jira as acme__app', calls.every((l) => l.startsWith('desk-jira acme__app api ')), true);
 t('jira: the search is limited to the project', calls.some((l) => decodeURIComponent(l.replace(/\+/g, ' ')).includes('project = APP AND (')), true);
@@ -582,6 +586,11 @@ has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the au
 has('#829 a batch\'s own sessions are never items', skill, 'A triage, preflight or worker session is evidence\n  for the ticket it worked, never work in its own right');
 has('#829 a parked ticket with no PR needs a Jira or GitHub change that day', skill, '**A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it\n  that day');
 has('#829 described by that change, not by the session', skill, 'and the item says what that change was. A session\n  alone is not a change.');
+{
+  const items = readFileSync(join(REPO, 'skills/desk-checkout/references/items.md'), 'utf8');
+  has('issue-1538 AC2 a move by your own account is yours', items, '**A status move the Jira collector marks `(you)` is the person\'s own**');
+  has('issue-1538 AC2 and is not something to check', items, 'and never put it under **Check before posting**');
+}
 has('#829 DESK_CHECKOUT_NAME_BATCH names the batch in one line', skill, 'set `DESK_CHECKOUT_NAME_BATCH=1`');
 has('#829 that line names the items by key', skill, 'Then one line after\n  the substantive work names the items a batch built by key');
 has('#819 the read wins over the collector\'s', skill, 'That read wins over the collector\'s: `MERGED` is `(merged)`, an open PR no longer a draft is\n  `(in review)`');
