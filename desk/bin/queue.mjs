@@ -384,6 +384,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   // A cloud ticket stopped by queue.mjs stop has no worker or worktree here: a requeue is the person
   // letting it start again with a new session, as needs-you's start does (stopCloud).
   const cloudStopped = t.location === 'cloud' && t.cloud?.abandoned_at && stoppedHold(t);
+  if (bareHold(t)) throw new Error(`${key} is ${bareHoldText(key)}, rather than requeue it`);
   if (isHeld(t) && !cloudStopped) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
