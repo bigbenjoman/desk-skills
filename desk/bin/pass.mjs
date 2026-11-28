@@ -36,7 +36,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, readArchived, readPending, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, deskReviewEnabled, cloudNeeds, cloudSetupRows, shotsRef, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, readArchived, readPending, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -1120,6 +1120,10 @@ function advanceCloud(t) {
     report.done.push(`${t.key}: ${prVerdict(pr.number)}; cloud session ${where} pushed its ${label} to PR #${pr.number} (${CLOUD_COST_UNKNOWN})`);
     return;
   }
+  // Its screenshots are brought here before it is done: a done ticket is not read here again.
+  const shots = c.shots ? fetchCloudShots(t, c.shots) : null;
+  if (shots?.wait) { report.waiting.push(`${t.key}: cloud PR #${pr.number} is finished, but ${shots.wait}; read again next pass`); return; }
+  if (shots?.n) report.advanced.push(`${t.key}: ${shots.n} screenshot(s) from ${c.shots} copied into ${shots.dir}, for the undraft step to upload into PR #${pr.number}${shots.left ? `; ${shots.left}` : ''}`);
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
@@ -1164,6 +1168,36 @@ function cloudFixPr(t, c, where) {
   const done = abandonCloud(t, null, ['state=triaged', `result.pr=${f.pr}`]);
   report.stalled.push(`${t.key}: its ${label} out to cloud session ${where} has no push to PR #${f.pr} in ${wallTime(waited)}, past the ${wallTime(CLOUD_FIX_WAIT_MS)} a sent fix is given, so ${done}. The next pass starts the try in a new cloud session, or a local worker where placement says local`);
   return null;
+}
+
+// A cloud session cannot reach this computer's upload queue, so its prompt has it push its Stage 5
+// screenshots to `ref` on origin (cloud-worker.mjs shotsRef) and leave `_drag <file>_` cells in its PR.
+// The screenshots at that ref's root are copied into the ticket's screenshot directory, where the undraft
+// step's upload puts them in those cells as it does a local worker's (undraft.mjs cellCall `upload`).
+// The ref is then deleted on origin where config §3 branch-delete allows; otherwise it is left, and said.
+//   -> { n, dir, left } (n is 0 where the session pushed none), or { wait } naming why it is read again
+function fetchCloudShots(t, ref) {
+  const dir = ticketShotDir(t, STATE);
+  const seen = shOut('git', ['-C', MAIN, 'ls-remote', 'origin', `refs/heads/${ref}`], { fresh: true });
+  if (!seen.ok) return { wait: `whether its session pushed screenshots to ${ref} could not be read (${lastLine(seen.out)})` };
+  const sha = seen.out.split(/\s+/)[0];
+  if (!sha) return { n: 0, dir, left: null };
+  if (DRY) return { n: 0, dir, left: `dry run: ${ref} is not fetched` };
+  const local = `refs/desk-shots/${t.key}`;
+  const got = shOut('git', ['-C', MAIN, 'fetch', '--no-tags', 'origin', `+refs/heads/${ref}:${local}`]);
+  if (!got.ok) return { wait: `its screenshots on ${ref} could not be fetched (${lastLine(got.out)})` };
+  let n = 0;
+  try {
+    const names = execFileSync('git', ['-C', MAIN, 'ls-tree', '-z', '--name-only', local], { encoding: 'utf8' }).split('\0')
+      .filter((f) => E.SCREENSHOT_FILE.test(f) && !f.includes('/') && !f.startsWith('.'));
+    mkdirSync(dir, { recursive: true });
+    for (const f of names) { writeFileSync(join(dir, f), execFileSync('git', ['-C', MAIN, 'show', `${local}:${f}`], { maxBuffer: 256 * 1024 * 1024 })); n += 1; }
+  } catch (e) { return { wait: `its screenshots on ${ref} could not be copied into ${dir} (${lastLine(e.message)})` }; }
+  finally { sh('git', ['-C', MAIN, 'update-ref', '-d', local], { tolerant: true }); }
+  const del = E.permission('branch-delete');
+  if (del !== 'yes') return { n, dir, left: `${ref} on origin is left, since config §3 branch-delete is "${del}"` };
+  const d = shOut('git', ['-C', MAIN, 'push', `--force-with-lease=refs/heads/${ref}:${sha}`, 'origin', '--delete', ref]);
+  return { n, dir, left: d.ok ? null : `deleting ${ref} on origin failed (${lastLine(d.out)})` };
 }
 
 // Cloud PR `pr` (its `view`) its session marked unfinished (`mark`): the ticket stays running at stage
@@ -4384,6 +4418,12 @@ function spawnCloud(t, pick) {
   const refreshed = refreshTicketFile(t);
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
+  // Config §3b "Cloud environment": with one, the session checks it runs there, and starts what its
+  // triage record says verifying it needs (cloud-worker.mjs servicesSection).
+  let cloudEnvRow;
+  try { cloudEnvRow = E.cloudEnvironment(); } catch (e) { park(e.message); return; }
+  let needs = null;
+  try { needs = cloudEnvRow ? cloudNeeds(readTriage(STATE, t.key)) : null; } catch { needs = cloudNeeds(null); }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); cloudSpawned += 1; return; }
   const { login, email } = pick;
   const who = email ? `${email} (login ${login.name})` : `login ${login.name}`;
@@ -4405,13 +4445,18 @@ function spawnCloud(t, pick) {
   // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
   // which moves it off running. `cloud` holds `started` from here, so a refused write of the session
   // below still leaves a running ticket the pass watches for its PR (advanceCloud) rather than skips.
-  if (!recordRunning(t.key, ['stage=cloud', 'location=cloud', `cloud=${JSON.stringify({ started, ...onPr })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null'],
+  // A first session's screenshots arrive on shotsRef and go to the default screenshot directory
+  // (fetchCloudShots), so what an earlier round recorded of its upload is cleared, as a local spawn
+  // clears it. A fix try keeps its PR's: it is done on its push, with no screenshots fetched.
+  if (!recordRunning(t.key, ['stage=cloud', 'location=cloud', `cloud=${JSON.stringify({ started, ...onPr })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null',
+    ...(f ? [] : ['images_uploaded=null', 'images_reported=null', 'images_dir=null'])],
     'no cloud session was started')) return;
   const name = cloudName(GH_REPO, t.key);
   // As spawn-worker.sh does with AUTOPILOT_LOGIN_DIR: unset, the pass is on that login already.
   const env = 'AUTOPILOT_LOGIN_DIR' in pick.vars ? loginEnv(login) : process.env;
   const prompt = f ? cloudFixPrompt({ key: t.key, repo: GH_REPO, pr: f.pr, branch: t.branch, fix: f, rules: cloudRules(), text })
-    : cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview() });
+    : cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests, rules: cloudRules(), review: cloudReview(),
+      env: cloudEnvRow, needs, setup: cloudEnvRow ? cloudSetupRows() : null });
   const s = startCloud(prompt, { name, env, cwd: MAIN });
   if (s.error) {
     q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
@@ -4419,7 +4464,10 @@ function spawnCloud(t, pick) {
     return;
   }
   // config_dir is kept so the retry follow-up (advanceCloud) reaches the session on the same login.
-  q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started, ...onPr, login: { name: login.name, email, config_dir: login.configDir ?? null } })}`, ...fixStarted(t));
+  // `shots` is the ref a first session's prompt told it to push its screenshots to, which advanceCloud
+  // fetches. A fix try's prompt names none.
+  q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, name, started, ...onPr, login: { name: login.name, email, config_dir: login.configDir ?? null },
+    ...(!f && cloudEnvRow && needs?.browser ? { shots: shotsRef(t.branch) } : {}) })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   refreshDelivered(t, refreshed);
   report.spawned.push(`${t.key} in a cloud session on ${who}: ${s.url}${f ? ` (${tryLabel(f)} on PR #${f.pr}, its own session gone)` : ''}${refreshed.line}`);

@@ -193,6 +193,28 @@ export function parseWorkerLocation(raw) {
   throw new DeskConfigError(`desk: config §3b "Worker location" is "${raw}" — want \`local\` or \`cloud\`. Refusing to guess.`);
 }
 
+// Config §3b "Cloud environment": the claude.ai/code environment cloud sessions run in and what it
+// provides, `<name>` or `<name>: <provides>`, each provided thing `db`, `browser` or
+// `services:<name>[,<name>…]` (§4 Local services by their compose service name). `none` or unset is no
+// environment: placement keeps every ticket that needs any of them local.
+//   -> { name, db, browser, services: [name] } | null, or throws DeskConfigError
+export function parseCloudEnv(raw) {
+  const v = String(raw ?? '').trim();
+  if (!v || isNone(v) || /^todo$/i.test(v)) return null;
+  const m = /^([^:\s][^:]*?)(?::\s+(.*))?$/.exec(v);
+  const bad = (why) => new DeskConfigError(`desk: config §3b "Cloud environment" is "${raw}" — ${why}; want \`<environment name>: db browser services:<name>,<name>\`, any of the three, or \`none\`. Refusing to guess.`);
+  if (!m) throw bad('it names no environment');
+  const env = { name: m[1].trim(), db: false, browser: false, services: [] };
+  for (const word of (m[2] ?? '').split(/\s+/).filter(Boolean)) {
+    const s = /^services:(.+)$/i.exec(word);
+    if (/^db$/i.test(word)) env.db = true;
+    else if (/^browser$/i.test(word)) env.browser = true;
+    else if (s && s[1].split(',').every(Boolean)) env.services.push(...s[1].split(','));
+    else throw bad(`\`${word}\` is none of them`);
+  }
+  return env;
+}
+
 // Config §3b "Phase 0 levers": names, one per backtick span (a span may hold several, split on commas
 // and spaces). Each lever named is pinned on for every ticket, outside any trial; `auto` beside them
 // hands every lever not named to desk's trials; `none` alone is every lever off and no trials. No row,
@@ -538,6 +560,7 @@ export const TYPES = Object.freeze({
   'worker-models': refusing(parseWorkerModels),
   'worker-effort': cell(refusing(parseWorkerEffort)),
   'worker-location': refusing(parseWorkerLocation),
+  'cloud-env': refusing(parseCloudEnv),
   'codex-review': cell(refusing(parseCodexReview)),
   'spawn-gate': matching('a spawn gate', () => true, spawnGateOf),
   'file-budget': cell({ parse(items) { const r = fileBudget(items); return r.bad ? fail(r.bad) : ok(r); } }, false),
@@ -679,6 +702,7 @@ export const ROWS = Object.freeze([
   v('worker-effort', '3b', 'Worker effort', 'worker-effort', '0=medium 4b=high task=low', dflt('none')),
   v('worker-location', '3b', 'Worker location', 'worker-location', 'local', dflt('local')),
   v('cloud-sessions', '3b', 'Cloud sessions at once', 'whole', '4', dflt('4')),
+  v('cloud-env', '3b', 'Cloud environment', 'cloud-env', 'widgets: db browser services:redis', dflt('none')),
   v('batches-run-by', '3b', 'Batches run by', 'batches-run-by', 'supervisor', dflt('session')),
   v('borrow-idle', '3b', 'Borrow idle workers', 'on-off', 'off', dflt('off')),
   v('park-after', '3b', 'Park an unanswered question after (minutes)', 'whole', '15'),

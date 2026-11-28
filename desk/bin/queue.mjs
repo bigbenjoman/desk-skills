@@ -21,7 +21,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { markRearmed } from './loop-tick.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, isBaseRedKey, recordStop } from './desk-env.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, cloudEnvironment, isBaseRedKey, recordStop } from './desk-env.mjs';
 import { placement, featureRole, runsText, handOver } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs, targetPids } from './worker-stop.mjs';
@@ -699,10 +699,13 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   // lever read from the ticket's pin (the row where it has none), as plan-batch reads it. The row is
   // read before the pin is drawn, so a bad row refuses the admit before any trial arm is drawn.
   const location = workerLocation();
+  // §3b "Cloud environment" likewise: what it provides no longer keeps a ticket local.
+  const cloudEnv = location === 'cloud' ? cloudEnvironment() : null;
   if (pin === undefined) pin = admissionPin(key, r.size);
   const placed = placement(r, location, {
     feature: featureRole(q.feature === true ? { spine: q.spine, owners: q.owners } : null, key),
     effort: location === 'cloud' && leverOnFor('effort', { key, levers: pin }),
+    env: cloudEnv,
   });
   // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
   // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue

@@ -12,33 +12,55 @@
 // Nothing gives a cloud session an effort: no recording or doc shows `claude --cloud` passing --effort
 // on, and local settings do not reach the session. So with the effort lever on, which promises each
 // session an effort config names, no ticket runs in the cloud (CLOUD_NO_EFFORT).
+//
+//   node cloud-worker.mjs setup   run in the repo: what /desk-setup proposes for config §3b "Cloud
+//                                 environment", as JSON { env, script, vars } (cloudSetup), or
+//                                 { env: null } with the row unset
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { repoStateOf } from './desk-env.mjs';
+import { repoStateOf, cloudEnvironment, configValues, isNone, repoRoot } from './desk-env.mjs';
+import { parseCommandItem } from './config-schema.mjs';
 import { FAILED } from './gate.mjs';
 import { FIRST_RUN } from './logins.mjs';
 import { fixItems } from './fix-tries.mjs';
 
 export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
+// What verifying a ticket needs that a cloud environment may provide, from its triage record: a browser
+// for its Stage 5 screenshots (`renders`, or lane D), a database (`needs_db`), and the §4 Local services
+// it names (`needs_services`). -> { browser, db, services: [name] }
+export function cloudNeeds(rec) {
+  return {
+    browser: rec?.lane === 'D' || rec?.renders === true,
+    db: rec?.needs_db === true,
+    services: Array.isArray(rec?.needs_services) ? [...new Set(rec.needs_services.map((s) => String(s ?? '').trim()).filter(Boolean))] : [],
+  };
+}
+
 // A ticket runs locally when what it needs is on this computer only, and says why; otherwise in the
-// cloud. The triage record decides: `renders` (Stage 5 screenshots need the browser lock and a local
-// dev server), `needs_db` (a local database) and `needs_local` (anything else only here, such as
-// stub binaries a check runs or a dev server). A record written before triage asked `needs_local`
-// runs locally, so a ticket is never sent to the cloud on a question nobody answered. `feature` is the
-// ticket's part in a feature batch, when it has one: the spine and a child owning acceptance specs
-// are checked in a local worktree when they finish, so either runs locally. `effort` is whether the
-// effort lever is on.
+// cloud. The triage record decides: `renders` (Stage 5 screenshots need a browser and a dev server),
+// `needs_db` (a database), `needs_services` (§4 Local services) and `needs_local` (anything else only
+// here, such as stub binaries a check runs). `env` is config §3b "Cloud environment"
+// (config-schema.mjs parseCloudEnv), or null: what it provides no longer keeps a ticket here. A record
+// written before triage asked `needs_local` runs locally, so a ticket is never sent to the cloud on a
+// question nobody answered. `feature` is the ticket's part in a feature batch, when it has one: the
+// spine and a child owning acceptance specs are checked in a local worktree when they finish, so either
+// runs locally. `effort` is whether the effort lever is on.
 //   -> { where: 'local' | 'cloud', why: string | null }
-export function placement(rec, location, { feature = null, effort = false } = {}) {
+export function placement(rec, location, { feature = null, effort = false, env = null } = {}) {
   if (location !== 'cloud') return { where: 'local', why: null };
   const why = [];
+  const need = cloudNeeds(rec);
+  const lacks = (what) => `cloud environment ${env.name} provides no ${what} (config §3b "Cloud environment")`;
   if (effort) why.push(CLOUD_NO_EFFORT);
   if (feature) why.push(feature);
-  if (rec?.lane === 'D' || rec?.renders === true) why.push('it renders: its screenshots need the browser lock and a local dev server');
-  if (rec?.needs_db === true) why.push('it needs a local database');
+  if (need.browser && !env?.browser) why.push(env ? `it renders, and ${lacks('browser')}` : 'it renders: its screenshots need the browser lock and a local dev server');
+  if (need.db && !env?.db) why.push(env ? `it needs a database, and ${lacks('database')}` : 'it needs a local database');
+  const missing = need.services.filter((s) => !env?.services?.includes(s));
+  if (missing.length) why.push(`it needs the local service${missing.length === 1 ? '' : 's'} ${missing.join(', ')}${env ? `, which cloud environment ${env.name} does not provide (config §3b "Cloud environment")` : ''}`);
   if (typeof rec?.needs_local === 'string' && rec.needs_local.trim()) why.push(rec.needs_local.trim());
   else if (rec?.needs_local === true) why.push('triage says it needs this computer');
   else if (!rec || !('needs_local' in rec)) why.push('its triage record does not say whether it needs this computer (re-run triage.sh to place it)');
@@ -186,13 +208,78 @@ function reviewSteps(review) {
   ];
 }
 
+// The orphan branch a cloud session pushes its Stage 5 screenshots to, beside its PR branch: the pass
+// fetches it into the ticket's screenshot directory, uploads them as a local worker's, then deletes it.
+export const shotsRef = (branch) => `desk-shots/${branch}`;
+// The variable a cloud environment carries its own name in, as /desk-setup proposes it: nothing else in
+// a session names the environment it runs in.
+export const CLOUD_ENV_VAR = 'DESK_CLOUD_ENV';
+
+// A §4 command item as the prompt shows it: `cmd`, or `cmd` in `dir`.
+const cmdText = (item) => { const { dir, cmd } = parseCommandItem(item); return `\`${cmd}\`${dir === '.' ? '' : ` in \`${dir}\``}`; };
+const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+
+// How the session starts what the ticket needs in its cloud environment, and takes its screenshots.
+// `needs` is cloudNeeds' result; `setup` holds the §4 rows they come from, each a list of items:
+// { services, migrate, seed, dev, dbVars } (services as §4 Local services writes them, `<service> :<port>`).
+function servicesSection({ branch, base, needs, setup }) {
+  const s = setup ?? {};
+  const lines = [];
+  if (needs?.db) {
+    const then = [...(s.migrate ?? []), ...(s.seed ?? [])].map(cmdText);
+    lines.push(`- It needs a database. Start the environment's PostgreSQL with \`service postgresql start\`, create a database of your own on it` +
+      `${s.dbVars?.length ? `, point ${andList(s.dbVars.map((v) => `\`${v}\``))} at it` : ''}${then.length ? `, then run ${then.join(' and then ')}` : ''}.`);
+  }
+  const names = (needs?.services ?? []).map((n) => (s.services ?? []).find((i) => String(i).trim().split(/\s+/)[0] === n) ?? n);
+  if (names.length) lines.push(`- It needs the local service${names.length === 1 ? '' : 's'} ${andList(names.map((n) => `\`${n}\``))}: start ${names.length === 1 ? 'it' : 'them'} with \`docker compose up -d ${needs.services.join(' ')}\`.`);
+  if (needs?.browser) {
+    const dev = (s.dev ?? []).map(cmdText);
+    lines.push(`- It changes what a user sees, so its PR shows before and after screenshots. Start the dev server${dev.length ? ` (${dev.join(', ')})` : ''} ` +
+      'and capture with the environment\'s Chrome for Testing at `$CHROME_PATH` (with Playwright, `chromium.launch({ executablePath: process.env.CHROME_PATH })`): ' +
+      `each view the ticket changes, as \`before-<view>.png\` on \`${base}\` and \`after-<view>.png\` on your branch.`,
+    `- Commit the screenshots alone, at the root of a new branch with no history (\`git worktree add --orphan -b ${shotsRef(branch)} <a directory outside the repo>\`), ` +
+      `and push it to origin as \`${shotsRef(branch)}\` before you open the PR. Never commit them on \`${branch}\`.`,
+    '- In the PR body, add a `### Before / after` table with a row per view whose cells are `_drag before-<view>.png_` and `_drag after-<view>.png_`, the file names exactly: ' +
+      `desk uploads the files from \`${shotsRef(branch)}\` into those cells and deletes that branch. Never link an image by URL.`);
+  }
+  return lines.length ? ['', '## What this ticket needs in your environment', '', ...lines] : [];
+}
+
+// What /desk-setup proposes for the person to paste into the environment's settings in claude.ai/code:
+// a setup script running §4 Install (it runs as root before each new session, without the variables,
+// and must exit 0), and the variables: CLOUD_ENV_VAR with the environment's name, the one value desk
+// writes, then every other name with no value, for the person to fill in: §4 Database URL variable
+// where the environment provides the database, and `envNames`, the names §4 Env files hold.
+//   -> { script, vars: ['NAME=value' | 'NAME='] }
+export function cloudSetup({ env, install = [], dbVars = [], envNames = [] }) {
+  const script = ['#!/bin/bash', `# The ${env.name} cloud environment: runs as root before each new session, without its variables.`,
+    ...install.map((i) => { const { dir, cmd } = parseCommandItem(i); return `${dir === '.' ? cmd : `(cd ${dir} && ${cmd})`} || true`; })];
+  const names = [...new Set([...(env.db ? dbVars : []), ...envNames])].filter((n) => n !== CLOUD_ENV_VAR);
+  return { script: script.join('\n'), vars: [`${CLOUD_ENV_VAR}=${env.name}`, ...names.map((n) => `${n}=`)] };
+}
+
+// The variable names in an env file's text, never their values.
+export const envFileNames = (text) => [...String(text ?? '').matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map((m) => m[1]);
+
+// A §4 list row's items, [] where it is unset or `none`.
+const rowItems = (id) => [].concat(configValues(id) ?? []).map((v) => String(v).trim()).filter((v) => v && !isNone(v));
+
+// The §4 rows a cloud ticket's prompt names (servicesSection's `setup`), read from this repo's config.
+export function cloudSetupRows() {
+  return { services: rowItems('local-services'), migrate: rowItems('db-migrate-cmd'), seed: rowItems('seed-cmd'), dev: rowItems('dev-cmd'), dbVars: rowItems('db-url-var') };
+}
+
 // The cloud session's whole brief: it reads nothing from this computer. `review` is set where the session
-// has desk-review (deskReviewEnabled), and adds reviewSteps; null leaves the brief as it was.
-export function cloudPrompt({ key, repo, base, branch, text, tests, rules, review = null }) {
+// has desk-review (deskReviewEnabled), and adds reviewSteps; null leaves the brief as it was. `env` is
+// config §3b "Cloud environment" (parseCloudEnv), or null; with one, the session first checks it runs
+// there, and `needs` (cloudNeeds) and `setup` (servicesSection) say how it starts what it needs.
+export function cloudPrompt({ key, repo, base, branch, text, tests, rules, review = null, env = null, needs = null, setup = null }) {
   const run = tests?.length ? `Run ${tests.map((c) => `\`${c}\``).join(' and ')} before you push, and fix what fails.` : 'Run the repo\'s tests for what you change before you push, and fix what fails.';
   return [
     `Work ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.`,
     '',
+    ...(env ? [`Before anything else, check you are in the \`${env.name}\` cloud environment: run \`printenv ${CLOUD_ENV_VAR}\`. ` +
+      `If it does not print exactly \`${env.name}\`, stop there: change nothing, push nothing, open no PR, and end with the line \`wrong cloud environment: <what it printed, or none>\`.`, ''] : []),
     `1. Do the smallest change that meets the ticket's acceptance criteria below. ${run}`,
     // A change that branches on a value it never read the source of is the P0 a local review then finds.
     '2. Before you push: where your change branches on a value an API or server state sets (a status, flag, enum or role read from a response or a stored record), read where that value is set, the endpoint, handler or service that assigns it, and check your branch against every value it can set, not only the one the ticket names. If that source is not in this repository, say so in the PR body as a premise: which value, and why it could not be read.',
@@ -201,6 +288,7 @@ export function cloudPrompt({ key, repo, base, branch, text, tests, rules, revie
     '5. If you cannot finish, push what you have and open the draft PR anyway, with WIP in its title and what is left in its body. When you do finish, take both out: the PR counts as finished only once neither is there.',
     `6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
     ...reviewSteps(review),
+    ...(env ? servicesSection({ branch, base, needs, setup }) : []),
     ...rulesSection(rules),
     '',
     `## The ticket`,
@@ -555,4 +643,25 @@ export function finishedCloud(tickets, archived, done = new Set(), pending = [])
   const seen = new Set(done);
   return [...rows, ...pending].filter((d) => !seen.has(d.session) && seen.add(d.session))
     .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+}
+
+// `setup`: cloudSetup for this repo's config, the variable names read from §4 Env files in the main
+// checkout (a file missing there names none).
+function setupCli() {
+  const env = cloudEnvironment();
+  if (!env) return { env: null };
+  const root = repoRoot();
+  const envNames = rowItems('env-files').flatMap((f) => { try { return envFileNames(readFileSync(join(root, f), 'utf8')); } catch { return []; } });
+  return { env, ...cloudSetup({ env, install: rowItems('install-cmd'), dbVars: rowItems('db-url-var'), envNames }) };
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (isMain) {
+  const [cmd] = process.argv.slice(2);
+  if (cmd !== 'setup') { console.error('usage: node cloud-worker.mjs setup'); process.exit(2); }
+  try { console.log(JSON.stringify(setupCli(), null, 2)); }
+  catch (e) { console.error(e.message); process.exit(1); }
 }

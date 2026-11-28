@@ -8,8 +8,9 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt, cloudNeeds, cloudSetup, envFileNames, shotsRef, CLOUD_ENV_VAR } from '../desk/bin/cloud-worker.mjs';
 import { cloudFixRoute, runsInCloud, fixInCloud, cloudArchiveWait } from '../desk/bin/pass/shared.mjs';
+import { parseCloudEnv } from '../desk/bin/config-schema.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
@@ -41,6 +42,25 @@ t('AC3 a feature spine or spec owner runs locally, and says so', `${spine.where}
 const leverOnAt = (loc) => { const p = placement(rec({}), loc, { effort: true }); return `${p.where}: ${p.why}`; };
 t('DS-450 AC1 with the effort lever on, a ticket that could run in the cloud runs locally, and says why', leverOnAt('cloud'), `local: ${CLOUD_NO_EFFORT}`);
 t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 'local: null');
+
+// ---- issue-1550: config §3b "Cloud environment" -------------------------------
+const envOf = (raw) => { try { return JSON.stringify(parseCloudEnv(raw)); } catch (e) { return `refused: ${/is "/.test(e.message)}`; } };
+t('issue-1550 AC1 the row reads as the environment and what it provides', envOf('widgets: db browser services:redis,mailpit'),
+  JSON.stringify({ name: 'widgets', db: true, browser: true, services: ['redis', 'mailpit'] }));
+t('issue-1550 AC1 a name alone provides nothing', envOf('widgets'), JSON.stringify({ name: 'widgets', db: false, browser: false, services: [] }));
+t('issue-1550 AC3 unset, none and TODO are no environment', [envOf(''), envOf('none'), envOf('TODO'), envOf(null)].join(), 'null,null,null,null');
+t('issue-1550 a word it does not know refuses the row', envOf('widgets: db gpu'), 'refused: true');
+const dbAndBrowser = rec({ renders: true, needs_db: true });
+const atEnv = (o, raw) => { const p = placement(o, 'cloud', { env: parseCloudEnv(raw) }); return `${p.where}${p.why ? `: ${p.why}` : ''}`; };
+t('issue-1550 AC1 a ticket that renders and needs a database runs in the cloud where the row provides both', atEnv(dbAndBrowser, 'widgets: db browser'), 'cloud');
+t('issue-1550 AC3 with the row unset it stays local, as before', atEnv(dbAndBrowser, 'none'), at(dbAndBrowser));
+t('issue-1550 AC1 where the environment lacks one, it stays local naming the row', atEnv(dbAndBrowser, 'widgets: db'),
+  'local: it renders, and cloud environment widgets provides no browser (config §3b "Cloud environment")');
+t('issue-1550 AC1 a service the row names runs in the cloud', atEnv(rec({ needs_services: ['redis'] }), 'widgets: services:redis'), 'cloud');
+t('issue-1550 AC1 a service it does not name stays local', atEnv(rec({ needs_services: ['redis', 'typesense'] }), 'widgets: services:redis'),
+  'local: it needs the local service typesense, which cloud environment widgets does not provide (config §3b "Cloud environment")');
+t('issue-1550 AC1 needs_local still keeps it local', atEnv(rec({ renders: true, needs_local: 'stub binaries' }), 'widgets: browser'), 'local: stub binaries');
+t('issue-1550 a lane D ticket needs the browser', cloudNeeds(rec({ lane: 'D' })).browser, true);
 
 // ---- the maintenance window counts only workers on this computer --------------
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
@@ -89,6 +109,28 @@ const settings = (o) => JSON.stringify({ enabledPlugins: o });
 t('issue-1555 the repo\'s settings enabling the desk plugin make desk-review available', deskReviewEnabled(settings({ [CLOUD_REVIEW_PLUGIN]: true })), true);
 t('issue-1555 disabled, missing, another value, another plugin, no file or bad JSON: not available',
   [settings({ [CLOUD_REVIEW_PLUGIN]: false }), settings({}), settings({ [CLOUD_REVIEW_PLUGIN]: 'true' }), settings({ 'other@x': true }), '{}', '', '{nope', null, '[]'].map(deskReviewEnabled).some(Boolean), false);
+
+// ---- issue-1550: a cloud ticket that needs the database or a browser (AC2, AC6) --
+const widgets = parseCloudEnv('widgets: db browser services:redis');
+const setup = { services: ['redis :6379', 'typesense :8108'], migrate: ['pnpm db:migrate'], seed: ['apps/api: pnpm db:seed'], dev: ['pnpm dev'], dbVars: ['DATABASE_URL'] };
+const served = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup });
+t('issue-1550 AC2 the prompt starts the database, points its variable at it, then migrates and seeds',
+  ['service postgresql start', '`DATABASE_URL`', 'then run `pnpm db:migrate` and then `pnpm db:seed` in `apps/api`'].every((x) => served.includes(x)), true);
+t('issue-1550 AC2 it starts the services the ticket needs, and only those', served.includes('docker compose up -d redis') && !served.includes('typesense'), true);
+t('issue-1550 AC2 it takes its screenshots with the environment\'s Chrome, from the dev server', ['`pnpm dev`', 'Chrome for Testing', 'before-<view>.png', 'after-<view>.png'].every((x) => served.includes(x)), true);
+t('issue-1550 AC4 it pushes them to the side ref and leaves _drag cells naming them', served.includes(`push it to origin as \`${shotsRef('feat/K-1-x')}\``) && served.includes('`_drag before-<view>.png_`'), true);
+t('issue-1550 AC6 its first step checks the environment, and stops naming the wrong one',
+  served.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && served.indexOf(`printenv ${CLOUD_ENV_VAR}`) < served.indexOf('1. Do the smallest change') && served.includes('`wrong cloud environment: <what it printed, or none>`'), true);
+const plain = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({})), setup });
+t('issue-1550 AC2 a ticket that needs none of them gets the check but no services section', plain.includes(CLOUD_ENV_VAR) && !plain.includes('What this ticket needs in your environment'), true);
+t('issue-1550 AC3 with no environment the prompt is as before', prompt.includes(CLOUD_ENV_VAR) || prompt.includes('desk-shots/'), false);
+
+// ---- issue-1550: what /desk-setup proposes (AC5) --------------------------------
+const proposed = cloudSetup({ env: widgets, install: ['pnpm install --frozen-lockfile', 'apps/api: uv sync'], dbVars: ['DATABASE_URL'], envNames: envFileNames('# c\nDATABASE_URL=postgres://secret\nexport CLERK_SECRET_KEY="sk_live_x"\nNOT A VAR\n') });
+t('issue-1550 AC5 the setup script runs §4 Install, each item in its directory', proposed.script.includes('pnpm install --frozen-lockfile || true') && proposed.script.includes('(cd apps/api && uv sync) || true'), true);
+t('issue-1550 AC5 the variables are the environment\'s name, then names with no value', proposed.vars.join(' '), `${CLOUD_ENV_VAR}=widgets DATABASE_URL= CLERK_SECRET_KEY=`);
+t('issue-1550 AC5 no value from an env file is ever proposed', JSON.stringify(proposed).includes('secret') || JSON.stringify(proposed).includes('sk_live'), false);
+t('issue-1550 AC5 without db, the database variable is not proposed', cloudSetup({ env: parseCloudEnv('w: browser'), dbVars: ['DATABASE_URL'] }).vars.join(' '), `${CLOUD_ENV_VAR}=w`);
 
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
 const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };

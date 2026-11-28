@@ -110,8 +110,10 @@ of tickets. There, compare each lowered start with that all-`medium` stretch ins
 and `budget:` lines say how many tickets can run in a cloud session and that a cloud session takes no
 per-worker budget, and each admitted ticket's `runs:` line says where it can run. A ticket stays local,
 with the reason, when its triage record says it renders (the browser lock and a dev server), needs a
-database, or names in `needs_local` anything else only this computer has (stub binaries, a local
-service), and when the record predates `needs_local`. Admission records only that a ticket can run in
+database, or names a §4 Local service in `needs_services`, unless config §3b "Cloud environment"
+says its environment provides it (`db`, `browser`, `services:<names>`). It also stays local when the
+record names in `needs_local` anything else only this computer has (stub binaries, a clone of another
+repo), and when the record predates `needs_local`. Admission records only that a ticket can run in
 the cloud (`cloud_ok: true` on the queue); the pass places it when it starts. Cloud first: a cloud-able
 ticket goes to a cloud session while "Cloud sessions at once" has room. Local slots go first to
 local-only tickets: a cloud-able one takes a local slot only with the cloud full, a local slot left free
@@ -126,7 +128,14 @@ running worker is stopped. The cap comes back once your use has stayed under the
 `cpu-cores`, and the threshold 10% of `memory-gb` and 25% of `cpu-cores`; `person-use=off` turns it
 off, and no machine profile means it never reads. Set any of them with `desk-env machine set`. desk-q
 and the pass say "you're using this computer: local cap 1, cloud first" while it is on.
-A ticket started in the cloud (`location: cloud` on the queue) gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
+With config §3b "Cloud environment" set, each cloud prompt first has the
+session check `DESK_CLOUD_ENV` names that environment, stopping with "wrong cloud environment" if not,
+and says how to start the database (§4 Database migrate and Seed after it), the services and the dev
+server. A session that renders pushes its screenshots to `desk-shots/<branch>` and leaves
+`_drag <file>_` cells in its PR. Before recording it done, the pass copies them into the ticket's
+screenshot directory, where the undraft step uploads them as a local worker's, and deletes that ref
+where §3 branch-delete allows. A ticket started in the cloud (`location: cloud` on the queue)
+gets no worktree, preflight or local worker: the pass starts `claude --cloud` under `script` with a
 prompt carrying the ticket's text, and the session pushes a branch and opens a draft PR. The pass
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
