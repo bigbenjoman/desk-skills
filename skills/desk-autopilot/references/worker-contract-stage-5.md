@@ -17,6 +17,8 @@ none comes, after config §3b Maintenance drain limit), uncounted as a kill, and
 where you stopped, pushing what you committed. A base conflict fix worker parks instead: nothing
 resumes its try from this marker.
 
+**At Stage 7, push (§4) and open the draft PR (§5) before any review round**, as briefed.
+
 ## 4. Before you push: rebase
 
 The default branch moves while you work. `git fetch origin`, and if

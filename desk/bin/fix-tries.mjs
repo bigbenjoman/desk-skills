@@ -1213,6 +1213,27 @@ export function reviewTry(t, { pr, head, why, base = null, baseMerge = null, tar
     what: `review its head${moved ? `, moved by a merge from ${base ?? 'its base'}` : ''}: ${why}`, ...(targeted ? { targeted } : {}) } };
 }
 
+// A Stage 7 session that hands off partway through on context, leaving the branch where the last
+// handoff left it and no review verdict posted at its head, moved its PR no further. After
+// EMPTY_SEVEN_MAX of them in a row the pass stops resuming Stage 7 in a session: the PR's head goes to a
+// review try, and for a tracker ticket a Stage 8 session follows that try for the tracker step (`then`).
+export const EMPTY_SEVEN_MAX = 2;
+// t: the queue ticket. empties: its empty Stage 7 handoffs in a row, this one included. s: its open PR
+// as read now ({ pr, state, head }), or null. head: its worktree's HEAD, which must be the PR's head, or
+// the try would review a head without the session's commits. A PR head behind it parks too: the try is
+// recorded at the worktree's head, so fixTryStale would end it unspawned as a moved head before
+// busyWorktree could push the commits. tracker: the ticket is a tracker key.
+// -> null where Stage 7 resumes as before; { call: 'park', why } where there is no PR head for a try to
+// read, so Stage 7 stops resuming all the same; else reviewTry's answer, its try marked as replacing
+// Stage 7 (`replaces`) and carrying `then: '8'` where a Stage 8 session follows it.
+export function emptySevenTry(t, { empties, s, head, tracker }) {
+  if (empties < EMPTY_SEVEN_MAX) return null;
+  if (s?.state !== 'OPEN' || !s.head) return { call: 'park', why: 'it has no open PR, so its commits were never pushed for review' };
+  if (s.head !== head) return { call: 'park', why: `PR #${s.pr}'s head ${s.head.slice(0, 9)} is not its branch's head ${String(head).slice(0, 9)}, so the branch's commits were not all pushed for review` };
+  const c = reviewTry(t, { pr: s.pr, head, why: `its last ${empties} Stage 7 sessions handed off partway through on context with no new commit and no review verdict posted at its head` });
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, replaces: '7', ...(tracker ? { then: '8' } : {}) } } : c;
+}
+
 // A ready PR whose §4 State check of kind `verdict` is red, with no review at its head that reads as
 // not clean (that is reviewFix's), has a verdict the check rejects: none, one for an older head, or one
 // in a form the gate does not accept. The driver never reruns it, so it goes to a review worker under
