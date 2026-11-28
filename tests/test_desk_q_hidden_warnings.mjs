@@ -118,7 +118,7 @@ const until = (at) => ({ tag: '▲ usage', text: [[`ben, the default, is at its 
 t('AC6 a reset time that gains or loses its weekday keeps the note\'s key', Q.noteKey(until('Mon 14:00')) === Q.noteKey(until('14:00')), true);
 const unreadable = (n) => ({ tag: '▲ alpha', text: [[`Batch ${n}'s queue is unreadable: Unexpected end of JSON input.`, null]] });
 t('AC3 a note naming another batch is another warning', Q.noteKey(unreadable(2)) === Q.noteKey(unreadable(3)), false);
-const ports = (a, b) => ({ tag: '▲ ports', text: [[`beta + gamma share ${a}–${b}. Two batches there at once can get the same worker port.`, null]] });
+const ports = (a, b) => ({ tag: '▲ ports', text: [[`beta + gamma both use ports ${a}–${b}. Two batches there at once can get the same worker port.`, null]] });
 t('AC3 a port clash on other ports is another warning', Q.noteKey(ports(5200, 5201)) === Q.noteKey(ports(5300, 5301)), false);
 t('AC3 a ticket key is wording', Q.noteKey({ tag: '▲ alpha', text: [['no PR for AL-1.', null]] }) === Q.noteKey({ tag: '▲ alpha', text: [['no PR for AL-7.', null]] }), false);
 
@@ -137,7 +137,7 @@ repo('epsilon', 5402);
 s.close();
 s = await open();
 f = s.frame();
-t('AC4 a new warning shows', warns(f).some((l) => /^▲ ports +delta \+ epsilon share /.test(l)), true);
+t('AC4 a new warning shows', warns(f).some((l) => /^▲ ports +delta \+ epsilon both use ports /.test(l)), true);
 t('AC4 and the hidden ones stay hidden', `${warns(f).filter((l) => /beta \+ gamma/.test(l)).length} ${summary(f)[0]}`, '0 2 warnings hidden · H shows them');
 
 // ---- AC5: hidden 24 hours ago and still true.

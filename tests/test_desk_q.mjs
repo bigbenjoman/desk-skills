@@ -117,7 +117,9 @@ const lines = (s) => s.split('\n');
 // The lines under the red bands, which open home above what needs you.
 const unbanded = (s) => lines(s).filter((l) => !l.startsWith(' ✕ '));
 // The text of each amber note tagged `▲ <tag>` in the rendered lines, its tag stripped.
-const notesIn = (ls, tag) => ls.filter((l) => new RegExp(`^(note| {4}) {2}▲ ${tag} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${tag} +`), ''));
+const notesIn = (ls, tag, mark = '▲') => ls.filter((l) => new RegExp(`^(note| {4}) {2}${mark} ${tag} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}${mark} ${tag} +`), ''));
+// A repo's grey notes: what clears by itself.
+const greyIn = (ls, tag) => notesIn(ls, tag, '·');
 const rowOf = (out, name) => lines(out).find((l) => l.startsWith(`  ${name} `));
 
 // ---- AC1: live batches first, then the quiet one that needs you, then the no-batch line
@@ -139,7 +141,7 @@ t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? '')
 const head = unbanded(ov.out)[1];
 t('AC4 (DS-188 AC5, DS-215 AC12) header', /^● 2 workers running │ machine cap 10 · room for \d+ more │ \d+\.\d GiB free$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
-t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk share 3502–3503\./.test(l)), true);
+t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk both use ports 3502–3503\./.test(l)), true);
 // ---- AC15: voicepa's counts, last pass and workers (and ALL DONE BY, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
 t('AC15 (DS-279 AC14) voicepa row: a session 4m ago, run 2, ready 0, merging 0, wait 1, needs 0, done 3, workers 3', vp.slice(1, 20).join(' '), '● session · 4m ago 2 0 0 1 0 3 no history 2 of 3 · cap 5');
@@ -1647,8 +1649,8 @@ const cell215 = (name) => coloured(ovRow(S215, name))[0] ?? '';
 t('DS-215 AC1 a handed-over batch with its agent loaded, on time: ● supervisor in green', `${cell215('sup')} ${/^ {2}sup +● supervisor · 2m ago {2}/.test(rowOf(ov215, 'sup') ?? '')}`, '38;5;108:● supervisor · 2m ago true');
 t('DS-215 AC2 a session-run batch set to session or unset: ● session in green, and no note names it',
   `${cell215('sess')} ${notes215.some((l) => /▲ sess\b/.test(l))}`, '38;5;108:● session · 1m ago false');
-t('DS-215 AC3 a session-run batch set to the supervisor: ▲ session in amber, and one amber note', `${cell215('over')} ${notes215.filter((l) => l.includes('▲ over')).join('|')}`,
-  `38;5;180:▲ session · 3m ago ${notes215.find((l) => l.includes('▲ over'))?.startsWith('note') ? 'note' : '    '}  ▲ over          set to the supervisor, but a session runs this batch. Its next batch hands over.`);
+t('DS-215 AC3 / DS-1049 AC1 a session-run batch set to the supervisor: ▲ session in amber, and one grey note saying nothing needs doing', `${cell215('over')} ${notes215.filter((l) => l.includes(' over ')).join('|')}`,
+  `38;5;180:▲ session · 3m ago ${notes215.find((l) => l.includes(' over '))?.startsWith('note') ? 'note' : '    '}  · over          set to the supervisor, but a session runs this batch. Nothing to do: its next batch hands over.`);
 const bandAt = lines(ov215).indexOf(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on');
 const needsAt = lines(ov215).findIndex((l) => l.startsWith('◆ '));
 t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off in red at once, and the red band above the header names the fix',
@@ -1705,8 +1707,8 @@ t('DS-215 AC19 "N more set up with no batch" is indented 2 with a blank line abo
 const halt215 = lines(Q.repoScreen(at215('halt'), { now: NOW }));
 t('DS-215 AC5 a loaded supervisor whose passes stopped: the header reads ■ stopped, then its last log line',
   `${/^■ stopped · 40m {2}last pass \d\d:\d\d │ /.test(halt215[2])} ${halt215.includes("Supervisor's last log line: last tick: skipped, a pass still holds the orchestrator lock")}`, 'true true');
-t('DS-215 AC6 a stopped session-run batch set to the supervisor: the resume hint says it hands over at Stage 4, on home and its own screen',
-  `${notes215.some((l) => l.endsWith('▲ gone          passes stopped. To resume: run /desk-autopilot in gone; it hands the batch to the supervisor at Stage 4.'))} ${lines(Q.repoScreen(at215('gone'), { now: NOW })).includes('To resume: run /desk-autopilot in gone; it hands the batch to the supervisor at Stage 4.')}`, 'true true');
+t('DS-215 AC6 a stopped session-run batch set to the supervisor: the resume hint says it hands over, at Stage 4 on its own screen',
+  `${notes215.some((l) => l.endsWith('▲ gone          passes stopped. To resume: run /desk-autopilot in gone; it hands the batch to the supervisor.'))} ${lines(Q.repoScreen(at215('gone'), { now: NOW })).includes('To resume: run /desk-autopilot in gone; it hands the batch to the supervisor at Stage 4.')}`, 'true true');
 const youOf = (s) => Number(/^◆ (\d+) tickets? needs? you/m.exec(s)?.[1] ?? 0);
 const withoutSkill = notes215.some((l) => l.includes('/desk-needs-you'));
 mkdirSync(join(I.env.DESK_SKILLS_DIR, 'desk-needs-you'), { recursive: true });
@@ -1731,7 +1733,7 @@ t('DS-215 AC9 neither macOS nor Linux: every repo reads session, with no supervi
 t('DS-215 AC9 and a repo screen offers no supervisor fix', /Supervisor's last log line|supervisor on/.test(halt215l), false);
 const plain215 = I.run('--plain').out;
 t('DS-215 AC10 --plain: the same words and glyphs, no colour, the band and notes as plain lines',
-  `${plain215.includes('\x1b')} ${lines(plain215).includes(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on')} ${lines(plain215).some((l) => /^(note| {4}) {2}▲ over {10}set to the supervisor/.test(l))} ${/ ✕ supervisor off · \d+m /.test(rowOf(plain215, 'off') ?? '')}`, 'false true true true');
+  `${plain215.includes('\x1b')} ${lines(plain215).includes(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on')} ${lines(plain215).some((l) => /^(note| {4}) {2}· over {10}set to the supervisor/.test(l))} ${/ ✕ supervisor off · \d+m /.test(rowOf(plain215, 'off') ?? '')}`, 'false true true true');
 t('DS-215 AC11 a repo screen\'s second header line: who runs it, the last pass, workers and cap, the batch',
   [lines(Q.repoScreen(at215('sup'), { now: NOW }))[2], lines(Q.repoScreen(at215('sess'), { now: NOW }))[2]].join(' | '),
   '● supervisor  last pass 2m ago │ workers 1 of 2 · cap 3 · machine 11 of 10 │ batch sup | ● session  last pass 1m ago │ workers 0 of 2 · cap 3 · machine 11 of 10 │ batch sess');
@@ -1817,11 +1819,11 @@ t('DS-215 AC4 a stopped handed-over batch with nothing for the user stays on hom
   `${/^ {2}idle +✕ supervisor off · 50m /.test(rowOf(ovStall, 'idle') ?? '')} ${lines(ovStall).includes(band('idle'))}`, 'true true');
 put215('ask', 5280, 50, 'supervisor', false, { 'AS-1': parked215 });
 t('DS-215 AC6 a stopped session-run batch set to the supervisor whose only ticket needs you still gets the hand-over hint on home',
-  /▲ ask +passes stopped\. To resume: run \/desk-autopilot in ask; it hands the batch to the supervisor at Stage 4\.$/m.test(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'ask'), { now: NOW, avail: 30 })), true);
+  /▲ ask +passes stopped\. To resume: run \/desk-autopilot in ask; it hands the batch to the supervisor\.$/m.test(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'ask'), { now: NOW, avail: 30 })), true);
 put215('closed', 5290, 50, 'supervisor', false, { 'CL-1': ready });
 const ovClosed = Q.overview(Q.loadRepos(NOW).filter((r) => r.name === 'closed'), { now: NOW, avail: 30 });
 t('DS-215 AC6 a stopped session-run batch set to the supervisor with only ready tickets stays on home, with the hand-over hint',
-  `${/^ {2}closed +■ stopped · 50m /.test(rowOf(ovClosed, 'closed') ?? '')} ${/▲ closed +passes stopped\. To resume: run \/desk-autopilot in closed; it hands the batch to the supervisor at Stage 4\.$/m.test(ovClosed)}`, 'true true');
+  `${/^ {2}closed +■ stopped · 50m /.test(rowOf(ovClosed, 'closed') ?? '')} ${/▲ closed +passes stopped\. To resume: run \/desk-autopilot in closed; it hands the batch to the supervisor\.$/m.test(ovClosed)}`, 'true true');
 t('DS-215 AC7 with one ticket that needs you, the note still gives the count',
   lines(ovStall).some((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about the 1 ticket\.$/.test(l)), true);
 
@@ -2061,6 +2063,11 @@ drv991('idlb', 5470, { 'IB-1': { state: 'parked', park: { question: 'which copy?
 drv991('rdyf', 5480, { 'RF-1': pr991(61) }, { idle: null, driver: stop991(1, 'FAIL: gh is signed out') }, 'FAIL: gh is signed out\nmerge driver exited 1\n');
 drv991('rdys', 5490, { 'RS-1': pr991(62) }, { idle: null, driver: stop991(143, info991) }, `${info991}\nmerge driver exited 143\n`);
 drv991('rdyi', 5500, { 'RI-1': pr991(63) }, { idle: null, driver: stop991(null, info991) }, `${info991}\n`);
+// Its log last written 10 minutes ago: past the few minutes the supervisor has to start it again.
+utimesSync(join(I.env.HOME, '.desk-autopilot', 'acme__rdyi', 'merge-driver.log'), (NOW - 10 * 60e3) / 1000, (NOW - 10 * 60e3) / 1000);
+// The same, stopped a minute ago.
+drv991('rdyk', 5530, { 'RK-1': pr991(66) }, { idle: null, driver: stop991(null, info991) }, `${info991}\n`);
+utimesSync(join(I.env.HOME, '.desk-autopilot', 'acme__rdyk', 'merge-driver.log'), (NOW - 60e3) / 1000, (NOW - 60e3) / 1000);
 // The repo's one driver, started for another batch after this one went idle, keeps its record here.
 drv991('idlr', 5510, { 'IR-1': pr991(64) }, { idle: 'fp', idle_at: minsAgo(30), driver: stop991(1, 'FAIL: gh is signed out') }, 'FAIL: gh is signed out\nmerge driver exited 1\n');
 // A 28-character repo name, its driver stopped 143: its note's tag nearly fills a narrow terminal.
@@ -2091,7 +2098,7 @@ writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '
 put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
   'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
 put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
-const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi', 'idlr', long996];
+const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi', 'rdyk', 'idlr', long996];
 I.loaded(...loaded219);
 // What install.sh leaves: the installed commit, and each agent it reloaded loaded at that commit.
 writeFileSync(join(I.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
@@ -2105,9 +2112,9 @@ const notesOf = (name) => notesIn(lines(ov219), name);
 const cell219 = (name) => (rowOf(ov219, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
 const needs219 = lines(ov219).findIndex((l) => l.startsWith('◆ '));
 const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
-t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note naming what held them',
+t('DS-219 AC1 passes that held everything for an hour: ▲ no progress, and one note pointing at the repo\'s screen for a pass that recorded no structured hold',
   `${cell219('np')} | ${notesOf('np').join(' / ')} | ${cell219('moved')} ${notesOf('moved').length}`,
-  `▲ no progress 3h 5m | nothing started or merged for 3h 5m. Last pass: ${held219}. | ● session · 1m ago 0`);
+  '▲ no progress 3h 5m | nothing started or merged for 3h 5m. See why: desk-q np | ● session · 1m ago 0');
 // Time the queue held nothing to work on is not counted as no progress.
 const merged1519 = { state: 'done', result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } };
 const pass1519 = { at: minsAgo(1), by: 'session', held: held219, errors: 0, progress_at: minsAgo(485) };
@@ -2124,26 +2131,36 @@ t('issue-1519 AC1/AC3 a ticket admitted a minute ago to a batch idle since a mer
 t('issue-1519 AC1 a ticket added 8h ago and parked until its requeue a minute ago: the clock starts at the requeue',
   `${cell1519('requeue1519')} ${notesIn(lines(ov1519), 'requeue1519').length}`, '● session · 1m ago 0');
 t('issue-1519 AC4 a ready ticket waiting 8h with no start or merge still reads no progress',
-  `${cell1519('stall1519')} | ${notesIn(lines(ov1519), 'stall1519').join(' / ')}`, `▲ no progress 8h 0m | nothing started or merged for 8h 0m. Last pass: ${held219}.`);
-t('DS-219 AC2 two errored passes in a row: the red band above the header names the repo and the error\'s first line; one does not',
-  `${bandAt219('err: the last 2 passes errored: no repo config found for acme/err')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
+  `${cell1519('stall1519')} | ${notesIn(lines(ov1519), 'stall1519').join(' / ')}`, '▲ no progress 8h 0m | nothing started or merged for 8h 0m. See why: desk-q stall1519');
+t('DS-219 AC2 / DS-1049 AC2 two errored passes in a row: the red band above the header names the repo, the error\'s first line and the command to check it; one does not',
+  `${bandAt219('err: the last 2 passes errored: no repo config found for acme/err. Run /desk-autopilot in err to see it.')} ${needs219} ${/err1:/.test(ov219)}`, `0 ${needs219} false`);
 t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervisor + session, and one note with both fixes',
   `${cell219('both')} | ${notesOf('both').join(' / ')} | ${cell219('alone')} ${notesOf('alone').length}`,
   '▲ supervisor + session | a session is also running this supervised batch. Close the session, or run: desk-q both supervisor off | ● supervisor · 1m ago 0');
 t('DS-219 AC4 a merge driver that died, never started, or whose retry died too: one note with the reason from its log',
   `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')} | ${notesOf('drv3').join(' / ')}`,
   'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES. | the merge driver stopped: no PR for DL-1.');
+// A driver note with no fix of its own points at the log that says why.
+const after219 = (name) => { const ls = lines(ov219), at = ls.findIndex((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)); return ls.slice(at + 1, at + 3).map((l) => l.trim()); };
+t('DS-1049 AC2 a merge driver that could not start, or stopped on a failure with no fix: its note ends with the command that shows its log',
+  `${after219('drv2').join(' / ')} | ${after219('drv3').join(' / ')}`,
+  'Its log says why: / tail -n 40 ~/.desk-autopilot/acme__drv2/supervisor.log | Its log says why: / tail -n 40 ~/.desk-autopilot/acme__drv3/merge-driver.log');
 // An overview of its own, so their parked tickets and open PRs stay out of AC7's needs-you count.
-const ov991 = Q.overview(Q.loadRepos(NOW).filter((r) => ['idlb', 'rdyf', 'rdys', 'rdyi', 'idlr'].includes(r.name)), { now: NOW, avail: 30 });
-const driverNotes991 = (name) => notesIn(lines(ov991), name).filter((n) => n.includes('merge driver')).map((n) => n.replace(/\d\d:\d\d/, 'HH:MM')).join(' / ');
+const ov991 = Q.overview(Q.loadRepos(NOW).filter((r) => ['idlb', 'rdyf', 'rdys', 'rdyi', 'rdyk', 'idlr'].includes(r.name)), { now: NOW, avail: 30 });
+const driverNotes991 = (name, ls = lines(ov991)) => [...notesIn(ls, name), ...greyIn(ls, name)].filter((n) => n.includes('merge driver')).map((n) => n.replace(/\d\d:\d\d/, 'HH:MM')).join(' / ');
 t('DS-991 AC1 a batch the supervisor recorded idle, its driver stopped 143 on an informational line: no merge driver note',
   `[${driverNotes991('idlb')}] ${ov991.includes('base state unknown')}`, '[] false');
 t('DS-991 AC2 a ready PR and a driver that exited on a failure line: the note says it stopped and gives the failure reason',
   driverNotes991('rdyf'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
-t('DS-991 AC3 a ready PR and a driver stopped with exit 143 and not restarted: the note says it was stopped and is not running, quoting no log line',
-  driverNotes991('rdys'), 'the merge driver was stopped at HH:MM (exit 143) and is not running.');
-t('DS-991 a driver gone with no failure line and no exit code: the note says so, quoting no log line',
-  driverNotes991('rdyi'), 'the merge driver stopped at HH:MM (no exit code logged) and logged no failure.');
+t('DS-991 AC3 / DS-1049 AC1 a ready PR and a driver stopped with exit 143 and not restarted yet: one grey note that nothing needs doing, with no exit code or log line',
+  `${driverNotes991('rdys')} | ${notesIn(lines(ov991), 'rdys').length}`,
+  'the merge driver was stopped at HH:MM and has not started again yet. Nothing to do: the supervisor starts it again once a PR is ready to merge. | 0');
+t('DS-1049 AC3 a driver gone with no reason and not restarted 10 minutes on: amber, pointing at its log, with no exit code',
+  `${notesIn(lines(ov991), 'rdyi').map((n) => n.replace(/\d\d:\d\d/, 'HH:MM')).join(' / ')} | ${lines(ov991).some((l) => l.trim() === 'tail -n 40 ~/.desk-autopilot/acme__rdyi/merge-driver.log')}`,
+  'the merge driver stopped at HH:MM without saying why, and has not started again. | true');
+t('DS-1049 AC3 the same a minute after it stopped: grey, as the supervisor can still start it again',
+  `${greyIn(lines(ov991), 'rdyk').map((n) => n.replace(/\d\d:\d\d/, 'HH:MM')).join(' / ')} | ${notesIn(lines(ov991), 'rdyk').length}`,
+  'the merge driver stopped at HH:MM without saying why. Nothing to do: the supervisor starts it again once a PR is ready to merge. | 0');
 t('DS-991 an idle batch whose record holds the repo driver started since it went idle: its failure is still shown',
   driverNotes991('idlr'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
 // Home's notes at each width: the block from the first "note" line to the blank line after it.
@@ -2156,8 +2173,8 @@ const notes996 = (width) => {
 const widths996 = Array.from({ length: 161 }, (_, i) => 200 - i);
 t('DS-996 AC1 a note under a 28-character repo name at 40 columns: every note line ends within 40 columns, and it names the driver',
   `${notes996(40).filter((l) => l.length > 40).length} ${notes996(40).join(' ').includes('merge driver')}`, '0 true');
-t('DS-996 AC2 the same note from 200 columns down to 40: no line runs past the width, and "exit 143" shows whole',
-  widths996.filter((w) => { const ns = notes996(w); return ns.some((l) => l.length > w) || !/\(exit 143\)/.test(ns.join(' ').replace(/ +/g, ' ')); }).join(' '), '');
+t('DS-996 AC2 the same note from 200 columns down to 40: no line runs past the width, and "Nothing to do:" shows whole',
+  widths996.filter((w) => { const ns = notes996(w); return ns.some((l) => l.length > w) || !/Nothing to do:/.test(ns.join(' ').replace(/ +/g, ' ')); }).join(' '), '');
 // old and unreloaded both run old code, so their notes fold into one.
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
   `${notesOf('old').length} ${notesOf('desk code').join(' / ')}`, '0 the supervisors of old and unreloaded run old desk code. Run ./install.sh in desk-skills.');
@@ -2165,12 +2182,12 @@ t('DS-512 AC1 an agent reloaded at the installed commit, whose last pass recorde
   notesOf('reloaded').length, 0);
 t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note names it',
   `${notesOf('unreloaded').length} ${/ and unreloaded run old desk code/.test(notesOf('desk code').join(' / '))}`, '0 true');
-t('DS-512 AC3 / DS-666 AC3 a driver whose lock names another version: the merge driver note says it moves by itself, with no install to run',
-  notesOf('drvold').join(' / '), 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.');
+t('DS-512 AC3 / DS-666 AC3 / DS-1049 AC1 a driver whose lock names another version: a grey note says it moves by itself, with nothing to do',
+  `${greyIn(lines(ov219), 'drvold').join(' / ')} | ${notesOf('drvold').length}`, 'the merge driver runs old desk code. Nothing to do: it moves to the installed code when it next waits between loops. | 0');
 t('DS-512 AC4 / DS-666 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
   notesOf('drvnew').length, 0);
-t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
-  `${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') >= 0} ${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') < needs219}`, 'true true');
+t('DS-219 AC6 / DS-1049 AC2 a loaded agent whose last run failed: the red band names the repo, the reason from its log and the command to check it, with no exit code',
+  `${bandAt219('cant: the supervisor cannot start, so no passes run: supervisor: no repo config found for acme/cant. Check it: desk-q cant supervisor') >= 0} ${bandAt219('cant: the supervisor cannot start, so no passes run: supervisor: no repo config found for acme/cant. Check it: desk-q cant supervisor') < needs219}`, 'true true');
 // land's open PR needs you too: nothing there may merge it.
 t('DS-219 AC7 the needs-you count is followed by how long the oldest has waited', /^◆ 3 tickets need you {2}oldest 2h 10m │ wait 2 · land 1$/.test(lines(ov219)[needs219]), true);
 t('DS-219 AC8 a supervised batch with every ticket done and a PR still open: live, not stopped, its rows read by their tickets',
@@ -2715,14 +2732,14 @@ const ov454 = Q.overview(Q.loadRepos(NOW).filter((r) => ['cap3', 'mixed', 'solo'
 const notes454 = (name) => notesIn(lines(ov454), name);
 const cap3notes = notes454('cap3');
 t('DS-454 AC1 three batches held by the repo\'s shared cap: one note, timed from the repo\'s latest progress',
-  `${cap3notes.length} ${cap3notes[0]?.startsWith("nothing started or merged for 3h 5m. Last pass: the repo's shared cap: repo workers: 0 of the §3b cap of 0 running — ")}`, '1 true');
+  `${cap3notes.length} ${cap3notes[0]?.startsWith('nothing started or merged for 3h 5m. ')}`, '1 true');
 t('DS-454 AC2 two batches held for different reasons: each reason once, each note naming its batch',
   notes454('mixed').join(' / '),
-  `the standing batch: nothing started or merged for 3h 5m. Last pass: ${cap454([null, 'KAN-9'], null)}. / batch KAN-9: nothing started or merged for 3h 20m. Last pass: ${mem454}.`);
-t('DS-454 AC3 a single held batch reads as before', notes454('solo').join(' / '), `nothing started or merged for 3h 5m. Last pass: ${mem454}.`);
+  'the default batch: nothing started or merged for 3h 5m. See why: desk-q mixed / batch KAN-9: nothing started or merged for 3h 20m. See why: desk-q mixed:KAN-9');
+t('DS-454 AC3 a single held batch reads as before', notes454('solo').join(' / '), 'nothing started or merged for 3h 5m. See why: desk-q solo');
 t('DS-454 AC4 two repos held for the same reason each keep their note',
   `${notes454('one').join(' / ')} | ${notes454('two').join(' / ')}`,
-  `nothing started or merged for 3h 5m. Last pass: ${mem454}. | nothing started or merged for 3h 5m. Last pass: ${mem454}.`);
+  'nothing started or merged for 3h 5m. See why: desk-q one | nothing started or merged for 3h 5m. See why: desk-q two');
 
 // ---- DS-1048: a hold on the machine's test lock is one note for every repo it holds.
 // Each repo's standing batch last passed a minute ago, held by `hold` (pass/report.mjs holdOf's shape)
@@ -2737,23 +2754,29 @@ put1048('tlb', 5860, lock1048(8, 3, ['TLB-1'], []));
 put1048('tlc', 5870, { cause: 'memory', scope: 'machine', numbers: { availGB: 3.1, minAvailGB: 4 }, holders: [], tickets: [], action: null });
 const repos1048 = () => Q.loadRepos(NOW).filter((r) => ['tla', 'tlb', 'tlc'].includes(r.repo));
 const ov1048 = Q.overview(repos1048(), { now: NOW, avail: 30 });
-const throttle1048 = lines(ov1048).filter((l) => /^(note| {4}) {2}⧗ tests queued +/.test(l)).map((l) => l.replace(/^(note| {4}) {2}⧗ tests queued +/, ''));
-t('DS-1048 AC1 two repos held by the test lock show one note naming both repos and their tickets, and no note of their own',
+// The test-lock note: its first line, then each line under it, trimmed.
+const throttleBlock = (ls) => { const at = ls.findIndex((l) => /^(note| {4}) {2}⧗ tests queued +/.test(l)); if (at < 0) return []; const out = [ls[at].replace(/^(note| {4}) {2}⧗ tests queued +/, '')];
+  for (const l of ls.slice(at + 1)) { if (!/^ {12,}\S/.test(l)) break; out.push(l.trim()); } return out; };
+const throttle1048 = throttleBlock(lines(ov1048));
+t('DS-1048 AC1 / DS-1049 AC1 two repos held by the test lock show one grey note naming their tickets and that nothing needs doing, and no note of their own',
   `${throttle1048.join(' / ')} | ${notesIn(lines(ov1048), 'tla').length} ${notesIn(lines(ov1048), 'tlb').length}`,
-  '8 runs waiting for 3 test slots, shared by all repos. Waiting for a slot: TLA-1 in tla and TLB-1 in tlb. Nothing started or merged for 3h 5m. | 0 0');
+  '8 runs waiting for 3 test slots, shared by all repos. / TLA-1 and TLB-1 start when a slot frees. / Nothing to do: workers start as tests finish. | 0 0');
 const wait1048 = (name, ov = ov1048) => { const head = lines(ov).find((l) => /^ {2}REPO /.test(l)); const at = head.indexOf('WAIT') + 4; return (rowOf(ov, name) ?? '').slice(at - 4, at); };
 t('DS-1048 AC2 each WAIT cell the note explains ends in its mark, and one it does not keeps its count in line',
   ['tla', 'tlb', 'tlc'].map((r) => wait1048(r)).join('|'), '  0⧗|  0⧗|  0 ');
 const cell1048 = (name) => (rowOf(ov1048, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
 t('DS-1048 AC4 a row only the test lock holds reads live, as its grey note does; a row memory holds still reads no progress',
-  `${cell1048('tla')} | ${cell1048('tlb')} | ${cell1048('tlc')} | ${notesIn(lines(ov1048), 'tlc').length}`, '● session · 1m ago | ● session · 1m ago | ▲ no progress 3h 5m | 1');
+  `${cell1048('tla')} | ${cell1048('tlb')} | ${cell1048('tlc')} | ${greyIn(lines(ov1048), 'tlc').length}`, '● session · 1m ago | ● session · 1m ago | ▲ no progress 3h 5m | 1');
+t('DS-1049 a batch held on low memory: a grey note saying how much is free, and that nothing needs doing',
+  greyIn(lines(ov1048), 'tlc').join(' / '),
+  'nothing started or merged for 3h 5m: the computer is low on memory (3.1 GB free, 4 GB needed to start a worker). Nothing to do: workers start once memory frees up.');
 // The same holds a pass later: other holders, another queue depth, the same cause and scope.
-put1048('tla', 5850, lock1048(11, 3, ['TLA-1', 'TLA-2'], [{ repo: 'tlb', where: '~/tlb', cmd: 'bash tests/run.sh x', heldS: 900, expectedS: 200 }]));
+put1048('tla', 5850, lock1048(11, 3, ['TLA-1', 'TLA-2'], [{ repo: 'tlb', where: '~/tlb', cmd: 'bash tests/run.sh x', heldS: 350, expectedS: 200 }]));
 put1048('tlc', 5870, { cause: 'memory', scope: 'machine', numbers: { availGB: 2.2, minAvailGB: 4 }, holders: [], tickets: [], action: null });
-const hidden1048 = new Map([['⧗ tests queued hold test-lock machine', NOW], ['▲ tlc hold memory machine', NOW]]);
+const hidden1048 = new Map([['⧗ tests queued hold test-lock machine', NOW], ['· tlc hold memory machine', NOW]]);
 const later1048 = Q.overview(repos1048(), { now: NOW, avail: 30, hidden: hidden1048 });
 t('DS-1048 AC3 hidden notes whose holders and counts moved on, but not their cause and scope, stay hidden',
-  `${/⧗ tests queued/.test(later1048)} ${notesIn(lines(later1048), 'tlc').length} ${lines(later1048).filter((l) => l.endsWith('2 warnings hidden · H shows them')).length}`, 'false 0 1');
+  `${/⧗ tests queued/.test(later1048)} ${greyIn(lines(later1048), 'tlc').length} ${lines(later1048).filter((l) => l.endsWith('2 warnings hidden · H shows them')).length}`, 'false 0 1');
 t('DS-1048 AC2 with the test-lock note hidden, no WAIT cell carries its mark',
   ['tla', 'tlb', 'tlc'].map((r) => wait1048(r, later1048)).join('|'), '   0|   0|   0');
 // A pass the test and light locks both held names each queue by its own lock.
@@ -2775,17 +2798,86 @@ t('DS-1048 AC1 repos held on different locks each keep their lock\'s queue in th
 const memHold1048 = { cause: 'memory', scope: 'machine', numbers: { availGB: 3.1, minAvailGB: 4 }, holders: [], tickets: [], action: null };
 put454('tld', 5880, null, mem454, 185, memHold1048);
 put454('tld', 5880, 'B2', 'the batch base sync holds every spawn', 185, { cause: 'base', scope: 'batch', numbers: null, holders: [], tickets: [], action: null });
-const tld1048 = Q.overview(Q.loadRepos(NOW).filter((r) => r.repo === 'tld'), { now: NOW, avail: 30, hidden: new Map([['▲ tld hold memory machine', NOW]]) });
-t('DS-1048 AC3 a hidden hold note stays hidden when a sibling batch stalls for another reason',
-  notesIn(lines(tld1048), 'tld').join(' / '), 'batch B2: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn.');
+const tld1048 = Q.overview(Q.loadRepos(NOW).filter((r) => r.repo === 'tld'), { now: NOW, avail: 30, hidden: new Map([['· tld hold memory machine', NOW]]) });
+t('DS-1048 AC3 / DS-1049 AC2 a hidden hold note stays hidden when a sibling batch stalls for another reason; a base it cannot sync is amber with the command',
+  `${notesIn(lines(tld1048), 'tld').join(' / ')} | ${greyIn(lines(tld1048), 'tld').length}`,
+  "batch B2: nothing started or merged for 3h 5m: the batch's base cannot take the latest changes, so no new work starts from it. Run /desk-needs-you in a Claude session. | 0");
 // Two batches of one repo each held on its own base keep a note each, each naming its batch and lag.
 const baseHold1048 = { cause: 'base', scope: 'batch', numbers: null, holders: [], tickets: [], action: null };
 put454('tle', 5890, null, 'the batch base sync holds every spawn: main is 3 behind', 185, baseHold1048);
 put454('tle', 5890, 'B2', 'the batch base sync holds every spawn: feat-x is 5 behind', 185, baseHold1048);
 t('DS-1048 two batches held on different bases keep a note each',
   notesIn(lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.repo === 'tle'), { now: NOW, avail: 30 })), 'tle').join(' / '),
-  'the standing batch: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn: main is 3 behind. / batch B2: nothing started or merged for 3h 5m. Last pass: the batch base sync holds every spawn: feat-x is 5 behind.');
+  "the default batch: nothing started or merged for 3h 5m: the batch's base cannot take the latest changes, so no new work starts from it. Run /desk-needs-you in a Claude session. / batch B2: nothing started or merged for 3h 5m: the batch's base cannot take the latest changes, so no new work starts from it. Run /desk-needs-you in a Claude session.");
 t('DS-1048 AC3 a note from a pass that wrote no structured hold keeps the key its wording gives', Q.noteKey({ tag: '▲ x', text: [['nothing started for 2h.', null]] }), '▲ x nothing started for #.');
+
+// ---- DS-1049: every note says whether it is a problem and what to do.
+// The 2026-11-26 scenario: three repos' passes held by 8 runs waiting for 3 test slots.
+const run1049 = (where, heldS, expectedS, pid) => ({ pid, repo: 'acme/x', where, cmd: 'bash tests/run.sh --maxWorkers=4', heldS, expectedS });
+const q1049 = (holders) => ({ lock: 'test', waiting: 8, slots: 3, factor: 2, holders });
+const lockQ1049 = (tickets, holders) => ({ ...lock1048(8, 3, tickets, holders), numbers: { waiting: 8, slots: 3, factor: 2, room: 0, stall: true, running: 2, concurrency: 3, queues: [q1049(holders)] } });
+const calm1049 = [run1049('~/studia/desk-skills-worktrees/AA-267', 400, 600, 4101), run1049('~/studia-web-worktrees/base-feat-DS-691-desk-app', 700, 600, 4102)];
+put1048('sva', 5900, lockQ1049(['SV-4139'], calm1049));
+put1048('svb', 5910, lockQ1049(['SV-3643'], calm1049));
+put1048('svc', 5920, lockQ1049([], calm1049));
+const ov1049 = (names, opts = {}) => Q.overview(Q.loadRepos(NOW).filter((r) => names.includes(r.repo)), { now: NOW, avail: 30, ...opts });
+const snap1049 = lines(ov1049(['sva', 'svb', 'svc']));
+t('DS-1049 snapshot: the 2026-11-26 scenario is one grey test-lock note of three lines, and no repo note',
+  `${throttleBlock(snap1049).join(' / ')} | ${['sva', 'svb', 'svc'].map((n) => notesIn(snap1049, n).length + greyIn(snap1049, n).length).join('')}`,
+  '8 runs waiting for 3 test slots, shared by all repos. / SV-4139 and SV-3643 start when a slot frees. / Nothing to do: workers start as tests finish. | 000');
+// One holder past twice its usual time (2500s against 600s), one not (700s against 600s).
+put1048('svb', 5910, lockQ1049(['SV-3643'], [run1049('~/studia/desk-skills-worktrees/DS-777', 2500, 600, 4242), run1049('~/studia/desk-skills', 700, 600, 4243)]));
+const over1049 = throttleBlock(lines(ov1049(['sva', 'svb'])));
+t('DS-1049 AC4 a holder well past its usual time adds one amber line naming its run, its time against its usual one and how to stop it',
+  `${over1049.length} ${over1049.at(-1)}`, "4 DS-777's test run has had a slot for 41m; it usually takes 10m. If it is stuck, stop its worker: node ~/.claude/desk/bin/queue.mjs stop DS-777, in x.");
+// A run past its usual time in a folder that is no ticket's is named by that folder, and stopped where it started.
+put1048('svb', 5910, lockQ1049(['SV-3643'], [run1049('~/studia/desk-skills', 2500, 600, 4244)]));
+t('DS-1049 AC4 a run past its usual time outside a ticket\'s worktree names its folder and how to stop it, with no pid',
+  throttleBlock(lines(ov1049(['sva', 'svb']))).at(-1), 'The test run in desk-skills has had a slot for 41m; it usually takes 10m. If it is stuck, stop it in the terminal that started it.');
+t('DS-1049 AC4 a note with a run past its usual time is a new warning, so one hidden before it shows again',
+  /⧗ tests queued/.test(ov1049(['sva', 'svb'], { hidden: new Map([['⧗ tests queued hold test-lock machine', NOW]]) })), true);
+// A note Ben can act on: a batch's worker count at 0, a usage hold; one that clears itself: the machine full.
+const hold1049 = (cause, scope, more = {}) => ({ cause, scope, numbers: null, holders: [], tickets: [], action: null, ...more });
+put1048('acta', 5930, hold1049('concurrency', 'batch', { numbers: { concurrency: 0 }, action: { text: 'raise it', cmd: `node ${I.env.HOME}/.claude/desk/bin/queue.mjs set-batch concurrency=1` } }));
+put1048('actb', 5940, hold1049('machine', 'machine', { detail: 'machine: 9 of 9 workers running — room 0' }));
+put1048('actc', 5950, hold1049('budget', 'batch', { action: { text: 'lift it', cmd: `node ${I.env.HOME}/.claude/desk/bin/queue.mjs set-batch budget_usd=none` } }));
+put(I.T, I.env, 'actd', { port: 5960, conc: '2 / 3', beat: 1, queue: { batch: 'actd', concurrency: 2, usage_hold: { type: 'five_hour', resets_at: Math.floor(NOW / 1000) + 3600, paused: [] },
+  pass: { at: minsAgo(1), by: 'session', held: 'usage', hold: hold1049('usage', 'machine'), errors: 0, progress_at: minsAgo(185) }, tickets: { 'ACTD-1': { state: 'triaged', open_questions: 0 } } } });
+const act1049 = lines(ov1049(['acta', 'actb', 'actc', 'actd']));
+t('DS-1049 AC2 a batch whose worker count is 0: amber, ending with the desk-q command that raises it',
+  notesIn(act1049, 'acta').join(' / '), "nothing started or merged for 3h 5m: the batch's worker count is 0. Run: desk-q acta workers 1");
+t('DS-1049 AC2 a batch that spent its budget: amber, ending with where to raise it, never the pass\'s own command, which acts on the shell\'s batch',
+  notesIn(act1049, 'actc').join(' / '), "nothing started or merged for 3h 5m: the batch has spent its budget. Run /desk-autopilot in actc to raise the default batch's budget.");
+// A named batch at 0 workers beside its repo's default batch: the command names the batch it raises.
+put454('actn', 5970, null, mem454, 185, memHold1048);
+put454('actn', 5970, 'B3', 'concurrency 0', 185, hold1049('concurrency', 'batch', { numbers: { concurrency: 0 } }));
+t('DS-1049 AC2 a named batch whose worker count is 0: the desk-q command names that batch, not the default one',
+  notesIn(lines(ov1049(['actn'])), 'actn').join(' / '), "batch B3: nothing started or merged for 3h 5m: the batch's worker count is 0. Run: desk-q actn:B3 workers 1");
+// Two named batches of one repo both at 0 workers share one note, whose fix raises each of them.
+put454('actm', 5990, null, mem454, 185, memHold1048);
+for (const b of ['B4', 'B5']) put454('actm', 5990, b, 'concurrency 0', 185, hold1049('concurrency', 'batch', { numbers: { concurrency: 0 } }));
+t('DS-1049 AC2 two batches of one repo at 0 workers: one note naming both, its fix raising each',
+  notesIn(lines(ov1049(['actm'])), 'actm').join(' / '),
+  'batch B4 and batch B5: nothing started or merged for 3h 5m: the worker count of batch B4 and batch B5 is 0. Run: desk-q actm:B4 workers 1, then desk-q actm:B5 workers 1');
+// A config row set to ask: amber, naming the repo to approve its passes in, never the pass's command.
+put1048('actf', 5980, hold1049('config', 'repo', { detail: 'config §3 autopilot-merge is "ask"', action: { text: 'confirm', cmd: 'AUTOPILOT_USER_APPROVED=1 node /b/pass.mjs' } }));
+t('DS-1049 AC2 a config row set to ask: amber, ending with where to approve the passes',
+  notesIn(lines(ov1049(['actf'])), 'actf').join(' / '), 'nothing started or merged for 3h 5m: a config row asks for your approval before passes run. Run /desk-autopilot in actf to approve them.');
+t('DS-1049 AC2 a usage hold: amber, ending with the key that switches subscription',
+  /Press 6 to switch subscription and lift it sooner\.$/.test(notesIn(act1049, 'actd').join(' / ')), true);
+t('DS-1049 every worker this computer allows running: grey, nothing to do, and none of the budget\'s own words',
+  `${greyIn(act1049, 'actb').join(' / ')} | ${notesIn(act1049, 'actb').length}`,
+  'nothing started or merged for 3h 5m: every worker this computer allows is running. Nothing to do: new workers start as running ones finish. | 0');
+// AC5: no note on any of these screens has a formula, a worktree path, a test command, a PID word, an
+// exit code or an internal word.
+const banned1049 = /\b(hold|share|room|gate|suite-bound)\b|standing batch|Stage 4|exit \d|\(exit|worktrees\/|--maxWorkers|tests\/run\.sh|\bpid\b|kill \d|\b(4242|4243|4244|4101|4102)\b|budget_usd|AUTOPILOT_USER_APPROVED|ceil\(| = \d|of the §3b cap|this pass/i;
+const noteBlock = (ls) => { const at = ls.findIndex((l) => l.startsWith('note ')); return at < 0 ? [] : ls.slice(at, ls.indexOf('', at) < 0 ? ls.length : ls.indexOf('', at)); };
+const bands = (ls) => ls.filter((l) => /^ [✕·] /.test(l));
+// The screen with a ticket's run past its usual time, whose holder's pid is 4242.
+put1048('svb', 5910, lockQ1049(['SV-3643'], [run1049('~/studia/desk-skills-worktrees/DS-777', 2500, 600, 4242)]));
+const screens1049 = [snap1049, lines(ov1049(['sva', 'svb'])), act1049, lines(ov1048), lines(ov219), lines(ov991), lines(ov454)];
+t('DS-1049 AC5 no note or band names a formula, a worktree path, a full test command, a PID, an exit code or an internal word',
+  screens1049.flatMap((ls) => [...noteBlock(ls), ...bands(ls)]).filter((l) => banned1049.test(l)).join(' // '), '');
 
 // ---- DS-490: a draft waiting on a check pending past the limit says how long, not "checks running".
 const pending490 = (h) => ({ name: 'Cookie Notice (local build)', status: 'in_progress', conclusion: null, started: new Date(NOW - h * 36e5).toISOString(), runner: true });
@@ -3334,14 +3426,14 @@ try {
   t('DS-944 AC1 a repo with four supervised batches on old desk code: one supervisor note',
     stw.filter((n) => n.startsWith('the supervisor runs old desk code')).join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
   t('DS-944 AC2 the same repo\'s merge drivers on old desk code: one merge driver note',
-    stw.filter((n) => n.startsWith('the merge driver runs old desk code')).length, 1);
+    greyIn(four, 'stw').filter((n) => n.startsWith('the merge driver runs old desk code')).length, 1);
   t('DS-944 AC4 a batch whose merge driver stopped keeps its own note beside the old code ones',
-    `${stw.filter((n) => /^the merge driver stopped at \d\d:\d\d: no ready batch PRs\.$/.test(n)).length} ${stw.length}`, '1 3');
+    `${stw.filter((n) => /^the merge driver stopped at \d\d:\d\d: no ready batch PRs\.$/.test(n)).length} ${stw.length + greyIn(four, 'stw').length}`, '1 3');
   const three = make944({ sa: { port: 5910, agent: 'old1', driver: { standing: 'old1' } }, sb: { port: 5920, batches: ['b1'], agent: 'old1', driver: { standing: 'old1', b1: 'old1' } },
     sc: { port: 5930, agent: 'old1' } });
   t('DS-944 AC3 three repos whose supervisors run old desk code: one note names them all and says to run ./install.sh once',
-    `${notesIn(three, 'desk code').join(' / ')} | ${three.filter((l) => /^(note| {4}) {2}▲ s[abc] /.test(l)).length}`,
-    'the supervisors of sa, sb and sc run old desk code. Run ./install.sh in desk-skills. / the merge drivers of sa and sb run old desk code. Each moves to the installed code when it next waits between loops. | 0');
+    `${notesIn(three, 'desk code').join(' / ')} / ${greyIn(three, 'desk code').join(' / ')} | ${three.filter((l) => /^(note| {4}) {2}[▲·] s[abc] /.test(l)).length}`,
+    'the supervisors of sa, sb and sc run old desk code. Run ./install.sh in desk-skills. / the merge drivers of sa and sb run old desk code. Nothing to do: each moves to the installed code when it next waits between loops. | 0');
   const fresh = make944({ up: { port: 5940, batches: ['b1', 'b2'], agent: 'new1', driver: { standing: 'new1', b1: 'new1' } } });
   t('DS-944 AC5 no repo on old desk code: no old code note', fresh.some((l) => l.includes('old desk code')), false);
 }
@@ -3493,7 +3585,7 @@ try {
   t('DS-959 AC5 one grey note per kind on trial with a clash today: the count, the latest clash, that it went through and when the trial ends',
     leaseNote(clashNotes).join('\n'),
     [`2 clashes today: DS-806 was given port 3204 while DS-796 held it, at ${hhmm(2)}. / Leases are on trial, so it went through. The trial ends ${ends}.`,
-      `1 clash today: a test run in DS-1's worktree was given a heavy slot while a test run in DS-2's worktree held it, at ${hhmm(3)}. / Leases are on trial, so it went through. The trial ends ${ends}.`].join('\n'));
+      `1 clash today: DS-1's test run was given a heavy slot while DS-2's test run held it, at ${hhmm(3)}. / Leases are on trial, so it went through. The trial ends ${ends}.`].join('\n'));
   const portOn = join(L.T, 'machine-port-on.md');
   writeFileSync(portOn, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| lease-kinds | `port=on` | x |\n');
   t('DS-959 AC6 a kind that is on shows no note for its clashes or refusals, while a kind on trial still does',
@@ -3646,16 +3738,38 @@ try {
 // ---- DS-1034 AC3: a base conflict fix that has not started for 3 passes in a row is a note on its
 // batch, saying why; under 3, or with a fix worker running, there is none.
 {
-  const why = 'repo workers: 1 of the §3b cap of 1 running';
-  const fixOf = (passes, running = null) => ({ tries: [], running, port: null, start: { try: 1, files: ['a.txt'], since: minsAgo(15), passes, failed: 0, why } });
+  const since = minsAgo(15), at = new Date(since).toTimeString().slice(0, 5);
+  const fixOf = (passes, running = null, { why = 'repo workers: 1 of the §3b cap of 1 running', failed = 0 } = {}) =>
+    ({ tries: [], running, port: null, start: { try: 1, files: ['a.txt'], since, passes, failed, why } });
   const tickets = { 'BF-1': { state: 'triaged', open_questions: 0 } };
   put(I.T, I.env, 'bfix3', { port: 5934, conc: '2 / 3', beat: 1, queue: { batch: 'bfix3', base: 'feat/x', concurrency: 2, base_fix: fixOf(3), tickets } });
   put(I.T, I.env, 'bfix2', { port: 5935, conc: '2 / 3', beat: 1, queue: { batch: 'bfix2', base: 'feat/x', concurrency: 2, base_fix: fixOf(2), tickets } });
   put(I.T, I.env, 'bfixr', { port: 5936, conc: '2 / 3', beat: 1, queue: { batch: 'bfixr', base: 'feat/x', concurrency: 2, base_fix: fixOf(5, 'sid-1'), tickets } });
-  const ov1034 = Q.overview(Q.loadRepos(NOW).filter((r) => ['bfix3', 'bfix2', 'bfixr'].includes(r.repo)), { now: NOW, avail: 30 });
-  t('DS-1034 AC3 three passes waiting: the batch shows its conflict fix has not started, and why', notesIn(lines(ov1034), 'bfix3').join(' / '),
-    `feat/x's conflict fix has not started for 3 passes: ${why}.`);
-  t('DS-1034 AC3 two passes, or a fix worker running: no note', `${notesIn(lines(ov1034), 'bfix2').length} ${notesIn(lines(ov1034), 'bfixr').length}`, '0 0');
+  put(I.T, I.env, 'bfixf', { port: 5937, conc: '2 / 3', beat: 1, queue: { batch: 'bfixf', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'failed its preflight: preflight failed, not spawned', failed: 3 }), tickets } });
+  put(I.T, I.env, 'bfixg', { port: 5940, conc: '2 / 3', beat: 1, queue: { batch: 'bfixg', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'failed its preflight: preflight failed, not spawned', failed: 1 }), tickets } });
+  put(I.T, I.env, 'bfixl', { port: 5938, conc: '2 / 3', beat: 1, queue: { batch: 'bfixl', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'no Claude login this repo may start a worker on' }), tickets } });
+  put(I.T, I.env, 'bfixm', { port: 5939, conc: '2 / 3', beat: 1, queue: { batch: 'bfixm', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'memory: BASE-FIX not started, its 6G share no longer fits under the 40G ceiling: 3G free' }), tickets } });
+  put(I.T, I.env, 'bfixh', { port: 5941, conc: '2 / 3', beat: 1, queue: { batch: 'bfixh', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'memory harm: VMMEM-HIGH within the last 10m (vmmem 60G)' }), tickets } });
+  const usageHold = { cause: 'usage', scope: 'batch', numbers: null, holders: [], tickets: [], action: null };
+  put(I.T, I.env, 'bfixu', { port: 5942, conc: '2 / 3', beat: 1, queue: { batch: 'bfixu', base: 'feat/x', concurrency: 2, base_fix: fixOf(3, null, { why: 'usage: the 5-hour window is at its limit' }), tickets,
+    pass: { at: minsAgo(1), by: 'session', held: 'held: usage', hold: usageHold, errors: 0, progress_at: minsAgo(185) } } });
+  const bfix = ['bfix3', 'bfix2', 'bfixr', 'bfixf', 'bfixg', 'bfixl', 'bfixm', 'bfixh', 'bfixu'];
+  const ov1034 = lines(Q.overview(Q.loadRepos(NOW).filter((r) => bfix.includes(r.repo)), { now: NOW, avail: 30 }));
+  t('DS-1034 AC3 DS-1049 AC1 three passes waiting for a worker: a grey note says the conflict fix waits, why, and that nothing is to do', greyIn(ov1034, 'bfix3').join(' / '),
+    `feat/x's conflict fix has waited to start since ${at}: every worker it may use is busy. Nothing to do: it starts once one is free.`);
+  t('DS-1034 AC3 two passes, or a fix worker running: no note', `${notesIn(ov1034, 'bfix2').length + greyIn(ov1034, 'bfix2').length} ${notesIn(ov1034, 'bfixr').length + greyIn(ov1034, 'bfixr').length}`, '0 0');
+  t('DS-1049 AC1 a base fix whose worker failed to start fewer times than the pass allows is grey: the next pass tries again',
+    `${notesIn(ov1034, 'bfixg').length} ${greyIn(ov1034, 'bfixg').join(' / ')}`,
+    `0 feat/x's conflict fix has waited to start since ${at}: its worker has failed to start. Nothing to do: the next pass tries again.`);
+  t('DS-1049 AC2 a base fix whose worker failed to start as many times as the pass allows, or that no login may start, is amber and ends with its fix',
+    `${notesIn(ov1034, 'bfixf').join(' / ')} // ${notesIn(ov1034, 'bfixl').join(' / ')}`,
+    `feat/x's conflict fix has waited to start since ${at}: its worker failed to start. Run /desk-needs-you in a Claude session. // feat/x's conflict fix has waited to start since ${at}: no signed-in Claude login may start it. Press 6 to switch subscription.`);
+  t('DS-1049 AC1 a base fix waiting on low memory or memory harm is grey', `${greyIn(ov1034, 'bfixm').join(' / ')} // ${greyIn(ov1034, 'bfixh').join(' / ')}`,
+    `feat/x's conflict fix has waited to start since ${at}: the computer is low on memory. Nothing to do: it starts once memory frees up. // feat/x's conflict fix has waited to start since ${at}: the computer is low on memory. Nothing to do: it starts once memory frees up.`);
+  t('DS-1049 AC2 a base fix held by the batch\'s usage hold is amber with the hold\'s key, never grey',
+    `${notesIn(ov1034, 'bfixu').filter((l) => l.includes('conflict fix')).join(' / ')} // ${greyIn(ov1034, 'bfixu').filter((l) => l.includes('conflict fix')).length}`,
+    `feat/x's conflict fix has waited to start since ${at}: a usage limit is reached. Press 6 to switch subscription. // 0`);
+  t('DS-1049 AC5 no base-fix note shows the pass\'s own reason', noteBlock(ov1034).filter((l) => banned1049.test(l) || /preflight|ceiling|§3b/.test(l)).join(' // '), '');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
