@@ -204,9 +204,9 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('a "not now", an answer to a ticket not parked, and an answer with the lever off each record no ask, and still exit 0',
     j([p.ev.length, ...none.map((o) => `${o.r.status} ${o.ev.length}`)]), j([1, '0 0', '0 0', '0 0']));
 
-  // issue-1668: whether the answer leaves the worker a step no worker can run is read from the answer, not
-  // the park: a park naming a refused `.claude/` write, answered by dropping or deferring that step, is
-  // not flagged as a session's; a yes to it still is.
+  // Whether the answer leaves the worker a step no worker can run is read from the answer, not the park:
+  // a park naming a refused `.claude/` write, answered by dropping or deferring that step, is not flagged
+  // as a session's; a yes to it still is.
   const claudePark = (key) => parkedQ(key, SINCE, { park: { kind: 'question', question: 'Writing the scratch repo\'s `.claude/settings.json` was refused. Shall I go on?', since: SINCE } });
   const SESSION = /never a worker's.*run \/desk-ticket/;
   const dropped = answer(claudePark('S-1'), ['S-1', 'Drop that step: the scratch repo needs no .claude/settings.json, carry on without it']);
@@ -215,6 +215,39 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('issue-1668 an answer dropping or deferring a refused .claude/ step is not flagged as a session\'s; a yes to it is',
     j([dropped, deferred, yes].map((o) => `${o.r.status} ${SESSION.test(o.r.stdout)}`)), j(['0 false', '0 false', '0 true']));
   t('issue-1668 and it says the answer does not ask for the step', /does not ask for it, so it is not flagged/.test(dropped.r.stdout), true);
+}
+
+// An answer given after the worker exited on its park and before the pass recorded it: the ticket still
+// reads running, so answer.mjs keeps the answer on it (early_answer), and the pass's --replay applies it
+// to the park it records: its ask answered, a grant, a session step.
+{
+  const run = (f, args) => {
+    const state = join(dirname(f), 'state');
+    mkdirSync(state, { recursive: true });
+    return spawnSync(process.execPath, [join(B, 'answer.mjs'), ...args], { cwd: join(T, 'repo'), encoding: 'utf8', env: { ...process.env, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: state } });
+  };
+  const ticketIn = (f, key) => JSON.parse(readFileSync(f, 'utf8')).tickets[key];
+  // The ticket as the pass leaves it once it records the park: parked, since the worker's exit, early_answer kept.
+  const parkIt = (f, key, park, more = {}) => { const q = JSON.parse(readFileSync(f, 'utf8')); Object.assign(q.tickets[key], { state: 'parked', park: { kind: 'question', ...park } }, more); write(f, q); };
+  const early = (key, answerArgs, park, more = {}) => {
+    const f = fixture({ version: 1, batch: 'b', tickets: { [key]: { key, lane: 'A', state: 'running', session_id: `sess-${key}`, ...more } } });
+    const a = run(f, [key, ...answerArgs]);
+    const kept = ticketIn(f, key).early_answer ?? null;
+    parkIt(f, key, park);
+    const r = run(f, ['--replay', key]);
+    return { a, kept, r, t: ticketIn(f, key), ev: log(f).filter((e) => e.type === 'ask_answered') };
+  };
+  const PARKED = '2026-11-20T09:00:00.000Z';
+  const plain = early('E-1', ['Blue.'], { question: 'which colour?', since: PARKED });
+  t('issue-1668 an answer to a running ticket with no worker live is kept on it, with who gave it', j([plain.a.status, plain.kept?.text, plain.kept?.by, plain.kept?.approve]), j([0, 'Blue.', 'person', false]));
+  t('issue-1668 replayed on the park the pass records, it answers that park\'s ask and is cleared', j([plain.r.status, plain.ev.length, plain.ev[0]?.data?.ask, plain.t.early_answer ?? null]), j([0, 1, `E-1:${PARKED}`, null]));
+  const LEASE = 'a'.repeat(40);
+  const push = early('E-2', ['yes'], { question: `The force-push was refused: approve \`git push --force-with-lease=fix/e-2:${LEASE} origin fix/e-2\`?`, since: PARKED }, { branch: 'fix/e-2' });
+  t('issue-1668 a yes to a force-push park given in that window records its one-off grant on replay', j([push.r.status, push.t.grant?.branch, push.t.grant?.lease]), j([0, 'fix/e-2', LEASE]));
+  const step = early('E-3', ['yes'], { question: 'Running `scripts/provision.sh` was refused.', since: PARKED });
+  t('issue-1668 a yes to a step no worker can run, given in that window, makes it a session item on replay', j([step.r.status, step.t.park?.session_step?.step]), j([0, 'scripts/provision.sh']));
+  const before = early('E-4', ['Blue.'], { question: 'which colour?', since: new Date(Date.now() + 3600e3).toISOString() });
+  t('issue-1668 an answer from before the worker parked is not that park\'s: cleared, and no ask answered', j([before.r.status, before.ev.length, before.t.early_answer ?? null]), j([0, 0, null]));
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');

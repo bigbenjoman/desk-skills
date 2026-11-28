@@ -351,6 +351,10 @@ export function* decideAdvance(s) {
     yield set(t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(approve ? [`park.approve=${JSON.stringify(approve)}`] : []),
       ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
+    // An answer given in that window found no park to act on (answer.mjs early_answer): applied to this
+    // park now that it is recorded with its date and inputs, so its ask is answered and its grant or
+    // session step recorded, as for an answer given once the ticket read parked.
+    if (t.early_answer) yield { type: 'early-answer', key: t.key };
     yield { type: 'keep-links', key: t.key, needs: linkNeeds.map((n) => n.why), pr: t.result?.pr };
     // Before the requeue, which moves this round's log aside.
     yield { type: 'decisions', key: t.key, pr: null };
