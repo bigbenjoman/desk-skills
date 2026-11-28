@@ -34,7 +34,7 @@
 //   unpromoted {key, into}        -> intake.mjs unpromotedBase(key, into): the branch key merged into instead, and its promotion PR into `into`
 //   landed-here {key}             -> whether key is in another configured repo, or landed on the default branch
 import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText, UNPROMOTED_AFTER_MS, promotionWords,
-  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS, doneOnPr } from '../batch-state.mjs';
+  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS, doneOnPr, holdThrough } from '../batch-state.mjs';
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
@@ -531,22 +531,28 @@ export function* decideMergeHolds(s) {
 // ---- merge-order holds -----------------------------------------------------
 // A ticket merge-ordered behind others in its batch (merge_order: plan-batch's merge chain, for shared
 // files or an in-batch blocker triage judged it needs only to merge after) starts as any other, and the
-// merge driver holds its PR. Each ticket named is lifted once its PR has merged (merged_at), or once it
-// is no longer in this queue (dropped or moved), which leaves nothing to merge after.
+// merge driver holds its PR. Each ticket named is lifted once its PR has merged (merged_at), once it is
+// done with no PR (holdThrough), which lands nothing to merge after, or once it is no longer in this
+// queue (dropped, or moved: queue.mjs transfer turns a Jira blocker's into a merge_after hold first).
+// It runs after the pass reads PR status, so a PR merged by hand frees its successor that same pass.
 //
 // The snapshot: tickets, dry.
 export function decideMergeOrder(s) {
   const out = [];
+  const outLine = (line) => ({ type: 'out', line });
   for (const t of Object.values(s.tickets).filter((x) => keysOf(x.merge_order).length)) {
     const firsts = keysOf(t.merge_order);
     const merged = firsts.filter((p) => s.tickets[p]?.merged_at);
+    // One done by another ticket's PR (done_by) lands with that PR, whose merge is its merged_at.
+    const noPr = firsts.filter((p) => !merged.includes(p) && !s.tickets[p]?.done_by && holdThrough(s.tickets, p));
     const gone = firsts.filter((p) => !s.tickets[p]);
-    const left = firsts.filter((p) => !merged.includes(p) && !gone.includes(p));
+    const left = firsts.filter((p) => ![merged, noPr, gone].some((l) => l.includes(p)));
     if (left.length === firsts.length) continue;
-    const what = [merged.length && `${merged.join(', ')} merged`, gone.length && `${gone.join(', ')} no longer in this batch`].filter(Boolean).join('; ');
-    if (s.dry) { out.push(epicLine(`merge order (dry run): ${t.key}: ${what}`)); continue; }
+    const what = [merged.length && `${merged.join(', ')} merged`, noPr.length && `${noPr.join(', ')} done with no PR`,
+      gone.length && `${gone.join(', ')} no longer in this batch`].filter(Boolean).join('; ');
+    if (s.dry) { out.push(outLine(`merge order (dry run): ${t.key}: ${what}`)); continue; }
     out.push(set(t.key, `merge_order=${left.join('|') || 'null'}`),
-      epicLine(`merge order: ${t.key}: ${what}; ${left.length ? `still merges only after ${left.join(', ')}` : 'free to merge'}`));
+      outLine(`merge order: ${t.key}: ${what}; ${left.length ? `still merges only after ${left.join(', ')}` : 'free to merge'}`));
   }
   return out;
 }

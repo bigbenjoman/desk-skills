@@ -376,9 +376,13 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   const open = drive(decideMergeOrder, s({ key: 'A', state: 'done', result: { pr: 11 } }), {}, false);
   t('DS-1031 AC2 while the earlier PR is unmerged the merge order holds', j(open), '[]');
   const one = drive(decideMergeOrder, s({ key: 'A', state: 'done', result: { pr: 11 }, merged_at: '2026-11-28T10:00:00Z' }), {}, false);
-  t('DS-1031 AC2 the pass after it merges lifts that one, the rest still held', j([sets(one), lines(one, 'epic-line')]), j([['merge_order=C'], ['merge order: B: A merged; still merges only after C']]));
+  t('DS-1031 AC2 the pass after it merges lifts that one, the rest still held', j([sets(one), lines(one, 'out')]), j([['merge_order=C'], ['merge order: B: A merged; still merges only after C']]));
   const all = drive(decideMergeOrder, s({ key: 'A', state: 'done', merged_at: 'x' }, null), {}, false);
-  t('DS-1031 a ticket named that left the batch holds nothing', j([sets(all), lines(all, 'epic-line')]), j([['merge_order=null'], ['merge order: B: A merged; C no longer in this batch; free to merge']]));
+  t('DS-1031 a ticket named that left the batch holds nothing', j([sets(all), lines(all, 'out')]), j([['merge_order=null'], ['merge order: B: A merged; C no longer in this batch; free to merge']]));
+  const noPr = drive(decideMergeOrder, s({ key: 'A', state: 'done', result: { pr: null } }, null), {}, false);
+  t('DS-1031 a ticket named that finished with no PR lands nothing, so it holds nothing', j([sets(noPr), lines(noPr, 'out')]), j([['merge_order=null'], ['merge order: B: A done with no PR; C no longer in this batch; free to merge']]));
+  const by = drive(decideMergeOrder, s({ key: 'A', state: 'done', done_by: 'Z' }), {}, false);
+  t('DS-1031 one done by another ticket\'s PR holds until that PR merges', j(by), '[]');
   const dry = drive(decideMergeOrder, { ...s({ key: 'A', merged_at: 'x' }, null), dry: true }, {}, false);
   t('DS-1031 a dry run writes nothing', j(sets(dry)), '[]');
 }

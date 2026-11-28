@@ -190,7 +190,7 @@ const holdBehind = (t, p, why) => {
 // Config §3b "Overlap holds": at `merge` (the default) a shared file, or an in-batch Jira blocker
 // triage judged needs only to merge, orders the merges (merge_order, held by the merge driver and
 // lifted by the pass once the named ticket's PR merges) rather than holding the start.
-const OVERLAP_START = (() => { try { return configValue('overlap-holds') === 'start'; } catch { return false; } })();
+const OVERLAP_START = (() => { try { return String(configValue('overlap-holds') ?? '').trim().replace(/^`|`$/g, '').toLowerCase() === 'start'; } catch { return false; } })();
 const mergeBehind = (t, p, why) => {
   if (t === p) return;
   if (!preds[t]?.includes(p) && !mergeOrder[t]?.includes(p)) (mergeOrder[t] ??= []).push(p);

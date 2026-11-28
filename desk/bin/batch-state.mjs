@@ -295,12 +295,15 @@ export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state)
 // An unpromoted record's promotion PR: "no promotion PR", or "promotion PR #N, a draft" / ", open" / ", red".
 export const promotionWords = (u) => (u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr}, ${promotionState(u)}`);
 
-// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
-export function heldBehindOf(q, key) {
-  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && holdsKept(o));
+// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it. With
+// `merges`, a ticket merge-ordered behind one of those (merge_order), started or not, waits too: a hold
+// that puts `key` behind it would wait on a merge that waits on `key`, so the cycle checks pass it.
+export function heldBehindOf(q, key, { merges = false } = {}) {
+  const waits = (o) => [...(holdsKept(o) ? blockersOf(o) : []), ...(merges ? String(o.merge_order ?? '').split('|').filter(Boolean) : [])];
+  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && waits(o).length);
   const behind = new Set();
   for (let edge = new Set([key]); edge.size;) {
-    const next = held.filter((o) => !behind.has(o.key) && blockersOf(o).some((k) => edge.has(k))).map((o) => o.key);
+    const next = held.filter((o) => !behind.has(o.key) && waits(o).some((k) => edge.has(k))).map((o) => o.key);
     next.forEach((k) => behind.add(k));
     edge = new Set(next);
   }

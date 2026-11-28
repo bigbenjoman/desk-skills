@@ -2517,7 +2517,7 @@ const linkLines = [];
       if (gone.length) linkLines.push(`blocker link: ${key}: no longer linked as blocked by ${gone.join(', ')}, and still held behind ${gone.length === 1 ? 'it' : 'them'}, as the hold does not record whether it came from that link, a shared file or the spine: release it by hand if nothing else needs ${gone.length === 1 ? 'it' : 'them'}`);
       if (!added.length) return;
       const h = holdsFor(rec, view.tickets, DEFAULT_BRANCH);
-      const { holds, cycles, outside } = holdsAmong(key, [...h.held, ...h.outside].filter((k) => added.includes(k) && !by.includes(k)), view.tickets, heldBehindOf(view, key));
+      const { holds, cycles, outside } = holdsAmong(key, [...h.held, ...h.outside].filter((k) => added.includes(k) && !by.includes(k)), view.tickets, heldBehindOf(view, key, { merges: true }));
       const failed = h.failed.filter((k) => added.includes(k));
       const steps = h.merge.filter((k) => added.includes(k) && !keysOf(t.merge_after).includes(k));
       if (cycles.length) {
@@ -5802,10 +5802,6 @@ runSteps({
   report,
 });
 
-// ---- merge-order holds ---------------------------------------------------
-// The decision is pass/parks.mjs decideMergeOrder.
-runPhase({ name: 'merge-order holds', snapshot: () => holdsSnapshot(), decide: decideMergeOrder, handlers: EPIC_HANDLERS, report });
-
 // ---- base drift ----------------------------------------------------------
 // The decision is pass/report.mjs decideDrift: each candidate's worktree that still exists is counted here.
 const drift = [];
@@ -6089,6 +6085,11 @@ runSteps({
   },
   report,
 });
+
+// ---- merge-order holds ---------------------------------------------------
+// The decision is pass/parks.mjs decideMergeOrder. After PR status, which records a merge made by hand,
+// so the pass that first reads the earlier PR merged frees the later one.
+runPhase({ name: 'merge-order holds', snapshot: () => holdsSnapshot(), decide: decideMergeOrder, handlers: OUT_HANDLERS, report });
 
 // ---- new merge holds -------------------------------------------------------
 // An open PR's files are read against §4 Merge holds once per head (new-holds.mjs). A file held at a

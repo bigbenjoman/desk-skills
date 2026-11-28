@@ -537,6 +537,9 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-14': { key: 'T-14', ...held('S-5') },
     'T-15': { key: 'T-15', state: 'triaged', merge_after: 'S-6' },
     'T-16': { key: 'T-16', state: 'triaged', merge_after: 'S-6' },
+    'P-1': { key: 'P-1', state: 'triaged' },
+    'O-1': { key: 'O-1', state: 'triaged', merge_order: 'P-1' },
+    'O-2': { key: 'O-2', state: 'triaged', merge_order: 'P-1|B-2' },
   } });
   const yState = (...p) => join(namedS('Y-1'), ...p);
   mkdirSync(yState('triage'), { recursive: true });
@@ -545,8 +548,9 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-12': { blockers: [{ key: 'S-4', category: 'done' }] }, 'T-13': { blockers: [{ key: 'S-4', category: 'indeterminate' }] },
     'T-14': { blockers: [{ key: 'S-5', category: 'indeterminate' }] },
     'T-15': { blockers: [{ key: 'S-6', category: 'done' }], blocker_needs: { 'S-6': { needs: 'merge', why: 'the rollout flag must land first' } } },
-    'T-16': { blockers: [{ key: 'S-6', category: 'done' }], blocker_needs: { 'S-6': { needs: 'none', why: 'independent' } } } };
-  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10', 'T-11', 'T-12', 'T-13', 'T-14', 'T-15', 'T-16']) {
+    'T-16': { blockers: [{ key: 'S-6', category: 'done' }], blocker_needs: { 'S-6': { needs: 'none', why: 'independent' } } },
+    'O-1': { blockers: [{ key: 'P-1', category: 'indeterminate' }], blocker_needs: { 'P-1': { needs: 'merge', why: 'both add a line to one list' } } } };
+  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10', 'T-11', 'T-12', 'T-13', 'T-14', 'T-15', 'T-16', 'P-1', 'O-1', 'O-2']) {
     writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...recs[k] }));
   }
   const answer = (text) => `\n## Answer from the user (2026-11-14T10:00:00Z)\n\n${text}\n`;
@@ -573,6 +577,13 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   r = moveTo('T-2');
   const t2 = sq()['T-2'] ?? {};
   t('DS-665 AC4 a ticket with no holds and no briefing arrives as before', `${r.code} ${t2.state} ${t2.held_by} ${'held_outside' in t2} ${existsSync(join(standingS, 'briefings', 'T-2.md'))}`, '0 triaged null false false');
+
+  r = moveTo('P-1');
+  const yq = readQ('Y-1').tickets;
+  t('DS-1031 a ticket merge-ordered behind its Jira blocker that moves still merges only once that blocker is Done and landed',
+    `${r.code} ${yq['O-1'].merge_order} ${yq['O-1'].merge_after} ${r.out.includes('O-1 still merges only once P-1 is Done and landed')}`, '0 null P-1 true');
+  t('DS-1031 one merge-ordered behind it for a shared file alone keeps only its other merge order',
+    `${yq['O-2'].merge_order} ${yq['O-2'].merge_after ?? null}`, 'B-2 null');
 
   r = moveTo('T-3');
   const t3 = sq()['T-3'] ?? {};

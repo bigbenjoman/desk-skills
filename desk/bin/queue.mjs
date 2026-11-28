@@ -744,7 +744,7 @@ function missingHolds(q, holdsFor) {
     if (!triagePark(t) || personStepPark(t) || blockersOf(t).length) continue;
     if (!existsSync(join(stateDir(), 'triage', `${t.key}.json`))) continue;
     const h = holdsFor(readTriage(stateDir(), t.key), q.tickets, baseOf(q));
-    const { holds, cycles, outside } = holdsAmong(t.key, [...h.held, ...h.outside], q.tickets, heldBehindOf(view, t.key));
+    const { holds, cycles, outside } = holdsAmong(t.key, [...h.held, ...h.outside], q.tickets, heldBehindOf(view, t.key, { merges: true }));
     if (holds.length) view.tickets[t.key].held_by = holds.join('|');
     if (holds.length || cycles.length || h.failed.length) found.push({ key: t.key, holds, outside, cycles, failed: h.failed, park: t.park.question });
   }
@@ -905,12 +905,23 @@ function transfer(q, key, to) {
   // which batchHolding refuses naming both.
   writeQueue(dest.queue, tq);
   delete q.tickets[key];
+  // A ticket here merge-ordered behind it (merge_order) no longer orders its merge on a shared file, which
+  // this batch's base no longer shares. One whose Jira blocker it is still merges only once that lands:
+  // Done in Jira and on the base (merge_after), as a blocker in no batch holds it at plan-batch.
+  const ordered = [];
   for (const o of Object.values(q.tickets)) {
     const left = String(o.collides_with ?? '').split('|').filter((k) => k && k !== key);
     if (o.collides_with) o.collides_with = left.join('|') || null;
+    const order = String(o.merge_order ?? '').split('|').filter(Boolean);
+    if (!order.includes(key)) continue;
+    o.merge_order = order.filter((k) => k !== key).join('|') || null;
+    const rec = existsSync(join(stateDir(), 'triage', `${o.key}.json`)) ? readTriage(stateDir(), o.key) : null;
+    if (!(Array.isArray(rec?.blockers) ? rec.blockers : []).some((b) => b?.key === key && b.category !== 'done')) continue;
+    o.merge_after = [...new Set([...String(o.merge_after ?? '').split('|').filter(Boolean), key])].join('|');
+    ordered.push(o.key);
   }
   save(q);
-  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}${stays.length ? ` (its hold on ${stays.join(', ')}, for this batch's files, spine or epic, stays here)` : ''}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
+  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}${stays.length ? ` (its hold on ${stays.join(', ')}, for this batch's files, spine or epic, stays here)` : ''}${ordered.length ? `; ${ordered.join(', ')} still ${ordered.length === 1 ? 'merges' : 'merge'} only once ${key} is Done and landed` : ''}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
 }
 
 const [, , cmd, ...args] = process.argv;

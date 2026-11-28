@@ -556,6 +556,9 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // every PR waiting on it, so the PR itself is not a second item.
   const steps = keysOf(t.merge_after);
   if (steps.length) return merging([`waits on your step ${steps.join(', ')}`, WARN], [' · merges once it is Done in Jira', null]);
+  // Held by the merge driver for the batch's merge order (merge_order) until each named ticket's PR merges.
+  const firsts = keysOf(t.merge_order);
+  if (firsts.length) return merging([`merges after the PR of ${firsts.join(', ')}`, WARN], [' · the merge order holds it until then', null]);
   const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;
   if (checks.length && done === checks.length) {
