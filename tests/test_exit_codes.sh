@@ -187,6 +187,12 @@ q drop T-5
 pj
 check "DS-332 AC3: once that blocker is dropped, its dependant is STUCK" '[ "$(js ".stuck | join(\",\")")" = T-2,T-4 ] && [ "$(js ".on_park | length")" = 0 ] && js ".waiting[]" | grep -q "^T-4: STUCK — held behind T-5"'
 q drop T-4
+# #1681 AC2: a hold whose held_by was emptied (state named, so the set released nothing) names no
+# blocker for anything to wait on: the pass releases it itself, and never reports it STUCK.
+q add T-7; q set T-7 state=triaged lane=A branch=fix/T-7; q hold T-7 T-2; q set T-7 state=parked held_by=null
+pj
+check "#1681 AC2: the pass releases a hold with no blocker left, not STUCK" '[ "$(js ".stuck | join(\",\")")" = T-2 ] && js .message | grep -q "^released: T-7, held behind no blocker" && ! js ".waiting[]" | grep -q "^T-7" && [ "$(oq T-7 state)" != parked ] && [ "$(oq T-7 park)" = null ]'
+q drop T-7
 
 # Every blocker merged and no merge driver running: the pass releases it, so it needs nobody.
 q set T-1 state=done result.pr=7

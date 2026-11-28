@@ -1514,7 +1514,7 @@ t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', ce
 t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');
 t('#1681 AC2 (DS-279 AC16) a hold that names no blocker, passes running: waiting on the next pass, with the release command', cells217('holdsup', 'W-0'), '· waiting | held, no blocker: release with queue.mjs set W-0 …');
 t('#1681 AC2 with no pass running it needs you, and gives the release command', JSON.stringify(Q.holdOf({ tickets: {} }, { key: 'W-0', ...heldBy('') })),
-  JSON.stringify({ k: 'needs', text: 'held, no blocker: release with queue.mjs set W-0 state=triaged', act: 'node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null' }));
+  JSON.stringify({ k: 'needs', text: 'held, no blocker: release with queue.mjs set W-0 state=triaged', act: 'node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null, then node ~/.claude/desk/bin/queue.mjs front W-0' }));
 t('DS-742 AC2 a ticket queue.mjs stop held: needs you, to let it start', cells217('holdsup', 'W-0S'), '◆ needs you | its worker was stopped: let it start');
 // The page's rail, its wrapped lines joined.
 const railText = (page) => lines(page).filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ');
