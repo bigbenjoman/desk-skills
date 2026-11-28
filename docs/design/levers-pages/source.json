@@ -1,0 +1,191 @@
+{
+  "url": "https://claude.ai/artifact/NTby4U3peDHBY27SjwQYBg",
+  "version": "1795857316-2085",
+  "fetched_at": "2026-11-28T09:06:39.365Z",
+  "kind": "canvas",
+  "dir": "levers-pages",
+  "tickets": [
+    {
+      "key": "DS-702",
+      "boards": []
+    }
+  ],
+  "boards": [
+    {
+      "name": "1 · /levers landing (1280)",
+      "width": 1280,
+      "file": "Main.dc.html"
+    },
+    {
+      "name": "1b · /levers landing, compact rail (1024)",
+      "width": 1024,
+      "file": "Compact.dc.html"
+    },
+    {
+      "name": "2 · Landing states: late, out of date, build failed, no number, loading, empty (1280)",
+      "width": 1280,
+      "file": "States.dc.html"
+    },
+    {
+      "name": "3 · /levers/levers: every lever (1280)",
+      "width": 1280,
+      "file": "Levers.dc.html"
+    },
+    {
+      "name": "4 · /levers/:lever: one lever, wrappers (1280)",
+      "width": 1280,
+      "file": "Lever.dc.html"
+    },
+    {
+      "name": "5 · /levers/trends (1280)",
+      "width": 1280,
+      "file": "Trends.dc.html"
+    },
+    {
+      "name": "6 · /levers/changes (1280)",
+      "width": 1280,
+      "file": "Changes.dc.html"
+    },
+    {
+      "name": "7 · Inbox ⌘1: a lever waiting on you (1280)",
+      "width": 1280,
+      "file": "Inbox.dc.html"
+    },
+    {
+      "name": "8 · Repos ⌘2: merge time and parking moved here (1280)",
+      "width": 1280,
+      "file": "Repos.dc.html"
+    },
+    {
+      "name": "1c · /levers landing chart in 6 weeks · 12 months (1280)",
+      "width": 1280,
+      "file": "LandingWbr.dc.html"
+    }
+  ],
+  "files": [
+    "project/Changes.dc.html",
+    "project/Compact.dc.html",
+    "project/Inbox.dc.html",
+    "project/LandingWbr.dc.html",
+    "project/Lever.dc.html",
+    "project/Levers.dc.html",
+    "project/Main.dc.html",
+    "project/Repos.dc.html",
+    "project/States.dc.html",
+    "project/Trends.dc.html",
+    "project/canvas.json",
+    "project/support.js"
+  ],
+  "home": "project",
+  "remote": [
+    "https://fonts.googleapis.com",
+    "https://fonts.gstatic.com",
+    "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap",
+    "https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js",
+    "https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js",
+    "https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js"
+  ],
+  "screens": {
+    "version": "1795857316-2085",
+    "rendered_at": "2026-11-28T09:15:26.511Z",
+    "breakpoints": [],
+    "widths": [
+      {
+        "width": 1024,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "1b · /levers landing, compact rail (1024)"
+        ]
+      },
+      {
+        "width": 1280,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "1 · /levers landing (1280)",
+          "2 · Landing states: late, out of date, build failed, no number, loading, empty (1280)",
+          "3 · /levers/levers: every lever (1280)",
+          "4 · /levers/:lever: one lever, wrappers (1280)",
+          "5 · /levers/trends (1280)",
+          "6 · /levers/changes (1280)",
+          "7 · Inbox ⌘1: a lever waiting on you (1280)",
+          "8 · Repos ⌘2: merge time and parking moved here (1280)",
+          "1c · /levers landing chart in 6 weeks · 12 months (1280)"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "board": "1 · /levers landing (1280)",
+        "screen": "1-levers-landing-1280",
+        "width": 1280,
+        "file": "screens/1-levers-landing-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "1b · /levers landing, compact rail (1024)",
+        "screen": "1b-levers-landing-compact-rail-1024",
+        "width": 1024,
+        "file": "screens/1b-levers-landing-compact-rail-1024@1024.png",
+        "drawn": true
+      },
+      {
+        "board": "2 · Landing states: late, out of date, build failed, no number, loading, empty (1280)",
+        "screen": "2-landing-states-late-out-of-date-build-failed-no-number-loading-empty-1280",
+        "width": 1280,
+        "file": "screens/2-landing-states-late-out-of-date-build-failed-no-number-loading-empty-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "3 · /levers/levers: every lever (1280)",
+        "screen": "3-levers-levers-every-lever-1280",
+        "width": 1280,
+        "file": "screens/3-levers-levers-every-lever-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "4 · /levers/:lever: one lever, wrappers (1280)",
+        "screen": "4-levers-lever-one-lever-wrappers-1280",
+        "width": 1280,
+        "file": "screens/4-levers-lever-one-lever-wrappers-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "5 · /levers/trends (1280)",
+        "screen": "5-levers-trends-1280",
+        "width": 1280,
+        "file": "screens/5-levers-trends-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "6 · /levers/changes (1280)",
+        "screen": "6-levers-changes-1280",
+        "width": 1280,
+        "file": "screens/6-levers-changes-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "7 · Inbox ⌘1: a lever waiting on you (1280)",
+        "screen": "7-inbox-1-a-lever-waiting-on-you-1280",
+        "width": 1280,
+        "file": "screens/7-inbox-1-a-lever-waiting-on-you-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "8 · Repos ⌘2: merge time and parking moved here (1280)",
+        "screen": "8-repos-2-merge-time-and-parking-moved-here-1280",
+        "width": 1280,
+        "file": "screens/8-repos-2-merge-time-and-parking-moved-here-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "1c · /levers landing chart in 6 weeks · 12 months (1280)",
+        "screen": "1c-levers-landing-chart-in-6-weeks-12-months-1280",
+        "width": 1280,
+        "file": "screens/1c-levers-landing-chart-in-6-weeks-12-months-1280@1280.png",
+        "drawn": true
+      }
+    ]
+  }
+}
