@@ -63,7 +63,7 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, pathsIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumesAtSeven, prInConflict, stageSevenConflictPark } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumesAtSeven, prInConflict, stageSevenConflictPark, emptySevenTry, EMPTY_SEVEN_MAX } from './fix-tries.mjs';
 import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
@@ -830,6 +830,29 @@ function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
   if (isSpine(t)) parkSpine(t, pr);
   else if (ownsSpecs(t)) checkOwned(t, pr);
 }
+// A review try sent in place of a Stage 7 session (fix-tries.mjs emptySevenTry) whose worker finished on
+// PR #pr: the try is over and the PR kept as the ticket's, and `stage` is queued for a fresh session,
+// from a briefing rebuilt out of the Stage 7 one the try's spawn moved aside, with no Stage 7 leftovers in
+// it, and the try's round moved aside. With no readable briefing to rebuild from, it is recorded done
+// instead, saying so.
+function thenStage(t, { log, h, pr, stage, line }) {
+  const path = handoffPath(STATE, t.key);
+  if (!existsSync(path) && existsSync(`${path}.old`)) renameSync(`${path}.old`, path);
+  const was = readHandoff(STATE, t.key);
+  const missing = was.ok ? handoffTarget({ worktree: t.worktree, branch: t.branch }) : was.why;
+  if (missing) return recordDone(t, { log, h, pr, summary: line, line: `${line}; no Stage ${stage} session followed its review try: ${missing}` });
+  const { criteria, lane, verification, review, evidence } = was.data;
+  writeFileSync(path, `${JSON.stringify({ ticket: t.key, stage, criteria, lane, verification, review, evidence }, null, 2)}\n`);
+  logDecisions(t, log, pr);
+  const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
+  q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=its worker finished; Stage ${stage} follows`, `result.pr=${pr}`, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`,
+    ...(cost ? [`handoff_cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`] : []));
+  // The try's AUTOPILOT_DONE would keep the Stage `stage` session from spawning: its round moves aside,
+  // as a requeue does.
+  E.rotateRound(t.key);
+  report.advanced.push(`${t.key}: ${line}: its review try on PR #${pr} is finished, and a fresh session from Stage ${stage} is queued for the tracker step`);
+  return undefined;
+}
 // Mid-stage handoffs in a row at one stage before the ticket parks (handedOff).
 const MID_STAGE_REPEATS = 2;
 // The ticket's raised handoff threshold (handedOff's handoff_pct) for a worker's env, on every session
@@ -853,7 +876,26 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   // in a row raises the ticket's threshold once, for the sessions after it, before any repeat parks.
   const head = t.worktree ? sh('git', ['-C', t.worktree, 'rev-parse', 'HEAD'], { tolerant: true }) : '';
   const stageless = Boolean(mid && head && t.handoff_stage != null && String(t.handoff_stage) === stage && head === t.handoff_head);
-  const stuck = stageless ? (Number(t.handoff_stuck) || 0) + 1 : 0;
+  // At Stage 7 a session that posted a review verdict at the head moved the PR on, commit or none.
+  const seven = stageless && stage === '7' ? prAtHandoff(ownPr(queue().tickets[t.key] ?? t)) : null;
+  const posted = Boolean(seven?.verdict && head.startsWith(seven.verdict.sha));
+  const stuck = stageless && !posted ? (Number(t.handoff_stuck) || 0) + 1 : 0;
+  // Stage 7 stops resuming in a session after EMPTY_SEVEN_MAX empty handoffs: its PR's head goes to a
+  // review try, then a tracker ticket to a Stage 8 session (fix-tries.mjs emptySevenTry, thenStage).
+  // A PR that could not be read is not one with no PR: Stage 7 resumes this pass, and the next empty
+  // handoff reads it again.
+  const instead = stage === '7' && mid && !seven?.unread ? emptySevenTry(t, { empties: stuck, s: seven, head, tracker: E.ticketKind(t.key).kind === 'tracker' }) : null;
+  if (seven?.unread && stuck >= EMPTY_SEVEN_MAX) report.waiting.push(`${t.key}: handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted, but PR #${seven.pr} could not be read (${seven.unread}), so Stage 7 resumes in a session this pass and the next empty handoff reads it again`);
+  const empty = `handed off partway through Stage 7 ${stuck} times in a row with no new commit and no review verdict posted`;
+  if (instead?.call === 'park') return parkIt(`${empty}, and ${instead.why}: there is no PR head for a review try to read. ${FROM_ZERO(t)}`);
+  if (instead?.call === 'stuck') return parkIt(`${empty}, and PR #${seven.pr} has ${instead.why}. ${FROM_ZERO(t)}`);
+  if (instead) {
+    // The ticket's cost so far, this session's included, is kept through the try's spawn (`replaces`).
+    const spent = /notional=\$([\d.]+)/.exec(h)?.[1];
+    const cost = spent || t.handoff_cost != null ? (Number(spent || 0) + (Number(t.handoff_cost) || 0)).toFixed(2) : null;
+    const fields = { state: 'triaged', handoff: null, handoff_stage: null, handoff_mid: null, handoff_repeats: null, handoff_stuck: null, handoff_head: null, handoff_cost: cost, ...(imgs ? { images_dir: imgs } : {}) };
+    if (applyFix(t, seven.pr, head, instead, { requeue: false, fields, instead: `resuming Stage 7 after ${stuck} empty handoffs` }) === 'requeued') return undefined;
+  }
   const ran = stuck >= STAGELESS_RAISE && t.handoff_pct == null ? sessionThreshold(E.deskHome(), t.session_id) ?? (Number(mid.threshold) || null) : null;
   const raise = ran && raisedThreshold(ran) > ran ? raisedThreshold(ran) : null;
   if (raise) repeats = 0;
@@ -1415,6 +1457,16 @@ function prVerdict(pr) {
     return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
   } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
 }
+// PR #pr as a Stage 7 handoff reads it: { pr, state, head, verdict }, `verdict` the latest one the
+// verdict logins posted (latestReview), or null. Null with no PR; { pr, unread: why } where it could not
+// be read, which is not the same as no PR.
+function prAtHandoff(pr) {
+  if (pr == null) return null;
+  try {
+    const v = JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'state,headRefOid,reviews'], { fresh: true }));
+    return v?.state ? { pr: Number(pr), state: v.state, head: v.headRefOid ?? null, verdict: conflictHandle ? latestReview(v.reviews, conflictHandle)?.verdict ?? null : null } : { pr: Number(pr), unread: 'gh gave no state for it' };
+  } catch (e) { return { pr: Number(pr), unread: String(e?.message ?? e) }; }
+}
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
   try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
@@ -1523,6 +1575,7 @@ const ADVANCE_HANDLERS = {
   'pr-verdict': (a) => prVerdict(a.pr),
   'pr-conflict': (a) => { const v = readPrStatus(a.pr); return v?.state === 'OPEN' && prInConflict(v) ? { base: v.base ?? DEFAULT_BRANCH } : null; },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
+  'then-stage': (a, s) => thenStage(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, stage: a.stage, line: a.line }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
   'live-read': (a, s) => liveReadOf(s.t, a.question),
@@ -4591,7 +4644,7 @@ async function spawnHandoff(t, pick) {
   const stage = restart?.stage ?? handedTo;
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? refreshed.brief}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits })}`);
+  const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? refreshed.brief}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits, pr: ownPr(t) })}`);
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -5393,7 +5446,8 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'handoff_head=null', 'handoff_stuck=null', 'handoff_pct=null', 'images_dir=null',
+    // A try sent in place of Stage 7 keeps the cost of the sessions before it (handedOff).
+    'handoff=null', 'handoff_stage=null', ...(t.fix?.replaces && !t.fix.finished ? [] : ['handoff_cost=null']), 'handoff_mid=null', 'handoff_repeats=null', 'handoff_head=null', 'handoff_stuck=null', 'handoff_pct=null', 'images_dir=null',
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.
