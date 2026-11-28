@@ -45,6 +45,8 @@ node ~/.claude/desk/bin/desk-ci.mjs ci-lint  [<file or dir>...]   # exit 1 on an
 
 ## The placement rule
 
+A repo that declares AWS runner labels is placed by the rule in *A repo's AWS runners* below.
+
 A job is placed **hosted** if any of these holds, and **self-hosted** otherwise:
 
 | Trigger | What fires it |
@@ -106,7 +108,8 @@ A repo whose CI runs on its own AWS runners declares their labels in `.github/de
 the root of the repo holding the workflows:
 
 ```yaml
-aws-runner-labels: [voicepa-linux-arm64, voicepa-linux-arm64-8cpu]
+aws-runner-labels: [voicepa-linux-arm64, voicepa-linux-arm64-8cpu]   # arm64 runners
+aws-x64-runner-labels: [voicepa-linux-x64]   # optional: x64 runners
 hosted-workflows: [release.yml]   # workflow files kept on GitHub-hosted runners
 ```
 
@@ -115,11 +118,23 @@ hosted-workflows: [release.yml]   # workflow files kept on GitHub-hosted runners
   or `id-token`, and needs no Dependabot branch. A declared label covers its `<label>-on-demand` twin.
 - A declared label beside one that is not, a bare `self-hosted`, or a label from `vars` or `inputs`
   is still reported.
-- `ci-lint` fails on `self-hosted` or a GitHub-hosted label under `aws-runner-labels`, naming the file
+- Labels under `aws-x64-runner-labels` are AWS runner labels too; every label under
+  `aws-runner-labels` is read as arm64.
+- `ci-lint` fails on `self-hosted` or a GitHub-hosted label under either labels key, naming the file
   and line, and on any job in a `hosted-workflows` file whose `runs-on` can pick a runner that is not
   GitHub-hosted.
 - `classify` places every job of a `hosted-workflows` file hosted with the reason `hosted-workflows`,
   and names the AWS label a job runs on today: `(runs-on today: AWS runner <label>, …)`.
+- Where any AWS runner label is declared, `classify` places every other job **aws** instead of
+  self-hosted: secrets, environments, `id-token`, staging URLs, third-party services and YAML aliases
+  no longer keep a job hosted, and the line still cites the first of them. Two things do:
+  - **needing x64**: an image with no arm64 build or production x64 build parity. Such a job is placed
+    hosted (`needs x64: <trigger>, and the repo's AWS runners are arm64`), or, where an
+    `aws-x64-runner-labels` label is declared, aws on the first one (`needs x64: <trigger>, on AWS x64
+    runner <label>`);
+  - **a call to a reusable workflow outside this repo**, which cannot be read here.
+
+  The summary then reads `summary: jobs=<n> hosted=<n> aws=<n>`.
 - With no `.github/desk-ci.yml`, both read as before.
 
 ## Running it
