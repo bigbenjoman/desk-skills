@@ -3003,7 +3003,8 @@ const placesFor = (f) => {
 // cloud-able tickets and the local-only ones are sorted apart, as each kind has its own slots first.
 // At §3b "Queue order: placed tickets" `move-and-say` it may also move a placed ticket, when that
 // brings the projected finish of the whole queue forward by more than §3b "Queue order: move
-// threshold" (placedMoves): the projection fills this batch's slots under the per-file budget above,
+// threshold" (placedMoves): the projection fills this batch's local slots and cloud sessions apart,
+// each ticket in its own kind's, under the per-file budget above,
 // each ticket's slot time read from its size as the forecast reads it. A ticket so moved stays placed
 // at its new place, so only another such move shifts it again. Each such move is said in the
 // report, on the ticket (`placed_move`, which desk-q shows, kept as `resort_why` is kept) and on this
@@ -3022,7 +3023,11 @@ const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
   };
   const hoursOf = (k) => sizeHours(sizeIn(triageRec(k)));
   const running = Object.values(fresh.tickets).filter((t) => t.state === 'running' && !reviewOnlyTry(t))
-    .map((t) => ({ key: t.key, hours: hoursOf(t.key) - Math.max(0, (now - (Date.parse(t.spawned_at) || now)) / 3_600_000) }));
+    .map((t) => ({ key: t.key, cloud: runsInCloud(t), hours: hoursOf(t.key) - Math.max(0, (now - (Date.parse(t.spawned_at) || now)) / 3_600_000) }));
+  // Local slots and cloud sessions fill apart, as the spawn loop fills them (CLOUD, read below); with
+  // no cloud session to start, every ticket is projected into a local slot.
+  const cloudWorkers = (() => { try { return E.cloudSessions().n; } catch { return 0; } })();
+  const cloud = (k) => cloudWorkers > 0 && startsInCloud(fresh.tickets[k] ?? {});
   // The other batches' tickets fill this batch's places as spawning counts them (budgetHolds), each
   // for a whole slot time of its size: how long it has run is in its own batch's queue, not read here.
   const held = elsewhereRunning.filter((o) => !fresh.tickets[o.key]).map((o) => ({ key: o.key, hours: sizeHours(o.size), files: o.files }));
@@ -3031,7 +3036,7 @@ const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
     ...resortOpts,
     thresholdH: moveThresholdMin(configOr('move-threshold')) / 60,
     finished: (t) => FINISHED.includes(t.state),
-    finish: (keys) => projectedFinish(keys, { workers: concurrency, hoursOf, scope: budgetFiles, blockers, running, held, places: placesFor }),
+    finish: (keys) => projectedFinish(keys, { workers: concurrency, cloudWorkers, cloud, hoursOf, scope: budgetFiles, blockers, running, held, places: placesFor }),
   });
 })() : { ...resortQueue(Object.values(fresh.tickets), resortOpts), placedMoved: [] };
 const orderLines = [];

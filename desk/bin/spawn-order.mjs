@@ -94,26 +94,27 @@ export function resortQueue(tickets, { scope, fileCount, cloud = () => false }) 
 
 // Config §3b "Queue order: placed tickets": `move-and-say` lets the re-sort move a placed ticket;
 // anything else is `keep`. "Queue order: move threshold" is in minutes; unset or not a whole number is 30.
-export const DEFAULT_MOVE_THRESHOLD_MIN = 30;
+const DEFAULT_MOVE_THRESHOLD_MIN = 30;
 export const movesPlaced = (raw) => String(raw ?? '').trim().toLowerCase() === 'move-and-say';
 export const moveThresholdMin = (raw) => (/^\d+$/.test(String(raw ?? '').trim()) ? Number(String(raw).trim()) : DEFAULT_MOVE_THRESHOLD_MIN);
 
 // The hours a ticket of each size holds a worker slot, read when there is too little merge history.
 export const FALLBACK_SLOT_HOURS = Object.freeze({ XS: 0.5, S: 1, M: 2, L: 4, XL: 8, unknown: 2 });
 
-// When the last of `order`'s tickets would finish, in hours from now, with `workers` slots filled in
-// queue order: a ticket starts at the first free slot once every blocker of it in play has finished
-// and none of its files is already held by as many tickets running then as `places(file)` allows (the
-// pass's per-file budget, placesFor). `running` are [{ key, hours }] holding slots now, `hoursOf(key)`
-// a ticket's slot time, `scope(key)` its files, `blockers(key)` the keys holding it. `held` are
-// [{ key, hours, files }] filling places but no slot of this batch: the repo's other batches' tickets,
-// running or handed off, as spawning counts them (budgetHolds).
+// When the last of `order`'s tickets would finish, in hours from now, with `workers` local slots and
+// `cloudWorkers` cloud sessions filled in queue order: a ticket starts at the first free slot of its
+// own kind (`cloud(key)`, as the spawn loop's startsInCloud picks) once every blocker of it in play has
+// finished and none of its files is already held by as many tickets running then, of either kind, as
+// `places(file)` allows (the pass's per-file budget, placesFor). `running` are [{ key, hours, cloud }]
+// holding slots now, `hoursOf(key)` a ticket's slot time, `scope(key)` its files, `blockers(key)` the
+// keys holding it. `held` are [{ key, hours, files }] filling places but no slot of this batch: the
+// repo's other batches' tickets, running or handed off, as spawning counts them (budgetHolds).
 // A ticket that can never start (a blocker cycle) is left out.
-export function projectedFinish(order, { workers, hoursOf, scope, blockers, running = [], held = [], places = () => 1 }) {
-  const n = Math.max(1, workers);
+export function projectedFinish(order, { workers, cloudWorkers = 1, cloud = () => false, hoursOf, scope, blockers, running = [], held = [], places = () => 1 }) {
+  const room = { false: Math.max(1, workers), true: Math.max(1, cloudWorkers) };
   const inPlay = new Set([...order, ...running.map((r) => r.key)]);
   const done = new Set();
-  let active = running.map((r) => ({ key: r.key, end: Math.max(0, r.hours), files: new Set(scope(r.key)) }));
+  let active = running.map((r) => ({ key: r.key, inCloud: !!r.cloud, end: Math.max(0, r.hours), files: new Set(scope(r.key)) }));
   let holding = held.map((h) => ({ end: Math.max(0, h.hours), files: new Set(h.files) }));
   let at = 0;
   let last = Math.max(0, ...active.map((a) => a.end));
@@ -121,16 +122,15 @@ export function projectedFinish(order, { workers, hoursOf, scope, blockers, runn
   while (pending.length) {
     active = active.filter((a) => (a.end <= at ? (done.add(a.key), false) : true));
     holding = holding.filter((h) => h.end > at);
-    if (active.length < n) {
-      const i = pending.findIndex((k) => blockers(k).every((b) => !inPlay.has(b) || done.has(b))
-        && scope(k).every((f) => [...active, ...holding].filter((a) => a.files.has(f)).length < Math.max(1, places(f))));
-      if (i >= 0) {
-        const [k] = pending.splice(i, 1);
-        const end = at + Math.max(0, hoursOf(k));
-        active.push({ key: k, end, files: new Set(scope(k)) });
-        last = Math.max(last, end);
-        continue;
-      }
+    const free = (c) => active.filter((a) => a.inCloud === c).length < room[c];
+    const i = pending.findIndex((k) => free(!!cloud(k)) && blockers(k).every((b) => !inPlay.has(b) || done.has(b))
+      && scope(k).every((f) => [...active, ...holding].filter((a) => a.files.has(f)).length < Math.max(1, places(f))));
+    if (i >= 0) {
+      const [k] = pending.splice(i, 1);
+      const end = at + Math.max(0, hoursOf(k));
+      active.push({ key: k, inCloud: !!cloud(k), end, files: new Set(scope(k)) });
+      last = Math.max(last, end);
+      continue;
     }
     if (!active.length && !holding.length) break;
     at = Math.min(...[...active, ...holding].map((a) => a.end));
@@ -145,7 +145,7 @@ const laidKeys = (tickets, order) => laidOrder({ tickets: Object.fromEntries(tic
 // queue order, is let go to the re-sort when that cuts the projected finish of the whole queue
 // (`finish(keys)`, the unstarted keys in their new order, in hours) by more than `thresholdH` beyond
 // the moves already taken. -> resortQueue's result for the queue with those tickets let go, plus
-// `released` (their keys) and `placedMoved`: [{ key, from, to, gainH }], `from` and `to` its
+// `placedMoved`: [{ key, from, to, gainH }], `from` and `to` its
 // 1-based place among the unfinished tickets before and after, `gainH` the hours its own move saved.
 // `cloud` is resortQueue's, so a placed ticket let go moves only among the places of its own kind.
 export function placedMoves(tickets, { scope, fileCount, cloud, finish, thresholdH, finished = () => false }) {
@@ -171,7 +171,7 @@ export function placedMoves(tickets, { scope, fileCount, cloud, finish, threshol
   const placedMoved = gains
     .map((g) => ({ key: g.key, from: before.indexOf(g.key) + 1, to: after.indexOf(g.key) + 1, gainH: g.gainH }))
     .filter((m) => m.from !== m.to);
-  return { ...best, changed: best.changed || placedMoved.length > 0, released: [...released], placedMoved };
+  return { ...best, changed: best.changed || placedMoved.length > 0, placedMoved };
 }
 
 // A gain in minutes as the digest and desk-q show it: "45m", or "2.5h" from two hours.
