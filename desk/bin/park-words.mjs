@@ -80,6 +80,7 @@ export const GRANT_WORDS = {
   'pr-conflict-reviewed': 'resolve conflicts on reviewed PRs',
   'ci-protection': 'change CI protection',
   'gh-close-linked-issue': 'close linked GitHub issues',
+  'gh-issue-close': 'close GitHub issues their merged PRs did not close',
   'gh-issue-create': 'create GitHub issues',
   'gh-issue-comment': 'comment on GitHub issues',
   'gh-issue-edit': 'edit GitHub issue bodies',

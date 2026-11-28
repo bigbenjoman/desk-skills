@@ -150,7 +150,10 @@
 # kind on, a merge call that does not return within its bound releases the lease and is noted as
 # unconfirmed.
 # A ticket that is Done then has the GitHub issues its web links name closed by linked-issues.mjs, each
-# once every ticket linking it is done, under §3 gh-close-linked-issue.
+# once every ticket linking it is done, under §3 gh-close-linked-issue. With §4 Tracker none, a merged
+# `issue-<n>` ticket's issue is closed by issue-close.mjs where its PR's `Closes #<n>` did not close it
+# (another base, a squash that dropped it), with a "Merged in #<pr>" comment, under §3 gh-issue-close;
+# a follow step left for later does not hold it open.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # A check still red after both goes back to a fix worker: pass.mjs reads reruns-<n>-<sha> and
@@ -837,6 +840,7 @@ flaky_ticket(){
 # Nothing else in the batch closes a ticket. A failure is logged and never undoes the merge.
 close_merged(){
   local n="$1" key="$2" open st out
+  if [ "$(node "$DESK_ENV_MJS" ticket-kind "$key" 2>/dev/null)" = issue ]; then close_ticket_issue "$n" "$key"; return 0; fi
   [ "$TRACKER" = jira ] && [ "$(node "$DESK_ENV_MJS" ticket-kind "$key" 2>/dev/null)" = tracker ] || return 0
   if [ "$CLOSE_PERM" != yes ]; then log "#$n $key left as it is: config §3 jira-close-own-merged is $CLOSE_PERM"; return 0; fi
   case "$DONE_STATE" in ''|TODO*|none) log "#$n $key not moved: config §4 Done state is not set — run /desk-setup"; return 0 ;; esac
@@ -853,6 +857,14 @@ close_merged(){
   st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
   if [ "$st" = "$DONE_STATE" ]; then log "#$n $key moved to $DONE_STATE (read back; §3 jira-close-own-merged)"; close_issues "$n" "$key"
   else log "#$n $key transition sent but it reads ${st:-unreadable}, not $DONE_STATE — check it by hand"; fi
+}
+# close_ticket_issue <n> <issue-key>: with §4 Tracker none, the issue the merged ticket works from is
+# closed where #n's closing keyword did not close it (issue-close.mjs, §3 gh-issue-close); its line is logged.
+close_ticket_issue(){
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] && log "#$1 $2 $line"
+  done < <(node "$DESK_RUN_BIN/issue-close.mjs" "$2" --pr "$1" --repo "$REPO" 2>&1)
 }
 # close_issues <n> <key>: once the ticket is Done, each GitHub issue in this repo its web links name is
 # closed when every ticket linking it is done (linked-issues.mjs, §3 gh-close-linked-issue); each line

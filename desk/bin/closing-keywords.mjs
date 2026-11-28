@@ -4,7 +4,9 @@
 // directly before a reference to it, in a sentence as much as on a line of its own. A line that is
 // only keywords and references ("Closes #12", "- Fixes #3, closes #4.") says the PR closes them and
 // passes; a keyword anywhere else is flagged with its line.
-//   closing-keywords.mjs <body file>   exit 0 none flagged, 1 flagged (one line each), 2 usage
+// With --ticket and a GitHub-issue ticket (`issue-<n>`, §4 Tracker none), a body with no `Closes #<n>`
+// for that issue is flagged too: nothing else closes it at merge.
+//   closing-keywords.mjs <body file> [--ticket <KEY>]   exit 0 none flagged, 1 flagged (one line each), 2 usage
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -34,6 +36,18 @@ export const closedBy = (body) => [...String(body ?? '').matchAll(USE)].map((m) 
   return { repo: r ? r[1] ?? r[2] : null, number: Number(/(\d+)$/.exec(m[0])[1]) };
 });
 
+// The issue a GitHub-issue ticket key (`issue-<n>`) names, or null for any other key.
+export const ticketIssue = (key) => { const m = /^issue-([0-9]+)$/.exec(String(key ?? '')); return m ? Number(m[1]) : null; };
+// Whether `body` closes issue <n> of the PR's own repo at merge.
+export const closesIssue = (body, n) => closedBy(body).some((c) => c.repo == null && c.number === n);
+// `body` with a `Closes #<n>` line of its own at the end for the ticket's issue where it lacks one, so
+// GitHub closes the issue at merge; unchanged for any other ticket.
+export function withCloses(body, key) {
+  const n = ticketIssue(key);
+  if (n == null || closesIssue(body, n)) return body;
+  return `${String(body ?? '').replace(/\s+$/, '')}\n\nCloses #${n}`;
+}
+
 // Every line of `body` with a closing keyword outside a line that says the PR closes it.
 // -> [{ line, text, uses }], `line` counted from 1 and `uses` the keyword and reference as written.
 export function strayClosings(body) {
@@ -46,8 +60,10 @@ export function strayClosings(body) {
 }
 
 function main(argv) {
-  if (argv.length !== 1 || argv[0].startsWith('-')) {
-    console.error('usage: closing-keywords.mjs <body file>');
+  const at = argv.indexOf('--ticket');
+  const ticket = at < 0 ? null : argv.splice(at, 2)[1];
+  if (argv.length !== 1 || argv[0].startsWith('-') || (at >= 0 && !ticket)) {
+    console.error('usage: closing-keywords.mjs <body file> [--ticket <KEY>]');
     return 2;
   }
   let body;
@@ -56,7 +72,10 @@ function main(argv) {
     return 2;
   }
   const stray = strayClosings(body);
-  if (!stray.length) return 0;
+  const n = ticketIssue(ticket);
+  const missing = n != null && !closesIssue(body, n);
+  if (missing) console.log(`no line closes #${n}, the issue ${ticket} works from: add "Closes #${n}" on a line of its own, so GitHub closes it at merge`);
+  if (!stray.length) return missing ? 1 : 0;
   for (const s of stray) console.log(`line ${s.line}: ${s.uses.join(', ')} would close ${s.uses.length > 1 ? 'those issues' : 'that issue'} at merge: ${s.text.trim()}`);
   console.log('GitHub closes an issue at merge wherever a closing keyword sits right before it. A step for later names the issue first ("#N can be closed after …"); an issue this PR closes goes on a line of its own ("Closes #N").');
   return 1;

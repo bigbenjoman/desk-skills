@@ -12,7 +12,9 @@ confirmed — subject to config §3 `jira-close-own-merged`; any other close is 
 Merge and Done are one action in two systems; splitting them is how a board ends up with ~20 merged
 tickets parked in §4 Review state. Two exceptions only: **a multi-part ticket whose other part is
 still open** (comment what landed, transition on the last part), and **no ticket key in the branch
-or title at all**. **§4 Tracker `none`: skip this step entirely** — there is no ticket to move.
+or title at all**. **§4 Tracker `none`: there is no ticket to move**; for a branch or title naming `issue-<n>`, run
+`node ~/.claude/desk/bin/issue-close.mjs issue-<n> --pr <n>` instead, which closes the issue where
+the PR's `Closes #<n>` did not (§3 `gh-issue-close`), and relay its line.
 
 **Report** stale worktrees and branches, never delete them: a worktree carries
 `.claude/desk-ticket-<TICKET>.json`, which desk-ticket resumes from. **desk-cleanup** removes them.

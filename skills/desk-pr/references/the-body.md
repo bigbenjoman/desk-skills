@@ -103,6 +103,13 @@ closed after a week of clean main runs". Only an issue this PR closes, because i
 gets a closing keyword, on a line of its own: `Closes #<n>`. `opening.md`'s closing-keyword check
 holds every body to this, a task item (`- [ ] Close #<n>`) included: a box is a step for later.
 
+**With §4 Tracker `none`, the ticket is a GitHub issue, and its PR closes it.** An `issue-<n>` ticket's
+body always carries `Closes #<n>` on a line of its own, so GitHub closes the issue at merge; nothing
+else does. A follow step left for after the merge does not keep the issue open: the step stays on
+needs-you, and the issue closes. Where the merge goes a way GitHub ignores the keyword (into a base
+other than the default branch, a squash whose message dropped it), the post-merge step closes the
+issue with a "Merged in #<pr>" comment (`issue-close.mjs`, §3 `gh-issue-close`).
+
 **Record the self-review the same way.** It is a check that ran, so it belongs in Testing:
 
 > `<§4 Local review command>` at `a1b2c3d`: <§4 Clean review verdict> across 7 files, findings

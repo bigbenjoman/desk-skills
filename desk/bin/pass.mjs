@@ -53,7 +53,7 @@ import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } fro
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond, commitOnBranch } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
-import { strayClosings } from './closing-keywords.mjs';
+import { strayClosings, withCloses } from './closing-keywords.mjs';
 import { claimHours, claimLive, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn, isBot } from './gate.mjs';
@@ -2156,7 +2156,8 @@ function pushDraft(t, { title, body, summary, refuse = () => null, fields = [] }
   const subject = title || sh('git', ['-C', wt, 'log', '-1', '--format=%s', t.branch], { tolerant: true }) || `fix: ${t.key}`;
   const bodyFile = join(STATE, 'pr-bodies', `${t.key}.md`);
   mkdirSync(join(STATE, 'pr-bodies'), { recursive: true });
-  writeFileSync(bodyFile, `${body}\n`);
+  // A GitHub-issue ticket's PR closes its issue at merge (§4 Tracker none).
+  writeFileSync(bodyFile, `${E.ticketKind(t.key).kind === 'issue' ? withCloses(body, t.key) : body}\n`);
   const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', subject, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
   if (!made.ok || !n) return { why: `${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})` };
