@@ -124,6 +124,16 @@ q set A-3 placed=null; q order A-5 A-3; order
 check "#1623 a plain order lays the keys and places none"                  '[ $rc -eq 0 ] && [ "${out%% *}" = A-5 ] && [ "$(placed A-5)" = false ] && [ "$(placed A-3)" = false ]'
 q order A-3 A-5 --placed; order
 check "#1623 order --placed lays the keys and places each one"             '[ $rc -eq 0 ] && [ "${out%% *}" = A-3 ] && [ "$(placed A-3)" = true ] && [ "$(placed A-5)" = true ]'
+# A ticket the pass moved at move-and-say stays placed with its note (pass.mjs placed_move); the user
+# placing it again, by move, front --placed or order --placed, clears the note.
+moved(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]].placed_move !== undefined)' "$DESK_QUEUE" "$1"; }
+note='placed_move={"from":1,"to":3,"gain_min":45}'
+q set A-3 "$note"; q move A-3 1
+check "#1625 the user moving a ticket the pass moved clears its note"       '[ $rc -eq 0 ] && [ "$(moved A-3)" = false ] && [ "$(placed A-3)" = true ]'
+q set A-3 "$note"; q front A-3 --placed
+check "#1625 front --placed clears it too"                                  '[ $rc -eq 0 ] && [ "$(moved A-3)" = false ] && [ "$(placed A-3)" = true ]'
+q set A-3 placed=null; q set A-5 placed=null "$note"; q order A-3 A-5 --placed
+check "#1625 and order --placed"                                            '[ $rc -eq 0 ] && [ "$(moved A-5)" = false ] && [ "$(placed A-5)" = true ]'
 q set A-3 placed=null; q set A-5 placed=null
 
 # A triaged ticket with a triage question open never spawns, so the table and front say so.
