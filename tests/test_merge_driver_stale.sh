@@ -66,9 +66,9 @@ main_change pnpm-lock.yaml
 S703=$(st_branch fix/T-703); st_pr 703 T-703 "$S703"
 stloop yes T-703; stloop yes T-703
 check "AC1 a green PR whose base changed a listed path is not merged: its branch is updated" \
-  '[ -z "$(merged)" ] && [ "$(updates 703)" = 1 ] && echo "$out" | grep -q "#703 green at ${S703:0:9}, but main changed pnpm-lock.yaml since it branched at ${M0:0:9} -> gh pr update-branch"'
+  '[ -z "$(merged)" ] && [ "$(updates 703)" = 1 ] && echo "$out" | grep -q "#703 green at ${S703:0:9}, but its checks are stale (main changed pnpm-lock.yaml since it branched at ${M0:0:9}) -> gh pr update-branch"'
 stloop yes T-703
-check "AC1 the update is asked once per head" '[ -z "$(merged)" ] && [ "$(updates 703)" = 1 ] && echo "$out" | grep -q "#703 its checks are stale (main changed pnpm-lock.yaml); update already requested"'
+check "AC1 the update is asked once per head" '[ -z "$(merged)" ] && [ "$(updates 703)" = 1 ] && echo "$out" | grep -q "#703 green at ${S703:0:9}, but its checks are stale (main changed pnpm-lock.yaml since it branched at ${M0:0:9}); update already requested"'
 # GitHub's update: main merged into the branch, a new head whose checks start red.
 git -C "$T/repo" switch -q fix/T-703; git -C "$T/repo" merge -q --no-edit main; git -C "$T/repo" push -q origin fix/T-703
 S703B=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" switch -q main
@@ -93,6 +93,14 @@ check "AC3 with the row none, the PR merges with no update and its note is clear
 S705=$(st_branch fix/T-705); st_pr 705 T-705 "$S705"
 stloop unset T-705; stloop unset T-705
 check "AC3 with the row unset, the PR merges with no update" '[ "$(merged)" = 705 ] && [ "$(updates 705)" = 0 ]'
+
+# A listed name with no slash matches at any depth, as the other §4 path rows do: a nested lockfile counts.
+S707=$(st_branch fix/T-707 main); mkdir -p "$T/repo/apps/web"; echo v1 > "$T/repo/apps/web/pnpm-lock.yaml"
+git -C "$T/repo" add apps; git -C "$T/repo" commit -q -m "nested lockfile"; git -C "$T/repo" push -q origin main
+st_pr 707 T-707 "$S707"
+stloop yes T-707; stloop yes T-707
+check "a change to a nested pnpm-lock.yaml on main makes a green PR stale" \
+  '[ -z "$(merged)" ] && [ "$(updates 707)" = 1 ] && echo "$out" | grep -q "main changed apps/web/pnpm-lock.yaml since it branched"'
 
 # AC4: main's run red after a merge halts every merge, a current PR's included.
 S706=$(st_branch fix/T-706 main); st_pr 706 T-706 "$S706"

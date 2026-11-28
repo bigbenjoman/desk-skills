@@ -21,6 +21,7 @@ import { rewriteEnvFiles } from './env-rewrite.mjs';
 import { runItem } from './baseline.mjs';
 import { execGit } from './remote-git.mjs';
 import { hookEnvFailure, refusalLine } from './push-retry.mjs';
+import { globToRegExp } from './gate.mjs';
 
 const git = (cwd, args) => {
   try { return { ok: true, out: execGit('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
@@ -169,11 +170,8 @@ export function mergedTreeCheck() {
 //   -> { result: 'none' } | { result: 'pass' | 'fail', base_sha, check? } | { result: 'error', why }
 export function prTreeCheck({ repo, cache, dir, base, pr, head, check = mergedTreeCheck() }) {
   if (!check) return { result: 'none' };
-  const f = git(repo, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`]);
-  if (!f.ok) return { result: 'error', why: `could not fetch ${base} from origin: ${firstLine(f.out)}` };
-  if (!git(repo, ['cat-file', '-e', `${head}^{commit}`]).ok && !git(repo, ['fetch', '-q', 'origin', `pull/${pr}/head`]).ok) {
-    return { result: 'error', why: `its head ${String(head).slice(0, 9)} could not be fetched` };
-  }
+  const fetched = fetchBaseAndHead({ repo, base, pr, head });
+  if (fetched) return fetched;
   const baseSha = git(repo, ['rev-parse', `origin/${base}`]).out;
   const row = createHash('sha1').update(String(check.row ?? '')).digest('hex').slice(0, 12);
   const kept = join(cache, `tree-${pr}-${head}-${baseSha}-${row}.json`);
@@ -195,27 +193,31 @@ export function prTreeCheck({ repo, cache, dir, base, pr, head, check = mergedTr
   return r;
 }
 
-// §4 Stale-check paths: the base paths (globs) whose change since a PR's branch point leaves its checks
-// stale. [] with the row unset, TODO or `none`.
-export function staleCheckPaths() {
-  return rowItems('stale-check-paths').filter((p) => p && !/^todo\b/i.test(p));
-}
-
-// Which §4 Stale-check paths origin's <base> changed since PR <pr>'s <head> branched from it: the diff
-// from their merge base to origin's <base>, so a PR's own change to a listed path never counts.
-//   -> { result: 'none' } | { result: 'current' | 'stale', merge_base, files } | { result: 'error', why }
-export function prStalePaths({ repo, base, pr, head, paths = staleCheckPaths() }) {
-  if (!paths.length) return { result: 'none' };
+// Fetches origin's <base>, and PR <pr>'s <head> where this clone lacks it: null, or the error result.
+function fetchBaseAndHead({ repo, base, pr, head }) {
   const f = git(repo, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`]);
   if (!f.ok) return { result: 'error', why: `could not fetch ${base} from origin: ${firstLine(f.out)}` };
   if (!git(repo, ['cat-file', '-e', `${head}^{commit}`]).ok && !git(repo, ['fetch', '-q', 'origin', `pull/${pr}/head`]).ok) {
     return { result: 'error', why: `its head ${String(head).slice(0, 9)} could not be fetched` };
   }
+  return null;
+}
+
+// Which §4 Stale-check paths origin's <base> changed since PR <pr>'s <head> branched from it: the diff
+// from their merge base to origin's <base>, so a PR's own change to a listed path never counts. The
+// globs match as the other §4 path rows do (gate.mjs globToRegExp), so `uv.lock` matches at any depth.
+// `paths` is [] with the row unset, TODO or `none`.
+//   -> { result: 'none' } | { result: 'current' | 'stale', merge_base, files } | { result: 'error', why }
+export function prStalePaths({ repo, base, pr, head, paths = rowItems('stale-check-paths').filter((p) => p && !/^todo\b/i.test(p)) }) {
+  if (!paths.length) return { result: 'none' };
+  const fetched = fetchBaseAndHead({ repo, base, pr, head });
+  if (fetched) return fetched;
   const mb = git(repo, ['merge-base', head, `origin/${base}`]);
   if (!mb.ok || !mb.out) return { result: 'error', why: `no merge base of its head and ${base}: ${firstLine(mb.out)}` };
-  const d = git(repo, ['diff', '--name-only', mb.out, `origin/${base}`, '--', ...paths.map((p) => `:(glob)${p}`)]);
+  const d = git(repo, ['diff', '--name-only', mb.out, `origin/${base}`]);
   if (!d.ok) return { result: 'error', why: `could not diff ${base} since its merge base: ${firstLine(d.out)}` };
-  const files = d.out ? d.out.split('\n') : [];
+  const res = paths.map(globToRegExp);
+  const files = (d.out ? d.out.split('\n') : []).filter((f) => res.some((re) => re.test(f)));
   return { result: files.length ? 'stale' : 'current', merge_base: mb.out, files };
 }
 
