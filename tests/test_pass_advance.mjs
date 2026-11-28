@@ -42,7 +42,7 @@ const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
   'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
-  'pr-verdict': null, 'park-file': null, progress: PROGRESS,
+  'pr-verdict': null, 'park-file': null, progress: PROGRESS, 'pr-conflict': null,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -535,6 +535,28 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   ].map(types));
   t('AC6 the decisions return their actions', j(out?.map((x) => x.includes('done') || x.includes('park') || x.includes('set') || x.includes('usage-hold'))), '[true,true,true,true,true]');
   t('AC6 and start no process and write no file on the way', j([threw, calls]), '[null,[]]');
+}
+
+// issue-1669: a Stage 7 session's DONE on a PR in conflict with its base is not recorded done: it is
+// parked naming the conflict, for the pass to send to a conflict fix try.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=1655 jira=In Review said=nothing to push, did not bring main in';
+  const h = `AUTOPILOT_STAGE: 7/9 PR\n${DONE}`;
+  const run = (fields, answers) => advance(snap(ticket('C', { draft_pr: 1655, ...fields }), logOf('C', h, [said(h), RESULT])), answers);
+  let asked = 0;
+  const conflict = run({ stage: '7/9' }, { 'pr-conflict': (a) => { asked += 1; return a.pr === '1655' ? { base: 'main' } : null; } });
+  const park = conflict.find((a) => a.type === 'park');
+  t('issue-1669 AC2 a Stage 7 DONE on a CONFLICTING PR is not recorded done', j([types(conflict).includes('done'), asked]), '[false,1]');
+  t('issue-1669 AC2 it is parked naming the conflict', j([park?.question.startsWith('CONFLICT at Stage 7 — PR #1655 conflicts with main'), /nothing to push/.test(park?.question)]), '[true,true]');
+  t('issue-1669 AC2 with the round it parked at, so a requeue reads it as a Stage 7 resume', j(sets(conflict).some((f) => f.startsWith('last_round=') && JSON.parse(f.slice(11)).stage === '7/9')), 'true');
+  const clean = run({ stage: '7/9' });
+  t('issue-1669 a Stage 7 DONE on a PR not in conflict is recorded done as before', j(types(clean).includes('done')), 'true');
+  let early = 0;
+  const atFour = advance(snap(ticket('C', { stage: '4/9' }), logOf('C', 'AUTOPILOT_STAGE: 4/9\nAUTOPILOT_DONE: pr=1655 jira=Done', [said('x'), RESULT])), { 'pr-conflict': () => { early += 1; return { base: 'main' }; } });
+  t('issue-1669 a DONE before Stage 7 does not read the PR\'s conflict', j([types(atFour).includes('done'), early]), '[true,0]');
+  let fixAsked = 0;
+  const fixDone = run({ stage: '7/9', fix: { kind: 'conflict', started: 'x' } }, { 'pr-conflict': () => { fixAsked += 1; return { base: 'main' }; } });
+  t('issue-1669 a fix try\'s own DONE is the fix tries\' to judge', j([types(fixDone).includes('done'), fixAsked]), '[true,0]');
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

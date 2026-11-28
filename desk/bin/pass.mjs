@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
+import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage, ownPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -63,7 +63,7 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, pathsIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S, resumesAtSeven, prInConflict, stageSevenConflictPark } from './fix-tries.mjs';
 import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
@@ -115,7 +115,7 @@ import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
-import { decideFixTries, decideOutage, tryLabel } from './pass/fix-tries.mjs';
+import { decideFixTries, decideOutage, decideResumeConflicts, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
 import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
@@ -1417,6 +1417,7 @@ const ADVANCE_HANDLERS = {
     try { return prOwner(a.pr); } catch { return null; }
   },
   'pr-verdict': (a) => prVerdict(a.pr),
+  'pr-conflict': (a) => { const v = readPrStatus(a.pr); return v?.state === 'OPEN' && prInConflict(v) ? { base: v.base ?? DEFAULT_BRANCH } : null; },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -2594,6 +2595,44 @@ runSteps({
   handlers: REPAIR_HANDLERS,
   report,
 });
+
+// ---- a Stage 7 resume whose PR is in conflict (issue-1669) -----------------------
+// A requeued ticket about to resume at Stage 7, or one its Stage 7 session finished with its PR in
+// conflict (pass/advance.mjs), goes to a conflict fix try, or is parked naming the conflict
+// (pass/fix-tries.mjs decideResumeConflicts). A ticket whose PR does not read is left as it is.
+{
+  const resumes = [];
+  for (const t of Object.values(queue().tickets)) {
+    const parked = stageSevenConflictPark(t);
+    if (!parked && (isHeld(t) || !resumesAtSeven(t))) continue;
+    const n = ownPr(t);
+    const s = n == null ? null : readPrStatus(n);
+    if (!s) continue;
+    const since = t.last_round?.at ?? t.prev_park?.since ?? null;
+    const briefPath = join(STATE, 'briefings', `${t.key}.md`);
+    resumes.push({ t, s, parked, notes: !parked && since && existsSync(briefPath) ? answersSince(readFileSync(briefPath, 'utf8'), since) : [] });
+  }
+  const resumeOf = (k) => resumes.find((e) => e.t.key === k);
+  runSteps({
+    name: 'stage 7 conflicts',
+    snapshot: () => ({ resumes, base: DEFAULT_BRANCH, dry: DRY,
+      conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])) }),
+    decide: decideResumeConflicts,
+    report,
+    handlers: {
+      ...PHASE_HANDLERS,
+      'human-seen': (a) => humanSeen(a.pr),
+      'conflict-files': (a) => conflictFiles(a.branch),
+      // Its handoff stage is kept, so a requeue once the person has resolved it resumes at Stage 7, as
+      // spawnHandoff's parks keep it.
+      park: (a) => { q('set', a.key, 'handoff=null'); q('park', a.key, a.question); },
+      requeue: (a) => qRun(['requeue', a.key]),
+      // A parked ticket is requeued for its try; one about to resume is not, as it spawns as it is. Either
+      // way its handoff and handoff stage are cleared with the try, so it starts the try and not Stage 7.
+      apply: (a) => applyFix(resumeOf(a.key).t, a.pr, a.head, a.call, { requeue: a.parked, fields: { handoff: null, handoff_stage: null }, instead: `${a.parked ? 'finishing' : 'resuming at'} Stage 7` }) === 'requeued',
+    },
+  });
+}
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
@@ -6424,7 +6463,11 @@ function refreshBranch(t, n, head, c) {
 // dependency wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's
 // checks classed runner or resource instead of spawning a fix worker, or a state check that failed on
 // a GitHub read error, in draft or out, `wait` holding that rerun for the run to finish.
-function applyFix(t, n, head, c) {
+// -> 'requeued' where the try was written (a dry run writes none). Options, for a try sent in place of a
+// Stage 7 resume (pass/fix-tries.mjs decideResumeConflicts): `requeue` false writes the try on a ticket
+// that spawns as it is, without requeueing it; `fields` ({ field: value }) are written with the try and
+// put back if its requeue is refused; `instead` names what the try replaces, for the report.
+function applyFix(t, n, head, c, { requeue = true, fields = {}, instead = null } = {}) {
   const rec = keptHold(t.base_red, c, PASS_AT);
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
@@ -6471,18 +6514,25 @@ function applyFix(t, n, head, c) {
     return;
   }
   const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule };
-  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
-  // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
-  q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
-  const rq = qRun(['requeue', t.key]);
+  const insteadOf = instead ? `, instead of ${instead}` : '';
+  // One in place of a Stage 7 resume runs before the report's lines are opened (`out`), so it is said
+  // in the report's recovered group.
+  const tell = (line) => (instead ? report.recovered : out).push(line);
+  if (DRY) { tell(`fix try (dry run): would ${requeue ? 'requeue' : 'send'} ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}${insteadOf}`); return; }
+  // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it
+  // back, and puts back the fields written with it.
+  const pairs = Object.entries(fields);
+  q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`, ...pairs.map(([k, v]) => `${k}=${v ?? 'null'}`));
+  const rq = requeue ? qRun(['requeue', t.key]) : { ok: true };
   if (!rq.ok) {
-    q('set', t.key, 'fix=null');
+    q('set', t.key, 'fix=null', ...pairs.map(([k]) => `${k}=${t[k] ?? 'null'}`));
     report.waiting.push(`${t.key}: STUCK — PR #${n} ${f.what}, and its fix try could not be requeued (${rq.out.split('\n').pop()})`);
     return;
   }
   const quoted = fixTryQuote(f);
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
-  out.push(`${tryLabel(f)}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  tell(`${tryLabel(f)}: ${t.key} ${requeue ? 'requeued' : 'sent'} for PR #${n} — ${f.what}${insteadOf}`);
+  return 'requeued';
 }
 
 // ---- what a session handed the person, rechecked -----------------------------
