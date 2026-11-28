@@ -264,6 +264,12 @@ export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
 // A killed worker waiting to resume, and a session handed off to its next stage (both run here).
 export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
 export const toHandoff = (r) => r.handoff === 'pending';
+// The tickets a `|`-separated queue field names.
+export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
+// A ticket placed at the front of the queue that is a new start, as far as its own record says: the pass's
+// atFront adds what only the pass knows (not running, its worker not finished), and desk-q reads the rest.
+export const placedFront = (t) => !!t?.placed && t.state === 'triaged' && !toHandoff(t) && !toResume(t) && !reviewOnlyTry(t)
+  && (t.open_questions ?? 0) === 0 && keysOf(t.cycle_link).length === 0;
 // A ticket that can run in a cloud session: its triage record needs nothing this computer has (admission
 // writes cloud_ok; a ticket admitted before that carries location=cloud), no PR of its is read yet, and
 // it has not started on this computer (its work is then in a local worktree, and stays there). Where it
