@@ -47,7 +47,8 @@ bounds both the re-sort and which ticket starts by the tracker priority (each tr
 to start; at `soft` (unset or invalid reads as `soft`) higher priorities sort first, and a lower one
 starts first only into a slot that would otherwise sit idle, or past a higher one held anyway (a file
 collision, a blocker, the test lock) that it shares no file with; at `off` priority is not read. A
-ticket that blocks a higher one is never held by it. A ticket priority holds is in the report's
+ticket that blocks a higher one is never held by it, nor is a ticket placed at the front that goes first
+for a file ahead of a handoff by a higher one waiting behind that handoff. A ticket priority holds is in the report's
 waiting list, naming the higher one. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file

@@ -3102,9 +3102,10 @@ const collisionHolds = (r) => {
 // Which ticket goes first for a file a pending handoff and a front ticket above it both need, and why
 // (#1667): one line each, said once the candidates are read and before the spawn loop, which can still
 // skip the front ticket, so the line says the handoff waits for it to start, not that it has.
-const frontWins = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key)).flatMap((t) =>
-  budgetHolds(t).filter((h) => h.front.length).map((h) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'goes' : 'go'} first for it, ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
-    `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept, and its handoff deadline keeps running until ${h.front.length === 1 ? 'that ticket starts' : 'they start'}`));
+const handoffFronts = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key))
+  .flatMap((t) => budgetHolds(t).filter((h) => h.front.length).map((h) => ({ t, h })));
+const frontWins = () => handoffFronts().map(({ t, h }) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'goes' : 'go'} first for it, ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
+  `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept, and its handoff deadline keeps running until ${h.front.length === 1 ? 'that ticket starts' : 'they start'}`);
 const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The
@@ -4877,9 +4878,16 @@ let memStop = false;
 const startedNow = new Set();
 const blockerSucc = {};
 for (const x of Object.values(fresh.tickets)) for (const p of blockersOf(x)) (blockerSucc[p] ??= []).push(x.key);
+// A front ticket goes first for a file ahead of the pending handoffs it names here (#1667), so a higher
+// one held behind one of those handoffs waits for it to start, and holds it by priority not at all: the
+// two would hold each other, with the handoff, for good.
+const firstFor = {};
+for (const { t, h } of handoffFronts()) for (const k of h.front) (firstFor[k] ??= new Set()).add(t.key);
+const heldBehind = (x, handoffs) => budgetHolds(x).some((h) => h.handoff.some((k) => handoffs.has(k)));
 const priorityHeldBy = (t, ahead) => {
   if (PRIORITY.mode === 'off' || !unstarted(t) || toResume(t) || toHandoff(t)) return null;
-  const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key)).map((x) => x.key);
+  const mine = firstFor[t.key];
+  const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key) && !(mine && heldBehind(x, mine))).map((x) => x.key);
   // The slot it would take, as decideSpawn places it: a cloud-able ticket with the cloud full may still
   // take a local one (pass/shared.mjs priorityPool).
   const pool = priorityPool(t, ahead, { local: (memStop ? 0 : localSlots) - attempts, cloud: cloudSlots - cloudAttempts,
