@@ -69,6 +69,11 @@
 //   GET /api/sessions                      { items }: every conversation, open and ended
 //   POST /api/sessions/<id>/messages {text}  the person's next message; resumes one a restart ended
 //   DELETE /api/sessions/<id>               ends it; its transcript is kept
+//
+// Terminals (desk-ui-terminals.mjs): held by the pty daemon (desk-ptyd.mjs, launchd com.desk-skills.ptyd),
+// so they outlive this server. server.terminals.openSkill({ repo, skill, ticket? }) opens /<skill>
+// [ticket] in the ticket's worktree on the repo's subscription; attach answers with the last 256 KB.
+// GET /api/meta's features.ptyd is false while no daemon answers: Desk then has no terminals.
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -82,6 +87,8 @@ import { makeFeed } from './desk-ui-events.mjs';
 import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
 import { makePrReader } from './desk-ui-ticket.mjs';
 import * as S from './desk-ui-settings.mjs';
+import { makeTerminals } from './desk-ui-terminals.mjs';
+import { socketPath as ptydSocket } from './desk-ptyd.mjs';
 import { AGENTS, forwardOnMain, gitIn, oldCode, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
@@ -263,6 +270,7 @@ const openTerminal = (dir) => new Promise((resolve) => {
 const START_FIELDS = new Set(['purpose', 'repo', 'ticket', 'mode', 'login']);
 const FOLDER_FIELDS = new Set(['folder']);
 const PURPOSES = new Set(['park', 'ticket', 'blank']);
+const SKILL = /^desk-[a-z][a-z0-9-]{0,40}$/;
 const EMAIL = /^[^\s@`]{1,128}@[^\s@`]{1,128}\.[^\s@`]{1,63}$/;
 const MAX_MESSAGE = 16000;
 const MAX_MESSAGE_BODY = 6 * MAX_MESSAGE + 1024;
@@ -310,7 +318,8 @@ const openFile = (file) => new Promise((resolve) => {
 // `running()` for the desk commit this server runs (runningVersion).
 // `chat` passes the conversations' options: `seed(about)` -> the quotes (parkSeed), `now`, `checkMs`.
 // `pr` passes options to the ticket page's PR reader (makePrReader): the tests' gh stub and clock.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {}, pr = {}, settings = {} } = {}) {
+// `ptyd` names the pty daemon's socket (desk-ptyd.mjs socketPath).
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {}, pr = {}, settings = {}, ptyd = ptydSocket() } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -326,6 +335,8 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   // API key, so it is billed to that subscription.
   const broker = makeBroker({ file: sessionsFile(), now: chat.now, checkMs: chat.checkMs,
     envOf: (e) => ({ ...loginEnv({ tool: 'claude', configDir: e.configDir }, E.otherRepoEnv()), DESK_REPO_DIR: e.cwd, DESK_REPO_ROOT: e.cwd }) });
+  // The terminals live in the pty daemon, so they outlast this server; it only asks for them.
+  const terminals = makeTerminals({ socket: ptyd });
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = Buffer.isBuffer(body) ? body : type.startsWith('application/json') ? JSON.stringify(body) : String(body);
@@ -598,6 +609,62 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return h ? `${who} is at ${limitName(h.type)}${h.at != null ? ` until ${resetText(h.at)}` : ''}` : null;
   };
 
+  // The login a Claude run for `slug` (named `name`) starts on: the repo's own subscription (§3b
+  // Subscription), as its workers start on it, with no subscriptions file and the row at default the
+  // login the server itself runs as; `other`, an email, only once the repo's own is at its limit.
+  // `what` names the run in a refusal. -> { login, email } | { refuse: [status, code, message] }
+  function chooseLogin(Q, all, slug, name, other, what) {
+    const subs = readSubscriptions(E.subscriptionsPath());
+    const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
+    const sub = repoSubscription(subs, { value: E.repoConfigValue(slug, 'subscription'), source: 'row' });
+    const mine = !subs.exists && sub.source === 'default' ? own : sub.login;
+    // Signed out is fixed by signing in, not by another subscription (screen-spec 8.3), so it refuses
+    // whatever the request names.
+    if (!mine) return { refuse: [409, 'subscription', `${possessive(name)} subscription, ${sub.email ?? 'the default'}, is not signed in to any login here, so nothing started. Sign it in, then try again.`] };
+    const mineHeld = heldReason(Q, all, mine, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
+    if (other === undefined) {
+      if (mineHeld) return { refuse: [429, 'usage_limit', `${mineHeld}, so nothing started. Name another subscription for this ${what} to start it there.`] };
+      return { login: mine, email: sub.email ?? null };
+    }
+    const o = repoSubscription(subs, { value: other, source: 'request' });
+    if (!o.login) return { refuse: [400, 'login', `${other} is not one of this computer's subscriptions.`] };
+    if (!mineHeld) return { refuse: [409, 'subscription', `${possessive(name)} own subscription has room, so a ${what} runs on it: another is named only once it is at its limit. Nothing started.`] };
+    const held = heldReason(Q, all, o.login, o.email);
+    if (held) return { refuse: [429, 'usage_limit', `${held}, so nothing started.`] };
+    return { login: o.login, email: o.email };
+  }
+
+  // Opens `/<skill> [ticket]` in a terminal the pty daemon hosts, on the repo's subscription: in the
+  // ticket's worktree (<§2 Worktrees directory>/<ticket>) where it has one, else the repo's checkout;
+  // refused while a worker runs the ticket. The argv is built here; the daemon checks it again.
+  // `o` is { repo: slug, skill, ticket?, login?, cols?, rows? }. -> the daemon's answer ({ ok, id,
+  // sessionId, pid } plus cwd and subscription) or { ok: false, error: { code, message } }
+  async function openSkill(o = {}) {
+    const no = (code, message) => ({ ok: false, error: { code, message } });
+    const { repo: slug, skill, ticket, login: other, cols, rows } = o;
+    if (typeof skill !== 'string' || !SKILL.test(skill)) return no('skill', 'skill is a desk skill\'s name.');
+    if (ticket !== undefined && (typeof ticket !== 'string' || !KEY.test(ticket))) return no('ticket', 'ticket is a ticket key.');
+    if (other !== undefined && (typeof other !== 'string' || !EMAIL.test(other))) return no('login', 'login is the email of one of this computer\'s subscriptions.');
+    const { Q, all } = await loadAll();
+    const batches = typeof slug === 'string' ? all.filter((r) => r.slug === slug) : [];
+    if (!batches.length) return no('repo', 'That is not a configured repo.');
+    const main = batches.find((r) => r.batch == null) ?? batches[0];
+    let cwd;
+    try { cwd = Q.checkoutOf(main, `open ${skill} in`).cwd; } catch (e) { return no('checkout', e.message); }
+    if (ticket) {
+      if (batches.some((b) => b.q?.tickets?.[ticket]?.state === 'running')) return no('running', `A worker is running ${ticket} in its worktree, so nothing opened: wait for it to finish.`);
+      const trees = E.repoDirs(slug).worktrees;
+      if (trees && existsSync(join(trees, ticket))) cwd = join(trees, ticket);
+    }
+    const chosen = chooseLogin(Q, all, slug, main.repo, other, 'terminal');
+    if (chosen.refuse) return no(chosen.refuse[1], chosen.refuse[2]);
+    const argv = ['claude', `/${skill}${ticket ? ` ${ticket}` : ''}`];
+    const env = { DESK_REPO_DIR: cwd, DESK_REPO_ROOT: cwd, ...(chosen.login.configDir ? { CLAUDE_CONFIG_DIR: chosen.login.configDir } : {}) };
+    const r = await terminals.open({ argv, cwd, env, cols, rows });
+    audit('terminal', argv, r.ok ? 'started' : null, { repo: slug, ticket: ticket ?? null, subscription: chosen.email, id: r.id ?? null, refused: r.ok ? null : r.error?.code ?? null });
+    return r.ok ? { ...r, cwd: tilde(cwd), subscription: chosen.email } : r;
+  }
+
   // POST /api/sessions: what the conversation is about, checked; the subscription it runs on; then the broker.
   async function startConversation(req, res, query) {
     const body = await jsonOnly(req, res, query, START_FIELDS);
@@ -618,29 +685,9 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       try { at = loaded.Q.checkoutOf(batches.find((r) => r.batch == null) ?? batches[0], 'talk about it'); } catch (e) { return refuse(res, 409, 'checkout', e.message); }
     } catch (e) { console.error(`desk-ui: sessions: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
     const name = (batches.find((r) => r.batch == null) ?? batches[0]).repo;
-
-    // The repo's own subscription (§3b Subscription), as its workers start on it; with no subscriptions
-    // file and the row at default, the login the server itself runs as.
-    const subs = readSubscriptions(E.subscriptionsPath());
-    const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
-    const sub = repoSubscription(subs, { value: E.repoConfigValue(slug, 'subscription'), source: 'row' });
-    const mine = !subs.exists && sub.source === 'default' ? own : sub.login;
-    // Signed out is fixed by signing in, not by another subscription (screen-spec 8.3), so it refuses
-    // whatever the request names. Another subscription only once the repo's own is at its limit.
-    if (!mine) return refuse(res, 409, 'subscription', `${possessive(name)} subscription, ${sub.email ?? 'the default'}, is not signed in to any login here, so nothing started. Sign it in, then try again.`);
-    const mineHeld = heldReason(Q, all, mine, `${possessive(name)} subscription${sub.email ? `, ${sub.email},` : ''}`);
-    let login, email;
-    if (other === undefined) {
-      if (mineHeld) return refuse(res, 429, 'usage_limit', `${mineHeld}, so nothing started. Name another subscription for this conversation to start it there.`);
-      login = mine; email = sub.email ?? null;
-    } else {
-      const o = repoSubscription(subs, { value: other, source: 'request' });
-      if (!o.login) return refuse(res, 400, 'login', `${other} is not one of this computer's subscriptions.`);
-      if (!mineHeld) return refuse(res, 409, 'subscription', `${possessive(name)} own subscription has room, so a conversation runs on it: another is named only once it is at its limit. Nothing started.`);
-      const held = heldReason(Q, all, o.login, o.email);
-      if (held) return refuse(res, 429, 'usage_limit', `${held}, so nothing started.`);
-      login = o.login; email = o.email;
-    }
+    const chosen = chooseLogin(Q, all, slug, name, other, 'conversation');
+    if (chosen.refuse) return refuse(res, ...chosen.refuse);
+    const { login, email } = chosen;
 
     let quotes;
     try { quotes = await seed({ slug, repo: name, ticket, purpose, batches }); } catch (e) { console.error(`desk-ui: sessions: seed: ${e.message}`); quotes = []; }
@@ -812,7 +859,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       }
       if (path === '/api/meta') {
         updatesNow();
-        return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p, ...appNow(), updates: upd.value });
+        return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p, ...appNow(), updates: upd.value, features: { ptyd: await terminals.available() } });
       }
       return refuse(res, 404, 'not_found', 'No such route.');
     }
@@ -838,7 +885,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     log(`${new Date().toISOString()} UPGRADE ${String(req.url ?? '').split('?')[0].slice(0, 200)} ${status.slice(0, 3)}`);
     socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\nX-Desk-Boot: ${boot}\r\n\r\n`);
   });
-  server.on('close', () => { clearInterval(appWatch); feed.stop(); broker.stop(); });
+  server.on('close', () => { clearInterval(appWatch); feed.stop(); broker.stop(); terminals.stop(); });
   server.headersTimeout = 10_000;
   server.requestTimeout = 10_000;
   server.feed = feed;
@@ -848,6 +895,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
   server.restarting = () => { const a = appNow(); if (a.restartRequired) feed.announce('server', { ...a, restarting: true }); };
   // The tests wait on the background count of skill and plugin updates.
   server.updates = () => upd.running ?? Promise.resolve();
+  server.terminals = { ...terminals, openSkill };
   return server;
 }
 
@@ -874,7 +922,7 @@ async function serve() {
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
   // Open change streams never end by themselves, so they are ended (each closes its connection), while
   // a write in flight is let finish, so its command's result is answered and audited.
-  const stop = () => { server.restarting(); server.feed.stop(); server.sessions.stop(); server.close(() => process.exit(0)); };
+  const stop = () => { server.restarting(); server.feed.stop(); server.sessions.stop(); server.terminals.stop(); server.close(() => process.exit(0)); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }
