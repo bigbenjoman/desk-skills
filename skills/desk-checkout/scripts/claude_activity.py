@@ -270,10 +270,21 @@ def batch_stage(s):
 
 def batch_ticket(s):
     """The ticket a headless session folds under: the one in its branch name, else its most-mentioned.
-    A repo with no ticket key pattern names its batch tickets issue-<n>, so that form counts too."""
+    A repo with no ticket key pattern names its batch tickets issue-<n>, so that form counts too.
+    A triage session runs in the person's main checkout (triage.sh cds there), so its branch is that
+    checkout's, not the triaged ticket's: it folds under the ticket its opening names instead."""
     if not in_scope(s["cwd"]):
         return None
-    for branch, _ in s["branches"].most_common():
+    triage = batch_stage(s) == "triage"
+    if triage:
+        first = s["prompts"][0]
+        opening = next(o for o in TRIAGE_OPENINGS if first.startswith(o))
+        for word in first[len(opening):].split(maxsplit=1)[:1]:  # "… ticket <KEY> in …"
+            word = word.rstrip(".,:;")
+            if any(rx.fullmatch(word) for rx in TICKET_RES) or ISSUE_KEY.fullmatch(word):
+                return word
+    branches = [] if triage else s["branches"].most_common()
+    for branch, _ in branches:
         for rx in TICKET_RES:
             m = rx.search(branch)
             if m:

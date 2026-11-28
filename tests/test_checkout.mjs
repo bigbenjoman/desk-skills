@@ -365,6 +365,16 @@ const issues = script('claude_activity.py', '--day', DAY).stdout;
 has('#1536 a batch on an issue-<n> branch folds under that key', issues, '- issue-12: worker (1 session)');
 has('#1536 with no branch, under its most-mentioned issue-<n>', issues, '- issue-13: triage (1 session)');
 has('#1536 and neither is counted as naming no ticket', issues, '(1 headless session naming no ticket omitted)');
+// Triage runs in the person's main checkout, so its branch is whatever that checkout has out, not the ticket triaged.
+headless('nnnn0009-triage', 'main', 'fix/APP-342-other-work', 'Triage ticket APP-310 in acme/app. Read-only: change nothing', 22);
+headless('nnnn0010-triage', 'main', 'fix/APP-342-other-work', 'Triage ticket APP-311 in acme/app. Read-only: change nothing', 22);
+headless('nnnn0011-challenge', 'main', 'fix/issue-1500-y', 'A first triage pass put ticket APP-312 in lane B. Challenge it', 22);
+const triaged = script('claude_activity.py', '--day', DAY).stdout;
+has('#1536 a triage session folds under the ticket its opening names, not the main checkout\'s branch', triaged, '- APP-310: triage (1 session)');
+has('#1536 each triaged ticket keeps its own line', triaged, '- APP-311: triage (1 session)');
+has('#1536 a challenge pass too', triaged, '- APP-312: triage (1 session)');
+lacks('#1536 so the checkout\'s branch ticket gets none of them', triaged, '- APP-342');
+lacks('#1536 nor an issue-<n> branch', triaged, '- issue-1500');
 
 // github_activity.py: the user's PRs that moved on the day, grouped by scope.
 const pr = (repo, number, title, extra = {}) => ({ repository_url: `https://api.github.com/repos/${repo}`, number, title, state: 'open', created_at: before, user: { login: 'me' }, pull_request: {}, ...extra });
