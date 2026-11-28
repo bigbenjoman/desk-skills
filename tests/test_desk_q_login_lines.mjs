@@ -142,7 +142,12 @@ t('AC9 with none pinned', quiet(home()), true);
 subscriptions([...CLAUDE, ...CODEX]);
 const AC5 = `Codex   ${'codex-2'.padEnd('ben.lavender@me.com'.length)}  5h ██········ 16% 16:40 · 7d ███······· 27% Mon 09:00  │ default`;
 t('AC5 the Codex line names codex-2 with its bars, and no count of other logins', lines()[1], AC5);
-t('AC5 drawn at 120 columns, under the Claude line', (await drawn()).slice(0, 2).join('\n'), `${AC3}\n${AC5}`);
+// issue-1588 AC2: each other Claude login with a reading has a line of its own, between the two, with
+// its own figures and resets.
+const W = 'ben.lavender@me.com'.length;
+const OTHERS = [`        ${'ben@voicepa.ai'.padEnd(W)}  5h █████····· 50% 13:20 · 7d ███████··· 70% Mon 09:00`,
+  `        ${'ben@studia.io'.padEnd(W)}  5h ·········· 0% 15:00 · 7d ·········· 4% Thu 22:00`];
+t('AC5 drawn at 120 columns, under the Claude line and the other Claude logins\'', (await drawn()).slice(0, 4).join('\n'), [AC3, ...OTHERS, AC5].join('\n'));
 codexReading(join(H, '.codex'), [100, at(24, 16, 40)], [27, at(26, 9, 0)]);
 t('AC5 the Codex default at its limit is still the one named', lines()[1].startsWith('Codex   codex-2 '), true);
 t('AC9 with the Codex default at its limit', quiet(home()), true);

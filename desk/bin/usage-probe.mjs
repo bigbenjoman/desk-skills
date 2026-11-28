@@ -7,7 +7,8 @@
 //
 // A probe given a login runs in that login's config folder, and its output and start time are kept as
 // that login's: probe.log and probe.at for the default login, probe.<login>.log and probe.<login>.at
-// for another, so another login's reading is never read as the default's.
+// for another, so another login's reading is never read as the default's. A login may be named by its
+// name in the subscriptions file, whatever its rule, as well as given as a login.
 import { mkdirSync, openSync, closeSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -17,7 +18,7 @@ import { WINDOWS, WINDOW_LABELS, newestReading, stateDirs, usageDir, probeLog, w
 import { tryBorrowLock } from './borrow.mjs';
 import { sleepSync } from './dir-lock.mjs';
 import { apiRefusal, resetText, usageLimit } from './usage-limit.mjs';
-import { loginEnv } from './logins.mjs';
+import { defaultLogin, loginEnv, readSubscriptions } from './logins.mjs';
 import { claudeLogins, loginKey } from './claude-logins.mjs';
 import { codexUsageByLogin } from './codex-usage.mjs';
 
@@ -28,8 +29,18 @@ const PROBE_LOCK = 'desk-usage-probe.lock.d';
 export const PROBE_ARGS = ['-p', 'Reply with: ok', '--model', 'haiku', '--output-format', 'stream-json', '--verbose',
   '--setting-sources', '', '--strict-mcp-config', '--tools', ''];
 export { usageDir, probeLog };
-const forLogin = (login) => (login?.configDir ? `.${loginKey(login)}` : '');
-export const loginProbeLog = (dir = usageDir(), login = null) => (forLogin(login) ? join(dir, `probe${forLogin(login)}.log`) : probeLog(dir));
+// The login a caller names: a login as given, or by name, the Claude login of that name the
+// subscriptions file lists (or finds) whatever its rule, `default` being ~/.claude where no login
+// takes that name. A name no login has is an error, never read as the default's.
+export function asLogin(login) {
+  if (typeof login !== 'string') return login;
+  const named = (x) => x.tool === 'claude' && x.name === login;
+  const l = claudeLogins().find(named) ?? readSubscriptions(E.subscriptionsPath()).logins.find(named) ?? (login === 'default' ? defaultLogin('claude') : null);
+  if (!l) throw new Error(`no Claude login named ${login}`);
+  return l;
+}
+const forLogin = (login) => { const l = asLogin(login); return l?.configDir ? `.${loginKey(l)}` : ''; };
+export const loginProbeLog = (dir = usageDir(), login = null) => { const k = forLogin(login); return k ? join(dir, `probe${k}.log`) : probeLog(dir); };
 const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
 // When a probe last started on this login (ms), or null when none has.
 export const lastProbeAt = (dir = usageDir(), login = null) => {
@@ -40,7 +51,7 @@ export const lastProbeAt = (dir = usageDir(), login = null) => {
 // repo and its last probe's output, the same sources a pass's pacing reads.
 //   -> { five_hour, seven_day, at, none }
 export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), login = null, now = Date.now() } = {}) =>
-  newestReading({ dirs, files: [loginProbeLog(dir, login)], login, now });
+  newestReading({ dirs, files: [loginProbeLog(dir, login)], login: asLogin(login), now });
 
 // A login's newest reading from its own probe's output alone, which is what its next probe is judged on.
 export const readLoginUsage = ({ login, dir = usageDir(), now = Date.now() }) =>
@@ -101,7 +112,7 @@ export const noReadingProbeDue = ({ dir = usageDir(), login = null, now = Date.n
 // on the 5-minute prompt cache, as a one-request call never reads a cache an hour later.
 export function probeEnv(env = process.env, login = null) {
   const { ANTHROPIC_API_KEY: _key, ...rest } = env;
-  return { ...(login ? loginEnv(login, env) : rest), FORCE_PROMPT_CACHING_5M: '1' };
+  return { ...(login ? loginEnv(asLogin(login), env) : rest), FORCE_PROMPT_CACHING_5M: '1' };
 }
 
 // The machine-wide gate on a login's probe start, which desk-q's probe and a pass's (probeShared) both
@@ -193,7 +204,7 @@ function probeAnswer(out, r, claude) {
   return { ok: false, limit, refused, why };
 }
 
-const loginName = (login) => (login?.configDir ? login.name : 'default');
+const loginName = (login) => { const l = asLogin(login); return l?.configDir ? l.name : 'default'; };
 
 // Whether the login's probe log was written at or after `since`. A filesystem that keeps mtimes to the
 // second is compared to the second.
