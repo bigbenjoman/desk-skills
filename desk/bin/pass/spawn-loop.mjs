@@ -25,6 +25,8 @@
 //   fetchLimit the seconds a worktree setup's git fetch is given
 //   cloudFix   where its unfinished fix try on a cloud PR goes (pass/shared.mjs cloudFixRoute): 'send'
 //              to its live session, 'new' for a new cloud session on the PR's branch, or null
+//   archiveWait the cloud session a local start must wait for the person to archive, or null
+//              (pass/shared.mjs cloudArchiveWait)
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
 //   file-budget {key}    -> true where a file it names is at its per-file budget, counting the tickets
@@ -57,6 +59,8 @@
 //   park {key, line}                          park it
 //   park-ask {key, line}                      park it with a question for the person, no slot taken
 //   hand-away {key, placement}                admit it in the repo its code is in
+//   cloud-archive-wait {key} -> what was recorded: its cloud PR's session recorded abandoned and on
+//                        needs-you's archive list, where it is not already
 //   start {key, how, pick?, setup?, place?}   start it: `how` is resume, handoff, send (its fix try to its
 //                                             cloud session), cloud or local; a local one carries its
 //                                             place ({where, why}), recorded once it runs
@@ -91,6 +95,14 @@ export function* decideSpawn(s) {
     return yield { ...skip, full: true, ...(place.full === 'cloud' ? { cloud: true } : {}) };
   }
   const cloud = place.where === 'cloud';
+  // A local try that writes to a cloud PR's branch waits, taking no slot, until the person has archived
+  // that PR's session, which is recorded abandoned and put on needs-you's archive list first: until
+  // then the session may still push there, and two writers race each other's pushes and reviews.
+  if (!cloud && s.archiveWait) {
+    const done = yield { type: 'cloud-archive-wait', key };
+    yield wait(`its fix try on PR #${t.fix.pr} runs as a local worker and writes to the PR's branch, which cloud session ${s.archiveWait} may still push to: ${done}. It starts once that session is archived (needs-you: done on its cloud-archive item)`);
+    return yield skip;
+  }
   // A resume or handoff of a ticket whose cloud session is over runs here, as before.
   const offHere = cloud || ((s.resume || s.handoff) && runsInCloud(t));
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.

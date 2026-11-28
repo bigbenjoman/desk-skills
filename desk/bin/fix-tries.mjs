@@ -1567,6 +1567,22 @@ function reviewStep(review, what, how = '') {
 }
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
+// What fix try record `f` lists, read from its fields once for every brief that words it (fixBrief, and
+// cloud-worker.mjs cloudFixMsg for a cloud session): a review's findings as `<sev>: <text>`; the checks
+// left red as not its to fix; and a feedback try's threads, split into those with a thread (or with no
+// body flag), the review body's findings with a file:line (`listed`) and the body itself (`whole`), with
+// `cut` where that body was cut short.
+export function fixItems(f) {
+  const all = f?.threads ?? [];
+  const inBody = all.filter((x) => !x.id && x.body), whole = inBody.filter((x) => x.whole);
+  return {
+    findings: (f?.findings ?? []).map((x) => `${x.sev}: ${x.text}`),
+    leaveRed: [...(f?.not_mine ?? []).map((c) => c.name), ...(f?.builds ?? []), ...(f?.base_red ?? [])],
+    threads: all.filter((x) => x.id || !x.body), listed: inBody.filter((x) => !x.whole), whole,
+    cut: whole.some((x) => x.text.endsWith(' …')),
+  };
+}
+
 // The fix worker's briefing section, while its try is open. `review` as reviewStep reads it.
 export function fixBrief(t, review = null) {
   const f = t.fix;
@@ -1655,15 +1671,14 @@ export function fixBrief(t, review = null) {
       ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads. ` +
         `That check stays red while that review still lists a finding it blocks on, so carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK) naming the one you cannot fix and why. Ending with nothing pushed leaves the check red and spends this try.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
-    const threads = (f.threads ?? []).filter((x) => x.id || !x.body), inBody = (f.threads ?? []).filter((x) => !x.id && x.body);
+    const { threads, listed, whole, cut } = fixItems(f);
     if (threads.length) {
       lines.push('Its unresolved review threads:', '');
       for (const x of threads) lines.push(`- ${x.text}`);
       lines.push('');
     }
-    if (inBody.length) {
+    if (listed.length || whole.length) {
       const who = f.external ? `${f.external.login}'s` : 'the';
-      const listed = inBody.filter((x) => !x.whole), whole = inBody.filter((x) => x.whole);
       if (listed.length) {
         lines.push(`The findings ${who} review body lists with a file:line, none with a thread of its own (one on a line outside the diff has none):`, '');
         for (const x of listed) lines.push(`- ${x.text}`);
@@ -1671,7 +1686,7 @@ export function fixBrief(t, review = null) {
       }
       if (whole.length) {
         lines.push(`${f.external ? `${f.external.login}'s review body` : 'The review body'} itself, for any finding it states with no file:line and what it says of each:`, '', ...whole.map((x) => `> ${x.text}`), '');
-        if (whole.some((x) => x.text.endsWith(' …'))) lines.push(`That body is cut here: read it in full with gh pr view ${f.pr} --json reviews.`, '');
+        if (cut) lines.push(`That body is cut here: read it in full with gh pr view ${f.pr} --json reviews.`, '');
       }
       lines.push('Fix each finding the review body still holds open, as you would a thread. One the body itself marks refuted, or not a finding, needs no fix: say so in your comment. Having no thread, a body finding is answered in your gh pr comment, naming its file:line (or quoting it, where it names none), not on a thread.', '');
     }
@@ -1682,7 +1697,7 @@ export function fixBrief(t, review = null) {
     lines.push(`Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
     if (f.findings?.length) {
       lines.push(`Fix each ${findingKinds(f.findings)} finding it lists${f.findings.some((x) => x.sev === 'P2') ? ', or carry one in your next review where fixing it would mean another round (worker contract Stage 4)' : ''}:`, '');
-      for (const x of f.findings) lines.push(`- ${x.sev}: ${x.text}`);
+      for (const x of fixItems(f).findings) lines.push(`- ${x}`);
       lines.push('');
     }
     if (f.gaps?.length) {

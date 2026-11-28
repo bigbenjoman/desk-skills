@@ -226,6 +226,15 @@ export const fixInCloud = (t) => t?.location === 'cloud' && Boolean(t.cloud?.fix
 export const runsInCloud = (t) => t?.location === 'cloud' && (!cloudPrHere(t) || fixInCloud(t));
 // A cloud session that may still push to its PR's branch: recorded, and not recorded abandoned.
 export const cloudSessionLive = (t) => Boolean(t?.cloud?.session) && !t.cloud.abandoned_at;
+// The session a local start of ticket `t` must wait on, or null: an unfinished fix try that writes to its
+// cloud PR's branch (any but a review or capture try), while that PR's session is not among `archived`
+// (cloud-worker.mjs readArchived). Recorded abandoned is not enough: nothing here can end a cloud
+// session, so until the person archives it, it may still push to the branch. -> its URL or id
+export function cloudArchiveWait(t, archived) {
+  const f = t?.fix, s = t?.cloud?.session;
+  if (!cloudPrHere(t) || !f || f.finished || ['rereview', 'capture'].includes(f.kind) || !s || archived.has(s)) return null;
+  return t.cloud.url ?? s;
+}
 // Where a cloud ticket's unfinished fix try on its PR goes, decided as its turn in the spawn loop comes:
 // 'send' to its live session (cloud-worker.mjs sendCloud), 'new' for a new cloud session on the PR's
 // branch where it has none, or null for a local worker: not a cloud PR's, a kind no session takes, a
