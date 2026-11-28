@@ -1176,6 +1176,10 @@ stale_base(){ # stale_base <n> <sha> <gate json> <key>
   return 1
 }
 
+# confirm_due <n> <epoch>: PR <n> is confirming until <epoch>; the loop keeps the soonest, so its pause
+# ends when that hold does.
+CONFIRM_DUE=""; CONFIRM_PR=""
+confirm_due(){ if [ -z "$CONFIRM_DUE" ] || [ "$2" -lt "$CONFIRM_DUE" ]; then CONFIRM_DUE="$2"; CONFIRM_PR="$1"; fi; }
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head="" pbase=""
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
@@ -1356,8 +1360,11 @@ EOF_RESOLVE
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)
-  if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
-  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
+  if [ -z "$green_at" ]; then
+    green_at=$(date +%s); echo "$sha $green_at" > "$SD/green-$n"; confirm_due "$n" $((green_at + GREEN_HOLD_SECS))
+    log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1
+  fi
+  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then confirm_due "$n" $((green_at + GREEN_HOLD_SECS)); log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
   if [ -z "$EPIC_KEY" ] && repair_held "$n" "$g"; then return 1; fi
   # The epic PR too: §0 Default branch may have gained a migration since the base's last sync.
@@ -1532,7 +1539,7 @@ while true; do
   fi
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)
-  merged=""
+  merged=""; CONFIRM_DUE=""; CONFIRM_PR=""
   while IFS="$(printf '\t')" read -r n key kind; do
     [ -n "$n" ] || continue
     # stdin from /dev/null: nothing inside may eat the list this loop is reading.
@@ -1541,5 +1548,10 @@ while true; do
   done <<EOF_READY
 $ready
 EOF_READY
-  if [ -n "$merged" ]; then outcome 10; pause 30; else pause 120; fi
+  if [ -n "$merged" ]; then outcome 10; pause 30
+  elif [ -n "$CONFIRM_DUE" ]; then
+    # A PR left confirming is looked at again as its hold ends, not after the full idle pause.
+    left=$(( CONFIRM_DUE - $(date +%s) )); [ "$left" -ge 1 ] || left=1; [ "$left" -le 120 ] || left=120
+    log "looking again in ${left}s, as #$CONFIRM_PR's confirmation hold ends"; pause "$left"
+  else pause 120; fi
 done
