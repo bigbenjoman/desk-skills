@@ -32,6 +32,8 @@ const REWRITTEN = [
   ['DS-259', '"Can resolve" means any value other than a GitHub-hosted image label', 1], // a repo's declared AWS runner labels resolve to its own cloud runner
   ['DS-261', 'and the protection writes below, each shown first', 1], // `aws-fallback off` is a write too
   ['DS-261', '--- name: desk-ci description: >-', 1], // the frontmatter names aws-fallback in its description and argument-hint
+  ['DS-263', 'summed over every attempt. Runs whose jobs were not read are scaled in per stratum', 1], // billed minutes count against the included minutes
+  ['DS-263', 'the same rounding with no multiplier and no cap', 1], // self-hosted minutes count to the second
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 10, minRows: 26, rewritten: REWRITTEN });
 

@@ -667,8 +667,9 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
       `merge_after=${mergeAfter[t]?.length ? mergeAfter[t].join('|') : 'null'}`,
-      // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs placeAtStart).
-      'location=null',
+      // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs
+      // placeAtStart). A pin to this computer (location=local) is the person's, kept until location=auto.
+      ...(queued[t]?.location === 'local' ? [] : ['location=auto']),
       `cloud_ok=${placed[t].where === 'cloud' ? 'true' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });

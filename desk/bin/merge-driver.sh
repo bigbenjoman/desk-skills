@@ -172,6 +172,8 @@
 #                                set by --all-batches for each batch's loop: the lock it runs under is
 #                                that pid's, n numbers the sweep, and the open PRs are read from the file.
 #                                Its one loop exits 10 after a merge and 11 with ready PRs left
+#   MERGE_DRIVER_DUE=<file>      set by --all-batches too: a loop that merges nothing and leaves a PR
+#                                confirming appends the epoch its hold ends, so the sweep waits only that long
 #   MERGE_DRIVER_LIST_LIMIT=<n>  with --all-batches, the most open PRs its one list reads (default 1000);
 #                                a list that long has each batch list its own that sweep
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
@@ -185,7 +187,7 @@
 #                                often within it the driver looks for a worker's exit or an undraft by the
 #                                pass, either of which ends it (default 60); each a whole number of
 #                                seconds above 0. After a merge it waits 30s, and with ready PRs still
-#                                waiting on CI 120s
+#                                waiting on CI 120s, or until the soonest confirmation hold ends
 #   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer before its one
 #                                branch update, and again after it before the queue asks the person
 #                                (default DESK_UNKNOWN_SECS, which the pass's undraft reads too, else 1800)
@@ -1176,6 +1178,10 @@ stale_base(){ # stale_base <n> <sha> <gate json> <key>
   return 1
 }
 
+# confirm_due <n> <epoch>: PR <n> is confirming until <epoch>; the loop keeps the soonest, so its pause
+# ends when that hold does.
+CONFIRM_DUE=""; CONFIRM_PR=""
+confirm_due(){ if [ -z "$CONFIRM_DUE" ] || [ "$2" -lt "$CONFIRM_DUE" ]; then CONFIRM_DUE="$2"; CONFIRM_PR="$1"; fi; }
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head="" pbase=""
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
@@ -1356,8 +1362,11 @@ EOF_RESOLVE
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)
-  if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
-  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
+  if [ -z "$green_at" ]; then
+    green_at=$(date +%s); echo "$sha $green_at" > "$SD/green-$n"; confirm_due "$n" $((green_at + GREEN_HOLD_SECS))
+    log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1
+  fi
+  if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then confirm_due "$n" $((green_at + GREEN_HOLD_SECS)); log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
   if [ -z "$EPIC_KEY" ] && repair_held "$n" "$g"; then return 1; fi
   # The epic PR too: §0 Default branch may have gained a migration since the base's last sync.
@@ -1532,7 +1541,7 @@ while true; do
   fi
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)
-  merged=""
+  merged=""; CONFIRM_DUE=""; CONFIRM_PR=""
   while IFS="$(printf '\t')" read -r n key kind; do
     [ -n "$n" ] || continue
     # stdin from /dev/null: nothing inside may eat the list this loop is reading.
@@ -1541,5 +1550,12 @@ while true; do
   done <<EOF_READY
 $ready
 EOF_READY
-  if [ -n "$merged" ]; then outcome 10; pause 30; else pause 120; fi
+  if [ -n "$merged" ]; then outcome 10; pause 30
+  elif [ -n "$CONFIRM_DUE" ]; then
+    # A PR left confirming is looked at again as its hold ends, not after the full idle pause. In a
+    # sweep the pause is the repo driver's, so the hold's end goes to it in MERGE_DRIVER_DUE.
+    [ -z "${MERGE_DRIVER_DUE:-}" ] || echo "$CONFIRM_DUE" >> "$MERGE_DRIVER_DUE"
+    left=$(hold_left "$CONFIRM_DUE")
+    log "looking again in ${left}s, as #$CONFIRM_PR's confirmation hold ends"; pause "$left"
+  else pause 120; fi
 done

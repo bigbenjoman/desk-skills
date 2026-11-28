@@ -226,7 +226,7 @@ export function* decideUndraft(snap) {
     let rf = null;
     if (hold || gated) rf = null;
     else if (gateFix) rf = gateFix;
-    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, workerMay: cfg.workerMay, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null });
+    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, workerMay: cfg.workerMay, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null, settled: () => reads.settled?.(t.key) ?? [] });
     // A draft the outage step re-ran this pass, its hold cleared, waits for that run, as a ready PR does.
     else if (c.call === 'checks' && snap.outageRerun?.includes(n)) rf = null;
     else if (c.call === 'checks' && !snap.fixRowErrors.length) {

@@ -307,14 +307,31 @@ check "DS-971 AC2: an undraft by the pass ends it too" \
   '[ $rc -eq 143 ] && echo "$out" | grep -q "woken: a PR left draft" && echo "$out" | grep -q "next look in 240s"'
 rm -f "$T/between.2"
 # Idle, then a ready PR that merges on its second green loop, then idle again: the merge pauses 30s
-# as before, and the idle run after it starts again at a minute.
+# as before, and the idle run after it starts again at a minute. Its confirming loop pauses only until
+# its hold ends, which at a 0s hold is the 1s floor.
 SHA971=9719719719719719719719719719719719719719
 q add T-971 Task A; q set T-971 branch=fix/T-971 state=done result.pr=971
 printf '#!/bin/sh\necho %s > "%s/prs.json"\n' "'{ \"971\": { \"head\": \"fix/T-971\", \"base\": \"main\", \"sha\": \"$SHA971\", \"state\": \"open\", \"draft\": false, \"checks\": [[\"test\", \"SUCCESS\"]] } }'" "$T" > "$T/between.1"; chmod +x "$T/between.1"
 loops 4
 check "DS-971 AC3: a loop that merged pauses 30s as before, and the next idle run starts at a minute" \
-  '[ $rc -eq 143 ] && grep -q "^971 main $SHA971" "$T/merges.log" && [ "$(paste -sd" " - < "$T/sleeps")" = "60 120 30 60" ] && ! echo "$out" | grep -q "next look in"'
-rm -f "$T/between.1"; q drop T-971
+  '[ $rc -eq 143 ] && grep -q "^971 main $SHA971" "$T/merges.log" && [ "$(paste -sd" " - < "$T/sleeps")" = "60 1 30 60" ] && ! echo "$out" | grep -q "next look in"'
+rm -f "$T/between.1"
+# ---- DS-957: a loop that leaves a PR confirming looks again as its hold ends, not after 120s ---------
+echo "{ \"971\": { \"head\": \"fix/T-971\", \"base\": \"main\", \"sha\": \"$SHA971\", \"state\": \"open\", \"draft\": false, \"checks\": [[\"test\", \"SUCCESS\"]] } }" > "$T/prs.json"
+: > "$T/merges.log"; rm -f "$T/state/merge-driver/green-971" "$T/sleeps"
+holdloops(){ out=$(PATH="$T/loopstub:$PATH" FAKE_LOOPS="$1" FAKE_BETWEEN="$T/between" MERGE_DRIVER_GREEN_SECS=60 bash "$B/merge-driver.sh" --tickets "T-971" 2>&1); rc=$?; }
+holdloops 2
+s1=$(head -n 1 "$T/sleeps"); s2=$(tail -n 1 "$T/sleeps")
+check "DS-957 AC1: a PR first seen green pauses the loop until its 60s hold ends, not 120s" \
+  '[ $rc -eq 143 ] && [ "$s1" -ge 50 ] && [ "$s1" -le 60 ] && echo "$out" | grep -q "looking again in ${s1}s, as #971'\''s confirmation hold ends"'
+check "DS-957 AC3: the 60s hold itself is unchanged: a look before it ends still confirms, merges nothing, and pauses only for what is left" \
+  '[ ! -s "$T/merges.log" ] && [ "$(grep -c "#971 green at 971971971 — confirming$" <<< "$out")" = 1 ] && [ "$s2" -ge 1 ] && [ "$s2" -le "$s1" ]'
+echo "{ \"971\": { \"head\": \"fix/T-971\", \"base\": \"main\", \"sha\": \"$SHA971\", \"state\": \"open\", \"draft\": false, \"checks\": [[\"test\", \"FAILURE\"]] } }" > "$T/prs.json"
+rm -f "$T/state/merge-driver/green-971" "$T/sleeps"
+holdloops 1
+check "DS-957 AC2: with no PR confirming, a loop that merges nothing still pauses 120s" \
+  '[ $rc -eq 143 ] && [ "$(cat "$T/sleeps")" = 120 ] && ! echo "$out" | grep -q "looking again in"'
+rm -f "$T/state/merge-driver/green-971" "$T/sleeps"; q drop T-971
 out=$(MERGE_DRIVER_WAKE_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
 check "DS-971: a pause setting that is not a whole number above 0 stops the driver at start" '[ $rc -eq 2 ] && echo "$out" | grep -q "MERGE_DRIVER_WAKE_SECS is .0."'
 

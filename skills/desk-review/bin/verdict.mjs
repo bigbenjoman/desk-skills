@@ -13,6 +13,7 @@
 //   node verdict.mjs --method <results.json>   prints the PR body's line on how the review ran
 //   node verdict.mjs --accepted <results.json> prints the review body's accepted-gaps section, if any
 //   node verdict.mjs --post-merge <results.json> prints the review body's after-the-merge section, if any
+//   node verdict.mjs --settled <results.json>  prints the review body's settled-by-Decisions section, if any
 //   node verdict.mjs --findings <results.json> --reviewer <self|pr>
 //                                              prints the round's AUTOPILOT_FINDINGS line, once its
 //                                              fixes are in, for the pass to record (desk/bin/findings.mjs)
@@ -52,6 +53,14 @@
 //
 // Only a requirement gap can be accepted; a P0 or P1 is never. The count goes on a line of its own
 // after the heading, as the carried count does, so every gate reads gaps=0 and nothing new.
+//
+// A criterion a dated entry in the ticket's Decisions section settles (it names the criterion, the
+// evidence and who decided) is met, or met as the entry amends it: it is never a gap, and is listed in
+// "settled", quoting the entry as the ticket holds it (`<yyyy-mm-dd> <who>: <what>`, settlingEntry):
+//
+//   "settled": [ { "gap": "AC3", "entry": "2026-11-26 ben: AC3 measured at 212 lines on the 2026-11-26 window, under 300" } ]
+//
+// It never changes a count: the verdict cites the entry in its own section (--settled).
 //
 // A criterion only a live system can check (a production run, a staging call, playback on a device)
 // is not open either: it leaves "gaps" and is listed in "post_merge", each naming what it needs and
@@ -99,7 +108,9 @@
 //   - an accepted gap names its criterion, who accepted it, when, and the PR comment or review that
 //     records it, once each: one without all four is refused, never counted out of gaps;
 //   - a post-merge criterion names its criterion, a live-only need and its step, once, and is not also
-//     accepted: one a test could check before the merge is refused, never counted out of gaps.
+//     accepted: one a test could check before the merge is refused, never counted out of gaps;
+//   - a settled criterion quotes a dated Decisions entry that names it, who decided and the evidence,
+//     once, and is neither accepted nor left for after the merge.
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { posix, resolve } from 'node:path'
@@ -108,7 +119,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
-const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'post_merge', 'skipped_files', 'seats', 'findings', 'rests_on', 'targeted', 'codex']
+const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'post_merge', 'settled', 'skipped_files', 'seats', 'findings', 'rests_on', 'targeted', 'codex']
 const TARGETED = ['from', 'range', 'files', 'users']
 const REPO_PATH = (p) => typeof p === 'string' && !!p && !/[\r\n]/.test(p) && !p.startsWith('/')
 // With the codex lever on, the model and effort each codex role ran at, as `desk-codex settings` prints them.
@@ -122,6 +133,27 @@ const ACCEPTED = ['gap', 'by', 'at', 'url']
 const ACCEPT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$/
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
 const POST_MERGE = ['gap', 'needs', 'step']
+const SETTLED = ['gap', 'entry']
+// A ticket's Decisions entry as desk-jira's template writes it, bullet dropped: date, who, then what.
+const DECISION_ENTRY = /^(\d{4}-\d{2}-\d{2})\s+([^:\r\n]*[^\s:])\s*:\s*(.+)$/
+// A criterion's label, as the ticket numbers it: AC3, DoD2.
+const CRITERION = /\b(?:AC|DoD)\s?\d+\b/gi
+const label = (s) => String(s).replace(/\s+/g, '').toUpperCase()
+
+// A Decisions entry (`<yyyy-mm-dd> <who>: <what>`, a leading `*` or `-` allowed) read as settling the
+// criterion `gap` (AC3, DoD2): { date, who, criterion }, or null. It settles it only when it is dated,
+// names who decided, names that criterion, and says more than the label: the evidence or the ruling. One
+// naming several criteria settles each it names. The desk pass's own entry (`<date> desk pass: issue
+// #<n> changed …`) reports criteria changed on the issue, and settles none.
+export function settlingEntry(entry, gap) {
+  const m = DECISION_ENTRY.exec(String(entry ?? '').trim().replace(/^[-*]\s+/, ''))
+  if (!m || /^desk pass$/i.test(m[2].trim())) return null
+  const [, date, who, what] = m
+  const criterion = label(gap ?? '')
+  if (!criterion || !(what.match(CRITERION) ?? []).map(label).includes(criterion)) return null
+  const said = what.replace(CRITERION, ' ').replace(/[\s:;,.()"'`—–-]+/g, ' ').trim()
+  return said ? { date, who: who.trim(), criterion } : null
+}
 // What only exists once the PR has merged: the production system, a shared staging one, a deployed
 // build, a physical device, or a third party's live service. A unit, integration or local check is none.
 const POST_MERGE_NEEDS =['production', 'staging', 'deployed', 'device', 'third-party']
@@ -191,6 +223,18 @@ export function tally(r) {
     if (named.has(p.gap)) no(`${name} is also accepted: a criterion is accepted or left for after the merge, not both`)
     if (!POST_MERGE_NEEDS.includes(p.needs)) no(`${name}: needs must be one of ${POST_MERGE_NEEDS.join(', ')}; a criterion a test, a local run or a preview can check before the merge is a gap`)
     if (typeof p.step !== 'string' || !p.step.trim() || /[\r\n]/.test(p.step) || p.step.length > POST_MERGE_STEP_MAX) no(`${name}: step says on one line, within ${POST_MERGE_STEP_MAX} characters, what checks it after the merge`)
+  })
+  const settled = r.settled ?? []
+  if (!Array.isArray(settled)) no('settled must list each criterion a Decisions entry settles ([] or left out when there are none)')
+  const met = new Set()
+  settled.forEach((x, i) => {
+    keysOf(x, SETTLED, `settled[${i}]`)
+    if (typeof x.gap !== 'string' || !x.gap.trim() || /[\r\n]/.test(x.gap)) no(`settled[${i}].gap names the criterion, as AC3`)
+    const name = `settled criterion ${x.gap}`
+    if (met.has(x.gap)) no(`${name} is listed twice`)
+    met.add(x.gap)
+    if (named.has(x.gap) || later.has(x.gap)) no(`${name} is also ${named.has(x.gap) ? 'accepted' : 'left for after the merge'}: a criterion a Decisions entry settles is met, not open`)
+    if (typeof x.entry !== 'string' || /[\r\n]/.test(x.entry) || !settlingEntry(x.entry, x.gap)) no(`${name}: entry quotes, on one line, the ticket's dated Decisions entry that settles it, as "<yyyy-mm-dd> <who>: <what>", naming ${x.gap} and the evidence`)
   })
 
   if (!Array.isArray(r.seats) || !r.seats.length) no('seats must list every seat dispatched')
@@ -314,7 +358,8 @@ export function tally(r) {
   const refuters = [...new Set(r.findings.filter((f) => f.severity !== 'PREMISE' && f.refuted_by != null).map((f) => f.refuted_by))]
   const anchorMissing = r.findings.filter((f) => f.anchor === ANCHOR_MISSING).length
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted, anchorMissing,
-    postMerge: postMerge.map((p) => ({ gap: p.gap.trim(), needs: p.needs, step: p.step.trim() })), restsOn, targeted, fixed,
+    postMerge: postMerge.map((p) => ({ gap: p.gap.trim(), needs: p.needs, step: p.step.trim() })),
+    settled: settled.map((x) => ({ gap: x.gap.trim(), ...settlingEntry(x.entry, x.gap), entry: x.entry.trim().replace(/^[-*]\s+/, '') })), restsOn, targeted, fixed,
     refuterVendor: refuters.length > 1 ? 'mixed' : refuters[0] ?? null,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
@@ -511,6 +556,19 @@ export function postMergeSection(r) {
   ].join('\n')
 }
 
+// The review body's section for the criteria the ticket's Decisions settle: each with the entry it
+// rests on and who decided; '' when there are none. Its heading never names requirement gaps, which a
+// reader of the body (fix-tries.mjs reviewGaps) takes for the open ones.
+export function settledSection(r) {
+  const t = tally(r)
+  if (!t.settled.length) return ''
+  return [
+    '### Settled by the ticket\'s Decisions',
+    'A dated Decisions entry on the ticket settles each of these criteria, so the verdict counts it met, as the entry amends it:',
+    ...t.settled.map((x) => `- ${x.gap}: decided by ${x.who} on ${x.date}: "${x.entry}"`),
+  ].join('\n')
+}
+
 // Why the review gate would reject a review body posted at `head`, or null: no verdict marker it reads,
 // a marker for another commit, a vendor other than the one the gate requires, or a heading that
 // contradicts a clean marker. gate: the review-gate.mjs module (parseVerdict, headingMismatch, COUNTS).
@@ -579,10 +637,10 @@ if (isMain && process.argv[2] === '--check') {
       if (at < 0) no('usage: verdict.mjs --findings <results.json> --reviewer <self|pr>')
       reviewer = args.splice(at, 2)[1] ?? ''
     }
-    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection, '--post-merge': postMergeSection, '--findings': (r) => findingsLine(r, reviewer) }
+    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection, '--post-merge': postMergeSection, '--settled': settledSection, '--findings': (r) => findingsLine(r, reviewer) }
     const mode = Object.hasOwn(modes, args[0] ?? '') ? args[0] : null
     const [file, ...rest] = mode ? args.slice(1) : args
-    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted | --post-merge | --findings … --reviewer <self|pr>] <results.json>')
+    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted | --post-merge | --settled | --findings … --reviewer <self|pr>] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
     const refused = validateResults(r)

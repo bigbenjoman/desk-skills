@@ -38,6 +38,10 @@ pause_for(){
   stop_if_asked
 }
 
+# hold_left <epoch>: the seconds from now until a confirmation hold ends at <epoch>, at least 1 and at
+# most the 120s a loop with ready PRs waits anyway.
+hold_left(){ local left=$(( $1 - $(date +%s) )); [ "$left" -ge 1 ] || left=1; [ "$left" -le 120 ] || left=120; echo "$left"; }
+
 # The pause after a loop with no ready PR: MERGE_DRIVER_IDLE_SECS, doubled on each such loop in a row
 # (IDLE_RUN) up to MERGE_DRIVER_IDLE_MAX_SECS, in slices of MERGE_DRIVER_WAKE_SECS.
 IDLE_SECS="${MERGE_DRIVER_IDLE_SECS:-60}"; IDLE_MAX_SECS="${MERGE_DRIVER_IDLE_MAX_SECS:-600}"; WAKE_SECS="${MERGE_DRIVER_WAKE_SECS:-60}"
