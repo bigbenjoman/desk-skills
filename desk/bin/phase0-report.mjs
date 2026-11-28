@@ -39,6 +39,7 @@ import { pinDisagrees } from './lever-pin.mjs';
 import { ticketRework, reworkSummary } from './rework.mjs';
 import { toolOutcomes, codexCalls, waitCalls } from './log-tool-calls.mjs';
 import { everyTicket } from './queue-store.mjs';
+import { quantile } from './quantile.mjs';
 import { readQueue as readQueueFile, reworked } from './batch-state.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -146,6 +147,25 @@ export function logFacts(text) {
   return out;
 }
 
+// ---- time per ticket ------------------------------------------------------------------------------
+// Hours from a ticket's first recorded worker start (each start's `at`) to its merge: null with no
+// merge, no start with a time, or a first start after the merge, never 0.
+function hoursToMerge(starts, mergedAt) {
+  const merged = Date.parse(mergedAt ?? '');
+  const ats = (starts ?? []).map((s) => Date.parse(s?.at ?? '')).filter(Number.isFinite);
+  if (!Number.isFinite(merged) || !ats.length) return null;
+  const first = Math.min(...ats);
+  return first <= merged ? (merged - first) / 3_600_000 : null;
+}
+// Why a per-ticket row has no time: requeued after merging (its round is not finished, and merged_at
+// keeps only its first merge), not merged, or no recorded start. Null when it has one.
+export function timeMissing(r) {
+  if (r.reworked) return 'reworked';
+  if (!Number.isFinite(Date.parse(r.merged_at ?? ''))) return 'not_merged';
+  return hoursToMerge(r.start_records, r.merged_at) == null ? 'no_start' : null;
+}
+export const ticketHours = (r) => (timeMissing(r) ? null : hoursToMerge(r.start_records, r.merged_at));
+
 // ---- one batch -----------------------------------------------------------------------------------
 const add = (into, from) => { for (const [k, v] of Object.entries(from)) into[k] = (into[k] ?? 0) + v; };
 const addQuota = (into, readings) => {
@@ -161,7 +181,7 @@ const addQuota = (into, readings) => {
 // `acc*` only the accepted tickets whose every run did, which is what the per-ticket figure divides.
 const emptyFigures = () => ({
   tickets: 0, accepted: 0, runs: 0, unknownRuns: 0, input: 0, output: 0, cost: 0,
-  accKnown: 0, accInput: 0, accOutput: 0, accCost: 0, fixTries: 0, repairs: {},
+  accKnown: 0, accInput: 0, accOutput: 0, accCost: 0, accHours: [], fixTries: 0, repairs: {},
   parks: 0, answered: 0, denials: {}, reviewRounds: 0, quota: {}, badReadings: 0, starts: 0, spawns: [], ci: {},
 });
 
@@ -200,6 +220,14 @@ function ticketFacts(state, t, from, records) {
   }
   return x;
 }
+// A ticket's starts as its per-ticket row records them, from ticketFacts' session-matched starts.
+const startRecords = (x) => x.starts.map(({ sid, record: s }) => ({
+  at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
+  levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
+  lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
+}));
+// Only a live ticket goes round again: reworked is never for an archived one (batch-state.mjs).
+const liveReworked = (q, t) => Object.hasOwn(q.tickets ?? {}, t.key) && reworked(t);
 
 // One batch's figures for the window from `since` (epoch ms). `answered` is the digest's answered
 // record ({ "<slug>/<ticket>/<hash>": ISO time }). A queue that cannot be read is { unreadable }.
@@ -226,6 +254,13 @@ export function batchFigures({ queue, state, slug, since, answered = {} }) {
     for (const y of tries) add(f.repairs, { [y.kind ?? 'unknown']: 1 });
     // Per accepted ticket counts only accepted tickets' tries, as fix-tries.mjs counts a try.
     if (merged) f.fixTries += triesMade(tries);
+    // Time as the per-ticket rows read it (ticketRows): the session-matched starts since the ticket's
+    // admission, to its merge. A ticket with no readable admission has no row, so no time.
+    if (merged && Number.isFinite(Date.parse(t.added_at ?? ''))) {
+      const own = from === t.added_at ? x : ticketFacts(state, t, t.added_at, records);
+      const hours = ticketHours({ reworked: liveReworked(q, t), merged_at: t.merged_at, start_records: startRecords(own) });
+      if (hours != null) f.accHours.push(hours);
+    }
     const spent = { input: x.input, output: x.output, cost: x.cost };
     for (const k of Object.keys(spent)) f[k] += spent[k];
     f.parks += x.parks;
@@ -264,6 +299,7 @@ export function totalOf(list) {
       f.quota[r] = had ? { min: Math.min(had.min, q.min), max: Math.max(had.max, q.max) } : { ...q };
     }
     f.spawns.push(...b.spawns);
+    f.accHours.push(...b.accHours);
   }
   return f;
 }
@@ -339,16 +375,11 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     const size = sizeOf(state, t.key);
     const rework = ticketRework(x.logs, t, x.cost);
     const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];
-    const starts = x.starts.map(({ sid, record: s }) => ({
-      at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
-      levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
-      lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
-    }));
+    const starts = startRecords(x);
     rows.push({
       slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,
       admitted_at: t.added_at, merged_at: t.merged_at ?? null, state: t.state ?? null,
-      // Only a live ticket goes round again: reworked is never for an archived one (batch-state.mjs).
-      reworked: Object.hasOwn(q.tickets ?? {}, t.key) && reworked(t),
+      reworked: liveReworked(q, t),
       cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
       preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
       starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
@@ -512,6 +543,10 @@ export function figureLines(f, { ci, quotaMissing, perStart = false }) {
     : !f.accKnown ? `per accepted ticket: ${NR}: no accepted ticket has its spend fully recorded${leftOut}`
       : `per accepted ticket: ${num(f.accInput / f.accKnown)} input tokens · ${num(f.accOutput / f.accKnown)} output tokens · ${usd(f.accCost / f.accKnown)} API-equivalent, over ${f.accKnown} of ${f.accepted}${leftOut}`);
   lines.push(`fix tries per accepted ticket: ${f.accepted ? (f.fixTries / f.accepted).toFixed(2) : 'no ticket accepted'} (${f.fixTries} made by accepted tickets)`);
+  const timed = f.accHours.length;
+  lines.push(!f.accepted ? 'time per accepted ticket: no ticket accepted'
+    : !timed ? `time per accepted ticket: ${NR}: no accepted ticket has a recorded start`
+      : `time per accepted ticket: median ${quantile(f.accHours, 0.5).toFixed(2)} hours from first start to merge, over ${timed} of ${f.accepted}${timed < f.accepted ? `; ${f.accepted - timed} left out, with no recorded start or requeued after merging` : ''}`);
   lines.push(`repair cycles by kind: ${listOf(f.repairs)}`);
   lines.push(`needs-you items: ${f.parks} raised (worker parks) · ${f.answered} answered (from the digest)`);
   const denials = Object.values(f.denials).reduce((n, v) => n + v, 0);

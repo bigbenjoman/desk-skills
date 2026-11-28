@@ -331,7 +331,12 @@ function summary(v) {
     lead = l.state === 'needs_you' ? 'Needs you.' : 'Working.';
     const breached = (v.panels.guardrails.rows ?? []).some((g) => g.status === 'breached');
     const pct = l.cheaper_pct;
-    const cost = pct == null ? '' : `Last week a ticket cost <b>${Math.abs(pct).toFixed(1)}% ${pct >= 0 ? 'less' : 'more'}</b> than before levers${breached ? ', and a guardrail has been breached' : ', and nothing has got worse'}. `;
+    // Time is named, as the view judged it, only when faster or slower than before levers.
+    const named = l.time === 'faster' || l.time === 'slower';
+    const time = named ? `finished <b>${Math.abs(l.faster_pct).toFixed(1)}% ${l.time}</b>` : '';
+    const cost = pct == null
+      ? (named ? `Last week a ticket ${time} than before levers. ` : '')
+      : `Last week a ticket cost <b>${Math.abs(pct).toFixed(1)}% ${pct >= 0 ? 'less' : 'more'}</b>${named ? ` and ${time}` : ''} than before levers${breached ? ', and a guardrail has been breached' : l.time === 'slower' ? '' : ', and nothing has got worse'}. `;
     body = `${cost}${l.kept} kept, ${l.testing} still being tested${needsText ? `, and ${needsText}` : ''}.`;
   }
   return `<p class="lede"><b>${lead}</b> ${body}</p>`;
@@ -903,7 +908,7 @@ function changes(v) {
   return `<section aria-labelledby="ch-h" class="card changes">${head}${notes(p)}${notes(log)}${body}</section>`;
 }
 
-const howDesk = () => `<section aria-labelledby="how-h" class="how"><h2 id="how-h">How desk decides</h2><p class="muted small">A lever being tested is on for half of new tickets and off for the other half. Once ${DECISION_RULE.min_per_arm['low-risk']} tickets on each side have finished, desk keeps the lever if those tickets cost less and nothing got worse: tickets accepted, fix tries, failed checks and reverts. Otherwise it turns the lever off. Riskier levers are tried on fewer tickets first, and each of their changes gets a blind review after merge. A lever turned off twice is paused until you decide.</p></section>`;
+const howDesk = () => `<section aria-labelledby="how-h" class="how"><h2 id="how-h">How desk decides</h2><p class="muted small">A lever being tested is on for half of new tickets and off for the other half. Once ${DECISION_RULE.min_per_arm['low-risk']} tickets on each side have finished, desk keeps the lever only if those tickets cost less and are no slower, and nothing else got worse: tickets accepted, fix tries, failed checks and reverts. Otherwise it turns the lever off. Riskier levers are tried on fewer tickets first, and each of their changes gets a blind review after merge. A lever turned off twice is paused until you decide.</p></section>`;
 
 const CSS = `
 *{box-sizing:border-box}

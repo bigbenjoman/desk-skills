@@ -523,5 +523,25 @@ t('AC8: the record is read back by the report', spawnRecords(S3).length, 2);
 t('AC1: spawn-worker\'s line carries the claude version and a hash per declared lever',
   `${'claude_version' in w1} ${JSON.stringify(Object.keys(w1.lever_fp ?? {}))}`, `true ${JSON.stringify(Object.keys(REGISTRY))}`);
 
+// Time per accepted ticket reads the starts the per-ticket rows read: a record whose session left no
+// worker log here is not the ticket's first start.
+{
+  const S3 = join(T, 'state-time');
+  mkdirSync(join(S3, 'logs'), { recursive: true });
+  mkdirSync(join(S3, 'workers'), { recursive: true });
+  writeFileSync(join(S3, 'logs', 'C-1.log'), `${init('c1')}\n${result(1, 10, 10)}\n`);
+  const HOUR = DAY_MS / 24;
+  const startAt = (session, hoursAgo) => writeFileSync(join(S3, 'workers', 'C-1.runs.jsonl'),
+    `${spawnLine({ ticket: 'C-1', session, now: new Date(NOW - hoursAgo * HOUR), installed: null, levers: { on: [], unknown: [] }, claude: null, fingerprints: { fp: {}, missing: [] } })}\n`, { flag: 'a' });
+  startAt('ghost', 20);
+  startAt('c1', 10);
+  const q3 = join(S3, 'queue.json');
+  writeFileSync(q3, JSON.stringify({ tickets: { 'C-1': { key: 'C-1', state: 'done', added_at: iso(30 * HOUR), merged_at: iso(2 * HOUR) } } }));
+  const since = NOW - 7 * DAY_MS;
+  const rowHours = ticketRows({ queue: q3, state: S3, slug: 'o__r', since }).rows.map((r) => (Date.parse(r.merged_at) - Date.parse(r.start_records[0].at)) / HOUR);
+  t('time per ticket: the baseline reads the session-matched starts the rows read, as the rows do',
+    `${batchFigures({ queue: q3, state: S3, slug: 'o__r', since }).accHours.map((h) => h.toFixed(2))} ${rowHours.map((h) => h.toFixed(2))}`, '8.00 8.00');
+}
+
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

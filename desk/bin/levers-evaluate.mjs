@@ -3,13 +3,14 @@
 // reverted, settled or held. A quality-risk lever on trial adopts only once a blind audit of its merged
 // PRs is recorded in that repo and none due is still waiting (levers-audit.mjs), at the layer's 40 per
 // arm; so does a pair trial of two quality-risk levers kept alone (levers-auto.mjs pairTrial), weighed
-// on the cost bound and the guardrails, which on an adopt becomes the repo's default. The mechanism metric and the cost ratio pool every such repo's tickets
+// on the cost and time bounds and the guardrails, which on an adopt becomes the repo's default. The mechanism metric and the cost ratio pool every such repo's tickets
 // (cost through a Student-t fit of log cost with repo and size as covariates); the guardrails are
 // judged per repo, so a harm in one repo cannot hide in the pool. Every interval and probability is
 // read from a seeded bootstrap of the per-ticket rows, so the same inputs give the same decision.
 //
 // The rule (lever-registry.mjs DECISION_RULE): an adopt needs the mechanism better by its registered
-// minimum with 90% probability, the cost ratio's 90% upper bound under 1.05, every repo guardrail
+// minimum with 90% probability, the cost ratio's 90% upper bound under 1.05, the time per ticket
+// ratio's (each arm's median hours from first start to merge) 90% upper bound under 1.05, every repo guardrail
 // within its margin and complete outcome files, on at least the layer's minimum tickets per arm in the
 // repo. A guardrail worse than its margin with 90% probability reverts the lever in that repo from
 // `revert_min_per_arm` per arm, before the minimum. At the maximum sample a lever that cannot adopt
@@ -54,7 +55,7 @@ import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-v
 import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
 import { parkedHours, liveOf, batchIdentity } from './stuck-time.mjs';
-import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
+import { perTicket, allBatches, failedRuns, ticketHours, timeMissing } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
 import { readAsks } from './ask-ledger.mjs';
@@ -417,6 +418,30 @@ export function costEstimate(rows, { seed, scope }) {
   };
 }
 
+// Time per ticket on against off over `rows`: the ratio of each side's median hours from first start to
+// merge, with its interval, over the tickets that have a time; the rest are counted by reason.
+const medianHours = (rs) => quantile(rs.map((r) => r.hours), 0.5);
+export function timeEstimate(rows, { seed, scope }) {
+  const excluded = {};
+  const timed = [];
+  for (const r of rows) {
+    const why = timeMissing(r);
+    if (why) excluded[why] = (excluded[why] ?? 0) + 1;
+    else timed.push({ ...r, hours: ticketHours(r) });
+  }
+  const ratio = (rs) => {
+    const on = medianHours(rs.filter((r) => r.on));
+    const off = medianHours(rs.filter((r) => !r.on));
+    return on == null || off == null || off <= 0 ? null : on / off;
+  };
+  const iv = interval(bootstrap(strata(timed), ratio, { random: seededRandom(seedOf(seed)) }));
+  const median = (on) => r4(medianHours(timed.filter((r) => r.on === on)));
+  return {
+    ratio: r4(ratio(timed)), lo90: r4(iv.lo90), hi90: r4(iv.hi90), margin: DECISION_RULE.time_ratio_max,
+    hours: { on: median(true), off: median(false) }, n: { ...counts(timed), excluded }, scope,
+  };
+}
+
 // Each guardrail over one repo's rows: estimate, interval, the probability it is worse than its
 // margin, and its status as the Levers view words it.
 export function guardrailEstimates(rows, { seed, minN, names = Object.keys(GUARDRAILS) }) {
@@ -439,6 +464,7 @@ export function guardrailEstimates(rows, { seed, minN, names = Object.keys(GUARD
 const NO_FIGURE = 'no figure yet';
 const pct = (v) => (v == null ? NO_FIGURE : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`);
 const x2 = (v) => (v == null ? NO_FIGURE : `${v.toFixed(2)}×`);
+const hrs = (v) => (v == null ? NO_FIGURE : `${v.toFixed(1)}h`);
 const fig = (v) => (Number.isFinite(v) ? v : NO_FIGURE);
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
@@ -484,10 +510,10 @@ function raiseVoided(r, at, written) {
 // null). A quality-risk trial passes `audits`, its blind audits in the repo: it adopts only once one is
 // recorded and none due is still waiting; `auditP0`, one reverted by a blind audit's P0, never adopts.
 // `probability` is what the mechanism's benefit must clear: the rule's, or a valued lever's corrected
-// one. A pair trial (`pair`) is weighed on the rule's cost bound and
-// guardrails alone, each lever's mechanism having been proven when it was adopted alone.
+// one. `time` is timeEstimate's: a lever is kept only if it is no slower, so with none it holds. A
+// pair trial (`pair`) is weighed on the rule's cost and time bounds and guardrails alone, each lever's mechanism having been proven when it was adopted alone.
 //   -> { decision, to, reason_code, reason, next }
-export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, frozen = false, incomplete = [], changedAt = null, priorReverts = 0, now, holdbackWeeks, audits = null, auditP0 = false, pair = false, probability = DECISION_RULE.probability }) {
+export function decide({ state, n, minN, maxN, mechanism, cost, time = null, guardrails, frozen = false, incomplete = [], changedAt = null, priorReverts = 0, now, holdbackWeeks, audits = null, auditP0 = false, pair = false, probability = DECISION_RULE.probability }) {
   const R = { ...DECISION_RULE, probability };
   const smaller = Math.min(n.on, n.off);
   const earliest = changedAt == null ? now : changedAt + R.cooldown_days * DAY_MS;
@@ -521,6 +547,11 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   if (pair) { /* no mechanism of its own */ } else if (mechanism.min_benefit == null) unmet.push(`${mechanism.metric} has no registered minimum`);
   else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability${probability !== DECISION_RULE.probability ? `, under the ${Math.round(probability * 1000) / 10}% each of its values needs` : ''}`);
   if (!(Number.isFinite(cost.hi90) && cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
+  // Kept only if no slower: a cheaper lever that cannot rule out slower tickets holds.
+  const timedSmaller = time ? Math.min(time.n?.on ?? 0, time.n?.off ?? 0) : 0;
+  if (!time) unmet.push('time per ticket is not recorded, so desk cannot rule out slower tickets');
+  else if (timedSmaller < minN) unmet.push(`time per ticket has ${timedSmaller} of ${minN} timed tickets in the smaller arm, so desk cannot rule out slower tickets`);
+  else if (!(Number.isFinite(time.hi90) && time.hi90 < R.time_ratio_max)) unmet.push(`time per ticket ratio ${x2(time.ratio)} (90%: ${x2(time.lo90)} to ${x2(time.hi90)}; median ${hrs(time.hours?.on)} on, ${hrs(time.hours?.off)} off) does not rule out ${x2(R.time_ratio_max)} slower`);
   const notOk = guardrails.filter((g) => g.status !== 'ok');
   if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${noFigure(g) ? `has ${NO_FIGURE}` : g.status}`).join(', ')}`);
   const noAudit = !!audits && !(audits.recorded > 0);
@@ -532,7 +563,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   }
   if (!unmet.length) {
     const effect = pair ? 'the pair against the kept set' : `${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) beat the ${pct(mechanism.min_benefit)} minimum`;
-    const why = `${effect}; cost ratio ${x2(cost.ratio)} (${x2(cost.lo90)} to ${x2(cost.hi90)}) under ${x2(R.cost_ratio_max)}; ${guardrails.length} guardrails within margin${audits ? `; ${audits.recorded} blind audit(s) recorded` : ''}; ${sample}`;
+    const why = `${effect}; cost ratio ${x2(cost.ratio)} (${x2(cost.lo90)} to ${x2(cost.hi90)}) under ${x2(R.cost_ratio_max)}; time per ticket ratio ${x2(time.ratio)} (${x2(time.lo90)} to ${x2(time.hi90)}) under ${x2(R.time_ratio_max)}; ${guardrails.length} guardrails within margin${audits ? `; ${audits.recorded} blind audit(s) recorded` : ''}; ${sample}`;
     if (cooling) return hold('change_cooldown', `every adopt condition holds, but it changed state less than ${R.cooldown_days} days ago`, `the ${R.cooldown_days}-day wait to pass`);
     return { decision: 'adopt', to: 'adopted', reason_code: 'adopt_all_conditions', reason: why, next: next(null) };
   }
@@ -630,6 +661,7 @@ export function evaluate({
       n: counts(rs),
       mechanism: mechanismEstimate(rs, lever, { seed: `${sd}|mechanism`, scope: 'pooled', registry }),
       cost: costEstimate(rs, { seed: `${sd}|cost`, scope: 'pooled' }),
+      time: timeEstimate(rs, { seed: `${sd}|time`, scope: 'pooled' }),
     });
     const reg = registry[lever];
     // A valued lever pools each value against its baseline.
@@ -658,7 +690,7 @@ export function evaluate({
         // The lever's last weighed evidence stays on its row, so the board keeps its figures.
         const st = r.byLever[lever];
         const last = r.prior.filter((x) => x.lever === lever && x.n).at(-1);
-        const kept = last ? { n: last.n, mechanism: last.mechanism, cost: last.cost, guardrails: last.guardrails, evidence_from: last.eval_id, evidence_file: last.evidence_file, evidence_sha256: last.evidence_sha256 } : {};
+        const kept = last ? { n: last.n, mechanism: last.mechanism, cost: last.cost, ...(last.time ? { time: last.time } : {}), guardrails: last.guardrails, evidence_from: last.eval_id, evidence_file: last.evidence_file, evidence_sha256: last.evidence_sha256 } : {};
         lines.push({ ...base, ...kept, state: st.state, decision: 'hold', reason_code: 'not_evaluated', reason: `${lever} is ${st.state} in ${r.name}${st.at ? ` since ${st.at.slice(0, 10)}` : ''}`, next: { earliest_change: null, needs: 'a change by hand' } });
         continue;
       }
@@ -671,6 +703,7 @@ export function evaluate({
       const weigh = (rs, pl, sd) => ({
         mechanism: pl ? pl.mechanism : mechanismEstimate(rs, lever, { seed: `${sd}|mechanism`, scope: 'repo', registry }),
         cost: pl ? pl.cost : costEstimate(rs, { seed: `${sd}|cost`, scope: 'repo' }),
+        time: pl ? pl.time : timeEstimate(rs, { seed: `${sd}|time`, scope: 'repo' }),
         guardrails: guardrailEstimates(rs, { seed: sd, minN, names: Object.keys(reg.guardrails) }),
         n: { ...counts(rs), pooled_on: (pl?.n ?? counts(rs)).on, pooled_off: (pl?.n ?? counts(rs)).off, excluded: excludedCounts(p.rows) },
       });
@@ -683,7 +716,7 @@ export function evaluate({
       const quality = reg.layer === 'quality-risk' && ['trial', 'reverted'].includes(s.state);
       const audits = quality ? auditCount(r.audits, s.state === 'trial' ? trialId(r.slug, lever, s) : p.rows[0]?.pin?.trial_ids?.[lever] ?? null) : null;
       const auditP0 = quality && s.state === 'reverted' && (r.log.events ?? []).filter((e) => e.lever === lever && e.id === s.id).some((e) => e.reason_code === 'audit_p0');
-      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete: named, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
+      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, time: w.time, guardrails: w.guardrails, frozen, incomplete: named, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
       // A valued lever's values are weighed at once: each clears the rule's probability shared among them.
       const others = isValued(reg) ? reg.values.filter((v) => v !== reg.baseline) : [];
       const pRequired = r4(1 - (1 - DECISION_RULE.probability) / Math.max(1, others.length));
@@ -705,7 +738,7 @@ export function evaluate({
         // A valued lever keeps the value it was adopted on when it settles.
         if (isValued(reg) && s.value) d = { ...d, value: s.value };
       }
-      const { mechanism, cost, guardrails, n } = w;
+      const { mechanism, cost, time, guardrails, n } = w;
 
       // The evidence this evaluation used: the pooled rows for a lever on trial, else the repo's.
       const evidence = writeEvidence(r.state, evalId, pooled ? pooled.rows : p.rows);
@@ -744,7 +777,7 @@ export function evaluate({
           return {
             kind: 'transition', lever, from: s.state, to: d.to, ...(d.value && d.to !== 'reverted' && d.to !== 'frozen' ? { value: d.value } : {}),
             actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at),
-            n, mechanism, cost, guardrails, desk_commit_range: range, lever_fp: fingerprints[lever] ?? null, ...(holdback ? { holdback } : {}),
+            n, mechanism, cost, time, guardrails, desk_commit_range: range, lever_fp: fingerprints[lever] ?? null, ...(holdback ? { holdback } : {}),
           };
         });
         if (e) {
@@ -759,12 +792,12 @@ export function evaluate({
         }
       }
       lines.push({
-        ...base, state: to ?? s.state, ...(to ? { from: s.state } : {}), arm_share_7d: share, n, mechanism, cost, guardrails,
+        ...base, state: to ?? s.state, ...(to ? { from: s.state } : {}), arm_share_7d: share, n, mechanism, cost, time, guardrails,
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
         ...(reg.rows === ASKING ? { ask_report: askReport(used) } : {}),
         ...(lever === 'handoff-threshold' ? { handoff_report: handoffReport(used.map((x) => ({ ...x, lever })), s.value ?? null, reg.baseline) } : {}),
-        ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
+        ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, time: x.time, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });
     }
@@ -800,12 +833,13 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
     .map((x) => ({ ...x, slug: x.slug ?? r.slug, on: x.pin.arms[key] === 'on', excluded: excludedWhy(x, null, null) }));
   const used = rows.filter((x) => !x.excluded);
   const cost = costEstimate(used, { seed: `${evalId}|cost`, scope: 'repo' });
+  const time = timeEstimate(used, { seed: `${evalId}|time`, scope: 'repo' });
   const guardrails = guardrailEstimates(used, { seed: evalId, minN });
   const n = { ...counts(used), excluded: excludedCounts(rows) };
   const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
   const audits = auditCount(r.audits, pt.id);
   const kept = pt.levers.map((l) => Date.parse(r.byLever[l]?.at)).filter(Number.isFinite);
-  const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, guardrails, frozen, incomplete: incomplete.map((f) => shortName(r.state, f)),
+  const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, time, guardrails, frozen, incomplete: incomplete.map((f) => shortName(r.state, f)),
     changedAt: kept.length ? Math.max(...kept) : null, now, holdbackWeeks: registry[pt.levers[0]].ramp.holdback_weeks, audits, pair: true });
   const evidence = writeEvidence(r.state, evalId, rows);
   let to = null;
@@ -815,13 +849,13 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
       const events = read(r.slug).events;
       const live = pairTrial({ slug: r.slug, events, states: r.states, values: null, registry, now });
       if (live?.id !== pt.id || live.state !== 'trial') return null;
-      return { kind: 'pair', levers: pt.levers, pair: key, trial_id: pt.id, from: 'trial', to: d.to === 'frozen' ? 'reverted' : d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at), n, cost, guardrails };
+      return { kind: 'pair', levers: pt.levers, pair: key, trial_id: pt.id, from: 'trial', to: d.to === 'frozen' ? 'reverted' : d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at), n, cost, time, guardrails };
     });
     if (e) { written.events.push(e); to = e.to; }
   }
   return {
     v: 1, eval_id: evalId, at, repo: r.slug, lever: key, pair: pt.levers, layer: 'quality-risk', min_n: minN, max_n: DECISION_RULE.max_per_arm, lever_fp: null,
-    state: to ?? 'trial', ...(to ? { from: 'trial' } : {}), trial_id: pt.id, arm_share_7d: shareOf(r.log.events, pt.levers, now), n, mechanism: null, cost, guardrails,
+    state: to ?? 'trial', ...(to ? { from: 'trial' } : {}), trial_id: pt.id, arm_share_7d: shareOf(r.log.events, pt.levers, now), n, mechanism: null, cost, time, guardrails,
     decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the pair trial changed while it was evaluated` : d.reason, next: d.next,
     ...(incomplete.length ? { missing: incomplete } : {}), audits, ...evidence, desk_commit_range: commitRange(used), claude_versions: [], inputs_age_s: inputsAge(r, now),
   };

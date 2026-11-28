@@ -36,6 +36,8 @@ import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
 import { excludedWhy, priorRevertsOf, revertTarget } from './levers-evaluate.mjs';
+import { ticketHours, timeMissing } from './phase0-report.mjs';
+import { quantile } from './quantile.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -43,6 +45,8 @@ const HOUR_S = 3600;
 export const MAX_AGE_S = Object.freeze({ supervisor: 10 * 60, health: 20 * 60, evals: 26 * HOUR_S, pooled: 26 * HOUR_S, post_merge: 26 * HOUR_S });
 // Below this many tickets per arm a point estimate is not shown, only its interval.
 export const POINT_MIN_N = 10;
+// How far, in percent, time per ticket must move from before levers for the verdict to name it.
+const TIME_NAMED_PCT = 1;
 const WEEK_DAYS = 7;
 const DAY_MS = 86_400_000;
 // Events the change list shows: every automatic or manual change, not the per-ticket assignments.
@@ -91,6 +95,22 @@ export function costView(c, n, minN, adopted = false) {
   return hi < margin
     ? { ...out, verdict: 'not_worse', label: 'not worse than off', saving_usd: saving }
     : { ...out, verdict: 'cant_rule_out_worse', label: "can't rule out worse" };
+}
+
+// Time per ticket on against off: each side's median hours, and the ratio of the medians worded
+// against its margin under the same minimum sample as cost. `n` is the smaller side of the tickets with
+// a time, which can be fewer than the lever's.
+export function timeView(t, minN) {
+  if (!t) return null;
+  const n = smallerArm(t.n);
+  const lo = t.lo90 ?? null;
+  const hi = t.hi90 ?? null;
+  const margin = t.margin ?? DECISION_RULE.time_ratio_max;
+  const out = { ratio: n != null && n >= POINT_MIN_N ? t.ratio ?? null : null, lo90: lo, hi90: hi, margin, scope: t.scope ?? null, n, min_n: minN,
+    hours: t.hours ?? null, excluded: t.n?.excluded ?? null };
+  if (n == null || n < minN) return { ...out, verdict: null, label: tooEarly(n, minN) };
+  if (lo == null || hi == null) return { ...out, verdict: null, label: 'no interval recorded' };
+  return hi < margin ? { ...out, verdict: 'not_slower', label: 'no slower than off' } : { ...out, verdict: 'cant_rule_out_slower', label: "can't rule out slower" };
 }
 
 // A guardrail's status from its probability of being worse than its margin: breached may show before
@@ -161,7 +181,7 @@ export function readBaseline(file) {
     base: {
       window: b.window, accepted: b.accepted, tickets_costed: b.perTicket?.over ?? null, starts: b.starts,
       cost: b.usdPerTicket, input_tokens: b.perTicket?.input ?? null, output_tokens: b.perTicket?.output ?? null,
-      fix_tries: b.fixTries, denials: b.denials,
+      fix_tries: b.fixTries, denials: b.denials, time_hours: b.timeHours, time_why: b.timeWhy,
     },
     error: null,
   };
@@ -263,10 +283,18 @@ const accepted = (r) => !!r.merged_at && !!r.merged_day;
 const mean = (xs) => (xs.length ? xs.reduce((n, v) => n + v, 0) / xs.length : null);
 const usdMean = (rows) => mean(rows.filter(costed).map((r) => r.cost));
 const sumOver = (rows, k) => rows.reduce((a, r) => a + r[k], 0);
-// Each metric: the tickets it reads (`of` them is its value), and the field its days are keyed by.
+// Each metric: the tickets it reads (`of` them is its value), and the field its days are keyed by. A
+// metric with `missing` leaves out each counted ticket it names a reason for, and counts it as excluded.
+const timed = (rows) => rows.filter(counted).filter((r) => !timeMissing(r));
 export const METRICS = Object.freeze({
   cost: { title: 'Cost per ticket', unit: 'usd', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(costed), of: (rs) => mean(rs.map((r) => r.cost)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
   tokens: { title: 'Tokens per ticket', unit: 'input tokens', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(costed).filter((r) => Number.isFinite(r.input)), of: (rs) => mean(rs.map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
+  // The median, so one ticket parked for days cannot swamp it.
+  time: {
+    title: 'Time per ticket', unit: 'hours, first start to merge (median)', keyed_by: 'merged_at', over: (rows) => timed(rows).filter(accepted),
+    of: (rs) => quantile(rs.map(ticketHours), 0.5), base: (b) => b?.time_hours ?? null, base_why: (b) => (b ? (b.time_hours == null ? b.time_why ?? null : null) : 'no Phase 0 baseline'), basis: 'per accepted ticket',
+    missing: (rows) => rows.filter(counted).map(timeMissing).filter(Boolean),
+  },
   prompts: {
     title: 'Permission prompts per start', unit: 'denials per start', keyed_by: 'merged_at',
     over: (rows) => rows.filter(accepted).filter(counted).filter((r) => r.starts > 0 && Number.isFinite(r.denials)),
@@ -280,8 +308,9 @@ const val = (v) => round(v, 4);
 
 // One metric's 30 daily points ending yesterday, 6 weekly points ending last week, 12 monthly points
 // ending this month, its baseline and its nine callouts. A point with no tickets, or before the first
-// recorded day, is null.
-function trend(metric, rows, base, today, first) {
+// recorded day, is null. A metric with `missing` carries the tickets it left out, by reason; one with
+// `base_why` says why its baseline is null.
+function trend(metric, rows, base, today, first, baseWhy = null) {
   const mine = metric.over(rows);
   const at = (pred) => mine.filter((r) => pred(r.merged_day));
   const point = (pred, before) => (first == null || before < first ? null : val(metric.of(at(pred))));
@@ -300,9 +329,11 @@ function trend(metric, rows, base, today, first) {
     yesterday: at((x) => x === yesterday).length, last_week: at((x) => x >= lastWeekStart && x < thisWeek).length,
     mtd: at((x) => monthOf(x) === month && x < today).length, to_date: at((x) => x < today).length,
   };
+  const left = metric.missing ? metric.missing(rows) : null;
+  const excluded = left ? { total: left.length, by_reason: Object.fromEntries([...new Set(left)].sort().map((k) => [k, left.filter((x) => x === k).length])) } : null;
   return {
-    title: metric.title, unit: metric.unit, first_recorded: first, keyed_by: metric.keyed_by, counts,
-    baseline: { value: base == null ? null : val(base), basis: metric.basis },
+    title: metric.title, unit: metric.unit, first_recorded: first, keyed_by: metric.keyed_by, counts, ...(excluded ? { excluded } : {}),
+    baseline: { value: base == null ? null : val(base), basis: metric.basis, ...(metric.base_why ? { why: base == null ? baseWhy : null } : {}) },
     daily, weekly, monthly,
     callouts: {
       yesterday: day, dod_pct: pct(day, daily.at(-2).value),
@@ -323,7 +354,7 @@ function evalEvidence(e, layerMin) {
   return {
     eval_id: e.eval_id ?? null, at: e.at ?? null, state: e.state ?? null,
     n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN, ...(e.value && e.baseline ? { arms: [e.value, e.baseline] } : {}) },
-    effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, KEPT.includes(e.state)),
+    effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, KEPT.includes(e.state)), time: timeView(e.time, minN),
     guardrails: (e.guardrails ?? []).map((g) => ({ ...g, status: guardrailStatus(g, n, minN) })),
   };
 }
@@ -535,7 +566,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         }
         const minN = e.min_n ?? min;
         const n = smallerArm(e.n);
-        const { effect, cost, guardrails } = evalEvidence(e, min);
+        const { effect, cost, time, guardrails } = evalEvidence(e, min);
         const chip = {};
         for (const g of guardrails) chip[g.status] = (chip[g.status] ?? 0) + 1;
         const last = changesBy.get(r.slug).get(lever);
@@ -544,7 +575,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
           repo: r.name, state: tripped ? tripped.to : e.state ?? null, ...(tripped ? { turned_off_at: tripped.at } : {}), as_of: e.at, stale: col.column === 'stale' || age(e.at, now, MAX_AGE_S.evals).stale,
           arm_share_7d: e.arm_share_7d ?? null,
           sample: { n, min: minN, max: e.max_n ?? DECISION_RULE.max_per_arm, on: e.n?.on ?? null, off: e.n?.off ?? null, pooled_on: e.n?.pooled_on ?? null, pooled_off: e.n?.pooled_off ?? null },
-          effect, cost,
+          effect, cost, time,
           guardrails, guardrail_chip: chip, decision: e.decision ?? null, reason_code: e.reason_code ?? null, reason: reasonWording(e.reason_code), next: e.next ?? null,
         };
       }),
@@ -635,7 +666,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }, [...rowErrors, ...errs(repos.map((r) => r.evals), baseRead)]);
 
   // Trends.
-  const metrics = Object.fromEntries(Object.entries(METRICS).map(([k, m]) => [k, trend(m, rows, m.base(baseline), today, first)]));
+  const metrics = Object.fromEntries(Object.entries(METRICS).map(([k, m]) => [k, trend(m, rows, m.base(baseline), today, first, m.base_why?.(baseline) ?? null)]));
   const trends = panel(rows.length ? 'ok' : 'empty', { first_recorded: first, metrics }, [...rowErrors, ...errs(baseRead)]);
 
   // The desk-q line.
@@ -646,7 +677,10 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const lineErrors = errs(repos.map((r) => r.evals), repos.map((r) => r.log), repos.map((r) => r.configRead), baseRead, rowErrors.map((error) => ({ error })));
   const common = { on_auto: status.on_auto, repos: repos.length, pinned: pinnedList };
   const vsBefore = metrics.cost.callouts.last_week_vs_before_pct;
-  const figures = { cheaper_pct: vsBefore == null ? null : round(-vsBefore, 1), kept: kept.size, testing: testing.size, needs_you: leverItems.length };
+  // Time is named only once it is at least TIME_NAMED_PCT faster or slower than before levers.
+  const timeVs = metrics.time.callouts.last_week_vs_before_pct;
+  const time = timeVs == null ? null : timeVs <= -TIME_NAMED_PCT ? 'faster' : timeVs >= TIME_NAMED_PCT ? 'slower' : 'same';
+  const figures = { cheaper_pct: vsBefore == null ? null : round(-vsBefore, 1), faster_pct: timeVs == null ? null : round(-timeVs, 1), time, kept: kept.size, testing: testing.size, needs_you: leverItems.length };
   let line;
   if (lineErrors.length) line = { state: 'broken', error: lineErrors[0], ...common };
   else if (!testing.size && !kept.size) line = { state: 'today', ...common, needs_you: leverItems.length };

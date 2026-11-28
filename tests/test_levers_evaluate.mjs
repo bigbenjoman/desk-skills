@@ -544,8 +544,29 @@ t('red CI for the evaluation is one list call, no per-run view', [ghCalls, liste
 // ---- the rule itself ------------------------------------------------------------------------------------------------------------------------------
 t('the rule: no cost interval (a singular fit) does not adopt', decide({ ...{ state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 }, mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, p_benefit: 1 }, cost: { ratio: null, lo90: null, hi90: null }, guardrails: [{ status: 'ok' }] }).reason_code, 'adopt_conditions_unmet');
 const ok = { status: 'ok' };
-const good = { mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, lo90: -0.7, hi90: -0.5, p_benefit: 1 }, cost: { ratio: 1, lo90: 0.95, hi90: 1.02 }, guardrails: [ok, ok] };
+const good = { mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, lo90: -0.7, hi90: -0.5, p_benefit: 1 }, cost: { ratio: 1, lo90: 0.95, hi90: 1.02 }, time: { ratio: 0.97, lo90: 0.9, hi90: 1.03, hours: { on: 5.8, off: 6 }, n: { on: 40, off: 40 } }, guardrails: [ok, ok] };
 const base = { state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 };
+// DS-1070 AC7: kept only if cheaper and no slower.
+{
+  const cheaper = { ...good, cost: { ratio: 0.9, lo90: 0.85, hi90: 0.95 } };
+  const timedN = { on: 40, off: 40 };
+  const slower = decide({ ...base, ...cheaper, time: { ratio: 1.2, lo90: 1.1, hi90: 1.31, hours: { on: 7.2, off: 6 }, n: timedN } });
+  t('DS-1070 AC7 a cheaper lever that is slower is held, never kept', [slower.decision, slower.reason_code], ['hold', 'adopt_conditions_unmet']);
+  t('DS-1070 AC7 and its reason names time', slower.reason, 'time per ticket ratio 1.20× (90%: 1.10× to 1.31×; median 7.2h on, 6.0h off) does not rule out 1.05× slower');
+  t('DS-1070 AC7 a time interval reaching 1.05 holds too', decide({ ...base, ...cheaper, time: { ratio: 1, lo90: 0.9, hi90: 1.05, n: timedN } }).decision, 'hold');
+  const fewTimed = decide({ ...base, ...cheaper, time: { ...cheaper.time, ratio: 1, lo90: 1, hi90: 1, n: { on: 1, off: 1 } } });
+  t('DS-1070 AC7 too few timed tickets on a side holds, as too few tickets does', [fewTimed.decision, /time per ticket has 1 of 30 timed tickets in the smaller arm/.test(fewTimed.reason)], ['hold', true]);
+  t('DS-1070 AC7 with no time recorded nothing is kept', /time per ticket is not recorded/.test(decide({ ...base, ...cheaper, time: null }).reason), true);
+  const kept = decide({ ...base, ...cheaper });
+  t('DS-1070 AC7 cheaper and no slower is kept, its reason naming time', [kept.decision, /time per ticket ratio 0\.97× \(0\.90× to 1\.03×\) under 1\.05×/.test(kept.reason)], ['adopt', true]);
+  const { timeEstimate } = await import('../desk/bin/levers-evaluate.mjs');
+  const h = (on, hours, o = {}) => ({ slug: 's', on, merged_at: at(0), start_records: [{ at: at(-hours / 24) }], ...o });
+  const te = timeEstimate([h(true, 4), h(true, 6), h(true, 8), h(false, 8), h(false, 10), h(false, 12), h(true, 1, { start_records: [{}] }), h(false, 1, { reworked: true }), h(false, 1, { merged_at: null })], { seed: 'x', scope: 'repo' });
+  t('DS-1070 AC5 each side\'s median hours, from first start to merge', te.hours, { on: 6, off: 10 });
+  t('DS-1070 AC5 the ratio of the medians', te.ratio, 0.6);
+  t('DS-1070 AC5 a ticket with no start, no merge or reworked is left out and counted', te.n, { on: 3, off: 3, excluded: { no_start: 1, reworked: 1, not_merged: 1 } });
+  t('DS-1070 AC7 the margin mirrors the cost one', [te.margin, DECISION_RULE.time_ratio_max], [1.05, DECISION_RULE.cost_ratio_max]);
+}
 t('the rule: a cost interval reaching 1.05 does not adopt', decide({ ...base, ...good, cost: { ratio: 1, lo90: 0.9, hi90: 1.05 } }).reason_code, 'adopt_conditions_unmet');
 t('the rule: a guardrail only watching does not adopt', decide({ ...base, ...good, guardrails: [ok, { status: 'watching' }] }).reason_code, 'adopt_conditions_unmet');
 t('the rule: a lever with no registered minimum never adopts', decide({ ...base, ...good, mechanism: { ...good.mechanism, min_benefit: null, p_benefit: null } }).reason_code, 'adopt_conditions_unmet');

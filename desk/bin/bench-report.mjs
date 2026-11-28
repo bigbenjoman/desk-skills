@@ -80,6 +80,10 @@ export function parseBaseline(text) {
   b.usdPerTicket = n ? Number(n[3]) : null;
   const fix = find(/^fix tries per accepted ticket: ([\d.]+) /);
   b.fixTries = fix ? Number(fix[1]) : null;
+  const time = find(/^time per accepted ticket: (.*)$/);
+  const hours = time && /^median ([\d.]+) hours from first start to merge/.exec(time[1]);
+  b.timeHours = hours ? Number(hours[1]) : null;
+  b.timeWhy = hours ? null : time ? time[1] : 'this baseline report has no time per accepted ticket line: it predates start times being reported';
   const den = find(/^permission denials by command: ([\d,]+) in all/);
   b.denials = den ? count(den[1]) : null;
   const lev = find(/^levers on: (.*)$/);
