@@ -22,3 +22,25 @@ Do not edit these files by hand. When the artifact has a newer version, re-save 
 | 6 · /levers/changes (1280) | 1280px | project/Changes.dc.html |
 | 7 · Inbox ⌘1: a lever waiting on you (1280) | 1280px | project/Inbox.dc.html |
 | 8 · Repos ⌘2: merge time and parking moved here (1280) | 1280px | project/Repos.dc.html |
+
+## Screens
+
+Rendered by `desk-design render` from version 1795856738-1cdd on 2026-11-28T09:06:47.523Z, at the
+Breakpoints (none) and each board's own width.
+
+| Width | Label | Boards drawn at it |
+|---|---|---|
+| 1024px | drawn (not a breakpoint) | 1b · /levers landing, compact rail (1024) |
+| 1280px | drawn (not a breakpoint) | 1 · /levers landing (1280), 2 · Landing states: late, out of date, build failed, no number, loading, empty (1280), 3 · /levers/levers: every lever (1280), 4 · /levers/:lever: one lever, wrappers (1280), 5 · /levers/trends (1280), 6 · /levers/changes (1280), 7 · Inbox ⌘1: a lever waiting on you (1280), 8 · Repos ⌘2: merge time and parking moved here (1280) |
+
+| Board | 1024px | 1280px |
+|---|---|---|
+| 1 · /levers landing (1280) | - | [drawn](screens/1-levers-landing-1280@1280.png) |
+| 1b · /levers landing, compact rail (1024) | [drawn](screens/1b-levers-landing-compact-rail-1024@1024.png) | - |
+| 2 · Landing states: late, out of date, build failed, no number, loading, empty (1280) | - | [drawn](screens/2-landing-states-late-out-of-date-build-failed-no-number-loading-empty-1280@1280.png) |
+| 3 · /levers/levers: every lever (1280) | - | [drawn](screens/3-levers-levers-every-lever-1280@1280.png) |
+| 4 · /levers/:lever: one lever, wrappers (1280) | - | [drawn](screens/4-levers-lever-one-lever-wrappers-1280@1280.png) |
+| 5 · /levers/trends (1280) | - | [drawn](screens/5-levers-trends-1280@1280.png) |
+| 6 · /levers/changes (1280) | - | [drawn](screens/6-levers-changes-1280@1280.png) |
+| 7 · Inbox ⌘1: a lever waiting on you (1280) | - | [drawn](screens/7-inbox-1-a-lever-waiting-on-you-1280@1280.png) |
+| 8 · Repos ⌘2: merge time and parking moved here (1280) | - | [drawn](screens/8-repos-2-merge-time-and-parking-moved-here-1280@1280.png) |
