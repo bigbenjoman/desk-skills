@@ -41,6 +41,7 @@
 //   worker-head {key}              record the head the exited worker left
 //   pr-conflict {key, pr}         -> { base } where PR #pr is open and in conflict with that base, else null (unread too)
 //   done {key, pr, summary, line, sets}   record the ticket done
+//   then-stage {key, pr, stage, line}     finish its fix try on PR #pr and queue `stage` for a fresh session
 //   settle-links {key}             -> the issue links the worker asked for that were not made
 //   park-links {key, needs, pr}    park a done ticket on the links not made
 //   live-read {key, question}      -> {reads, head} where the park asks only for §4 Live reads, or null
@@ -409,6 +410,12 @@ export function* decideAdvance(s) {
     // The review the line states is the verdict on the PR at its head, whatever the marker says; the
     // worker's own words follow it.
     const review = pr ? yield { type: 'pr-verdict', key: t.key, pr } : null;
+    // A review try sent in place of a Stage 7 session (fix-tries.mjs emptySevenTry) is followed by the
+    // stage its try names, in a fresh session, rather than recorded done.
+    if (pr && t.fix && !t.fix.finished && t.fix.then) {
+      yield { type: 'then-stage', key: t.key, pr, stage: String(t.fix.then), line: `${review ? `${review}; its worker said: ` : ''}${done.trim()}${stopped}` };
+      return;
+    }
     yield { type: 'done', key: t.key, pr, summary: done.trim(), line: `${review ? `${review}; its worker said: ` : ''}${done.trim()}${stopped}`, sets: [
       ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
       ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),

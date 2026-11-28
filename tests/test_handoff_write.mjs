@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readHandoff, resumeCheck, escapeRawControls, parseJsonLenient, replaceUnreadable, handoffPath, renderHandoff, handoffStage } from '../desk/bin/handoff.mjs';
+import { readHandoff, resumeCheck, escapeRawControls, parseJsonLenient, replaceUnreadable, handoffPath, renderHandoff, renderLastRound, handoffStage } from '../desk/bin/handoff.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -62,6 +62,34 @@ t('AC3 the fresh session starts at the same stage', brief.startsWith('## Handoff
 t('AC3 its briefing says it was handed off partway through on context', /finished Stages 0 to 4b and handed off partway through Stage 5, as its context passed the handoff threshold \(31% used; handoff-threshold 30\)/.test(brief), true);
 t('AC3 and lists what is left of the stage', brief.includes('### Left of Stage 5\n\n- capture the after screenshot\n- then Stage 6\n'), true);
 t('a stage-boundary briefing has no Left of Stage section', renderHandoff({ key: 'W-1', stage: '7', data: readHandoff(state, 'W-1').data, branch: 'b', worktree: '/w', base: 'origin/main', commits: [] }).includes('### Left of Stage'), false);
+
+// #1680 AC1: a Stage 7 session pushes and opens its draft PR before any review round.
+const seven = renderHandoff({ key: 'W-1', stage: '7', data: readHandoff(state, 'W-1').data, branch: 'b', worktree: '/w', base: 'origin/main', commits: ['abc1234 feat: W-1'] });
+t('#1680 AC1 a Stage 7 briefing with no PR says to push and open the draft PR before any review round',
+  seven.includes('### Before any review round') && /push it \(push-retry\.mjs[^)]*\) and open the draft PR \(desk-pr\) before you run any review round/.test(seven), true);
+t('#1680 AC1 and that push wins over the contract\'s review-before-push rules, which bind the pushes after it',
+  seven.includes('This push comes first even where the Stage 4 file\'s `verdict.mjs --check` or the Stage 5 file\'s §4 asks for a review before a push'), true);
+t('#1680 AC1 and that comes before the ticket and its findings', seven.indexOf('### Before any review round') < seven.indexOf('### Self-review findings so far'), true);
+t('#1680 AC1 one with its PR open says to push each commit to it before a round',
+  /Your PR #55 is open on this branch\. Push every commit not on it yet .* before you start a review round/.test(renderHandoff({ key: 'W-1', stage: '7', data: readHandoff(state, 'W-1').data, branch: 'b', worktree: '/w', base: 'origin/main', commits: [], pr: 55 })), true);
+t('#1680 AC1 a briefing at another stage says nothing of it', brief.includes('### Before any review round'), false);
+t('#1680 AC1 a Stage 7 round resumed after a park says it too',
+  renderLastRound({ key: 'W-1', round: { stage: '7', question: 'q' }, answers: [], branch: 'b', worktree: '/w', base: 'origin/main', commits: [], resumePath: '/r' }).includes('### Before any review round'), true);
+
+// #1680 AC2: a handoff partway through a Stage 7 review round carries its seats and verdict draft, and
+// the next session re-runs only the seats that did not finish.
+const sw = write('S-1', '--stage', '7', '--criterion', 'AC1: saves', '--lane', 'A', '--left', 'finish the review round', '--context', '81',
+  '--seat', 'correctness (lena-code-reviewer): ran, 1 P2 at src/a.js:3, read abc1234', '--seat', 'security (nadia-security-auditor): died, timed out',
+  '--verdict', 'round 1 at abc1234: p0=0 p1=0 p2=1, security seat to run');
+const sd = readHandoff(state, 'S-1');
+t('#1680 AC2 the write takes --seat and --verdict', `${sw.status} ${sd.data?.seats?.length} ${sd.data?.verdict}`, '0 2 round 1 at abc1234: p0=0 p1=0 p2=1, security seat to run');
+const sb = renderHandoff({ key: 'S-1', stage: '7', data: sd.data, branch: 'b', worktree: '/w', base: 'origin/main', commits: [] });
+t('#1680 AC2 the next briefing lists each seat with what it found',
+  sb.includes('### Review seats already run') && sb.includes('- correctness (lena-code-reviewer): ran, 1 P2 at src/a.js:3, read abc1234') && sb.includes('- security (nadia-security-auditor): died, timed out'), true);
+t('#1680 AC2 and tells it to re-run only the seats that did not finish, not the round', /Re-run only the seats not listed here as ran at the branch's head.*do not start the round over/.test(sb), true);
+t('#1680 AC2 and carries the verdict draft', sb.includes('### Verdict draft\n\nround 1 at abc1234: p0=0 p1=0 p2=1, security seat to run\n'), true);
+t('#1680 AC2 a briefing with no seats has neither section', ['### Review seats already run', '### Verdict draft'].some((s) => seven.includes(s)), false);
+t('#1680 AC2 a write with no seats records neither field', ['seats', 'verdict'].some((k) => k in parsed), false);
 
 // The readers: a raw TAB or newline inside a string is escaped and parsed; outside a string it is kept.
 t('a raw tab in a string is escaped', escapeRawControls('{"a":\t"x\ty"}'), '{"a":\t"x\\u0009y"}');

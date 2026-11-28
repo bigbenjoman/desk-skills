@@ -732,7 +732,10 @@ def on_worker_context(event, data, session, root, path):
         "--left '<each piece of this stage still to do, and the next step>' --lane '<lane>' "
         "--criterion '<each acceptance criterion, verbatim>' --verification '<each check run so "
         "far: command, scope, result>'` (add --review and --evidence as the Stage 4 file's "
-        "Handing off says, when there are any). 4. Print "
+        "Handing off says, when there are any, and partway through a review round --seat "
+        "'<each seat: role, ran or died, its findings, the SHA it read>' and --verdict "
+        "'<the round's verdict draft>', so the next session re-runs only the seats that did "
+        "not finish). 4. Print "
         f"`AUTOPILOT_HANDOFF: {stage}` at the start of a line in your reply text, not in a code "
         "fence, and end your turn. Print no AUTOPILOT_DONE."))
     return True
