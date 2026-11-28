@@ -168,6 +168,16 @@ q set T-61 merge_after=null
 sloop; sloop
 check "DS-407 AC3: once the step is lifted, it merges with no other answer, pinned to its head" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
 
+# ---- DS-1031 AC2: a merge-order hold on another ticket's unmerged PR holds a green PR's merge -------
+q init merge-order
+q add T-61 Story A; q set T-61 branch=fix/T-61 state=done result.pr=161 merge_order=T-60
+: > "$T/merges.log"
+sloop; sloop
+check "DS-1031 AC2: a green PR merge-ordered behind another ticket's unmerged PR is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "#161 green at f11111111, HELD until the PR of T-60 merges (merge order)"'
+q set T-61 merge_order=null
+sloop; sloop
+check "DS-1031 AC2: once the pass lifts the hold, it merges" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
+
 # ---- The person's instruction on a ready PR holds its merge until a worker has carried it out --------
 SHA62=a611111111111111111111111111111111111111; SHA63=a622222222222222222222222222222222222222
 SHA64=a633333333333333333333333333333333333333; SHA65=a644444444444444444444444444444444444444

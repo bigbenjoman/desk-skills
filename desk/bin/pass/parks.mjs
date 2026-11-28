@@ -528,6 +528,29 @@ export function* decideMergeHolds(s) {
   }
 }
 
+// ---- merge-order holds -----------------------------------------------------
+// A ticket merge-ordered behind others in its batch (merge_order: plan-batch's merge chain, for shared
+// files or an in-batch blocker triage judged it needs only to merge after) starts as any other, and the
+// merge driver holds its PR. Each ticket named is lifted once its PR has merged (merged_at), or once it
+// is no longer in this queue (dropped or moved), which leaves nothing to merge after.
+//
+// The snapshot: tickets, dry.
+export function decideMergeOrder(s) {
+  const out = [];
+  for (const t of Object.values(s.tickets).filter((x) => keysOf(x.merge_order).length)) {
+    const firsts = keysOf(t.merge_order);
+    const merged = firsts.filter((p) => s.tickets[p]?.merged_at);
+    const gone = firsts.filter((p) => !s.tickets[p]);
+    const left = firsts.filter((p) => !merged.includes(p) && !gone.includes(p));
+    if (left.length === firsts.length) continue;
+    const what = [merged.length && `${merged.join(', ')} merged`, gone.length && `${gone.join(', ')} no longer in this batch`].filter(Boolean).join('; ');
+    if (s.dry) { out.push(epicLine(`merge order (dry run): ${t.key}: ${what}`)); continue; }
+    out.push(set(t.key, `merge_order=${left.join('|') || 'null'}`),
+      epicLine(`merge order: ${t.key}: ${what}; ${left.length ? `still merges only after ${left.join(', ')}` : 'free to merge'}`));
+  }
+  return out;
+}
+
 // The report's date-hold and epic lists.
 const dateLine = (line) => ({ type: 'date-line', line });
 const epicLine = (line) => ({ type: 'epic-line', line });

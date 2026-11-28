@@ -10,12 +10,15 @@ does not hold, that is in the core or in the file the core's reference table nam
 `plan-batch` sets the merge order: triage records each ticket's `change_kind` (`relocate`, `schema`,
 `shared` or `surface`), and the plan's `MERGE ORDER` section lists the admitted tickets largest blast
 radius first, each with its kind and why. Two tickets that share files are chained, the larger blast
-radius first (two of a kind: the smaller first, then the order named), as holds in the queue and
-entries in the `--deps` it prints, which already carries the chain; tickets that share no files are
-never chained. Each ticket in a chain is held behind every earlier one it shares a file with, not
-only the one just before it, so dropping or freeing that one by hand never lets it start ahead of
-the rest. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
-disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
+radius first (two of a kind: the smaller first, then the order named); tickets that share no files are
+never chained. Config §3b "Overlap holds" (`desk-env get overlap-holds`) says what the chain holds. At
+`merge` (unset reads as `merge`) both tickets start, and the later one carries a merge-order hold,
+`merge_order`, naming the earlier one: the merge driver does not merge its PR, green or not, and the
+first pass after the earlier PR merges lifts the hold (`MERGE-ORDER HOLDS` in the plan). At `start`
+the later one is held from starting instead, as holds in the queue and entries in the `--deps` it
+prints. Each ticket in a chain waits on every earlier one it shares a file with, not only the one
+just before it, so dropping or freeing that one by hand never lets it go ahead of the rest. Jira
+Blocks links win over the kinds, and `CONTRADICTIONS` names each place they disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
 
 **A file tickets only add to is not shared.** A path §4 Append-only paths (`desk-env list
@@ -70,7 +73,8 @@ chained for you: hold it with `queue.mjs hold <SUCCESSOR> <TICKET>` where its me
 
 | Blocker | What `plan-batch` does |
 |---|---|
-| in the batch, admitted or parked for its lane or size | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
+| in the batch, admitted or parked for its lane or size, and triage's `blocker_needs` calls it `merge`, with §3b "Overlap holds" `merge` | built now, its merge held: `merge_order` set, lifted by the pass once the blocker's PR merges |
+| in the batch otherwise (`build`, no call, or "Overlap holds" `start`) | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
 | outside the batch, not done, and triage's `blocker_needs` calls it `build` (needed to build) | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
 | outside the batch, not done, and `blocker_needs` calls it `merge` (needed only to merge) | built now, its merge held: `merge_after` set, lifted by the pass once the blocker is Done and on the base (Done alone where its Jira Repository is another configured repo) |
@@ -91,8 +95,8 @@ A ticket parked for its lane (C, D), its size (L, XL) or its design is planned l
 blockers go in `held_by` (and `held_outside`) **beside its park**, and the plan reads `HELD (blocked
 by … , and parked: <its park>)`. The park wins and it is **never in `--deps`**, so a release can never
 send one to a headless worker; `queue.mjs hold`, `admit` and `transfer` keep that park beside the hold. `plan-batch` seeds the queue
-in spawn order (above), and its `--deps` already carries the merge chain for tickets that share files (*Order
-the batch by blast radius*): pass it to the merge driver as it stands.
+in spawn order (above), and its `--deps` already carries the start holds, the merge chain's too at
+"Overlap holds" `start` (*Order the batch by blast radius*): pass it to the merge driver as it stands.
 
 **A batch planned before those parks kept their blockers** has them with `held_by` empty. `queue.mjs
 backfill-holds --dry-run` (with `--batch <name>` for a named batch) prints the hold each would gain from

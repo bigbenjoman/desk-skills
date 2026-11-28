@@ -136,7 +136,7 @@ export function keepPrs(t, keyOf = (x) => `${x.url ?? ''}#${x.pr}`) {
   return [...kept.values()].map((x) => (x.url ? x : x.pr));
 }
 
-const HOLD_FIELDS = ['held_outside', 'merge_after'];
+const HOLD_FIELDS = ['held_outside', 'merge_after', 'merge_order'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
 // Whether ticket `key` of queue `q` moves to the archive: done, with its PR merged (recorded by

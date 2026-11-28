@@ -684,14 +684,15 @@ export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
 export const behindPrs = (q) => Object.values(q?.tickets ?? {}).filter((t) => landing(t) && Object.keys(t.pr_status.behind ?? {}).length).map((t) => `PR #${t.result.pr}`);
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
-// is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), or
-// on a fix ticket for its evidence workflow, or on the repo's reviewer check, is held, not stalled.
+// is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), on
+// another ticket's PR to merge first (merge_order), on a fix ticket for its evidence workflow, or on the
+// repo's reviewer check, is held, not stalled.
 export const STALL_MS = 2 * 60 * 60 * 1000;
 export const STALL_FOR = span(STALL_MS);
 const stalledFor = (t, now) => {
   const ps = prStatusOf(t), at = Date.parse(ps?.changed_at ?? '');
   if (t.undraft?.call === 'evidence-fix' || gateHeldAt(t)) return null;
-  return ps?.state === 'OPEN' && !keysOf(t.merge_after).length && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
+  return ps?.state === 'OPEN' && !keysOf(t.merge_after).length && !keysOf(t.merge_order).length && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
 };
 // A PR the pass holds for the repo's failing reviewer check (gate_hold), at the head it read.
 export const gateHeldAt = (t) => !!t?.gate_hold && prStatusOf(t)?.state === 'OPEN' && (t.gate_hold.head ?? null) === (prStatusOf(t)?.head ?? null);

@@ -105,7 +105,7 @@ import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
 import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
-import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
+import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds, decideMergeOrder } from './pass/parks.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, holdOf, heldText, lockHeldLine, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
@@ -5802,6 +5802,10 @@ runSteps({
   report,
 });
 
+// ---- merge-order holds ---------------------------------------------------
+// The decision is pass/parks.mjs decideMergeOrder.
+runPhase({ name: 'merge-order holds', snapshot: () => holdsSnapshot(), decide: decideMergeOrder, handlers: EPIC_HANDLERS, report });
+
 // ---- base drift ----------------------------------------------------------
 // The decision is pass/report.mjs decideDrift: each candidate's worktree that still exists is counted here.
 const drift = [];
@@ -7154,6 +7158,11 @@ if (!merger.driver && undrafted.length) {
     const steps = keysOf(t.merge_after);
     if (steps.length) {
       report.waiting.push(`${t.key}: MERGE HELD — PR #${s.pr} is out of draft and green, but it merges only after your step ${steps.join(', ')} is Done in Jira: do not merge it yet; the next pass that reads the step Done lifts the hold and puts it to you to merge`);
+      continue;
+    }
+    const firsts = keysOf(t.merge_order);
+    if (firsts.length) {
+      report.waiting.push(`${t.key}: MERGE HELD — PR #${s.pr} is out of draft and green, but it merges only after the PR of ${firsts.join(', ')} (merge order): do not merge it yet; the pass that reads that PR merged lifts the hold and puts it to you to merge`);
       continue;
     }
     if (feedbackFirst && s.reviewDecision === 'CHANGES_REQUESTED') {
