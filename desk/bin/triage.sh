@@ -301,7 +301,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
   "needs_db": <true if verifying it needs a database, seed, or integration test>,
   "needs_services": [<the name of each of this repo's local services ($LOCAL_SERVICES) that verifying it needs running, the name only, without its port>],
-  "needs_local": <null, or one clause naming what verifying it needs that only this computer has, beyond the browser, the database and the services the three fields above cover: local stub binaries, a clone of another repo to read, anything else. A cloud session has the repo from GitHub, and only what config §3b "Cloud environment" says its environment provides>
+  "needs_local": <null, or one clause naming what verifying it needs that only this computer has, beyond the browser and dev server a rendered change's screenshots need, the database and the services the three fields above cover (never name those here): local stub binaries, a clone of another repo to read, anything else. A cloud session has the repo from GitHub, and only what config §3b "Cloud environment" says its environment provides>
 }
 
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
