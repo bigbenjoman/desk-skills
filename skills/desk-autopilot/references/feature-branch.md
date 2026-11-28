@@ -67,7 +67,12 @@ worker parked or finished is stopped, as is one quiet for six passes (wedged); e
 One that reaches a usage limit is never stopped or failed for it: it is paused, and resumed in its
 own session as the same try once the limit lifts (its reset passes or a probe call succeeds), as a
 ticket's worker is. It is never moved to another login or subscription, however much room another
-has (an epic PR review try too). A preflight the limit refuses spends no try and holds the batch. The maintenance
+has (an epic PR review try too). A preflight the limit refuses spends no try and holds the batch. It
+wants its slot under the repo's shared §3b cap even with no ticket to spawn. A try that is due and does
+not start (no room, a held lock, no login, or a spawn that failed or was refused) spends no try either:
+it is kept as `base_fix.start`, the next pass tries again, and `desk-q` notes a fix that has waited 3
+passes, and why. After 3 failed or refused spawns the conflict is yours, as a `/desk-needs-you` item
+naming the batch, the files and the last reason. The maintenance
 window drains it, and stops it at its limit, as any worker, and it resumes as the same try once the
 window is done; either resume waits while anything holds spawns. While it runs the pass leaves the base worktree
 alone (no sync, no baseline, no base gate) and, in feature mode, still spawns nothing else. The next
