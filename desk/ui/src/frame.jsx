@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './icons.jsx';
 import { SCREENS, ticketPath } from './routes.js';
+import { plural } from './words.js';
 
 export const SERVER = '127.0.0.1:4823';
 // Below this width the window is Compact: Standard's sidebar, list and detail pane need 1192 px.
@@ -73,10 +74,11 @@ export function ExternalLink({ text, url, where, open = null }) {
   );
 }
 
-// The banners due now, highest first in §2.5's priority order. Each is { id, tone, glyph, body, action }.
-// A production-broken park and being offline cannot be dismissed; the other banners belong to the
-// Usage and Settings screens.
-export function bannersFor({ snapshot, online, routes, go }) {
+// The banners due now, highest first in §2.5's priority order. Each is { id, tone, glyph, body, sub?,
+// action } or with several buttons { ..., actions: [action] }. A production-broken park and being
+// offline cannot be dismissed; `system` holds the app's own (updated, restarting, build failed: App.jsx
+// appBanners), which sit between them, and the other banners belong to the Usage and Settings screens.
+export function bannersFor({ snapshot, online, routes, go, system = [] }) {
   const out = [];
   for (const r of snapshot?.repos ?? []) {
     for (const key of r.production_broken ?? []) {
@@ -87,6 +89,7 @@ export function bannersFor({ snapshot, online, routes, go }) {
       });
     }
   }
+  out.push(...system);
   if (!online) out.push({ id: 'offline', tone: 'info', glyph: null, body: OFFLINE, action: null });
   return out;
 }
@@ -95,16 +98,19 @@ const TONE = { crit: 'bg-fail-bg border-b-fail-bd', warn: 'bg-needs-bg border-b-
 const GLYPH = { crit: 'text-fail', warn: 'text-needs', info: 'text-muted-fg' };
 
 function Banner({ b, more = null }) {
+  const actions = b.actions ?? (b.action ? [b.action] : []);
   return (
     <div role={b.tone === 'crit' ? 'alert' : 'status'} data-banner={b.id}
-      className={`flex h-10 shrink-0 items-center gap-2.5 border-b pr-3 pl-5 text-[13px] text-foreground ${TONE[b.tone]}`}>
+      className={`flex shrink-0 items-center gap-2.5 border-b pr-3 pl-5 text-[13px] text-foreground ${b.sub ? 'min-h-10 py-1.5' : 'h-10'} ${TONE[b.tone]}`}>
       {b.glyph && <span className={`font-semibold ${GLYPH[b.tone]}`}>{b.glyph}</span>}
-      <span className="min-w-0 truncate">{b.body}</span>
+      {b.sub
+        ? <span className="flex min-w-0 flex-col"><span className="truncate">{b.body}</span><span className="truncate text-[12.5px] text-muted-fg">{b.sub}</span></span>
+        : <span className="min-w-0 truncate">{b.body}</span>}
       <span className="ml-auto flex items-center gap-1.5">
-        {b.action && (
-          <button type="button" onClick={b.action.run}
-            className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2.5 text-[12.5px] font-medium">{b.action.label}</button>
-        )}
+        {actions.map((a, i) => (
+          <button key={a.label} type="button" onClick={a.run}
+            className={`inline-flex h-7 items-center rounded-md px-2.5 text-[12.5px] font-medium ${i === 0 ? 'border border-border bg-background' : 'text-muted-fg hover:bg-muted'}`}>{a.label}</button>
+        ))}
         {more}
       </span>
     </div>
@@ -142,7 +148,7 @@ function Pill({ needs, broken, onClick }) {
 // "● 7 workers · cap 30 · room for 7 more · 27.5 GiB free"
 export function machineLine(m) {
   if (!m) return null;
-  return [`● ${m.running} worker${m.running === 1 ? '' : 's'}`, m.cap != null ? `cap ${m.cap}` : null,
+  return [`● ${plural(m.running, 'worker')}`, m.cap != null ? `cap ${m.cap}` : null,
     m.room != null ? `room for ${m.room} more` : null, m.avail_gib != null ? `${Number(m.avail_gib).toFixed(1)} GiB free` : null]
     .filter(Boolean).join(' · ');
 }
@@ -277,7 +283,7 @@ function StatusBar({ snapshot, live }) {
 }
 
 // `path` is the screen showing, `go` opens another, and `routes` holds the screens that exist.
-export function Frame({ snapshot, live, path, go, routes, title, children }) {
+export function Frame({ snapshot, live, path, go, routes, title, banners = [], children }) {
   const width = useWidth();
   const online = useOnline();
   const [hidden, setHidden] = useState(false);
@@ -301,7 +307,7 @@ export function Frame({ snapshot, live, path, go, routes, title, children }) {
       <div className="flex min-h-0 flex-1">
         {!hidden && (compact ? <Rail {...side} /> : <Sidebar {...side} />)}
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <Banners list={bannersFor({ snapshot, online, routes, go })} />
+          <Banners list={bannersFor({ snapshot, online, routes, go, system: banners })} />
           <div className="min-h-0 flex-1 overflow-auto">{children}</div>
         </div>
       </div>

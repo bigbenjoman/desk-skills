@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { COMPACT_BELOW, ExternalLink, TicketLink, useWidth, waited } from './frame.jsx';
 import { Button, clock, Command, useCopy, WriteButton } from './system.jsx';
+import { useKept } from './kept.js';
 
 export const KIND_TIPS = {
   parked: 'A worker stopped to ask you something.',
@@ -379,9 +380,16 @@ function Gone({ gone, next, step }) {
   );
 }
 
+// A question's own key for its kept answer: an item parked again with a new question starts empty.
+const questionKey = (item) => {
+  let h = 0;
+  for (const c of String(item.question ?? '')) h = (Math.imul(h, 31) + c.codePointAt(0)) | 0;
+  return `${item.id}:${(h >>> 0).toString(36)}`;
+};
+
 function Detail({ item, snapshot, compact, step, result, record, go, next, nextPass, nextCheckin }) {
-  const [chosen, setChosen] = useState(null);
-  const [text, setText] = useState('');
+  const [chosen, setChosen] = useKept(`inbox:chosen:${questionKey(item)}`, null);
+  const [text, setText] = useKept(`inbox:draft:${questionKey(item)}`, '');
   const [hint, setHint] = useState(null);
   const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined');
   const field = useRef(null);
@@ -397,6 +405,8 @@ function Detail({ item, snapshot, compact, step, result, record, go, next, nextP
   const o = options.find((x) => x.id === chosen) ?? null;
   const busy = result?.phase === 'busy';
   const done = result?.phase === 'done';
+  // A recorded answer is sent: a reload from the confirmation brings none of it back.
+  useEffect(() => { if (done) { setChosen(null); setText(''); } }, [done, setChosen, setText]);
 
   // The question counts as read once any of it has been on screen.
   useEffect(() => {
@@ -619,16 +629,17 @@ export function Inbox({ get, snapshot, go }) {
   const [gone, setGone] = useState(null);
   const [failed, setFailed] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [sel, setSel] = useState(null);
-  const [repoF, setRepoF] = useState('');
-  const [kindF, setKindF] = useState('');
-  const [sort, setSort] = useState('oldest');
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  // Kept across a reload for a new app (§2.5): the item open, the filters and the sort.
+  const [sel, setSel] = useKept('inbox:sel', null);
+  const [repoF, setRepoF] = useKept('inbox:repo', '');
+  const [kindF, setKindF] = useKept('inbox:kind', '');
+  const [sort, setSort] = useKept('inbox:sort', 'oldest');
+  const [filtersOpen, setFiltersOpen] = useKept('inbox:filters-open', false);
   const compact = useWidth() < COMPACT_BELOW;
   const busy = useRef(false);
   const lastSettle = useRef(-Infinity);
   const rows = useRef(new Map());
-  const picked = useRef(false);
+  const picked = useRef(sel != null); // an item kept across a reload stays open
 
   const load = useCallback(async (settle) => {
     // A press while a check runs is that check; one within a minute of the last reads the list only.

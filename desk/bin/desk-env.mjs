@@ -1055,6 +1055,8 @@ export function permissionOrUnset(id, parsed) {
   return permValue(key, v);
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
+// Another repo's, by slug, as permissionOrUnset reads it: null for a row missing, blank or TODO.
+export const repoPermissionOrUnset = (slug, id, root = deskConfigRoot()) => permissionOrUnset(id, parseConfigFile(join(root, 'repos', slug, 'config.md')));
 
 // The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
 // user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.

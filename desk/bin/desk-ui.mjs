@@ -76,11 +76,13 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { userInfo } from 'node:os';
 import { dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { uiLogFile } from './desk-app.mjs';
 import * as E from './desk-env.mjs';
 import { makeFeed } from './desk-ui-events.mjs';
 import { ID as SESSION_ID, makeBroker, seedPrompt, shownArgs } from './desk-ui-sessions.mjs';
 import { makePrReader } from './desk-ui-ticket.mjs';
-import { AGENTS, readInstalled, runningVersion } from './installed.mjs';
+import * as S from './desk-ui-settings.mjs';
+import { AGENTS, forwardOnMain, gitIn, oldCode, readInstalled, runningVersion } from './installed.mjs';
 import { loginEnv, readSubscriptions, repoSubscription, tilde } from './logins.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
@@ -275,12 +277,40 @@ function parkSeed({ ticket, batches }) {
   return t ? [{ source: 'desk park', text: t.park.question }] : [];
 }
 
+// ---- Settings (screen-spec §9, desk-ui-settings.mjs) --------------------------------------------
+//   GET  /api/settings/repos                 [{ slug, name }]: every repo folder under the config root,
+//                                            with or without its config.md
+//   GET  /api/settings/repos/<slug>          repoSettings: its rows, or why they can't be read
+//   GET  /api/settings/subscriptions         subscriptionsView, read only
+//   GET  /api/settings/install               installView, with the skill and plugin updates counted
+//                                            at most every 6 h in the background (skills-upstream)
+//   POST /api/settings/install-log           opens the app build's log (desk-ui-build.log) on the Mac;
+//                                            nothing else, so the request carries nothing
+// The `server` event, on the change stream, and /api/meta carry appState: { app: { build, failed },
+// installed, restartRequired }. The event is sent when install.sh moves one of them, with `released`
+// ({ from, commits }) when the installed commit moved forward on main, and `restarting` when this server is stopped
+// while the installed commit is not the one it runs.
+const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]*__[A-Za-z0-9._-]+$/;
+const repoFolders = (root = E.deskConfigRoot()) => {
+  let slugs;
+  try { slugs = readdirSync(join(root, 'repos')).filter((s) => SLUG.test(s)).sort(); } catch { return []; }
+  const names = E.shownNames(slugs);
+  return slugs.map((slug, i) => ({ slug, name: names[i] }));
+};
+const CHECK_EVERY_MS = 60 * 1000;
+const openFile = (file) => new Promise((resolve) => {
+  execFile('open', [file], { shell: false, timeout: 30_000 }, (err) => resolve(err ? (Number.isInteger(err.code) ? err.code : null) : 0));
+});
+
 // `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
 // `terminal(dir)` opens Terminal for /api/terminal (openTerminal), and `github()` checks GitHub before
-// the Inbox settles (probeGitHub); the tests pass stubs.
+// the Inbox settles (probeGitHub); the tests pass stubs. `settings` holds Settings' stand-ins:
+// `check(src, sha)` for main's tests check (releaseCheck), `updates()` for the skill and plugin count
+// (readUpdates), `open(file)` for the install log (openFile), `appEveryMs` for the app build's watch and
+// `running()` for the desk commit this server runs (runningVersion).
 // `chat` passes the conversations' options: `seed(about)` -> the quotes (parkSeed), `now`, `checkMs`.
 // `pr` passes options to the ticket page's PR reader (makePrReader): the tests' gh stub and clock.
-export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {}, pr = {} } = {}) {
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {}, terminal = openTerminal, github = probeGitHub, chat = {}, pr = {}, settings = {} } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -640,6 +670,82 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return send(res, 200, { id, state: 'ended' });
   }
 
+  // ---- Settings ----
+  const { check = null, updates = S.readUpdates, open = openFile, appEveryMs = 2000, running = version } = settings;
+  const appNow = () => { const a = S.appState(); return { ...a, restartRequired: oldCode(running(), { commit: a.installed }) }; };
+  let appWas = S.appState();
+  const appWatch = setInterval(() => {
+    const next = S.appState();
+    if (JSON.stringify(next) === JSON.stringify(appWas)) return;
+    const was = appWas;
+    appWas = next;
+    // A release is the installed commit moving forward along origin/main, as the release watch reads
+    // one (installed.mjs forwardOnMain): a move back (a rollback), off main or one it can't count is
+    // no release, so the window shows no toast for it.
+    const from = readInstalled()?.from;
+    const commits = next.installed && was.installed && next.installed !== was.installed && typeof from === 'string' && from && existsSync(from)
+      ? forwardOnMain(gitIn(from), was.installed, next.installed).merges : null;
+    feed.announce('server', { ...appNow(), ...(commits > 0 ? { released: { from: was.installed, commits } } : {}) });
+  }, appEveryMs);
+  appWatch.unref?.();
+  // The skill and plugin updates, counted in the background at most every UPDATES_EVERY_MS.
+  const upd = { value: null, at: -Infinity, running: null };
+  const updatesNow = () => {
+    if (!upd.running && clock() - upd.at >= S.UPDATES_EVERY_MS) {
+      upd.at = clock();
+      upd.running = Promise.resolve().then(updates).then((v) => { if (v) upd.value = v; }, (e) => console.error(`desk-ui: updates: ${e.message}`))
+        .finally(() => { upd.running = null; });
+    }
+    return upd.value;
+  };
+  // main's tests check on one commit, read again at most once a minute and never on the request's own
+  // thread: gh can take up to a minute. A commit's first read is waited on; after that the last answer
+  // stands while the next one is read in the background. Each read resolves to its own commit's answer,
+  // so a request waiting on one commit never takes the answer of another that replaced it meanwhile.
+  const checked = { sha: null, at: -Infinity, value: null, running: null };
+  const checkOf = (src, sha, real) => {
+    if (checked.sha !== sha) Object.assign(checked, { sha, at: -Infinity, value: null, running: null });
+    if (!checked.running && clock() - checked.at >= CHECK_EVERY_MS) {
+      checked.at = clock();
+      const p = Promise.resolve().then(() => (check ?? real)(src, sha))
+        .catch((e) => ({ error: String(e?.message ?? e).split('\n')[0] }))
+        .then((v) => {
+          if (checked.running === p) Object.assign(checked, { value: v, running: null });
+          return v;
+        });
+      checked.running = p;
+    }
+    return checked.value ?? checked.running;
+  };
+  async function settingsRoute(req, res, path, method, query) {
+    const fail = (what, e) => { console.error(`desk-ui: settings ${what}: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); };
+    if (path === '/api/settings/install-log') {
+      if (method !== 'POST') return refuse(res, 405, 'method', 'POST only.');
+      if (query) return refuse(res, 400, 'body', 'This route takes nothing.');
+      const file = uiLogFile();
+      if (!existsSync(file)) return refuse(res, 404, 'log', "There's no install log yet.");
+      const exit = await open(file);
+      audit(path, ['open', tilde(file)], exit);
+      return exit === 0 ? send(res, 200, { opened: tilde(file) }) : refuse(res, 500, 'open', "The install log didn't open. See the server log.");
+    }
+    if (method !== 'GET' && method !== 'HEAD') return refuse(res, 405, 'method', 'GET only.');
+    try {
+      if (path === '/api/settings/repos') return send(res, 200, repoFolders());
+      const r = path.match(/^\/api\/settings\/repos\/([^/]+)$/);
+      if (r) {
+        let slug;
+        try { slug = decodeURIComponent(r[1]); } catch { slug = null; }
+        if (!slug || !repoFolders().some((x) => x.slug === slug)) return refuse(res, 404, 'repo', 'That is not a repo desk is set up for.');
+        return send(res, 200, S.repoSettings(slug));
+      }
+      if (path === '/api/settings/subscriptions') return send(res, 200, await S.readSubscriptionsView(clock()));
+      if (path === '/api/settings/install') {
+        return send(res, 200, await S.installView({ check: checkOf, updates: updatesNow() }));
+      }
+    } catch (e) { return fail(path, e); }
+    return refuse(res, 404, 'not_found', 'No such route.');
+  }
+
   async function handle(req, res) {
     const [path, query = ''] = String(req.url ?? '/').split('?');
     const method = req.method ?? 'GET';
@@ -685,6 +791,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       }
       const c = path.match(/^\/api\/sessions\/([^/]+)(?:\/([^/]+))?$/);
       if (c) return sessionRoute(req, res, method, c[1], c[2], query);
+      if (path === '/api/settings' || path.startsWith('/api/settings/')) return settingsRoute(req, res, path, method, query);
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
       const tk = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)(?:\/(pr)(?:\/jobs\/(\d{1,20})\/log)?)?$/);
       if (tk) return ticketRead(res, tk[1], tk[2], tk[3], tk[4]);
@@ -703,7 +810,10 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
         const opened = await feed.subscribe(req, res, { headers: { ...BASE_HEADERS, 'X-Desk-Boot': boot }, query: new URLSearchParams(query) });
         return opened || refuse(res, 500, 'read', "Could not read desk's state; see the server log.");
       }
-      if (path === '/api/meta') return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p });
+      if (path === '/api/meta') {
+        updatesNow();
+        return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p, ...appNow(), updates: upd.value });
+      }
       return refuse(res, 404, 'not_found', 'No such route.');
     }
     if (!s) return send(res, 401, 'Not signed in. Open Desk.app.\n', 'text/plain; charset=utf-8');
@@ -728,11 +838,16 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     log(`${new Date().toISOString()} UPGRADE ${String(req.url ?? '').split('?')[0].slice(0, 200)} ${status.slice(0, 3)}`);
     socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\nX-Desk-Boot: ${boot}\r\n\r\n`);
   });
-  server.on('close', () => { feed.stop(); broker.stop(); });
+  server.on('close', () => { clearInterval(appWatch); feed.stop(); broker.stop(); });
   server.headersTimeout = 10_000;
   server.requestTimeout = 10_000;
   server.feed = feed;
   server.sessions = broker;
+  // Before the streams end: a stop while the installed commit is not the one this server runs is
+  // install.sh restarting it after an update, which the window says while it reconnects.
+  server.restarting = () => { const a = appNow(); if (a.restartRequired) feed.announce('server', { ...a, restarting: true }); };
+  // The tests wait on the background count of skill and plugin updates.
+  server.updates = () => upd.running ?? Promise.resolve();
   return server;
 }
 
@@ -759,7 +874,7 @@ async function serve() {
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
   // Open change streams never end by themselves, so they are ended (each closes its connection), while
   // a write in flight is let finish, so its command's result is answered and audited.
-  const stop = () => { server.feed.stop(); server.sessions.stop(); server.close(() => process.exit(0)); };
+  const stop = () => { server.restarting(); server.feed.stop(); server.sessions.stop(); server.close(() => process.exit(0)); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

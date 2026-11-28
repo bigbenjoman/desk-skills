@@ -239,5 +239,8 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     started = false;
   }
 
-  return { current, snapshot, subscribe, stop, tick, get rev() { return rev; }, get clients() { return clients.size; } };
+  // An event that is not the model's (the server's own `server` event), sent to every open stream and
+  // held in the ring like any other.
+  const announce = (event, data) => { if (!stopped) publish(event, data); };
+  return { current, snapshot, subscribe, stop, tick, announce, get rev() { return rev; }, get clients() { return clients.size; } };
 }

@@ -12,4 +12,7 @@ contextBridge.exposeInMainWorld('desk', {
     if (typeof fn === 'function') ipcRenderer.on('desk:deep-link', (_e, route) => fn(route));
   },
   startServer: () => ipcRenderer.invoke('desk:start-server'),
+  // Settings · App's theme and density, kept in the app's own preferences file.
+  prefs: () => ipcRenderer.invoke('desk:prefs-get'),
+  setPref: (key, value) => ipcRenderer.invoke('desk:prefs-set', { [key]: value }),
 });

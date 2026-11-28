@@ -339,16 +339,17 @@ runInNewContext(readFileSync(join(SHELL, 'preload.cjs'), 'utf8'), {
     ipcRenderer: { invoke: (ch, ...a) => { invoked.push([ch, ...a]); return null; }, on: (ch, fn) => { listeners[ch] = fn; } },
   } : null),
 });
-t('the preload exposes desk.badge, notify, openExternal, onDeepLink and startServer only',
-  Object.fromEntries(Object.entries(exposed).map(([k, v]) => [k, Object.keys(v)])), { desk: ['badge', 'notify', 'openExternal', 'onDeepLink', 'startServer'] });
+t('the preload exposes desk.badge, notify, openExternal, onDeepLink, startServer, prefs and setPref only',
+  Object.fromEntries(Object.entries(exposed).map(([k, v]) => [k, Object.keys(v)])), { desk: ['badge', 'notify', 'openExternal', 'onDeepLink', 'startServer', 'prefs', 'setPref'] });
 exposed.desk.badge(3); exposed.desk.notify({ title: 'T', body: 'B', extra: 1 }); exposed.desk.openExternal('https://github.com/x'); exposed.desk.startServer();
+exposed.desk.prefs(); exposed.desk.setPref('theme', 'dark');
 t('each call goes to its own channel, passing only plain values', invoked,
-  [['desk:badge', 3], ['desk:notify', { title: 'T', body: 'B' }], ['desk:open-external', 'https://github.com/x'], ['desk:start-server']]);
+  [['desk:badge', 3], ['desk:notify', { title: 'T', body: 'B' }], ['desk:open-external', 'https://github.com/x'], ['desk:start-server'], ['desk:prefs-get'], ['desk:prefs-set', { theme: 'dark' }]]);
 const routes = [];
 exposed.desk.onDeepLink((...a) => routes.push(a));
 listeners['desk:deep-link']({ sender: 'the IPC event' }, '/inbox/x');
 t('a deep link reaches the page as its route alone, never the IPC event', routes, [['/inbox/x']]);
-t('the main process answers only those channels', Object.keys(f.ipc).sort(), ['desk:badge', 'desk:notify', 'desk:open-external', 'desk:start-server']);
+t('the main process answers only those channels', Object.keys(f.ipc).sort(), ['desk:badge', 'desk:notify', 'desk:open-external', 'desk:prefs-get', 'desk:prefs-set', 'desk:start-server']);
 t('no webview tag', prefs.webviewTag, false);
 
 // AC2: the page cannot leave the server or open a window.

@@ -1,15 +1,56 @@
-import { useEffect } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 const DARK = '(prefers-color-scheme: dark)';
 
-// Keeps <html data-theme> on the Mac's appearance, which Electron passes to the page as
-// prefers-color-scheme, and follows it when it changes while the window is open.
-export function useColorScheme(root = document.documentElement) {
+// The app's own display preferences (screen-spec §9.2): Theme and Density. Desk.app keeps them in its
+// preferences file outside desk's state (window.desk.prefs / setPref); no desk command runs. A window
+// without that bridge (an older Desk.app) shows a choice at once but saves nothing, so setPref answers
+// false. Anything missing or unreadable is the default, with no error. The choices are declared here
+// only: the shell's file keeps whatever the window sends for a known key.
+export const THEMES = ['system', 'light', 'dark'];
+export const DENSITIES = ['comfortable', 'compact'];
+export const DEFAULT_PREFS = { theme: 'system', density: 'comfortable' };
+const valid = (p) => ({
+  theme: THEMES.includes(p?.theme) ? p.theme : DEFAULT_PREFS.theme,
+  density: DENSITIES.includes(p?.density) ? p.density : DEFAULT_PREFS.density,
+});
+const CHOICES = { theme: THEMES, density: DENSITIES };
+
+// `bridge` is window.desk (the tests pass a stub). -> { prefs, setPref(key, value) -> Promise<boolean> }
+export function usePrefs(bridge = globalThis.window?.desk) {
+  const [prefs, setPrefs] = useState(() => ({ ...DEFAULT_PREFS }));
+  useEffect(() => {
+    if (!bridge?.prefs) return undefined;
+    let live = true;
+    Promise.resolve().then(() => bridge.prefs()).then((p) => { if (live) setPrefs(valid(p)); }, () => {});
+    return () => { live = false; };
+  }, [bridge]);
+  const setPref = useCallback(async (key, value) => {
+    if (!CHOICES[key]?.includes(value)) return false;
+    let saved = null;
+    // Shown at once; the file follows.
+    setPrefs((p) => ({ ...p, [key]: value }));
+    try { saved = bridge?.setPref ? await bridge.setPref(key, value) : null; } catch { saved = null; }
+    if (saved && typeof saved === 'object') setPrefs(valid(saved));
+    return !!saved;
+  }, [bridge]);
+  return { prefs, setPref };
+}
+
+export const Prefs = createContext({ prefs: DEFAULT_PREFS, setPref: async () => false });
+export const usePrefsContext = () => useContext(Prefs);
+
+// Keeps <html data-theme> on the chosen theme: with System, the Mac's appearance, which Electron passes
+// to the page as prefers-color-scheme, followed when it changes while the window is open. <html
+// data-density> carries the density.
+export function useColorScheme(root = document.documentElement, { theme = 'system', density = 'comfortable' } = {}) {
   useEffect(() => {
     const query = window.matchMedia(DARK);
-    const apply = () => { root.dataset.theme = query.matches ? 'dark' : 'light'; };
+    const apply = () => { root.dataset.theme = theme === 'system' ? (query.matches ? 'dark' : 'light') : theme; };
     apply();
+    if (theme !== 'system') return undefined;
     query.addEventListener('change', apply);
     return () => query.removeEventListener('change', apply);
-  }, [root]);
+  }, [root, theme]);
+  useEffect(() => { root.dataset.density = density; }, [root, density]);
 }

@@ -132,7 +132,9 @@ export function install(src) {
 
 const uiDir = () => join(E.deskHome(), 'ui');
 export const uiDist = () => join(uiDir(), 'dist');
-const uiStampFile = () => join(uiDir(), 'source-hash');
+// The source hash of the build served, and of a build that failed (read by desk-ui-settings.mjs appState).
+export const uiStampFile = () => join(uiDir(), 'source-hash');
+export const uiFailedFile = () => join(uiDir(), 'build-failed');
 export const uiLogFile = () => join(E.HOME, '.desk-autopilot', 'ui', 'desk-ui-build.log');
 
 // Builds in a copy of the source, then swaps the new build in for the one the server serves: until
@@ -151,11 +153,18 @@ export function installUi(src) {
   if (!src || !existsSync(join(src, 'package.json'))) { console.error(`desk app: no app source at ${src ?? '(none given)'}`); return 2; }
   const hash = sourceHash(src);
   const had = existsSync(join(uiDist(), 'index.html'));
-  if (had && readStamp(uiStampFile()) === hash) { console.log(`desk app: unchanged since its last build (${tilde(uiDist())})`); return 0; }
+  // A source back at the served build (a failed build reverted) leaves no failed build to tell the window about.
+  if (had && readStamp(uiStampFile()) === hash) { rmSync(uiFailedFile(), { force: true }); console.log(`desk app: unchanged since its last build (${tilde(uiDist())})`); return 0; }
   const job = { label: 'desk app', what: 'the desk app', src, log: uiLogFile(), work: join(uiDir(), 'build'), had,
     kept: 'the previous build is still served', none: 'no build is installed' };
-  if (!rebuild(job, (log) => buildUi(src, log))) return 1;
+  // A build that failed leaves its hash in build-failed, so an open window can say it is on the previous
+  // app (desk-ui-settings.mjs appState); the next build that goes in clears it.
+  if (!rebuild(job, (log) => buildUi(src, log))) {
+    try { mkdirSync(uiDir(), { recursive: true }); writeFileSync(uiFailedFile(), `${hash}\n`); } catch { /* only the window's notice is lost */ }
+    return 1;
+  }
   writeFileSync(uiStampFile(), `${hash}\n`);
+  rmSync(uiFailedFile(), { force: true });
   console.log(`desk app: ${had ? 'rebuilt' : 'built'}: ${tilde(uiDist())}; an open window shows it once it reloads`);
   return 0;
 }
