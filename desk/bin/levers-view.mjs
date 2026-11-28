@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, isNone, leverRow, localDay, repoConfigValue, repoConfigValues, repoDirs, shownNames } from './desk-env.mjs';
 import { changeLog, costRecorded } from './desk-changes.mjs';
 import { DAY_MS, addDays, addMonths, monthOf, weekStart } from './day-keys.mjs';
-import { REGISTRY, DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, OFF_STATES, TESTING_STATES, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, OFF_STATES, TESTING_STATES, decideChoices, fixTriesLimit, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
@@ -289,7 +289,7 @@ const FIX_LIMIT = GUARDRAILS['fix-tries-parks'];
 function limitOf(metric, base) {
   if (!metric.limited) return null;
   const ratio = FIX_LIMIT.margin.max_rate_ratio;
-  return base == null ? { value: null, reason: NO_BASELINE, ratio } : { value: round(base * ratio, 2), ratio, basis: `${ratio} × before levers` };
+  return base == null ? { value: null, reason: NO_BASELINE, ratio } : { value: fixTriesLimit(base), ratio, basis: `${ratio} × before levers` };
 }
 
 // One metric's 30 daily points ending yesterday, 6 weekly points ending last week, 12 monthly points

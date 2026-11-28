@@ -7,7 +7,7 @@
 import * as MS from './merge-stages.mjs';
 import { fmtHours } from './stuck-time.mjs';
 import { andList } from './desk-q.mjs';
-import { DECISION_RULE, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
+import { DECISION_RULE, KEPT_STATES as KEPT, REGISTRY, fixTriesLimit, isValued } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
 // minutes as "min", as the page's header does. Runs in the browser too, so it uses nothing from outside
@@ -96,8 +96,9 @@ const isoWeek = (k) => {
 };
 
 // ---- the four trend metrics, as the page titles and formats them ------------------------------------------
-// The limit a metric must stay under, as the view sets it (fix tries only), or null.
-const limitOf = (metric) => metric.limit?.value ?? null;
+// The fix tries limit, as the view sets it; a view saved before it carried one gets the same figure
+// from its baseline.
+const limitOf = (metric) => (metric.limit === undefined ? fixTriesLimit(metric.baseline?.value) : metric.limit?.value ?? null);
 // `sub` words a card's one-line description from its metric and whether the view keyed its days by
 // the day each ticket merged.
 const perTicket = (merged) => (merged ? 'per merged ticket, by the day it merged' : 'per accepted ticket');

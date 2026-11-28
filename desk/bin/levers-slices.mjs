@@ -192,7 +192,7 @@ export function leverSlice(view, lever) {
   const board = view.panels.board;
   const l = (board.levers ?? []).find((x) => x.lever === lever);
   const reg = REGISTRY[lever];
-  const cells = enrolledCells(view, l?.cells ?? []);
+  const cells = enrolledCells(view, l?.cells ?? []).map((c) => (c.sample ? { ...c, sample: withReasons(c.sample, ['on', 'off', 'pooled_on', 'pooled_off', 'n', 'min'], NOT_COUNTED) } : c));
   const mine = (e) => e.lever === lever || (e.levers ?? []).includes(lever);
   return {
     ...head(view, 'lever'),

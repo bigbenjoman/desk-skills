@@ -607,7 +607,7 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     v.panels.board.levers.find((l) => l.lever === 'wrappers').cells.find((c) => c.repo === 'desk-skills').sample.on = null;
     const blank = S.leversSlice(v).levers.find((l) => l.lever === 'wrappers').cells[0];
     t('DS-1068 AC7 a count the evaluation did not record is null with a reason', j([blank.on, blank.reasons?.on, blank.reasons?.off]), '[null,"not recorded by the latest evaluation",null]');
-    t('DS-1068 AC7 and on the lever page too', S.leverSlice(v, 'wrappers').evidence[0].reasons?.on, 'not recorded by the latest evaluation');
+    t('DS-1068 AC7 and on the lever page too', j([S.leverSlice(v, 'wrappers').evidence[0].reasons?.on, S.leverSlice(v, 'wrappers').cells[0].sample.reasons?.on]), '["not recorded by the latest evaluation","not recorded by the latest evaluation"]');
   }
 
   // A pair trial's change is in both its levers' histories.

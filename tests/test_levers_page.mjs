@@ -256,6 +256,9 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   const f = tileOf(P.renderPage(over), 'Fix tries per ticket');
   t('tiles: fix tries over the 0.16 limit turn amber', f.includes('<span class="tile-s" style="color:#B45309"><span class="dot" style="background:#D97706"></span>Over the 0.16 limit</span>'), true);
   t('tiles: fix tries under it do not', tileOf(hSix, 'Fix tries per ticket').includes('Over the'), false);
+  const saved = structuredClone(over);
+  delete saved.panels.trends.metrics.fixes.limit;
+  t('tiles: a view saved before it carried its limit still turns amber', tileOf(P.renderPage(saved), 'Fix tries per ticket').includes('Over the 0.16 limit'), true);
 }
 
 const cards = hSix.split('<article class="card wbr"').slice(1).map((c) => c.split('</article>')[0]);
