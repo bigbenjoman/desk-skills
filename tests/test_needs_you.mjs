@@ -5,7 +5,7 @@
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -2212,6 +2212,23 @@ t('DS-965 AC1 it names the base, the fetch failure and what clears it', bs965[0]
 t('DS-965 AC1 the list prints it', here('list', 'rho808').out.split('\n').some((l) => l.startsWith('rho808 base-sync base-sync')), true);
 put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-965 AC2 once a pass clears the record the item is gone', N.collect({ word: 'rho808' }).items.length, 0);
+// ---- DS-1034: a base conflict fix whose worker could not be started in 3 tries is one item for the
+// batch, naming it, the files and the last reason.
+const start1034 = (failed) => ({ tries: [], running: null, port: null, start: { try: 1, files: ['a.txt', 'b.txt'], since: minsAgo(30), passes: 4, failed, why: 'failed its spawn: spawn refused: no seat' } });
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: start1034(3) }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const bf1034 = N.collect({ word: 'rho1034' }).items;
+t('DS-1034 AC2 one base-fix-start item for the batch', bf1034.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-fix-start base-fix-start');
+t('DS-1034 AC2 it names the batch, the base, the files and the reason', bf1034[0]?.need,
+  'the conflict fix worker for feat/x in rho1034 could not be started in 3 tries, so feat/x stays in conflict with main (a.txt, b.txt). The last try: failed its spawn: spawn refused: no seat. Resolve the conflict by hand in the base worktree and push feat/x');
+t('DS-1034 AC2 its age is the first wait\'s', Math.round((NOW - bf1034[0]?.since) / 60000), 30);
+t('DS-1034 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.name === 'rho1034')).shown, 1);
+t('DS-1034 done records nothing', N.record({ word: 'rho1034', ticket: 'base-fix-start', action: 'done' }).line.includes('drops this item once it is current'), true);
+const check1034 = start1034(3); check1034.start = { ...check1034.start, files: [], check: 'make check' };
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: check1034 }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-1034 a merged-tree fix that could not start names its check, not a conflict', N.collect({ word: 'rho1034' }).items[0]?.need,
+  'the merged-tree fix worker for feat/x in rho1034 could not be started in 3 tries, so merging main into feat/x still fails §4 Merged-tree check (make check). The last try: failed its spawn: spawn refused: no seat. Merge it by hand in the base worktree, fix what the check fails and push feat/x');
+put('rho1034', { port: 4534, beat: 1, supervised: true, batch: { base: 'feat/x', base_fix: start1034(2) }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-1034 under 3 failed starts there is no item', N.collect({ word: 'rho1034' }).items.length, 0);
 
 // ---- DS-416: a child PR whose required check only the default branch's workflow runs on the base is
 // no item of its own under ask: the base-push item says syncing the base starts its CI.
@@ -2337,7 +2354,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 only the merged ticket with steps not yet run is listed', f1.map((i) => i.t.key).join(), 'follow:F-1');
   t('DS-509 AC5 DS-788 AC2 AC4 AC6 it says the code is on the default branch since the merge, and names the step and its §3 row and value once',
     `${/^F-1 is on main since \d{4}-\d\d-\d\d\. Check: run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)\. Then say done\.$/.test(f1[0]?.need ?? '')} ${(f1[0]?.need ?? '').split('§3').length - 1}`, 'true 1');
-  t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
+  const nc509 = N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509'));
+  t('DS-509 AC5 issue-1687 AC1 desk-q counts it as a check after merge, not as needing the person', `${nc509.shown} ${nc509.follows.map((f) => f.t.key).join()} ${nc509.checking.length}`, '0 follow:F-1 0');
   const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
@@ -2349,8 +2367,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'P-1': merged(71, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
   } });
   const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
-  t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
-    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+  t('DS-934 issue-1687 AC1 every ticket done: the follow item is a Checks after merge row, not counted as needing you, and the Queue does not say there is nothing',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Checks after merge · 1\b/.test(scr())} ${/Needs you ·/.test(scr())} ${/P-1 +▹ check +(\d+[dhm]( \d+[hm])? +)?Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '0 true false true false');
   N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
   t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
     `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
@@ -2362,7 +2380,47 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'P-1': merged(71, { follow_on: [{ step: 'check the refund totals look right', row: null }] }),
   } });
   t('issue-1419 a dropped item comes back once what it keys to changes, as a put-off one does',
-    `${phiCount().shown} ${/P-1 +◆ needs you .*Check: check the refund totals/.test(scr())}`, '1 true');
+    `${phiCount().follows.length} ${/P-1 +▹ check .*Check: check the refund totals/.test(scr())}`, '1 true');
+  // issue-1687 AC2: a session takes the check on (claim <item> --by <session>): it shows as checking
+  // (<session>), counted in `checking`, not `follows`; it lapses once the session's transcript is gone or
+  // idle past §3b Release idle claims after (12 hours unset), and done clears it.
+  const TR1687 = join(env.HOME, '.claude', 'projects', '-x', 'sess-1687.jsonl');
+  const badId = N.claim({ word: 'phi934', item: 'follow:P-1', session: 'not a session' });
+  t('issue-1687 AC2 claim refuses a --by that is not a session id', `${badId.ok} ${/--by wants a session id/.test(badId.line)}`, 'false true');
+  const noTr = N.claim({ word: 'phi934', item: 'follow:P-1', session: 'sess-1687' });
+  t('issue-1687 AC2 claim refuses a session with no transcript here, and claims nothing',
+    `${noTr.ok} ${/no transcript for session sess-1687/.test(noTr.line)} ${phiCount().checking.length} ${phiCount().follows.length}`, 'false true 0 1');
+  const noItem = N.claim({ word: 'phi934', item: 'follow:P-9', session: 'sess-1687' });
+  t('issue-1687 AC2 claim refuses an item that is not a listed check after merge', `${noItem.ok} ${/no check after merge in \S+ is listed as follow:P-9/.test(noItem.line)}`, 'false true');
+  mkdirSync(dirname(TR1687), { recursive: true });
+  writeFileSync(TR1687, '{}\n');
+  const claimed = cli('claim', 'phi934', 'follow:P-1', '--by', 'sess-1687');
+  t('issue-1687 AC2 claim <item> --by <session> records it, and says it is out of the count until done or idle',
+    `${claimed.code} ${/follow:P-1: claimed by session sess-1687\. desk-q shows it as checking \(sess-1687\) and leaves it out of your count until it is done, or session sess-1687 has been idle past §3b Release idle claims after \(12 hours\)\.$/.test(claimed.out.trim())}`, '0 true');
+  t('issue-1687 AC2 claimed, it is in checking, not follows, and not shown',
+    `${phiCount().shown} ${phiCount().follows.length} ${phiCount().checking.map((f) => `${f.t.key} ${f.item.claim.session}`).join()}`, '0 0 follow:P-1 sess-1687');
+  t('issue-1687 AC2 its Queue row says checking (<session>), still under Checks after merge',
+    `${/Checks after merge · 1\b/.test(scr())} ${/P-1 +▹ check .*checking \(sess-1687\) · Check: /.test(scr())}`, 'true true');
+  const listed1687 = here('list', 'phi934');
+  t('issue-1687 AC2 needs-you list leaves a claimed check out of the items and names who is checking it',
+    `${N.collect({ word: 'phi934' }).items.some((i) => i.t.key === 'follow:P-1')} ${/Checking \(sess-1687\): follow:P-1/.test(listed1687.out)}`, 'false true');
+  t('issue-1687 AC2 the not-now list leaves the claim entry out', spawnSync(process.execPath, [join(REAL_BIN, 'not-now.mjs'), 'list'], { encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: join(env.HOME, '.desk-autopilot', 'acme__phi934') } }).stdout.includes('claim'), false);
+  // Idle past 12 hours, the claim lapses: the check needs the person again.
+  const old = (NOW - 13 * 3600e3) / 1000;
+  NN.addClaim({ item: 'follow:P-1', session: 'sess-1687', ticket: 'P-1', at: new Date(NOW - 13 * 3600e3).toISOString() }, join(env.HOME, '.desk-autopilot', 'acme__phi934'));
+  utimesSync(TR1687, old, old);
+  t('issue-1687 AC2 a claim whose session is idle past §3b Release idle claims after lapses', `${phiCount().checking.length} ${phiCount().follows.length}`, '0 1');
+  // A fresh claim, live while its transcript is there, lapses once the transcript is gone, whatever its age.
+  writeFileSync(TR1687, '{}\n');
+  NN.addClaim({ item: 'follow:P-1', session: 'sess-1687', ticket: 'P-1', at: new Date().toISOString() }, join(env.HOME, '.desk-autopilot', 'acme__phi934'));
+  t('issue-1687 AC2 a fresh claim with its transcript there is live', phiCount().checking.length, 1);
+  rmSync(TR1687);
+  t('issue-1687 AC2 a claim whose session has no transcript lapses', `${phiCount().checking.length} ${phiCount().follows.length}`, '0 1');
+  writeFileSync(TR1687, '{}\n');
+  t('issue-1687 AC2 claimed again', N.claim({ word: 'phi934', item: 'P-1', session: 'sess-1687' }).ok && phiCount().checking.length, 1);
+  const done1687 = N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'done' });
+  t('issue-1687 AC2 done on a claimed check records it and clears the claim',
+    `${done1687.ok} ${phiCount().checking.length} ${phiCount().follows.length} ${NN.claimOf(NN.readRegister(join(env.HOME, '.desk-autopilot', 'acme__phi934')), 'follow:P-1')}`, 'true 0 0 null');
   // A batch's base-push item is the repo's, not a ticket's, and is a Needs you row all the same.
   put('chi934', { port: 4411, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
     tickets: { 'C-1': { state: 'triaged', lane: 'A' } } });
@@ -2610,7 +2668,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const gateDirs = new Set();
   N.collect({ word: 'prod785', reads: { ...STUB, git: (dir) => { gateDirs.add(dir); return null; } } });
   t('DS-929 AC1 a collect reads the gates through the git read it is given, in the repo root', [...gateDirs].join(), c.root);
-  t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
+  t('DS-785 issue-1687 desk-q counts only the listed items, as checks after merge', ((n) => `${n.shown} ${n.follows.length}`)(N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785'))), '0 2');
   const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
   const g1 = queueOf('prod785').tickets['G-1'];
   t('DS-785 done on the merge item records its step run and keeps the main and production ones',
@@ -2786,7 +2844,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const feature = (word, port, promotion, tickets) => put(word, { port, beat: 1, supervised: true,
     batch: { base: 'feat/P-1-portal', feature: true, epic: 'P-1', promotion }, tickets });
   const follows = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
-  const count = (word) => N.needsCount(loadRepos().find((r) => r.slug === `acme__${word}`)).shown;
+  // A follow item counts as a check after merge (issue-1687), never in `shown`.
+  const count = (word) => ((n) => n.shown + n.follows.length)(N.needsCount(loadRepos().find((r) => r.slug === `acme__${word}`)));
 
   feature('psi784', 4784, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-2': child(97, 1200), 'P-3': child(100, 1000) });
   t('DS-784 AC1 no follow item while the promotion PR is open', follows('psi784').length, 0);
@@ -4336,7 +4395,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
-t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,ask-status,left,list,record');
+t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,ask-status,claim,left,list,record');
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

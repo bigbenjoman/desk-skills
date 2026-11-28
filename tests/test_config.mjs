@@ -821,6 +821,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'queue-priority|3b|Queue order: priority', // #1624
     'placed-order|3b|Queue order: placed tickets', // #1625
     'move-threshold|3b|Queue order: move threshold', // #1625
+    'cloud-env|3b|Cloud environment',
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
   const sorted = (a) => [...a].sort().join('\n');
@@ -869,7 +870,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['signin-permissions', 'apps/portal: HELP_ARTICLES, ADMIN', 'apps/portal: help articles', false],['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
-    ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
+    ['worker-location', 'cloud', 'remote', true], ['cloud-env', 'widgets: db browser services:redis', 'widgets: gpu', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
     ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
     ['git-author', 'Pat <pat@example.com>', 'Pat', true], ['review-account', 'none', 'agent pullbot', true],
     ['gate-reviewers', 'agent-pullbot', 'agent pullbot', true],

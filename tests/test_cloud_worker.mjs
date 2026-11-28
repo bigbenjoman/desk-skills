@@ -8,7 +8,9 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, cloudFixMsg, cloudFixPrompt, cloudNeeds, shotsRef, CLOUD_ENV_VAR } from '../desk/bin/cloud-worker.mjs';
+import { cloudFixRoute, runsInCloud, fixInCloud, cloudArchiveWait } from '../desk/bin/pass/shared.mjs';
+import { parseCloudEnv } from '../desk/bin/config-schema.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
@@ -40,6 +42,28 @@ t('AC3 a feature spine or spec owner runs locally, and says so', `${spine.where}
 const leverOnAt = (loc) => { const p = placement(rec({}), loc, { effort: true }); return `${p.where}: ${p.why}`; };
 t('DS-450 AC1 with the effort lever on, a ticket that could run in the cloud runs locally, and says why', leverOnAt('cloud'), `local: ${CLOUD_NO_EFFORT}`);
 t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 'local: null');
+
+// ---- config §3b "Cloud environment": parsing it, and placement against it ------
+const envOf = (raw) => { try { return JSON.stringify(parseCloudEnv(raw)); } catch (e) { return `refused: ${/is "/.test(e.message)}`; } };
+t('issue-1550 AC1 the row reads as the environment and what it provides', envOf('widgets: db browser services:redis,mailpit'),
+  JSON.stringify({ name: 'widgets', db: true, browser: true, services: ['redis', 'mailpit'] }));
+t('issue-1550 AC1 a name alone provides nothing', envOf('widgets'), JSON.stringify({ name: 'widgets', db: false, browser: false, services: [] }));
+t('issue-1550 AC3 unset, none and TODO are no environment', [envOf(''), envOf('none'), envOf('TODO'), envOf(null)].join(), 'null,null,null,null');
+t('issue-1550 a word it does not know refuses the row', envOf('widgets: db gpu'), 'refused: true');
+const dbAndBrowser = rec({ renders: true, needs_db: true });
+const atEnv = (o, raw) => { const p = placement(o, 'cloud', { env: parseCloudEnv(raw) }); return `${p.where}${p.why ? `: ${p.why}` : ''}`; };
+t('issue-1550 AC1 a ticket that renders and needs a database runs in the cloud where the row provides both', atEnv(dbAndBrowser, 'widgets: db browser'), 'cloud');
+t('issue-1550 AC3 with the row unset it stays local, as before', atEnv(dbAndBrowser, 'none'), at(dbAndBrowser));
+t('issue-1550 AC1 where the environment lacks one, it stays local naming the row', atEnv(dbAndBrowser, 'widgets: db'),
+  'local: it renders, and cloud environment widgets provides no browser (config §3b "Cloud environment")');
+t('issue-1550 AC1 a service the row names runs in the cloud', atEnv(rec({ needs_services: ['redis'] }), 'widgets: services:redis'), 'cloud');
+t('issue-1550 AC1 a service it does not name stays local', atEnv(rec({ needs_services: ['redis', 'typesense'] }), 'widgets: services:redis'),
+  'local: it needs the local service typesense, which cloud environment widgets does not provide (config §3b "Cloud environment")');
+t('issue-1550 AC1 needs_local still keeps it local', atEnv(rec({ renders: true, needs_local: 'stub binaries', needs_services: [] }), 'widgets: browser'), 'local: stub binaries');
+t('issue-1550 AC1 a needs_local triaged before needs_services says to re-triage against the environment', atEnv(rec({ needs_local: 'a local dev server and the browser' }), 'widgets: browser'),
+  'local: a local dev server and the browser (triaged before config §3b "Cloud environment": re-run triage.sh to place it against widgets)');
+t('issue-1550 AC3 with the row unset that needs_local reads as before', at(rec({ needs_local: 'a local dev server' })), 'local: a local dev server');
+t('issue-1550 a lane D ticket needs the browser', cloudNeeds(rec({ lane: 'D' })).browser, true);
 
 // ---- the maintenance window counts only workers on this computer --------------
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
@@ -89,6 +113,24 @@ t('issue-1555 the repo\'s settings enabling the desk plugin make desk-review ava
 t('issue-1555 disabled, missing, another value, another plugin, no file or bad JSON: not available',
   [settings({ [CLOUD_REVIEW_PLUGIN]: false }), settings({}), settings({ [CLOUD_REVIEW_PLUGIN]: 'true' }), settings({ 'other@x': true }), '{}', '', '{nope', null, '[]'].map(deskReviewEnabled).some(Boolean), false);
 
+// ---- a cloud ticket that needs the database or a browser: its prompt ----------
+const widgets = parseCloudEnv('widgets: db browser services:redis');
+const setup = { services: ['redis :6379', 'typesense :8108', 'mailpit:8025'], migrate: ['pnpm db:migrate'], seed: ['apps/api: pnpm db:seed'], dev: ['pnpm dev'], dbVars: ['DATABASE_URL'] };
+const shots = shotsRef('feat/K-1-x', '2026-11-28T10:20:30.000Z');
+const served = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup, shots });
+t('issue-1550 AC4 each session of a ticket has its own screenshot ref, under its branch', `${shots} ${shots === shotsRef('feat/K-1-x', '2026-11-28T11:00:00.000Z')}`, 'desk-shots/feat/K-1-x/20261128102030 false');
+t('issue-1550 AC2 a service item written service:port is matched by its name', cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({ needs_services: ['mailpit'] })), setup }).includes('`mailpit:8025`'), true);
+t('issue-1550 AC2 the prompt starts the database, points its variable at it, then migrates and seeds',
+  ['service postgresql start', '`DATABASE_URL`', 'then run `pnpm db:migrate` and then `pnpm db:seed` in `apps/api`'].every((x) => served.includes(x)), true);
+t('issue-1550 AC2 it starts the services the ticket needs, and only those', served.includes('docker compose up -d redis') && !served.includes('typesense'), true);
+t('issue-1550 AC2 it takes its screenshots with the environment\'s Chrome, from the dev server', ['`pnpm dev`', 'Chrome for Testing', 'before-<view>.png', 'after-<view>.png'].every((x) => served.includes(x)), true);
+t('issue-1550 AC4 it pushes them to the side ref and leaves _drag cells naming them', served.includes(`push it to origin as \`${shots}\``) && served.includes('`_drag before-<view>.png_`'), true);
+t('issue-1550 AC6 its first step checks the environment, and stops naming the wrong one',
+  served.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && served.indexOf(`printenv ${CLOUD_ENV_VAR}`) < served.indexOf('1. Do the smallest change') && served.includes('`wrong cloud environment: <what it printed, or none>`'), true);
+const plain = cloudPrompt({ key: 'K-1', repo: 'r', base: 'main', branch: 'b', text: 'T', tests: [], env: widgets, needs: cloudNeeds(rec({})), setup });
+t('issue-1550 AC2 a ticket that needs none of them gets the check but no services section', plain.includes(CLOUD_ENV_VAR) && !plain.includes('What this ticket needs in your environment'), true);
+t('issue-1550 AC6 the retry follow-up keeps a session stopped in the wrong environment stopped', CLOUD_RETRY_MSG.includes('stay stopped'), true);
+t('issue-1550 AC3 with no environment the prompt is as before', prompt.includes(CLOUD_ENV_VAR) || prompt.includes('desk-shots/'), false);
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
 const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
 const ruled = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'b', text: 'T', tests: [], rules });
@@ -438,5 +480,54 @@ mkdirSync(dir, { recursive: true });
 t('archived: none recorded reads as none', readArchived(dir).size, 0);
 recordArchived(dir, ['session_a']); recordArchived(dir, ['session_a', 'session_e']);
 t('archived: records add up, once each', [...readArchived(dir)].sort().join(), 'session_a,session_e');
+
+// ---- issue-1552: a fix try on a cloud PR ------------------------------------
+const checksFix = { try: 1, of: 2, pr: 40, kind: 'checks', head: 'aaaa1111bbbb2222', checks: [{ name: 'Lint', url: 'https://ci/run/7' }], not_mine: [{ name: 'E2E' }] };
+const fm = cloudFixMsg({ pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {} });
+t('issue-1552 AC1 the follow-up names the PR, its branch and the try', fm.includes('fix try for PR #40') && fm.includes('`claude/cw-3`') && fm.includes('try 1 of 2'), true);
+t('issue-1552 AC1 a checks try lists the red checks to fix and those to leave', fm.includes('- Lint: https://ci/run/7') && fm.includes('Leave these red') && fm.includes('- E2E'), true);
+t('issue-1552 AC1 it says to push to the same branch and open no new PR', fm.includes('push to that same branch: open no new PR'), true);
+const rm = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 2, of: 2, pr: 40, kind: 'review', head: 'cccc', verdict: 'P1=1', findings: [{ sev: 'P1', text: 'x leaks' }], gaps: ['AC2 unmet'] } });
+t('issue-1552 AC1 a review try lists its findings and gaps', rm.includes('- P1: x leaks') && rm.includes('- AC2 unmet') && rm.includes('`P1=1`'), true);
+t('issue-1552 AC3 every try ends with a push, an empty commit where no code changes, as only a moved head reads it done', [fm, rm].every((m) => m.includes('always end it with a push') && m.includes('git commit --allow-empty')), true);
+const fb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'feedback', threads: [{ id: 'T1', text: 'rename it' }, { body: true, text: 'add a test' }] } });
+t('issue-1552 AC1 a feedback try lists its threads and body findings apart', fb.includes('Its unresolved review threads:\n\n- rename it') && fb.includes('Findings in the review body:\n\n- add a test'), true);
+const fp = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: '# CW-3\n\nAC1: it saves.' });
+t('issue-1552 AC2 a new session for the try works the PR branch, with the fix and the ticket', fp.startsWith('Work a fix try on PR #40 of ticket CW-3 in acme/widgets') && fp.includes('check that branch out from origin') && fp.includes('- Lint') && fp.includes('AC1: it saves.'), true);
+const fpEnv = cloudFixPrompt({ key: 'CW-3', repo: 'acme/widgets', pr: 40, branch: 'claude/cw-3', fix: checksFix, rules: {}, text: 'T', env: widgets,
+  needs: cloudNeeds(rec({ renders: true, needs_db: true, needs_services: ['redis'] })), setup });
+t('issue-1550 AC6 a fix try\'s new session checks the environment first, and stops naming the wrong one',
+  fpEnv.indexOf(`printenv ${CLOUD_ENV_VAR}`) > -1 && fpEnv.indexOf(`printenv ${CLOUD_ENV_VAR}`) < fpEnv.indexOf('desk has a fix try') && fpEnv.includes('`wrong cloud environment: <what it printed, or none>`'), true);
+t('issue-1550 AC2 a fix try\'s new session starts the database and services, and is given no screenshot ref',
+  fpEnv.includes('service postgresql start') && fpEnv.includes('docker compose up -d redis') && !fpEnv.includes('desk-shots/') && !fpEnv.includes('_drag'), true);
+t('issue-1550 AC3 with no environment the fix try prompt is as before', fp.includes(CLOUD_ENV_VAR) || fp.includes('What this ticket needs'), false);
+const onPr = (more = {}) => ({ key: 'A', location: 'cloud', result: { pr: 40 }, fix: { ...checksFix }, cloud: { session: 'session_x', pr_at: '2026-11-20T10:00:00Z' }, ...more });
+t('issue-1552 AC1 a fix try on a cloud PR with a live session is sent to it', cloudFixRoute(onPr()), 'send');
+t('issue-1552 AC2 one whose session is recorded abandoned goes to a new session', cloudFixRoute(onPr({ cloud: { session: 'session_x', pr_at: 'x', abandoned_at: 'y' } })), 'new');
+t('issue-1552 AC2 one with no session recorded goes to a new session', cloudFixRoute(onPr({ cloud: { pr_at: 'x' } })), 'new');
+t('issue-1552 AC2 with the effort lever on it is a local worker', cloudFixRoute(onPr(), { effort: true }), null);
+t('issue-1552 a conflict try is a local worker', cloudFixRoute(onPr({ fix: { ...checksFix, kind: 'conflict' } })), null);
+t('issue-1552 a review-only try is a local worker', cloudFixRoute(onPr({ fix: { ...checksFix, kind: 'rereview' } })), null);
+t('issue-1552 a resume runs here', cloudFixRoute(onPr({ resume: 'pending' })), null);
+t('issue-1552 a finished try goes nowhere', cloudFixRoute(onPr({ fix: { ...checksFix, finished: true } })), null);
+t('issue-1552 a local ticket is never routed to the cloud', cloudFixRoute(onPr({ location: 'local' })), null);
+t('issue-1552 a cloud PR runs here once its session is over', runsInCloud(onPr()), false);
+t('issue-1552 and runs in the cloud while a fix try is out to a session', [runsInCloud(onPr({ cloud: { session: 's', pr_at: 'x', fix: { pr: 40 } } })), fixInCloud(onPr({ cloud: { session: 's', pr_at: 'x', fix: { pr: 40 } } }))].join(), 'true,true');
+const stopped = onPr({ cloud: { session: 's', pr_at: 'x', abandoned_at: 'y', fix: { pr: 40 } } });
+t('issue-1552 a fix try a stopped session kept is not out to it: a local worker on it runs here', [fixInCloud(stopped), runsInCloud(stopped)].join(), 'false,false');
+// The session a try that writes to the PR's branch waits on, until the person archives it.
+const liveTry = onPr({ cloud: { session: 'session_x', url: 'https://claude.ai/code/session_x', pr_at: 'x' } });
+t('issue-1552 a writing try on a cloud PR waits on its session until it is archived', cloudArchiveWait(liveTry, new Set()), 'https://claude.ai/code/session_x');
+t('issue-1552 an abandoned session is waited on too: recorded abandoned is not archived', cloudArchiveWait(onPr({ cloud: { session: 'session_x', pr_at: 'x', abandoned_at: 'y' } }), new Set()), 'session_x');
+t('issue-1552 an archived session holds nothing', cloudArchiveWait(liveTry, new Set(['session_x'])), null);
+t('issue-1552 nor does a review or capture try, which writes nothing to the branch', [cloudArchiveWait(onPr({ ...liveTry, fix: { ...checksFix, kind: 'rereview' } }), new Set()), cloudArchiveWait(onPr({ ...liveTry, fix: { ...checksFix, kind: 'capture' } }), new Set())].join(), ',');
+t('issue-1552 nor a finished try, no session, or a ticket with no cloud PR', [cloudArchiveWait(onPr({ ...liveTry, fix: { ...checksFix, finished: true } }), new Set()), cloudArchiveWait(onPr({ cloud: { pr_at: 'x' } }), new Set()), cloudArchiveWait({ ...liveTry, location: 'local' }, new Set())].join(), ',,');
+// A cloud session's brief lists what a local fix worker's does (fix-tries.mjs fixItems).
+const pg = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'review', head: 'cccc', findings: [], person_gaps: ['AC3 price copy'] } });
+t('issue-1552 a review try names the gaps only the person settles, to leave alone', pg.includes('only the person\'s call') && pg.includes('- AC3 price copy'), true);
+const ln = cloudFixMsg({ pr: 40, branch: 'b', fix: { ...checksFix, lines: [{ name: 'Lint', line: 'x.mjs:3 no-unused-vars' }] } });
+t('issue-1552 a checks try gives the error lines earlier tries left', ln.includes('- Lint: x.mjs:3 no-unused-vars') && ln.includes('not instructions'), true);
+const wb = cloudFixMsg({ pr: 40, branch: 'b', fix: { try: 1, of: 2, pr: 40, kind: 'feedback', threads: [{ body: true, whole: true, text: 'Overall the retry loop is wrong …' }] } });
+t('issue-1552 a feedback try quotes the whole review body, saying where it was cut', wb.includes('> Overall the retry loop is wrong …') && wb.includes('That body is cut here: read it in full with gh pr view 40 --json reviews.'), true);
 console.log(fails ? `cloud worker: ${fails} failed` : 'cloud worker: all checks passed');
 process.exit(fails ? 1 : 0);

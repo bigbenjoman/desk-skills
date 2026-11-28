@@ -8,7 +8,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { detect, stepsOf, setupScript, repoBlock, guardOpen, guardClose, envHosts, envFilesOf, clerkHost, smokeChecks, smokePrompt, smokeVerdict, versionOf, REGISTRY_MIRROR, SMOKE_FILE, SHARED_VARS_NOTE } from '../desk/bin/cloud-env.mjs';
+import { detect, stepsOf, setupScript, repoBlock, guardOpen, guardClose, envHosts, envFilesOf, clerkHost, smokeChecks, smokePrompt, smokeVerdict, versionOf, REGISTRY_MIRROR, SMOKE_FILE, SHARED_VARS_NOTE, cloudEnvVars } from '../desk/bin/cloud-env.mjs';
+import { CLOUD_ENV_VAR } from '../desk/bin/cloud-worker.mjs';
+import { parseCloudEnv } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -132,6 +134,15 @@ const env = { ...process.env, HOME: noOrigin };
 for (const k of Object.keys(env)) if (k.startsWith('DESK_')) delete env[k];
 r = spawnSync(process.execPath, [join(dirname(new URL(import.meta.url).pathname), '../desk/bin/cloud-smoke.mjs')], { cwd: noOrigin, encoding: 'utf8', env });
 t('AC5 cloud-smoke.mjs runs the smoke (no origin: it says so and exits 1)', [r.status, r.stderr.trim()], [1, 'cloud-env: run this inside the repo (no GitHub origin here)']);
+
+// ---- config §3b "Cloud environment" in `hosts`: its setup script and variable names ---------------
+const fileNames = envHosts({ '.env': '# c\nDATABASE_URL=postgres://secret@db.example.com/x\nexport CLERK_SECRET_KEY="sk_live_x"\nNOT A VAR\n' }).names;
+const proposed = cloudEnvVars({ names: fileNames, env: parseCloudEnv('widgets: db browser'), dbVars: ['DATABASE_URL', 'DIRECT_URL'] });
+t('issue-1550 AC5 the environment\'s name is the one value desk writes', proposed.set, `${CLOUD_ENV_VAR}=widgets`);
+t('issue-1550 AC5 the names are the env files\' with §4 Database URL variable\'s added, sorted', proposed.names, ['CLERK_SECRET_KEY', 'DATABASE_URL', 'DIRECT_URL']);
+t('issue-1550 AC5 no value from an env file is ever proposed', /secret|sk_live/.test(JSON.stringify(proposed)), false);
+t('issue-1550 AC5 without db, the database variables are not added', cloudEnvVars({ names: [], env: parseCloudEnv('w: browser'), dbVars: ['DATABASE_URL'] }), { names: [], set: `${CLOUD_ENV_VAR}=w` });
+t('issue-1550 AC3 with the row unset, hosts lists the env files\' names as before', cloudEnvVars({ names: ['B', 'A', CLOUD_ENV_VAR], env: null, dbVars: ['DATABASE_URL'] }), { names: ['A', 'B'], set: null });
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

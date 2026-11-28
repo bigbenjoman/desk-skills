@@ -3,7 +3,7 @@
 // followed from GitHub. The PR body is never read or written for it: a body rewrite could overwrite an
 // edit the person saved at the same moment, and GitHub has no conditional write.
 import { createHash } from 'node:crypto';
-import { isHeld } from './batch-state.mjs';
+import { isHeld, bareHold, bareHoldText } from './batch-state.mjs';
 import { blockersOf } from './queue-states.mjs';
 
 export const LEDGER_BEGIN = '<!-- desk-autopilot:ledger -->';
@@ -14,6 +14,7 @@ const cell = (v) => String(v).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
 // A child's state as the ledger shows it. `prState(n)` is GitHub's state for PR n (OPEN, MERGED,
 // CLOSED), or null when it could not be read, which reads as plain "done" rather than a guess.
 export function ledgerState(t, prState = () => null) {
+  if (bareHold(t)) return bareHoldText(t.key);
   if (isHeld(t)) return `held until ${blockersOf(t).join(', ') || '?'} merge`;
   if (t.state !== 'done') return t.state;
   const s = t.result?.pr != null ? prState(t.result.pr) : null;

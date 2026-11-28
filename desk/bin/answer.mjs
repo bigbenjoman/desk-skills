@@ -12,7 +12,7 @@ import { writeFileSync, existsSync, mkdirSync, readFileSync, statSync, utimesSyn
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, runBin, queueFile, configValue, ticketKind, SAFE_ID } from './desk-env.mjs';
-import { isHeld, EXIT, crashShowsPerson, readQueue, readTriage, unknownsOf, openUnknowns, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
+import { isHeld, bareHold, bareHoldText, EXIT, crashShowsPerson, readQueue, readTriage, unknownsOf, openUnknowns, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
@@ -286,7 +286,8 @@ try {
       // still starts only once the blocker's PR has merged (release_chain, or the sanctioned release).
       settle();
       const by = blockersOf(Q.tickets[ticket]);
-      console.log(`${ticket}: answered${stillOpen}. It is held — it releases when ${by.join(', ') || '?'} merge${by.length > 1 ? '' : 's'}.`);
+      if (bareHold(Q.tickets[ticket])) console.log(`${ticket}: answered${stillOpen}. It is ${bareHoldText(ticket)}.`);
+      else console.log(`${ticket}: answered${stillOpen}. It is held — it releases when ${by.join(', ') || '?'} merge${by.length > 1 ? '' : 's'}.`);
     } else if (st === 'triaged' || st === 'queued') {
       settle();
       console.log(left ? `${ticket}: answered${stillOpen}. It does not start until they are answered.` : `${ticket}: answered.`);
