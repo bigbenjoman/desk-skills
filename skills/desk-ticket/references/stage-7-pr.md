@@ -149,7 +149,7 @@ every ticket linking it and their merged PRs, once all of those tickets are done
 another ticket still holds open stays open. Relay each line it prints. A ticket with no such link
 prints nothing. The merge driver runs this itself after its own move to Done.
 
-**With §4 Tracker `none`, once the PR has merged, make sure its issue closed**:
+**With §4 Tracker (`desk-env get tracker`) `none`, once the PR has merged, make sure its issue closed**:
 
 ```bash
 node ~/.claude/desk/bin/issue-close.mjs issue-<n> --pr <pr>
