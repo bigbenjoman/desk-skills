@@ -428,7 +428,7 @@ check "issue-1587 AC2 and the next pass starts it on that local slot" \
 q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
 # issue-1570: a cloud PR its session marked unfinished keeps the ticket running on its session. Once CI
 # on its head finishes the session is sent the results; after 2 follow-ups with no push it parks.
-cl_view(){ node -e 'const [title, body, status, conclusion] = process.argv.slice(1); console.log(JSON.stringify({ title, body, headRefOid: "aaaaaaa111", comments: [],
+cl_view(){ node -e 'const [title, body, status, conclusion] = process.argv.slice(1); console.log(JSON.stringify({ title, body, headRefOid: "aaaaaaa111", author: { login: "me" }, comments: [],
   commits: [{ oid: "aaaaaaa111", committedDate: new Date(Date.now() - 600e3).toISOString(), messageHeadline: "feat: save", messageBody: "", authors: [{ name: "t", email: "t@example.com" }] }],
   statusCheckRollup: [{ __typename: "CheckRun", name: "Lint", status: "COMPLETED", conclusion: "SUCCESS" }, { __typename: "CheckRun", name: "Tests", status, conclusion: conclusion || null }] }))' "$@" > "$T/cloud-view.json"; }
 cl_pr(){ node -e 'const [k, n, title] = process.argv.slice(1); const s = Date.parse(process.argv[4]); console.log(JSON.stringify([{ number: +n, title, url: "u", headRefName: `claude/${k.toLowerCase()}-abc`, createdAt: new Date(s + 600e3).toISOString() }]))' "$1" "$2" "$3" "$(field "$1" cloud.started | tr -d '"')" > "$T/cloud-prs.json"; }
@@ -460,6 +460,7 @@ check "issue-1570 AC1 the prompt's step 5 wording keeps it running too" '[ "$(fi
 cl_view "feat(w): CW-14 save" "Saves the widget.\n\n### Testing\nbash tests/run.sh" COMPLETED SUCCESS
 out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1570 AC4 once the PR reads finished it is recorded done, its unfinished record dropped" '[ "$(field CW-14 state)" = "\"done\"" ] && [ "$(field CW-14 result.pr)" = 68 ] && [ "$(field CW-14 cloud.unfinished)" = null ] && [ "$(field CW-14 cloud.pr_at)" != null ]'
+check "issue-1556 AC1 it keeps the PR and who opened it, whose verdict then counts on that PR" '[ "$(field CW-14 cloud.pr)" = 68 ] && [ "$(field CW-14 cloud.opener)" = "\"me\"" ] && [ "$(field CW-14 cloud.head)" = "\"aaaaaaa111\"" ]'
 rm -f "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-view.json" "$T/cloud-prs.json"
 
 # ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.

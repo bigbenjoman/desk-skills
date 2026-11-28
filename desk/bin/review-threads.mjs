@@ -4,9 +4,10 @@
 // in, resolves the threads `resolve` names, and holds the PR on what is `left`:
 //
 //   review-threads.mjs query      the GraphQL query the payload answers
-//   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" < payload.json
+//   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" [--pr <n> --ticket <KEY>] < payload.json
 //   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> [--ticket <KEY>] < payload.json
-//     (the review-reuse lever is read from KEY's pin in the queue; with no pin, or no KEY, the row)
+//     (the review-reuse lever is read from KEY's pin in the queue; with no pin, or no KEY, the row.
+//     On a cloud ticket KEY's own PR n, the login that opened it counts with the handle: verdictHandle)
 //   review-threads.mjs approved --clean "<row>" < payload.json   (approvedAt)
 //
 // prints one JSON line: { decision, head, verdict, resolve: [thread], left: [thread] }, where a thread is
@@ -28,11 +29,12 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, verdictReadAt, reviewCarries, carryComment, markerClean } from './undraft.mjs';
 import { pairs, queueFile } from './desk-env.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 import { loginIn } from './gate.mjs';
+import { verdictHandle } from './pass/shared.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
   headRefOid reviewDecision
@@ -102,22 +104,27 @@ export function externalReview(payload, login) {
 export const localReviewSet = rowSet;
 
 // Whether a clean review stands at the PR's head, for a merge: { head, clean, carried, range, said,
-// why, settle, person }. A clean verdict for an older head counts where it still holds at the head
+// why, settle, person, location }. A clean verdict for an older head counts where it still holds at the head
 // (carry(sha, body), as verdictCarries or restsOnCarries says; `range` is the base range the latter
 // checked, and `said` the comment that tells the PR). Not clean, `settle` is a review at the head that says so, and
 // `person` a row only the person can set; with neither, a review worker has what it needs: there is
 // no verdict, a stale one, or one the gate cannot read, and `targeted` what that review need read only
 // (scope(sha, body), as reviewScope says), when a clean review for an older head narrows it.
-export function readVerdict(payload, { handle, clean, carry, scope }) {
+// `location` is where the desk-format verdict at the head was reviewed (undraft.mjs verdictReadAt:
+// `cloud` or `local`; one carried from an older head, where it was reviewed there), null where none is
+// at the head.
+export function readVerdict(payload, { handle, clean, carry, scope, cloudHead = null }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
   const head = pr.headRefOid ?? '';
   const row = String(clean ?? '').trim();
-  if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true };
-  const { v, carried, range, targeted } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry, scope);
-  if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false };
+  if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true, location: null };
+  const reviews = pr.reviews?.nodes ?? [];
+  const { v, carried, range, targeted } = verdictAtHead(reviews, handle, head, row, carry, scope);
+  const location = verdictReadAt(reviews, handle, head, cloudHead, v.clean ? carried : null)?.location ?? null;
+  if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false, location };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
-  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
+  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, location, ...(targeted ? { targeted } : {}) };
 }
 
 // When the PR last had an approval at its head: the newest of an APPROVED review of the head and a clean
@@ -159,11 +166,19 @@ const isMain = (() => {
 })();
 const a = isMain ? process.argv.slice(2) : [null];
 const at = (flag) => (a.includes(flag) ? a[a.indexOf(flag) + 1] : undefined);
+// The queue record of --ticket, or null (no flag, no queue, or no such ticket).
+const ticketOf = () => {
+  if (!at('--ticket')) return null;
+  try { return JSON.parse(readFileSync(queueFile(), 'utf8')).tickets?.[at('--ticket')] ?? null; } catch { return null; }
+};
+// The logins whose verdict counts on --pr: --handle, and a cloud ticket's PR opener on its own PR
+// (pass/shared.mjs verdictHandle), as the pass reads the same PR.
+const handleFor = (ticket) => verdictHandle(ticket, at('--pr'), at('--handle'));
 if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   console.log(THREADS_QUERY);
 } else if (a[0] === 'read') {
   let r = null;
-  try { r = readThreads(JSON.parse(readFileSync(0, 'utf8')), { handle: at('--handle'), clean: at('--clean') }); } catch { /* unreadable: null */ }
+  try { r = readThreads(JSON.parse(readFileSync(0, 'utf8')), { handle: handleFor(ticketOf()), clean: at('--clean') }); } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
 } else if (a[0] === 'verdict') {
@@ -176,11 +191,11 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
     // The lever is the ticket's pin, as the pass reads it; a mangled pin reads no verdict.
-    let ticket = null;
-    if (at('--ticket')) { try { ticket = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets?.[at('--ticket')] ?? null; } catch { /* no queue: the row */ } }
+    // No queue: the row.
+    const ticket = ticketOf();
     const reuse = leverOnFor('review-reuse', ticket);
     const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && reviewCarries({ reuse, from: sha, head, base: `origin/${base}`, body, git });
-    r = readVerdict(payload, { handle: at('--handle'), clean: at('--clean'), carry });
+    r = readVerdict(payload, { handle: handleFor(ticket), clean: at('--clean'), carry });
   } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
@@ -190,5 +205,5 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
 } else {
-  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> [--ticket <KEY>] < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
+  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" [--pr <n> --ticket <KEY>] < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> [--ticket <KEY>] < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
 }

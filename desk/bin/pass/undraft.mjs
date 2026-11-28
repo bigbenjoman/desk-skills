@@ -37,11 +37,11 @@
 //   note {line}                        a batch-notes line
 //   undraft-error {line}               a gh pr ready that failed, for the pass record
 //   evidence-failures {items}          settle the drafts whose evidence run failed, together
-import { undraftCall, undraftComment, personHold, repairSaid } from '../undraft.mjs';
+import { undraftCall, undraftComment, personHold, repairSaid, verdictReadAt } from '../undraft.mjs';
 import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, outsideRerunWait, prInConflict } from '../fix-tries.mjs';
 import { latestPerCheck, normaliseRollup } from '../gate.mjs';
 import { dragCells, dragFiles } from '../evidence.mjs';
-import { set, say } from './shared.mjs';
+import { set, say, cloudHead, verdictHandle } from './shared.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (line) => say(null, 'waiting', line);
@@ -174,8 +174,10 @@ export function* decideUndraft(snap) {
     const spine = t.key === snap.spine || t.spine_check != null || t.approved === true;
     // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
+    // The logins whose verdict counts on this PR: the handle's, and a cloud ticket's PR opener's on its own PR.
+    const handle = verdictHandle(t, n, cfg.handle);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
-      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), shotDir: reads.shotDir(t),
+      { ...passCfg, verdictHandle: handle, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), shotDir: reads.shotDir(t),
         // Files a preview-database PR's cells name that did not pass its error-page check as they are count
         // as not taken, so a capture worker takes and checks them rather than their being uploaded.
         missingShots: (body) => {
@@ -189,7 +191,12 @@ export function* decideUndraft(snap) {
         waived: (names) => s.head === head && !!reads.waived?.(n, head, s.checks, names) });
     if (!c) continue;
     // A verdict carried to this head is recorded there (findings.mjs recordCarry), with no round run.
-    if (c.carried && !snap.dry) yield { type: 'record-carry', key: t.key, t, head, from: c.carried, reviews: v.reviews };
+    if (c.carried && !snap.dry) yield { type: 'record-carry', key: t.key, t, head, from: c.carried, reviews: v.reviews, handle };
+    // A desk-format verdict at the head, its cloud session's as a local review's, is read alike and
+    // recorded in the ticket ledger with where it was reviewed; one carried to the head, where it was
+    // reviewed at the commit it was carried from.
+    const read = verdictReadAt(v.reviews, handle, head, cloudHead(t), c.carried ?? null);
+    if (read && !snap.dry) yield { type: 'verdict-read', key: t.key, pr: n, head, location: read.location };
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
     // and the call would act.
@@ -295,7 +302,7 @@ export function* decideUndraft(snap) {
     else {
       const r = yield { type: 'ready', key: t.key, pr: n };
       if (r.ok) {
-        yield out(`undrafted: PR #${n} (${t.key}) at ${String(head).slice(0, 12)}${carried}; the merge driver merges it once it is green`);
+        yield out(`undrafted: PR #${n} (${t.key}) at ${String(head).slice(0, 12)}${carried}${read?.location === 'cloud' ? ', on the verdict its cloud session posted' : ''}; the merge driver merges it once it is green`);
         const said = yield { type: 'comment', key: t.key, pr: n, body: undraftComment(c.verdict, head, cfg.clean, c.carried, c.range) };
         if (!said.ok) yield out(`undraft: PR #${n} (${t.key}) left draft, but its comment was not posted (${lastLine(said.out)})`);
         // Said here, the merge driver need not say the carry again at this head.

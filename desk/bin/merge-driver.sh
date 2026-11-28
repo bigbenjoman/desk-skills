@@ -475,13 +475,15 @@ prs(){
 }
 # The PR's review decision and unresolved threads, as review-threads.mjs reads them (one JSON line):
 # those a clean desk-review verdict at the head settles are in `resolve`, the rest in `left`. Nothing
-# when GitHub could not be read. An empty reviewDecision is not an approval.
-feedback(){
+# when GitHub could not be read. An empty reviewDecision is not an approval. <key> is the PR's ticket: on
+# a cloud ticket's own PR the login that opened it counts with VERDICT_BY, as in head_verdict.
+feedback(){ # feedback <n> [<key>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null
+    | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" ${2:+--pr "$1" --ticket "$2"} 2>/dev/null
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
-# Nothing when GitHub could not be read. <key> is the PR's ticket, whose pin gives the review-reuse lever.
+# Nothing when GitHub could not be read. <key> is the PR's ticket, whose pin gives the review-reuse lever,
+# and on a cloud ticket's own PR the login that opened it counts with VERDICT_BY.
 head_verdict(){ # head_verdict <n> [<base>] [<key>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
     | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" ${3:+--ticket "$3"} 2>/dev/null
@@ -1235,7 +1237,7 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   fi
 
   if [ -n "$FEEDBACK_STRICT" ]; then
-    fb=$(feedback "$n")
+    fb=$(feedback "$n" "$key")
     if [ -z "$fb" ]; then log "#$n could not read review state — not merging it this loop"; return 1; fi
     decision=$(printf '%s' "$fb" | jq -r .decision)
     held=$(printf '%s' "$fb" | jq -r '.left[].text')

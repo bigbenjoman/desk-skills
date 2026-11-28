@@ -218,6 +218,27 @@ export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.k
 // at origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there. cloud.pr_at
 // outlives the local spawn, which clears result; a new cloud start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
+// The head a cloud ticket's session left on its PR (advanceCloud records cloud.head), where its own
+// desk-review posted the verdict; null for a local ticket, for one recorded before the head was kept, and
+// once a local try of any kind has started at that head: a review try reviews it, and a gaps or
+// instruction try may post the verdict again there, so a verdict at it may then be the local worker's.
+// (A try that fixes something pushes a new head, which this one never is.)
+export const cloudHead = (t) => {
+  const head = t?.location === 'cloud' ? t.cloud?.head : null;
+  if (typeof head !== 'string' || !head) return null;
+  const tries = [...(t.fix_tries ?? []), ...(t.fix ? [t.fix] : [])];
+  return tries.some((f) => f?.head === head) ? null : head;
+};
+// The logins whose desk-format verdict counts on PR `pr`: `handle` (verdictLogins), plus, on a cloud
+// ticket's own PR, the login that opened it (cloud.opener, kept with cloud.pr when the pass adopts the
+// PR), as its session posted its review under that login. Any other PR, and a ticket with no handle,
+// reads `handle` alone.
+export const verdictHandle = (t, pr, handle) => {
+  const c = t?.location === 'cloud' ? t.cloud : null;
+  const opener = typeof c?.opener === 'string' ? c.opener.trim() : '';
+  if (!handle || !opener || c.pr == null || pr == null || Number(c.pr) !== Number(pr) || loginIn(opener, handle)) return handle;
+  return [...(Array.isArray(handle) ? handle : String(handle).split(',').map((l) => l.trim()).filter(Boolean)), opener];
+};
 // The fix tries a cloud session takes on its own PR: review findings and gaps, red checks and a
 // reviewer's threads, each of which the PR shows it. A conflict, a sync, a person's call and the
 // review and capture tries need this computer.

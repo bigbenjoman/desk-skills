@@ -2,7 +2,7 @@
 // layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from '../desk/bin/pass/undraft.mjs';
-import { conflictFilesIn, fixTryQuote } from '../desk/bin/pass/shared.mjs';
+import { conflictFilesIn, fixTryQuote, cloudHead } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 import { flakyWaiver, notesIn, parseFlaky, normaliseRollup } from '../desk/bin/gate.mjs';
 let fails = 0;
@@ -41,7 +41,7 @@ const undraftSnap = (drafts, fields = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the action).
 const READS = { 'pr-close': { ok: true, out: '' }, 'pr-reopen': { ok: true, out: '' }, fetch: true, 'child-renames': [], events: { hold: null }, 'pr-view': null, 'pr-files': [], 'conflict-files': null, 'base-at': null, ready: { ok: true, out: '' }, comment: { ok: true, out: '' }, 'update-branch': { ok: true, out: '' } };
 const RECS = ['cancel', 'build', 'rebuilt', 'evidence'];
-const WRITES = ['set', 'report', 'out', 'set-batch', 'apply-fix', 'take', 'gate-hold', 'upload', 'rerun-draft', 'carried', 'record-carry', 'note', 'undraft-error', 'evidence-failures'];
+const WRITES = ['set', 'report', 'out', 'set-batch', 'apply-fix', 'take', 'gate-hold', 'upload', 'rerun-draft', 'carried', 'record-carry', 'verdict-read', 'note', 'undraft-error', 'evidence-failures'];
 function drive(decide, s, answers = {}) {
   const handlers = Object.fromEntries([...Object.keys(READS), ...RECS, ...WRITES].map((type) => [type, (a) => {
     if (Object.hasOwn(answers, type)) return typeof answers[type] === 'function' ? answers[type](a) : answers[type];
@@ -64,6 +64,40 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   const { actions } = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([review(marker(ALL_ZERO))]) });
   t('a clean green draft is undrafted and commented on', j(acts(actions)), '["ready","comment"]');
   t('and its record reads ready', JSON.parse(sets(actions).find((f) => f.startsWith('undraft='))?.slice(8) ?? '{}').call, 'ready');
+}
+
+// issue-1556: a cloud ticket's draft PR with the verdict its session posted at its current head goes
+// straight on, with no review try, and the ledger records the verdict as the cloud's; one at an older
+// head gets a review try, as today.
+{
+  const OLD = 'b'.repeat(40);
+  const cloudT = (head = HEAD, fields = {}) => ticket('A', { location: 'cloud', cloud: { started: AT, pr_at: AT, head }, ...fields });
+  const at = (sha) => review(marker(ALL_ZERO).replace(`sha=${HEAD}`, `sha=${sha}`));
+  const { actions } = drive(decideUndraft, undraftSnap([{ t: cloudT(), s: status() }]), { 'pr-view': view([at(HEAD)]) });
+  t('issue-1556 AC1 a cloud PR with its verdict at the head is undrafted, with no review try', j(acts(actions)), '["ready","comment"]');
+  t('issue-1556 AC3 and its verdict is recorded as the cloud\'s', j(actions.filter((a) => a.type === 'verdict-read').map((a) => [a.key, a.pr, a.head === HEAD, a.location])), j([['A', 701, true, 'cloud']]));
+  t('issue-1556 the undraft line says the cloud session\'s verdict let it on', lines(actions).some((l) => l.includes('on the verdict its cloud session posted')), true);
+  const old = drive(decideUndraft, undraftSnap([{ t: cloudT(OLD), s: status() }]), { 'pr-view': view([at(OLD)]) }).actions;
+  const fix = old.find((a) => a.type === 'apply-fix')?.fix;
+  t('issue-1556 AC2 a cloud PR whose verdict is at an older head gets a review try', `${fix?.call}:${fix?.fix?.kind}:${acts(old).includes('ready')}`, 'requeue:rereview:false');
+  t('issue-1556 AC2 and no verdict is recorded', types(old).includes('verdict-read'), false);
+  const local = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([at(HEAD)]) }).actions;
+  t('issue-1556 AC3 a local ticket\'s verdict is recorded as local', j(local.filter((a) => a.type === 'verdict-read').map((a) => a.location)), '["local"]');
+  t('issue-1556 a dry run records nothing', types(drive(decideUndraft, undraftSnap([{ t: cloudT(), s: status() }], { dry: true }), { 'pr-view': view([at(HEAD)]) }).actions).includes('verdict-read'), false);
+  // The login that opened the cloud ticket's PR counts there, and the carry it makes is recorded with it.
+  const byBot = (sha) => ({ ...at(sha), author: { login: 'cloudbot' } });
+  const opened = (pr) => cloudT(HEAD, { cloud: { started: AT, pr_at: AT, head: HEAD, pr, opener: 'cloudbot' } });
+  t('issue-1556 AC1 the cloud PR opener\'s verdict at the head undrafts it, with no review try', j(acts(drive(decideUndraft, undraftSnap([{ t: opened(701), s: status() }]), { 'pr-view': view([byBot(HEAD)]) }).actions)), '["ready","comment"]');
+  t('issue-1556 AC1 the same login\'s verdict on another PR gets a review try', drive(decideUndraft, undraftSnap([{ t: opened(702), s: status() }]), { 'pr-view': view([byBot(HEAD)]) }).actions.find((a) => a.type === 'apply-fix')?.fix?.fix?.kind, 'rereview');
+  const carrySnap = (tk) => undraftSnap([{ t: tk, s: status() }], { reads: { ...undraftSnap([]).reads, baseMoves: () => ({ carry: (sha) => sha === OLD, scope: () => null, baseMerge: () => true, behind: () => null }) } });
+  const carriedCloud = drive(decideUndraft, carrySnap(cloudT(OLD)), { 'pr-view': view([at(OLD)]) }).actions;
+  t('issue-1556 AC3 a cloud verdict carried to the head is recorded, where it was reviewed', j(carriedCloud.filter((a) => a.type === 'verdict-read').map((a) => [a.head === HEAD, a.location])), j([[true, 'cloud']]));
+  t('issue-1556 AC3 a local verdict carried to the head is recorded as local', j(drive(decideUndraft, carrySnap(ticket('A')), { 'pr-view': view([at(OLD)]) }).actions.filter((a) => a.type === 'verdict-read').map((a) => a.location)), '["local"]');
+  t('issue-1556 cloudHead: the head a cloud ticket\'s session left', cloudHead(cloudT()), HEAD);
+  t('issue-1556 cloudHead: none for a local ticket, or one with no head kept', j([cloudHead(ticket('A', { cloud: { head: HEAD } })), cloudHead(ticket('A', { location: 'cloud', cloud: { started: AT } }))]), '[null,null]');
+  t('issue-1556 cloudHead: none once a local review try has reviewed that head', j([cloudHead(cloudT(HEAD, { fix_tries: [{ try: 1, head: HEAD, kind: 'rereview' }] })), cloudHead(cloudT(HEAD, { fix: { try: 1, head: HEAD, kind: 'rereview' } }))]), '[null,null]');
+  t('issue-1556 cloudHead: none once a gaps try, which may post the verdict again, started there', cloudHead(cloudT(HEAD, { fix: { try: 1, head: HEAD, kind: 'gaps' } })), null);
+  t('issue-1556 cloudHead: a try at another head leaves it', cloudHead(cloudT(HEAD, { fix_tries: [{ try: 1, head: OLD, kind: 'rereview' }] })), HEAD);
 }
 
 // A draft's review round whose gaps only widen a broad AC an earlier try worked, past triage's files: the

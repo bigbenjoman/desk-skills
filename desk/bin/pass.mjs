@@ -92,7 +92,7 @@ import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, pl
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
-import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
+import { fold as ledgerFold, append as ledgerAppend, verdictHeld } from './ticket-ledger.mjs';
 import { recordAsks, measure as measureAsks, ASK_BY_ENV } from './ask-ledger.mjs';
 import { defaultsAtCheckin, defaultAnswer, defaultCall, digestPresented, raisedOf } from './question-arms.mjs';
 import * as MS from './merge-stages.mjs';
@@ -111,7 +111,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, cloudFixRoute, cloudSessionLive, cloudArchiveWait, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, cloudFixRoute, cloudSessionLive, cloudArchiveWait, cloudHead, verdictHandle, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1117,13 +1117,19 @@ function advanceCloud(t) {
     const label = tryLabel(c.fix);
     q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
       `result.pr=${pr.number}`, `result.summary=cloud session pushed its ${label} to PR #${pr.number}`);
-    report.done.push(`${t.key}: ${prVerdict(pr.number)}; cloud session ${where} pushed its ${label} to PR #${pr.number} (${CLOUD_COST_UNKNOWN})`);
+    report.done.push(`${t.key}: ${prVerdict(pr.number, { ...t, location: 'cloud', cloud })}; cloud session ${where} pushed its ${label} to PR #${pr.number} (${CLOUD_COST_UNKNOWN})`);
     return;
   }
   const wall = wallTime(cloudWall(cloud) ?? 0);
+  // The head the session left, where its desk-review posted the verdict: a verdict there is read as the
+  // cloud's (pass/shared.mjs cloudHead), and the pass spends no review try on it.
+  if (view.headRefOid) cloud.head = view.headRefOid;
+  // Who opened it: their desk-format verdict counts on this PR alone (pass/shared.mjs verdictHandle).
+  cloud.pr = pr.number;
+  if (view.author?.login) cloud.opener = view.author.login;
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
-  report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
+  report.done.push(`${t.key}: ${prVerdict(pr.number, { ...t, location: 'cloud', cloud })}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
 }
 
 // The environment a follow-up to cloud session `c` is sent from: the login it started on (spawnCloud),
@@ -1357,12 +1363,16 @@ function buildParkOf(t, question) {
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
 // What a finished ticket's done line says of its review, read from its PR at its head (doneVerdictLine).
-function prVerdict(pr) {
+// `t`, the ticket, reads its verdict by the logins the pass's own reads count on that PR (verdictHandle):
+// on a cloud ticket's PR, its opener's too.
+function prVerdict(pr, t = null) {
   if (!conflictHandle) return 'review read from the PR: unread, no GitHub handle to read verdicts by (§1)';
   try {
-    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), conflictHandle);
+    return doneVerdictLine(JSON.parse(readOrThrow(`gh pr view ${pr}`, 'gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid,reviews'], { fresh: true })), verdictHandle(t, pr, conflictHandle));
   } catch (e) { return `review read from the PR: unread (${String(e?.message ?? e)})`; }
 }
+// The ticket a phase's `pr-verdict` step names, from the phase's own snapshot.
+const verdictTicket = (a, s) => (s?.t?.key === a.key ? s.t : s?.tickets?.[a.key]) ?? null;
 // §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
   try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
@@ -1384,8 +1394,8 @@ function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
   // Only a verdict posted at the head counts here; the undraft step reads it again, with its carries.
   const verdict = (pr) => {
     if (!localReviewSet(E.configValue('local-review')) || !conflictHandle) return null;
-    const fb = readFeedback(pr.number);
-    return fb ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict') }) : null;
+    const fb = readFeedback(pr.number, false, t);
+    return fb ? readVerdict(fb.payload, { handle: verdictHandle(t, pr.number, conflictHandle), clean: E.configValue('clean-verdict'), cloudHead: cloudHead(t) }) : null;
   };
   return mergePark(cond, readPr, { ...gateLists(), verdict, ready, merge });
 }
@@ -1468,7 +1478,7 @@ const ADVANCE_HANDLERS = {
   'pr-owner': (a) => {
     try { return prOwner(a.pr); } catch { return null; }
   },
-  'pr-verdict': (a) => prVerdict(a.pr),
+  'pr-verdict': (a, s) => prVerdict(a.pr, verdictTicket(a, s)),
   'pr-conflict': (a) => { const v = readPrStatus(a.pr); return v?.state === 'OPEN' && prInConflict(v) ? { base: v.base ?? DEFAULT_BRANCH } : null; },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
@@ -1897,7 +1907,7 @@ const CLEARS_HANDLERS = {
     return checkCond(a.cond, { ...clearsRead, push: (p) => pushParked(t, p), file: (f) => existsSync(condPath(f, { worktree: t.worktree, state: STATE })) });
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
-  'pr-verdict': (a) => prVerdict(a.pr),
+  'pr-verdict': (a, s) => prVerdict(a.pr, verdictTicket(a, s)),
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
   'other-merged': (a, s) => {
     const t = s.tickets[a.key];
@@ -2081,7 +2091,7 @@ function finishPush(t) {
     report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${r.wait}: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
-  report.done.push(`${t.key}: ${prVerdict(r.pr)}; PR #${r.pr} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
+  report.done.push(`${t.key}: ${prVerdict(r.pr, t)}; PR #${r.pr} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
 }
 // A worker's committed branch pushed and opened as a draft PR into the default branch, recorded done on it
@@ -4924,7 +4934,7 @@ function fixTryStale(t) {
     : headBound && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
   if (!ended) return false;
   // A PR still open (its head moved) leads with the review at that head; a merged or closed one has none to gate.
-  const line = `${t.key}: ${v.state === 'OPEN' ? `${prVerdict(f.pr)}; ` : ''}its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
+  const line = `${t.key}: ${v.state === 'OPEN' ? `${prVerdict(f.pr, t)}; ` : ''}its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
   // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
   // done tickets' reading below.
@@ -5859,6 +5869,16 @@ const PREVIEW_TEAM = (() => { try { const team = E.previewTeam(); return team &&
 // machine's merge log, each line folded into the ticket ledger once by its position.
 const LEDGER_ON = !DRY && ledgerOn();
 const LEDGER_AT = ledgerTarget(QUEUE_FILE);
+// A desk-format verdict read at PR pr's head `head`, with where it was reviewed (`cloud` or `local`,
+// undraft.mjs verdictReadAt), recorded once per PR and head in the ticket ledger (verdict_read).
+function recordVerdict(key, pr, head, location) {
+  if (!LEDGER_ON || !key || pr == null || !head || !location) return;
+  try {
+    ledgerAppend(LEDGER_AT.repoDir, [{ id: `verdict_read:${key}:${pr}:${head}`, type: 'verdict_read', batch: LEDGER_AT.batch, key, data: { pr: Number(pr), head_sha: head, location } }],
+      // Never the first event to name a batch: it waits for a pass after the seed (verdictHeld).
+      { by: 'pass', skip: verdictHeld });
+  } catch (e) { report.failed.push(`${MISSED_PREFIX} for ${key}'s verdict at ${String(head).slice(0, 12)} (${location}): ${String(e?.message ?? e).split('\n')[0]}`); }
+}
 const mergeLogNow = () => { try { return readLogLines(); } catch { return null; } };
 // null until the log has named this batch: an event appended first would stop its seeding
 // (queue-ledger.mjs recordWrite), so its lines wait for a pass after the seed. Only the tickets the log
@@ -6193,7 +6213,8 @@ const UNDRAFT_HANDLERS = {
   // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
   'update-branch': (a) => updateBranch(a.t, a.pr, a.branch),
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
-  'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
+  'verdict-read': (a) => recordVerdict(a.key, a.pr, a.head, a.location),
+  'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: a.handle ?? conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
   note: (a) => {
     const notesFile = join(STATE, 'batch-notes.md');
@@ -6562,8 +6583,12 @@ function fixReads(t, s, dirty, dirtyFiles) {
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     },
-    atHead: (payload, carry, scope) => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
-      ? readVerdict(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null),
+    atHead: (payload, carry, scope) => {
+      if (!localReviewSet(E.configValue('local-review')) || !E.mergeGrant(queue()).by) return null;
+      const r = readVerdict(payload, { handle: verdictHandle(t, n, conflictHandle), clean: E.configValue('clean-verdict'), carry, scope, cloudHead: cloudHead(t) });
+      if (r?.location) recordVerdict(t.key, n, r.head, r.location);
+      return r;
+    },
   };
 }
 // An outside gate reviewer's reads and the PRs waiting on it, this pass (gate-reviewer.mjs).
@@ -6589,7 +6614,7 @@ const externalSeen = [], externalWaits = [];
       'gate-hold': (a) => { const { t, s } = fixTicket(a.key); markGateHold(t, s, a.on); },
       'human-seen': (a) => humanSeen(a.pr),
       reads: (a) => { const { t, s } = fixTicket(a.key); return fixReads(t, s, a.dirty, a.dirtyFiles); },
-      feedback: (a) => readFeedback(a.pr, a.gate),
+      feedback: (a) => readFeedback(a.pr, a.gate, fixTicket(a.key)?.t ?? null),
       'settle-worked': (a) => settleWorked(fixTicket(a.key).t, a.pr, a.head, a.worked),
       'check-build': (a) => {
         const { t } = fixTicket(a.key);
@@ -6639,14 +6664,16 @@ if (!DRY) {
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
 // it. A PR the reviewer check holds still gets those findings fixed (pass/fix-tries.mjs heldTry).
-function readFeedback(n, gate = false) {
+// `t`, the PR's ticket, where it has one: on a cloud ticket's own PR the login that opened it counts with
+// the handle (verdictHandle), as in the verdict read at its head.
+function readFeedback(n, gate = false, t = null) {
   const [owner, name] = GH_REPO.split('/');
   const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
   if (!r.ok) return null;
   try {
     const payload = JSON.parse(r.out);
     const clean = E.configValue('clean-verdict');
-    const read = readThreads(payload, { handle: conflictHandle, clean });
+    const read = readThreads(payload, { handle: verdictHandle(t, n, conflictHandle), clean });
     const g = gate && gateHandle();
     return read && { ...read, payload, ...(gate ? { gateReview: (g && readThreads(payload, { handle: g, clean })?.review) || null } : {}) };
   } catch { return null; }
