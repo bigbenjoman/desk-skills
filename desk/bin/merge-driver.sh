@@ -172,6 +172,8 @@
 #                                set by --all-batches for each batch's loop: the lock it runs under is
 #                                that pid's, n numbers the sweep, and the open PRs are read from the file.
 #                                Its one loop exits 10 after a merge and 11 with ready PRs left
+#   MERGE_DRIVER_DUE=<file>      set by --all-batches too: a loop that merges nothing and leaves a PR
+#                                confirming appends the epoch its hold ends, so the sweep waits only that long
 #   MERGE_DRIVER_LIST_LIMIT=<n>  with --all-batches, the most open PRs its one list reads (default 1000);
 #                                a list that long has each batch list its own that sweep
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
@@ -185,7 +187,7 @@
 #                                often within it the driver looks for a worker's exit or an undraft by the
 #                                pass, either of which ends it (default 60); each a whole number of
 #                                seconds above 0. After a merge it waits 30s, and with ready PRs still
-#                                waiting on CI 120s
+#                                waiting on CI 120s, or until the soonest confirmation hold ends
 #   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer before its one
 #                                branch update, and again after it before the queue asks the person
 #                                (default DESK_UNKNOWN_SECS, which the pass's undraft reads too, else 1800)
@@ -1550,8 +1552,10 @@ $ready
 EOF_READY
   if [ -n "$merged" ]; then outcome 10; pause 30
   elif [ -n "$CONFIRM_DUE" ]; then
-    # A PR left confirming is looked at again as its hold ends, not after the full idle pause.
-    left=$(( CONFIRM_DUE - $(date +%s) )); [ "$left" -ge 1 ] || left=1; [ "$left" -le 120 ] || left=120
+    # A PR left confirming is looked at again as its hold ends, not after the full idle pause. In a
+    # sweep the pause is the repo driver's, so the hold's end goes to it in MERGE_DRIVER_DUE.
+    [ -z "${MERGE_DRIVER_DUE:-}" ] || echo "$CONFIRM_DUE" >> "$MERGE_DRIVER_DUE"
+    left=$(hold_left "$CONFIRM_DUE")
     log "looking again in ${left}s, as #$CONFIRM_PR's confirmation hold ends"; pause "$left"
   else pause 120; fi
 done

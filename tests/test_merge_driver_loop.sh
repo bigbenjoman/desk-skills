@@ -308,7 +308,7 @@ check "DS-971 AC2: an undraft by the pass ends it too" \
 rm -f "$T/between.2"
 # Idle, then a ready PR that merges on its second green loop, then idle again: the merge pauses 30s
 # as before, and the idle run after it starts again at a minute. Its confirming loop pauses only until
-# its hold ends, which at a 0s hold is the 1s floor (DS-957).
+# its hold ends, which at a 0s hold is the 1s floor.
 SHA971=9719719719719719719719719719719719719719
 q add T-971 Task A; q set T-971 branch=fix/T-971 state=done result.pr=971
 printf '#!/bin/sh\necho %s > "%s/prs.json"\n' "'{ \"971\": { \"head\": \"fix/T-971\", \"base\": \"main\", \"sha\": \"$SHA971\", \"state\": \"open\", \"draft\": false, \"checks\": [[\"test\", \"SUCCESS\"]] } }'" "$T" > "$T/between.1"; chmod +x "$T/between.1"
