@@ -132,7 +132,13 @@ finished ticket holds nothing, and a ready ticket with any file at its budget wa
 The report's `held back by a collision:` line names each such file and the running tickets filling
 it, each one from another batch as `<ticket> in batch <name>` (or `in the standing batch`). Another
 batch's queue that does not read counts nothing, and a `collisions:` line names it as not checked. A
-row that does not read is 1 for every file, and the report says so.
+row that does not read is 1 for every file, and the report says so. A ticket handed off between
+sessions keeps its files' places against new tickets until its next session starts, except against
+one a person placed at the front (`--front`, or `queue.mjs move`) above it that could start this
+pass (not already finished): that ticket goes first for a file they both need at its budget, the
+handoff waits with its briefing kept, and the report's waiting lines name which ticket goes first
+and why. Until the front ticket starts it fills no place, so the handoff's deadline keeps running,
+and a front ticket that never starts escalates the handoff rather than holding it for good.
 
 **A file whose merge-time conflicts rise runs fewer at once, on its own.** Each time a pass meets a
 ready PR in conflict with its base, or a base sync that stops on one, it records one entry per
