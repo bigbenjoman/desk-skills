@@ -305,6 +305,15 @@ t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainN
     resortQueue(kinds, { scope: () => [], fileCount: () => 0, cloud: (x) => x.cloud_ok === true, rank: (k) => kr[k], priority: 'soft' }).order.join(' '), 'HI LO CH CC');
   const fallback = pool([HL, HC], { local: 2 });
   t('#1624 a local fallback counts every fresh ticket still to come, as a cloud-able one may fall back too', [...fallback.pending].join(','), 'HL,HC');
+  // #1552: the reserve and pending read as decideSpawn's localOnlyAhead does: a fix try sent to its live
+  // session, or waiting on its archive, takes no slot; one whose session is gone is placed as cloud-able.
+  const SEND = { key: 'SEND' };
+  const GONE = { key: 'GONE' };
+  const passReads = { able: (x) => x.cloud_ok === true || x.key === 'GONE', slotless: (x) => x.key === 'SEND' };
+  t('#1552 a fix try sent to its session ahead holds back no local slot from the fallback', pool([SEND], passReads)?.where, 'local');
+  t('#1552 a fix try whose session is gone ahead holds back no local slot (it is placed as cloud-able)', pool([GONE], passReads)?.where, 'local');
+  t('#1552 a slotless fix try ahead is not pending for the slot', [...pool([SEND, HC], { local: 2, ...passReads }).pending].join(','), 'HC');
+  t('#1552 a slotless ticket weighs no slot', priorityPool(SEND, [], { local: 1, cloud: 1, ...passReads }), null);
   t('#1624 a blocker still starts before what it blocks, whatever its priority', resortQueue([tk('LO'), tk('HI', { state: 'parked', held_by: 'LO' })], { scope: () => [], fileCount: () => 0, rank: (k) => (k === 'HI' ? 0 : 3), priority: 'strict' }).order.join(' '), 'LO HI');
 }
 

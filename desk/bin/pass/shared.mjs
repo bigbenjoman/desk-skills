@@ -293,13 +293,18 @@ export function placeAtStart({ able, cloudRoom, localRoom, localSpare = false, r
 // read; `local` and `cloud` the local slots and cloud sessions still free; `localSpare` and `personUse`
 // as placeAtStart's. `pending` the fresh tickets ahead that may want that slot: for a cloud start the
 // cloud-able ones, for a local start any, as a cloud-able one may fall back to it. One counted that then
-// goes elsewhere costs only a deferral (spawn-order.mjs deferringOrder).
-export function priorityPool(t, ahead, { local, cloud, localSpare = false, personUse = false }) {
-  const place = placeAtStart({ able: startsInCloud(t), cloudRoom: cloud > 0, localRoom: local > 0, localSpare,
-    reserve: ahead.filter((x) => !startsInCloud(x)).length, free: local, personUse });
+// goes elsewhere costs only a deferral (spawn-order.mjs deferringOrder). `able` and `slotless` are the
+// pass's own reads, as decideSpawn's: `able` a ticket placed as cloud-able (startsInCloud, and in the pass
+// a fix try whose cloud session is gone), `slotless` one that takes no slot of either kind (in the pass a
+// fix try sent to its live session, or one waiting on that session's archive), so neither the reserve nor
+// `pending` counts it, and a slotless `t` weighs no slot.
+export function priorityPool(t, ahead, { local, cloud, localSpare = false, personUse = false, able = startsInCloud, slotless = () => false }) {
+  if (slotless(t)) return null;
+  const place = placeAtStart({ able: able(t), cloudRoom: cloud > 0, localRoom: local > 0, localSpare,
+    reserve: ahead.filter((x) => !able(x) && !slotless(x)).length, free: local, personUse });
   if (place.where == null) return null;
   const toCloud = place.where === 'cloud';
-  const pending = ahead.filter((x) => x.key !== t.key && !toResume(x) && !toHandoff(x) && (!toCloud || startsInCloud(x)));
+  const pending = ahead.filter((x) => x.key !== t.key && !toResume(x) && !toHandoff(x) && !slotless(x) && (!toCloud || able(x)));
   return { where: place.where, free: toCloud ? cloud : local, pending: new Set(pending.map((x) => x.key)) };
 }
 // The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its

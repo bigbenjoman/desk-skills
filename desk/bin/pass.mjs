@@ -5128,7 +5128,8 @@ let slotStopAt = null;
 // The local-only tickets the loop has still to read (`ahead`, deferringOrder's, priority's deferred
 // retries included): the local slots a cloud-able ticket leaves them. A fix try sent to its cloud
 // session, or waiting on that session's archive, takes no slot of either kind.
-const localOnlyAhead = (ahead) => ahead.filter((x) => !cloudStartable(x) && cloudFixOf(x) !== 'send' && !archiveWaitOf(x)).length;
+const slotless = (x) => cloudFixOf(x) === 'send' || !!archiveWaitOf(x);
+const localOnlyAhead = (ahead) => ahead.filter((x) => !cloudStartable(x) && !slotless(x)).length;
 const loopFrom = { attempts, running: localKeys().length };
 // The memory share a local start was refused: no later local ticket starts this pass, though a cloud one may.
 let memStop = false;
@@ -5153,9 +5154,9 @@ const priorityHeldBy = (t, ahead) => {
   const mine = firstFor[t.key];
   const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key) && !(mine && heldBehind(x, mine))).map((x) => x.key);
   // The slot it would take, as decideSpawn places it: a cloud-able ticket with the cloud full may still
-  // take a local one (pass/shared.mjs priorityPool).
+  // take a local one (pass/shared.mjs priorityPool), its reserve read as localOnlyAhead reads it.
   const pool = priorityPool(t, ahead, { local: (memStop ? 0 : localSlots) - attempts, cloud: cloudSlots - cloudAttempts,
-    localSpare: LOCAL_SPARE, personUse: PERSON.on });
+    localSpare: LOCAL_SPARE, personUse: PERSON.on, able: cloudStartable, slotless });
   if (!pool) return null;
   return priorityHold(t.key, { mode: PRIORITY.mode, rank: heldRankOf, waiting, pending: pool.pending, free: pool.free, files: budgetFiles,
     blocks: (a, b) => reach(a, blockerSucc[a] ?? [], blockerSucc).has(b) });
