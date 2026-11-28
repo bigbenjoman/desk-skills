@@ -1957,6 +1957,17 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "#1667 a front ticket that does not start holds the handoff with no collision hold: its handoff wait keeps a deadline" \
   '! spawned HO-20 && ! spawned HO-19 && echo "$out" | grep -qF "HO-20: WORKTREE IN USE" && [ "$(field HO-19 waits.handoff | jq -c "[.collision, (.deadline != null)]")" = "[null,true]" ] && ! echo "$out" | grep -qF "HO-19: held by collision"'
 
+# #1624 with #1667: a front ticket goes first for a serial file ahead of a handoff, and a higher-priority
+# ticket on that file waits behind the handoff. The higher one does not hold the front ticket by
+# priority, or the three hold each other for good: the front ticket starts.
+fbq hok '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+printf '\n## 4. Ranking\n| Field | Value |\n|---|---|\n| Priority | `P1` `P2` |\n' >> "$T/config-fb.md"
+hot HO-21 src/hot.ts; fbt HO-22 triaged src/hot.ts; fbt HO-23 triaged src/hot.ts; q front HO-22 --placed >/dev/null
+for p in HO-22:P2 HO-23:P1; do f="$DESK_AUTOPILOT_STATE/triage/${p%%:*}.json"; jq -c --arg v "${p#*:}" '.priority = $v' "$f" > "$f.new" && mv "$f.new" "$f"; done
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1624 a lower-priority front ticket ahead of a handoff starts, though a higher one waits behind that handoff on its file" \
+  'spawned HO-22 && ! spawned HO-21 && ! spawned HO-23 && ! echo "$out" | grep -qF "HO-22: waits for HO-23"'
+
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
 # the first line of big.ts (1,200 lines, so 3 places unlowered). The fake gh answers PRs from $T/fx.

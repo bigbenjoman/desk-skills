@@ -413,6 +413,12 @@ check "DS-541 AC1 the next pass does not say it again" '! echo "$out" | grep -q 
 node "$B/ticket-facts.mjs" --blockers J-9 >/dev/null 2>&1
 check "DS-541 a re-read of the ticket's blockers leaves its batch's epic out of them, kept as own_epic_blockers" \
   '[ "$(jq -c "[.blockers, .own_epic_blockers]" "$T/state-j/triage/J-9.json")" = "[[],[\"E-1\"]]" ]'
+printf '%s\n' '{"fields":{"issuelinks":[],"priority":{"name":"P1"}}}' > "$T/jira/J-9.json"
+node "$B/ticket-facts.mjs" --blockers J-9 >/dev/null 2>&1
+check "#1624 a re-read of the ticket's blockers records its tracker priority as Jira has it now" '[ "$(jq -r .priority "$T/state-j/triage/J-9.json")" = P1 ]'
+printf '%s\n' '{"fields":{"issuelinks":[]}}' > "$T/jira/J-9.json"
+node "$B/ticket-facts.mjs" --blockers J-9 >/dev/null 2>&1
+check "#1624 a search that returns no priority field leaves the recorded priority as it was" '[ "$(jq -r .priority "$T/state-j/triage/J-9.json")" = P1 ]'
 q set-batch epic=null; q drop J-9
 q add J-10; q set J-10 state=parked open_questions=1 held_by=E-2 held_outside=E-2 'park={"question":"held by orchestrator: blocked by E-2 — starts once their PRs merge"}'
 printf '%s\n' '{"epic":{"key":"E-2","summary":"the epic"},"blockers":[{"key":"E-2","category":"indeterminate"}]}' > "$T/state-j/triage/J-10.json"
