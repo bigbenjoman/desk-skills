@@ -126,7 +126,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 .verdict h2{margin:0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.015em;max-width:62ch;text-wrap:pretty}
 .verdict p{margin:0;font-size:14px;line-height:21px;color:var(--muted-fg);max-width:72ch}
 .verdict .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
-.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
 .tile{padding:16px;display:flex;flex-direction:column;gap:6px;min-height:136px}
 .tile .lb{font-size:13px;font-weight:500;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
 .tile .v{font-size:30px;line-height:36px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
@@ -189,7 +189,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
   <div class="win" style="width: 1048px">
     <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp warn">Built 08:02 · 2 hours ago</span><button class="btn out sm fr">Rebuild</button></div></header>
     <div class="banner warn" role="status"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4M12 17h.01"></path></svg><span>Built 2 hours ago. The supervisor in desk-skills hasn't checked in since 08:04, so these numbers may be behind.</span><span class="ba"><a class="btn ghost xs" href="#">See Health</a><button class="btn out xs">Rebuild</button></span></div>
-    <div class="pb" style="padding-bottom: 20px"><section class="verdict"><h2>Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section></div>
+    <div class="pb" style="padding-bottom: 20px"><section class="verdict"><h2>Tickets cost 6% less and finish 19% faster than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section></div>
   </div>
   <div class="note" style="padding: 0 4px">Focus ring shown on the header's Rebuild: 2px var(--focus) ring, 2px offset (class .fr). While a rebuild runs, the button reads "Rebuilding…" with a 12px spinner and is disabled; the banner stays until the new build lands.</div>
 
@@ -198,8 +198,8 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
     <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp s-fail">Built Fri 27 Nov, 04:12 · 30 hours ago</span></div></header>
     <div class="banner crit" role="alert"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v4M12 16h.01"></path></svg><span>These numbers are out of date. Nothing has rebuilt Levers since Fri 27 Nov, 04:12.</span><span class="ba"><button class="btn pri xs">Rebuild now</button></span></div>
     <div class="pb" style="padding-bottom: 20px; opacity: .45" aria-hidden="true">
-      <section class="verdict"><h2>Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section>
-      <div class="tiles"><div class="card tile" style="min-height: 96px"><span class="lb">Cost per ticket</span><span class="v">$16.47</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Tokens per ticket</span><span class="v">29.8M</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Fix tries per ticket</span><span class="v">0.30</span></div></div>
+      <section class="verdict"><h2>Tickets cost 6% less and finish 19% faster than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section>
+      <div class="tiles"><div class="card tile" style="min-height: 96px"><span class="lb">Cost per ticket</span><span class="v">$16.47</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Tokens per ticket</span><span class="v">29.8M</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Time per ticket</span><span class="v">6.4h</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Fix tries per ticket</span><span class="v">0.30</span></div></div>
     </div>
   </div>
 
@@ -207,7 +207,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
   <div class="win" style="width: 1048px">
     <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp">Built 06:55 · 3 hours ago</span><button class="btn out sm">Rebuild</button></div></header>
     <div class="banner warn" role="status"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4M12 17h.01"></path></svg><span>Levers couldn't update at 09:34: the build ran out of time after 2 minutes. You're seeing the build from 06:55.</span><span class="ba"><a class="btn ghost xs" href="#">See what failed</a><button class="btn out xs">Try again</button></span></div>
-    <div class="pb" style="padding-bottom: 20px"><section class="verdict"><h2>Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section></div>
+    <div class="pb" style="padding-bottom: 20px"><section class="verdict"><h2>Tickets cost 6% less and finish 19% faster than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section></div>
   </div>
   <div class="note" style="padding: 0 4px">"See what failed" opens Health › Levers build with the error kept verbatim. Never word this as "the supervisor may have stopped": that is state A, and only when the heartbeat says so.</div>
 
@@ -217,6 +217,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
       <div class="tiles">
         <div class="card tile"><span class="lb">Cost per ticket</span><span class="v">$16.47</span><span class="st s-done"><span class="dot"></span>6% less than before levers</span><span class="cmp">Before levers $17.52 · 89 tickets since 21 Nov</span></div>
         <div class="card tile"><span class="lb">Tokens per ticket</span><span class="v muted">—</span><span class="st s-grey">No number yet</span><span class="cmp">No ticket merged in studia-zendesk in the last 7 days.</span></div>
+        <div class="card tile"><span class="lb">Time per ticket</span><span class="v muted">—</span><span class="st s-grey">Not recorded</span><span class="cmp">None of these tickets has a first-start time, so desk shows none rather than a guess.</span></div>
         <div class="card tile"><span class="lb">Fix tries per ticket</span><span class="v muted">—</span><span class="st s-grey">Not recorded</span><span class="cmp">3 tickets have no fix-try count, so desk shows none rather than a wrong one.</span></div>
       </div>
     </div>
@@ -227,7 +228,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
     <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp">Building for the first time…</span></div></header>
     <div class="pb" style="padding-bottom: 20px" aria-busy="true">
       <div class="verdict" style="gap: 12px"><span class="skel" style="width: 140px; height: 22px; border-radius: 6px"></span><span class="skel" style="width: 82%; height: 20px"></span><span class="skel" style="width: 64%; height: 14px"></span></div>
-      <div class="tiles"><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div></div>
+      <div class="tiles"><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div></div>
       <div class="card" style="height: 268px; padding: 16px; display: flex; flex-direction: column; gap: 12px"><span class="skel" style="width: 180px; height: 14px"></span><span class="skel" style="flex: 1; border-radius: 6px"></span></div>
     </div>
   </div>

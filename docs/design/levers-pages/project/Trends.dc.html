@@ -180,10 +180,19 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 .tt b{font-weight:600;font-size:13px}
 .note{font-size:12.5px;line-height:18px;color:var(--muted-fg)}
 .fr{box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--focus)!important}
+.rng{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;height:28px;box-shadow:var(--sh-sm);flex:none}
+.rng button{border:0;background:var(--background);padding:0 10px;font:500 12.5px/1 var(--font-sans);color:var(--muted-fg);cursor:pointer;white-space:nowrap}
+.rng button+button{border-left:1px solid var(--border)}
+.rng button[aria-checked="true"]{background:var(--muted);color:var(--foreground)}
+.rng button:hover{color:var(--foreground)}
+.rng button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.rng.lg{height:32px}.rng.lg button{padding:0 12px;font-size:13px}
+.sw.sofar{width:9px;height:9px;border:2px solid var(--chart-now);border-radius:50%;background:var(--background)}
+.sw.nodata{width:18px;height:10px;border:0;background:repeating-linear-gradient(45deg,var(--chart-grid) 0 2px,transparent 2px 4.2px);outline:1px solid var(--border)}
 </style>
 </helmet>
 <div class="board">
-  <div class="ann"><b>5 · /levers/trends</b><span>route <i>/levers/trends</i></span><span>reads <i>GET /api/levers/trends?range=30d</i> = panels.trends.metrics.{cost,tokens,fixes,prompts} + change markers already cut to the window</span><span>area <i>Trends</i></span><span>x axis starts at the later of the range start and the first recorded day</span><span>markers: lever events + Claude versions, at most 5 per chart; two closer than 24px merge into one pill "n +k"</span></div>
+  <div class="ann"><b>5 · /levers/trends</b><span>route <i>/levers/trends?range=wbr</i> (default <i>range=30d</i>, kept per viewer)</span><span>reads <i>GET /api/levers/trends?range=wbr</i> = trends.metrics.{cost,time,tokens,fixes,prompts}.weekly (last 6) + .monthly (last 12); <i>range=30d</i> reads .daily</span><span>drawn in <i>6 weeks · 12 months</i>; board 1 shows <i>Last 30 days</i></span><span>markers in this range: lever events only, one per week or month, "n +k" when several</span><span><i>sample</i>: every Time per ticket figure (desk doesn't record it yet)</span></div>
   <div class="win">
     <div class="tb">
       <div class="tbxl"><div class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></div><div class="wm"><span class="mark"><i></i></span>Desk</div><span class="pgname">Levers</span></div>
@@ -225,56 +234,79 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
         </nav>
         <div class="pb" style="gap: 16px">
           <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
-            <div role="radiogroup" aria-label="Range" style="display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; height: 32px; box-shadow: var(--sh-sm)">
-              <button role="radio" aria-checked="false" style="border: 0; background: var(--background); padding: 0 12px; font: 500 13px/1 var(--font-sans); color: var(--muted-fg)">Weeks</button>
-              <button role="radio" aria-checked="false" style="border: 0; border-left: 1px solid var(--border); background: var(--background); padding: 0 12px; font: 500 13px/1 var(--font-sans); color: var(--muted-fg)">Months</button>
-              <button role="radio" aria-checked="true" style="border: 0; border-left: 1px solid var(--border); background: var(--muted); padding: 0 12px; font: 500 13px/1 var(--font-sans); color: var(--foreground)">Last 30 days</button>
-            </div>
-            <span class="note">desk started recording on 21 Nov, so the days before it are left off.</span>
-            <div class="legend" style="margin-left: auto"><span><i class="sw"></i>Now</span><span><i class="sw before"></i>Before levers</span><span><span class="mk lev">1</span>A lever changed</span><span><span class="mk">2</span>Claude Code updated</span><span><span class="mk">5 +3</span>Changes too close to draw apart</span></div>
+            <div class="rng lg" role="radiogroup" aria-label="Time range"><button role="radio" aria-checked="false">Last 30 days</button><button role="radio" aria-checked="true">6 weeks · 12 months</button></div>
+            <span class="note">One choice drives every chart. desk started recording on 21 Nov, so earlier weeks and months are empty.</span>
+            <div class="legend" style="margin-left: auto"><span><i class="sw"></i>Now</span><span><i class="sw before"></i>Before levers</span><span><span class="mk lev">1</span>A lever changed</span><span><span class="mk lev">2 +1</span>Several in one week or month</span><span><i class="sw sofar"></i>So far</span><span><i class="sw nodata"></i>No data</span></div>
           </div>
           <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
-
-            <section class="card chart" aria-labelledby="t1" style="position: relative">
+<section class="card chart" aria-labelledby="t1" style="position: relative">
               <div class="ch"><h3 id="t1">Cost per ticket</h3><span class="st s-done" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="dot"></span>6% less than before levers</span></div>
-              <svg viewBox="0 0 460 220" width="100%" height="220" role="img" aria-label="Cost per ticket each day, 21 to 27 November, against $17.52 before levers." style="display: block">
-                <g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="444" y2="36"></line><line x1="48" y1="75" x2="444" y2="75"></line><line x1="48" y1="114" x2="444" y2="114"></line><line x1="48" y1="153" x2="444" y2="153"></line></g>
-                <line x1="48" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">$0</text><text x="40" y="157">$6</text><text x="40" y="118">$12</text><text x="40" y="79">$18</text><text x="40" y="40">$24</text></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="60" y="210">21 Nov</text><text x="113.1" y="210">22</text><text x="166.3" y="210">23</text><text x="219.4" y="210">24</text><text x="272.6" y="210">25</text><text x="325.7" y="210">26</text><text x="378.9" y="210">27</text><text x="432" y="210">28</text></g>
-                <line x1="48" y1="78.1" x2="444" y2="78.1" stroke="var(--chart-before)" stroke-width="1.5"></line>
-                <g stroke="#71717a" stroke-dasharray="3 3"><line x1="139.7" y1="30" x2="139.7" y2="192"></line><line x1="188.3" y1="30" x2="188.3" y2="192"></line><line x1="267.4" y1="30" x2="267.4" y2="192"></line><line x1="352.3" y1="30" x2="352.3" y2="192" stroke="#18181b"></line></g>
-                <polyline points="60.0,93.5 113.1,103.0 166.3,75.5 219.4,128.9 272.6,167.7 325.7,75.4 378.9,58.3" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
-                <g fill="var(--chart-now)"><circle cx="60" cy="93.5" r="3"></circle><circle cx="113.1" cy="103" r="3"></circle><circle cx="166.3" cy="75.5" r="3"></circle><circle cx="219.4" cy="128.9" r="3"></circle><circle cx="272.6" cy="167.7" r="3"></circle><circle cx="325.7" cy="75.4" r="3"></circle><circle cx="378.9" cy="58.3" r="3"></circle></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="139.7" cy="20" r="10" fill="#18181b"></circle><text x="139.7" y="24" fill="#fafafa">1</text><circle cx="188.3" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="188.3" y="24" fill="#3f3f46">2</text><circle cx="267.4" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="267.4" y="24" fill="#3f3f46">3</text><circle cx="352.3" cy="20" r="11" fill="#18181b" stroke="#52525b" stroke-width="2"></circle><text x="352.3" y="24" fill="#fafafa">4</text></g>
-              </svg>
-              <div class="tt" role="tooltip" style="position: absolute; left: 96px; top: 86px">
-                <span class="k">4 · 27 Nov, 00:02 · Lever</span>
-                <b>desk turned failure-class off</b>
-                <span>$17.94 a ticket the day before · $20.57 the day after</span>
-                <span class="k">Before and after, not a test</span>
-              </div>
-              <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Cost per ticket by week for the last 6 weeks and by month for the last 12 months. Week 47 $15.60, week 48 so far $13.00, November so far $16.47, against $17.52 before levers. No data before 21 November." style="display: block">
+<defs><pattern id="hatch-cost" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-cost)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-cost)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">$0</text><text x="40" y="157">$6</text><text x="40" y="118">$12</text><text x="40" y="79">$18</text><text x="40" y="40">$24</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="78.1" x2="234.0" y2="78.1" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="78.1" x2="444" y2="78.1" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,90.6 218.5,107.5" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="90.6" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="107.5" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="84.9" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b" stroke="#52525b" stroke-width="2"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <div class="tt" role="tooltip" style="position: absolute; left: 196px; top: 70px"><span class="k">Week 48 · 24 to 30 Nov, so far · 2 lever changes</span><b>desk turned preflight off · 26 Nov</b><b>desk turned failure-class off · 27 Nov</b><span>$13.00 a ticket this week so far · $15.60 the week before</span><span class="k">Before and after, not a test</span></div><dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">$20.57</dd></div>
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">$14.13</dd></div>
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">$16.47</dd></div>
                 <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">$17.52</dd></div>
               </dl>
             </section>
-
-            <section class="card chart" aria-labelledby="t2">
+<section class="card chart" aria-labelledby="tt">
+              <div class="ch"><h3 id="tt">Time per ticket</h3><span class="st s-done" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="dot"></span>19% faster than before levers</span><span class="sub">median, first start to merge</span></div>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Median time per ticket from first start to merge, by week and by month. Week 47 6.9 hours, week 48 so far 5.6 hours, November so far 6.4 hours, against 7.9 hours before levers. Sample figures." style="display: block">
+<defs><pattern id="hatch-time" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-time)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-time)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0h</text><text x="40" y="157">3h</text><text x="40" y="118">6h</text><text x="40" y="79">9h</text><text x="40" y="40">12h</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="89.3" x2="234.0" y2="89.3" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="89.3" x2="444" y2="89.3" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,102.3 218.5,119.2" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="102.3" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="119.2" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="108.8" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
+              <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">6.1h</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">5.8h</dd></div>
+                <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">This month</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">6.4h</dd></div>
+                <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">7.9h</dd></div>
+              </dl>
+            </section>
+<section class="card chart" aria-labelledby="t2">
               <div class="ch"><h3 id="t2">Tokens per ticket</h3><span class="st s-done" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="dot"></span>23% fewer than before levers</span></div>
-              <svg viewBox="0 0 460 220" width="100%" height="220" role="img" aria-label="Input tokens per ticket each day, 21 to 27 November, against 38.9 million before levers." style="display: block">
-                <g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="444" y2="36"></line><line x1="48" y1="75" x2="444" y2="75"></line><line x1="48" y1="114" x2="444" y2="114"></line><line x1="48" y1="153" x2="444" y2="153"></line></g>
-                <line x1="48" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">10M</text><text x="40" y="118">20M</text><text x="40" y="79">30M</text><text x="40" y="40">40M</text></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="60" y="210">21 Nov</text><text x="113.1" y="210">22</text><text x="166.3" y="210">23</text><text x="219.4" y="210">24</text><text x="272.6" y="210">25</text><text x="325.7" y="210">26</text><text x="378.9" y="210">27</text><text x="432" y="210">28</text></g>
-                <line x1="48" y1="40.4" x2="444" y2="40.4" stroke="var(--chart-before)" stroke-width="1.5"></line>
-                <g stroke="#71717a" stroke-dasharray="3 3"><line x1="139.7" y1="30" x2="139.7" y2="192"></line><line x1="188.3" y1="30" x2="188.3" y2="192"></line><line x1="267.4" y1="30" x2="267.4" y2="192"></line><line x1="352.3" y1="30" x2="352.3" y2="192"></line></g>
-                <polyline points="60.0,70.1 113.1,96.7 166.3,62.7 219.4,128.4 272.6,171.8 325.7,65.9 378.9,53.0" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
-                <g fill="var(--chart-now)"><circle cx="60" cy="70.1" r="3"></circle><circle cx="113.1" cy="96.7" r="3"></circle><circle cx="166.3" cy="62.7" r="3"></circle><circle cx="219.4" cy="128.4" r="3"></circle><circle cx="272.6" cy="171.8" r="3"></circle><circle cx="325.7" cy="65.9" r="3"></circle><circle cx="378.9" cy="53" r="3"></circle></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="139.7" cy="20" r="10" fill="#18181b"></circle><text x="139.7" y="24" fill="#fafafa">1</text><circle cx="188.3" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="188.3" y="24" fill="#3f3f46">2</text><circle cx="267.4" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="267.4" y="24" fill="#3f3f46">3</text><circle cx="352.3" cy="20" r="10" fill="#18181b"></circle><text x="352.3" y="24" fill="#fafafa">4</text></g>
-              </svg>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Input tokens per ticket by week and by month. Week 47 29.6 million, week 48 so far 22.4 million, November so far 29.8 million, against 38.9 million before levers." style="display: block">
+<defs><pattern id="hatch-tok" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-tok)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-tok)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">10M</text><text x="40" y="118">20M</text><text x="40" y="79">30M</text><text x="40" y="40">40M</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="40.3" x2="234.0" y2="40.3" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="40.3" x2="444" y2="40.3" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,76.6 218.5,104.6" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="76.6" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="104.6" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="75.8" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
               <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">35.7M</dd></div>
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">26.5M</dd></div>
@@ -282,23 +314,26 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
                 <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">38.9M</dd></div>
               </dl>
             </section>
-
-            <section class="card chart" aria-labelledby="t3" style="border-color: var(--fail-bd)">
+<section class="card chart" aria-labelledby="t3" style="border-color: var(--fail-bd)">
               <div class="ch"><h3 id="t3">Fix tries per ticket</h3><span class="st s-fail" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="g">✕</span>Over the 0.16 limit</span></div>
-              <svg viewBox="0 0 460 220" width="100%" height="220" role="img" aria-label="Fix tries per ticket each day, 21 to 27 November, against 0.13 before levers and a limit of 0.16. Four of seven days are over the limit." style="display: block">
-                <g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="444" y2="36"></line><line x1="48" y1="75" x2="444" y2="75"></line><line x1="48" y1="114" x2="444" y2="114"></line><line x1="48" y1="153" x2="444" y2="153"></line></g>
-                <line x1="48" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">0.2</text><text x="40" y="118">0.4</text><text x="40" y="79">0.6</text><text x="40" y="40">0.8</text></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="60" y="210">21 Nov</text><text x="113.1" y="210">22</text><text x="166.3" y="210">23</text><text x="219.4" y="210">24</text><text x="272.6" y="210">25</text><text x="325.7" y="210">26</text><text x="378.9" y="210">27</text><text x="432" y="210">28</text></g>
-                <line x1="48" y1="166.7" x2="444" y2="166.7" stroke="var(--chart-before)" stroke-width="1.5"></line>
-                <line x1="48" y1="160.3" x2="444" y2="160.3" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="5 4"></line>
-                <text x="440" y="154" font-family="Geist, Inter, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="end">limit 0.16</text>
-                <g stroke="#71717a" stroke-dasharray="3 3"><line x1="139.7" y1="30" x2="139.7" y2="192"></line><line x1="188.3" y1="30" x2="188.3" y2="192"></line><line x1="267.4" y1="30" x2="267.4" y2="192"></line><line x1="352.3" y1="30" x2="352.3" y2="192"></line></g>
-                <polyline points="60.0,170.6 113.1,145.2 166.3,143.2 219.4,192.0 272.6,192.0 325.7,73.1 378.9,127.7" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
-                <g fill="var(--chart-now)"><circle cx="60" cy="170.6" r="3"></circle><circle cx="219.4" cy="192" r="3"></circle><circle cx="272.6" cy="192" r="3"></circle></g>
-                <g fill="#b91c1c"><circle cx="113.1" cy="145.2" r="3.5"></circle><circle cx="166.3" cy="143.2" r="3.5"></circle><circle cx="325.7" cy="73.1" r="3.5"></circle><circle cx="378.9" cy="127.7" r="3.5"></circle></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="139.7" cy="20" r="10" fill="#18181b"></circle><text x="139.7" y="24" fill="#fafafa">1</text><circle cx="188.3" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="188.3" y="24" fill="#3f3f46">2</text><circle cx="267.4" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="267.4" y="24" fill="#3f3f46">3</text><circle cx="352.3" cy="20" r="10" fill="#18181b"></circle><text x="352.3" y="24" fill="#fafafa">4</text></g>
-              </svg>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Fix tries per ticket by week and by month. Week 47 0.20, week 48 so far 0.24, November so far 0.30, all over the 0.16 limit, against 0.13 before levers." style="display: block">
+<defs><pattern id="hatch-fix" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-fix)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-fix)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">0.2</text><text x="40" y="118">0.4</text><text x="40" y="79">0.6</text><text x="40" y="40">0.8</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="166.7" x2="234.0" y2="166.7" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="166.7" x2="444" y2="166.7" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<line x1="48" y1="160.8" x2="234.0" y2="160.8" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="5 4"></line><line x1="250.0" y1="160.8" x2="444" y2="160.8" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="5 4"></line>
+<text x="440" y="154.8" font-family="Geist, Inter, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="end">limit 0.16</text>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,153.0 218.5,146.2" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="153.0" r="3.5" fill="#b91c1c"></circle><circle cx="218.5" cy="146.2" r="4.0" fill="var(--background)" stroke="#b91c1c" stroke-width="2"></circle><circle cx="435.9" cy="133.5" r="4.0" fill="var(--background)" stroke="#b91c1c" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
               <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num s-fail" style="margin: 2px 0 0; font-weight: 600">0.33</dd></div>
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num s-fail" style="margin: 2px 0 0; font-weight: 600">0.20</dd></div>
@@ -306,20 +341,24 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
                 <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">0.13</dd></div>
               </dl>
             </section>
-
-            <section class="card chart" aria-labelledby="t4">
+<section class="card chart" aria-labelledby="t4">
               <div class="ch"><h3 id="t4">Permission prompts per start</h3><span class="st s-fail" style="font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; font-weight: 500"><span class="g">✕</span>39% more than before levers</span></div>
-              <svg viewBox="0 0 460 220" width="100%" height="220" role="img" aria-label="Permission prompts per worker start each day, 21 to 27 November, against 2.71 before levers." style="display: block">
-                <g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="444" y2="36"></line><line x1="48" y1="75" x2="444" y2="75"></line><line x1="48" y1="114" x2="444" y2="114"></line><line x1="48" y1="153" x2="444" y2="153"></line></g>
-                <line x1="48" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">1.5</text><text x="40" y="118">3</text><text x="40" y="79">4.5</text><text x="40" y="40">6</text></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="60" y="210">21 Nov</text><text x="113.1" y="210">22</text><text x="166.3" y="210">23</text><text x="219.4" y="210">24</text><text x="272.6" y="210">25</text><text x="325.7" y="210">26</text><text x="378.9" y="210">27</text><text x="432" y="210">28</text></g>
-                <line x1="48" y1="121.5" x2="444" y2="121.5" stroke="var(--chart-before)" stroke-width="1.5"></line>
-                <g stroke="#71717a" stroke-dasharray="3 3"><line x1="139.7" y1="30" x2="139.7" y2="192"></line><line x1="188.3" y1="30" x2="188.3" y2="192"></line><line x1="267.4" y1="30" x2="267.4" y2="192"></line><line x1="352.3" y1="30" x2="352.3" y2="192"></line></g>
-                <polyline points="60.0,66.4 113.1,113.2 166.3,102.3 219.4,133.2 272.6,166.0 325.7,62.8 378.9,95.8" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
-                <g fill="var(--chart-now)"><circle cx="60" cy="66.4" r="3"></circle><circle cx="113.1" cy="113.2" r="3"></circle><circle cx="166.3" cy="102.3" r="3"></circle><circle cx="219.4" cy="133.2" r="3"></circle><circle cx="272.6" cy="166" r="3"></circle><circle cx="325.7" cy="62.8" r="3"></circle><circle cx="378.9" cy="95.8" r="3"></circle></g>
-                <g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="139.7" cy="20" r="10" fill="#18181b"></circle><text x="139.7" y="24" fill="#fafafa">1</text><circle cx="188.3" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="188.3" y="24" fill="#3f3f46">2</text><circle cx="267.4" cy="20" r="10" fill="#fff" stroke="#71717a"></circle><text x="267.4" y="24" fill="#3f3f46">3</text><circle cx="352.3" cy="20" r="10" fill="#18181b"></circle><text x="352.3" y="24" fill="#fafafa">4</text></g>
-              </svg>
+              <svg viewBox="0 0 460 236" width="100%" height="236" role="img" aria-label="Permission prompts per worker start by week and by month. Week 47 3.77, week 48 so far 2.98, November so far 3.76, against 2.71 before levers." style="display: block">
+<defs><pattern id="hatch-pr" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--chart-grid)" stroke-width="2"></line></pattern></defs>
+<g stroke="var(--chart-grid)"><line x1="48" y1="36" x2="234.0" y2="36"></line><line x1="48" y1="75" x2="234.0" y2="75"></line><line x1="48" y1="114" x2="234.0" y2="114"></line><line x1="48" y1="153" x2="234.0" y2="153"></line><line x1="250.0" y1="36" x2="444" y2="36"></line><line x1="250.0" y1="75" x2="444" y2="75"></line><line x1="250.0" y1="114" x2="444" y2="114"></line><line x1="250.0" y1="153" x2="444" y2="153"></line></g>
+<rect x="48" y="30" width="124.0" height="162" fill="url(#hatch-pr)"></rect><rect x="250.0" y="30" width="177.8" height="162" fill="url(#hatch-pr)"></rect>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#6b6b73" text-anchor="middle"><text x="110.0" y="117">no data before 21 Nov</text><text x="338.9" y="117">no data before 21 Nov</text></g>
+<line x1="48" y1="192" x2="234.0" y2="192" stroke="var(--chart-axis)"></line><line x1="250.0" y1="192" x2="444" y2="192" stroke="var(--chart-axis)"></line>
+<line x1="242.0" y1="10" x2="242.0" y2="226" stroke="var(--border)"></line>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="end"><text x="40" y="196">0</text><text x="40" y="157">1.5</text><text x="40" y="118">3</text><text x="40" y="79">4.5</text><text x="40" y="40">6</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="11" fill="#6b6b73" text-anchor="middle"><text x="63.5" y="210">W43</text><text x="94.5" y="210">W44</text><text x="125.5" y="210">W45</text><text x="156.5" y="210">W46</text><text x="187.5" y="210">W47</text><text x="218.5" y="210">W48</text><text x="258.1" y="210">D</text><text x="274.2" y="210">J</text><text x="290.4" y="210">F</text><text x="306.6" y="210">M</text><text x="322.8" y="210">A</text><text x="338.9" y="210">M</text><text x="355.1" y="210">J</text><text x="371.2" y="210">J</text><text x="387.4" y="210">A</text><text x="403.6" y="210">S</text><text x="419.8" y="210">O</text><text x="435.9" y="210">N</text></g>
+<g font-family="Geist, Inter, sans-serif" font-size="10.5" font-weight="500" fill="#52525b"><text x="48" y="230">Last 6 weeks</text><text x="250.0" y="230">Last 12 months · Dec 2025 to Nov 2026</text></g>
+<line x1="48" y1="121.5" x2="234.0" y2="121.5" stroke="var(--chart-before)" stroke-width="1.5"></line><line x1="250.0" y1="121.5" x2="444" y2="121.5" stroke="var(--chart-before)" stroke-width="1.5"></line>
+<g stroke="#71717a" stroke-dasharray="3 3"><line x1="187.5" y1="30" x2="187.5" y2="192"></line><line x1="218.5" y1="30" x2="218.5" y2="192"></line><line x1="435.9" y1="30" x2="435.9" y2="192"></line></g>
+<polyline points="187.5,94.0 218.5,114.5" fill="none" stroke="var(--chart-now)" stroke-width="2.5" stroke-linejoin="round"></polyline>
+<circle cx="187.5" cy="94.0" r="3" fill="var(--chart-now)"></circle><circle cx="218.5" cy="114.5" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle><circle cx="435.9" cy="94.2" r="3.5" fill="var(--background)" stroke="var(--chart-now)" stroke-width="2"></circle>
+<g font-family="Geist, Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle"><circle cx="187.5" cy="20" r="10" fill="#18181b"></circle><text x="187.5" y="24" fill="#fafafa">1</text><rect x="203.5" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="218.5" y="24" fill="#fafafa" font-size="10.5">2 +1</text><rect x="420.0" y="10" width="30" height="20" rx="10" fill="#18181b"></rect><text x="435.0" y="24" fill="#fafafa" font-size="10.5">1 +2</text></g>
+</svg>
               <dl style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px -16px 0; border-top: 1px solid var(--border)">
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Yesterday</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">3.70</dd></div>
                 <div style="padding: 8px 16px 2px; border-right: 1px solid var(--border)"><dt class="note">Last 7 days</dt><dd class="num" style="margin: 2px 0 0; font-weight: 600">3.55</dd></div>
@@ -327,13 +366,18 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
                 <div style="padding: 8px 16px 2px"><dt class="note">Before levers</dt><dd class="num muted" style="margin: 2px 0 0; font-weight: 600">2.71</dd></div>
               </dl>
             </section>
+<section class="card" aria-labelledby="t5" style="padding: 16px; display: flex; flex-direction: column; gap: 10px">
+              <h3 id="t5" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600">Reading 6 weeks · 12 months</h3>
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--muted-fg)">Each chart is two charts side by side. On the left, one point for each of the last 6 weeks, Monday to Sunday. On the right, one point for each of the last 12 months. A hollow point is a week or month that hasn't finished.</p>
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--muted-fg)">Only lever changes are marked here, one marker per week or month. A marker like 2 +1 means change 2 and one more in that week; hover it to see both. Claude Code updates, PRs and settings are marked in Last 30 days and listed on Changes.</p>
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--muted-fg)">Weeks and months before 21 Nov are hatched: desk has no tickets from then, so they are left empty, never drawn as 0.</p>
+            </section>
           </div>
           <div class="card" style="padding: 4px 16px">
             <div class="mkl" style="border-top: 0; margin: 0; padding: 6px 0">
-              <a href="Changes.dc.html"><span class="mk lev">1</span><span>desk turned memory off: failed CI runs per ticket went over the limit</span><span class="when">23 Nov, 00:00</span></a>
-              <a href="Changes.dc.html"><span class="mk">2</span><span>Claude Code 2.1.330 to 2.1.331</span><span class="when">23 Nov, 21:57</span></a>
-              <a href="Changes.dc.html"><span class="mk">3</span><span>Claude Code 2.1.331 to 2.1.332</span><span class="when">25 Nov, 09:41</span></a>
-              <a href="Changes.dc.html"><span class="mk lev">4</span><span>desk turned failure-class off: serious review findings went over the limit</span><span class="when">27 Nov, 00:02</span></a>
+              <a href="Changes.dc.html"><span class="mk lev">1</span><span>desk turned memory off: failed CI runs per ticket went over the limit</span><span class="when">W47 · 23 Nov, 00:00</span></a>
+              <a href="Changes.dc.html"><span class="mk lev">2</span><span>desk turned preflight off: a worker that skipped the check failed on something it looks for</span><span class="when">W48 · 26 Nov, 00:01</span></a>
+              <a href="Changes.dc.html"><span class="mk lev">3</span><span>desk turned failure-class off: serious review findings went over the limit</span><span class="when">W48 · 27 Nov, 00:02</span></a>
             </div>
           </div>
         </div>
@@ -341,10 +385,10 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
     </div>
     <div class="sbar"><span class="seg"><span class="dot run"></span>7 workers · cap 30 · room for 7 more by memory · 27.5 GiB free</span><span class="sep"></span><span class="seg">Claude default <span class="warn">7d 88%</span> · 2 repos pinned</span><span class="sep"></span><span class="seg">Codex 7d 46%</span><span style="flex: 1"></span><span class="seg">Server 127.0.0.1:4823 <span class="dot"></span></span><span class="sep"></span><span class="seg num">09:58</span></div>
   </div>
-  <div class="note" style="padding: 0 4px">Marker 4 on Cost per ticket is shown hovered: ring 2px #52525b, tooltip 260px on --primary. Points over a limit draw 3.5px in --fail. The "5 +3" legend swatch is the merged-marker form: 20px tall, 10px radius, 6px side padding, widens to fit; its tooltip lists every change it holds. Marker numbers are per chart window, 1 at the oldest.</div>
+  <div class="note" style="padding: 0 4px">Marker "2 +1" on Cost per ticket is shown hovered: ring 2px #52525b, tooltip 260px on --primary listing every change it holds. Points over a limit draw 3.5px in --fail. The "2 +1" marker is the grouped form: 20px tall, 10px radius, 30px wide (widens to fit), 10.5px text; its tooltip lists every change it holds. Marker numbers are per range, 1 at the oldest. The week/month divider is 1px --border, 16px gap; week labels W43 to W48 (ISO weeks), month labels are initials, Dec 2025 to Nov 2026.</div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1330}}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1750}}'>
 class Component extends DCLogic {
   renderVals() { return {}; }
 }

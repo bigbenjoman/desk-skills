@@ -1,6 +1,6 @@
 {
   "url": "https://claude.ai/artifact/NTby4U3peDHBY27SjwQYBg",
-  "version": "1795856738-1cdd",
+  "version": "1795857316-2085",
   "fetched_at": "2026-11-28T09:06:39.365Z",
   "kind": "canvas",
   "dir": "levers-pages",
@@ -55,12 +55,18 @@
       "name": "8 · Repos ⌘2: merge time and parking moved here (1280)",
       "width": 1280,
       "file": "Repos.dc.html"
+    },
+    {
+      "name": "1c · /levers landing chart in 6 weeks · 12 months (1280)",
+      "width": 1280,
+      "file": "LandingWbr.dc.html"
     }
   ],
   "files": [
     "project/Changes.dc.html",
     "project/Compact.dc.html",
     "project/Inbox.dc.html",
+    "project/LandingWbr.dc.html",
     "project/Lever.dc.html",
     "project/Levers.dc.html",
     "project/Main.dc.html",
@@ -80,8 +86,8 @@
     "https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js"
   ],
   "screens": {
-    "version": "1795856738-1cdd",
-    "rendered_at": "2026-11-28T09:06:47.523Z",
+    "version": "1795857316-2085",
+    "rendered_at": "2026-11-28T09:15:26.511Z",
     "breakpoints": [],
     "widths": [
       {
@@ -104,7 +110,8 @@
           "5 · /levers/trends (1280)",
           "6 · /levers/changes (1280)",
           "7 · Inbox ⌘1: a lever waiting on you (1280)",
-          "8 · Repos ⌘2: merge time and parking moved here (1280)"
+          "8 · Repos ⌘2: merge time and parking moved here (1280)",
+          "1c · /levers landing chart in 6 weeks · 12 months (1280)"
         ]
       }
     ],
@@ -170,6 +177,13 @@
         "screen": "8-repos-2-merge-time-and-parking-moved-here-1280",
         "width": 1280,
         "file": "screens/8-repos-2-merge-time-and-parking-moved-here-1280@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "1c · /levers landing chart in 6 weeks · 12 months (1280)",
+        "screen": "1c-levers-landing-chart-in-6-weeks-12-months-1280",
+        "width": 1280,
+        "file": "screens/1c-levers-landing-chart-in-6-weeks-12-months-1280@1280.png",
         "drawn": true
       }
     ]

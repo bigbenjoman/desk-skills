@@ -183,7 +183,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 </style>
 </helmet>
 <div class="board">
-  <div class="ann"><b>4 · /levers/:lever</b><span>route <i>/levers/wrappers</i> (lever names are never levers, trends or changes)</span><span>reads <i>GET /api/levers/lever/wrappers</i> = board.levers[wrappers].cells + guardrails.rows[lever=wrappers] + changes.all[lever=wrappers] + evidence counts</span><span>area <i>Lever detail</i></span><span><i>sample</i> figures: the on/off cost, prompts and every check estimate (the evidence fix hasn't run yet)</span></div>
+  <div class="ann"><b>4 · /levers/:lever</b><span>route <i>/levers/wrappers</i> (lever names are never levers, trends or changes)</span><span>reads <i>GET /api/levers/lever/wrappers</i> = board.levers[wrappers].cells + guardrails.rows[lever=wrappers] + changes.all[lever=wrappers] + evidence counts</span><span>area <i>Lever detail</i></span><span><i>sample</i> figures: the on/off cost, time, prompts and every check estimate (the evidence fix and the time metric haven't landed yet)</span><span>time per ticket = median hours from first start to merge, per side</span></div>
   <div class="win">
     <div class="tb">
       <div class="tbxl"><div class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></div><div class="wm"><span class="mark"><i></i></span>Desk</div><span class="pgname">Levers › wrappers</span></div>
@@ -228,8 +228,9 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
           <section class="verdict">
             <p style="color: var(--foreground)">Runs common commands through approved wrappers, so workers hit fewer permission prompts.</p>
             <h2>Both sides have enough tickets. desk decides at midnight, keeping wrappers only if tickets with it cost less and nothing got worse.</h2>
-            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 6px">
+            <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 6px">
               <div><div class="note">Cost per ticket</div><div style="font: 600 20px/28px var(--font-sans)" class="num">$15.80 <span class="muted" style="font-weight: 500; font-size: 14px">on</span> · $16.90 <span class="muted" style="font-weight: 500; font-size: 14px">off</span></div><div class="note s-done" style="font-weight: 500">7% less with it on</div></div>
+              <div><div class="note">Time per ticket</div><div style="font: 600 20px/28px var(--font-sans)" class="num">6.1h <span class="muted" style="font-weight: 500; font-size: 14px">on</span> · 6.6h <span class="muted" style="font-weight: 500; font-size: 14px">off</span></div><div class="note s-done" style="font-weight: 500">8% faster with it on</div></div>
               <div><div class="note">Permission prompts per start</div><div style="font: 600 20px/28px var(--font-sans)" class="num">2.1 <span class="muted" style="font-weight: 500; font-size: 14px">on</span> · 3.6 <span class="muted" style="font-weight: 500; font-size: 14px">off</span></div><div class="note s-done" style="font-weight: 500">42% fewer with it on</div></div>
               <div><div class="note">Range desk is 90% sure of</div><div style="font: 600 20px/28px var(--font-sans)" class="num">2% to 12% less</div><div class="note">cost per ticket, with it on</div></div>
             </div>
@@ -289,7 +290,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1490}}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1520}}'>
 class Component extends DCLogic {
   renderVals() { return {}; }
 }

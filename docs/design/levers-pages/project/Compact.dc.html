@@ -126,7 +126,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 .verdict h2{margin:0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.015em;max-width:62ch;text-wrap:pretty}
 .verdict p{margin:0;font-size:14px;line-height:21px;color:var(--muted-fg);max-width:72ch}
 .verdict .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
-.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .tile{padding:16px;display:flex;flex-direction:column;gap:6px;min-height:136px}
 .tile .lb{font-size:13px;font-weight:500;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
 .tile .v{font-size:30px;line-height:36px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
@@ -180,10 +180,19 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 .tt b{font-weight:600;font-size:13px}
 .note{font-size:12.5px;line-height:18px;color:var(--muted-fg)}
 .fr{box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--focus)!important}
+.rng{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;height:28px;box-shadow:var(--sh-sm);flex:none}
+.rng button{border:0;background:var(--background);padding:0 10px;font:500 12.5px/1 var(--font-sans);color:var(--muted-fg);cursor:pointer;white-space:nowrap}
+.rng button+button{border-left:1px solid var(--border)}
+.rng button[aria-checked="true"]{background:var(--muted);color:var(--foreground)}
+.rng button:hover{color:var(--foreground)}
+.rng button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.rng.lg{height:32px}.rng.lg button{padding:0 12px;font-size:13px}
+.sw.sofar{width:9px;height:9px;border:2px solid var(--chart-now);border-radius:50%;background:var(--background)}
+.sw.nodata{width:18px;height:10px;border:0;background:repeating-linear-gradient(45deg,var(--chart-grid) 0 2px,transparent 2px 4.2px);outline:1px solid var(--border)}
 </style>
 </helmet>
 <div class="board">
-  <div class="ann"><b>1b · /levers at 1024</b><span>below 1100px the sidebar becomes the 56px rail and the status bar hides (DS-691 §2.3)</span><span>header wraps: stamp and controls drop to a second line</span><span>tiles stay 3 across down to 900px content, then 1 across</span><span>chart keeps its 220px height and redraws to the card width; axis labels, points and markers keep their px sizes (drawn here as the plot only; markers and their list as board 1)</span></div>
+  <div class="ann"><b>1b · /levers at 1024</b><span>below 1100px the sidebar becomes the 56px rail and the status bar hides (DS-691 §2.3)</span><span>header wraps: stamp and controls drop to a second line</span><span>tiles go 2 × 2 below 1100px window width, 1 across below 600px content</span><span>range control stays in the chart header; below 640px content it drops under the title</span><span>chart keeps its 220px height and redraws to the card width; axis labels, points and markers keep their px sizes (drawn here as the plot only; markers and their list as board 1)</span></div>
   <div class="win compact">
     <div class="tb">
       <div class="tbxl"><div class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></div><div class="wm"><span class="mark"><i></i></span>Desk</div><span class="pgname">Levers</span></div>
@@ -222,17 +231,18 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
         <div class="pb">
           <section class="verdict" aria-labelledby="vh">
             <div class="top"><span class="badge b-fail"><span class="g">✕</span>Fix tries over their limit</span><span class="badge b-needs"><span class="g">◆</span>1 needs you</span></div>
-            <h2 id="vh">Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2>
+            <h2 id="vh">Tickets cost 6% less and finish 19% faster than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2>
             <p>wrappers is ready to decide: 52 tickets with it on, 51 with it off. desk decides at the next check, at midnight. 6 more levers are being tested, desk turned 3 off, and 1 is on by hand.</p>
             <div class="acts"><a class="btn pri sm" href="Inbox.dc.html">Review failure-class in Inbox</a><a class="btn out sm" href="Trends.dc.html">See fix tries by day</a></div>
           </section>
           <div class="tiles">
             <a class="card tile" href="Trends.dc.html" style="text-decoration: none; color: inherit"><span class="lb">Cost per ticket</span><span class="v">$16.47</span><span class="st s-done"><span class="dot"></span>6% less than before levers</span><span class="cmp">Before levers $17.52 · last 7 days $14.13 · 89 tickets since 21 Nov</span></a>
             <a class="card tile" href="Trends.dc.html" style="text-decoration: none; color: inherit"><span class="lb">Tokens per ticket</span><span class="v">29.8M</span><span class="st s-done"><span class="dot"></span>23% fewer than before levers</span><span class="cmp">Before levers 38.9M · last 7 days 26.5M · 89 tickets since 21 Nov</span></a>
+            <a class="card tile" href="Trends.dc.html" style="text-decoration: none; color: inherit"><span class="lb">Time per ticket</span><span class="v">6.4h</span><span class="st s-done"><span class="dot"></span>19% faster than before levers</span><span class="cmp">Before levers 7.9h · last 7 days 5.8h · median, first start to merge</span></a>
             <a class="card tile bad" href="Trends.dc.html" style="text-decoration: none; color: inherit"><span class="lb">Fix tries per ticket</span><span class="v s-fail">0.30</span><span class="st s-fail"><span class="g">✕</span>Over the 0.16 limit</span><span class="cmp">Before levers 0.13 · last 7 days 0.20 · 89 tickets since 21 Nov</span></a>
           </div>
           <section class="card chart" aria-labelledby="ch1">
-            <div class="ch"><h3 id="ch1">Cost per ticket, each day</h3><span class="sub">desk-skills</span><span style="margin-left: auto"></span><a class="lnk" href="Trends.dc.html" style="font-size: 13px">All four trends</a></div>
+            <div class="ch"><h3 id="ch1">Cost per ticket, each day</h3><span class="sub">desk-skills</span><span style="margin-left: auto"></span><div class="rng" role="radiogroup" aria-label="Time range"><button role="radio" aria-checked="true">Last 30 days</button><button role="radio" aria-checked="false">6 weeks · 12 months</button></div><a class="lnk" href="Trends.dc.html" style="font-size: 13px; margin-left: 4px">All trends</a></div>
             <svg viewBox="0 0 968 220" width="100%" height="220" preserveAspectRatio="none" role="img" aria-label="Cost per ticket each day from 21 to 27 November against $17.52 before levers, with four changes marked." style="display: block">
               <g stroke="var(--chart-grid)" stroke-width="1" vector-effect="non-scaling-stroke"><line x1="48" y1="36" x2="952" y2="36"></line><line x1="48" y1="75" x2="952" y2="75"></line><line x1="48" y1="114" x2="952" y2="114"></line><line x1="48" y1="153" x2="952" y2="153"></line></g>
               <line x1="48" y1="192" x2="952" y2="192" stroke="var(--chart-axis)"></line>
@@ -258,7 +268,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1024,"height":1420}}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1024,"height":1600}}'>
 class Component extends DCLogic {
   renderVals() { return {}; }
 }

@@ -14,7 +14,7 @@
       "x": 0,
       "y": 0,
       "w": 1280,
-      "h": 1560,
+      "h": 1640,
       "title": "1 · /levers landing (1280)",
       "expand": "fill"
     },
@@ -22,7 +22,7 @@
       "x": 1360,
       "y": 0,
       "w": 1024,
-      "h": 1420,
+      "h": 1600,
       "title": "1b · /levers landing, compact rail (1024)",
       "expand": "fill"
     },
@@ -38,7 +38,7 @@
       "x": 0,
       "y": 2960,
       "w": 1280,
-      "h": 1470,
+      "h": 1490,
       "title": "3 · /levers/levers: every lever (1280)",
       "expand": "fill"
     },
@@ -46,7 +46,7 @@
       "x": 1360,
       "y": 2960,
       "w": 1280,
-      "h": 1490,
+      "h": 1520,
       "title": "4 · /levers/:lever: one lever, wrappers (1280)",
       "expand": "fill"
     },
@@ -54,7 +54,7 @@
       "x": 2720,
       "y": 2960,
       "w": 1280,
-      "h": 1330,
+      "h": 1750,
       "title": "5 · /levers/trends (1280)",
       "expand": "fill"
     },
@@ -68,7 +68,7 @@
     },
     "Inbox.dc.html": {
       "x": 0,
-      "y": 4850,
+      "y": 5130,
       "w": 1280,
       "h": 960,
       "title": "7 · Inbox ⌘1: a lever waiting on you (1280)",
@@ -76,10 +76,18 @@
     },
     "Repos.dc.html": {
       "x": 1360,
-      "y": 4850,
+      "y": 5130,
       "w": 1280,
       "h": 1000,
       "title": "8 · Repos ⌘2: merge time and parking moved here (1280)",
+      "expand": "fill"
+    },
+    "LandingWbr.dc.html": {
+      "x": 3824,
+      "y": 0,
+      "w": 1280,
+      "h": 680,
+      "title": "1c · /levers landing chart in 6 weeks · 12 months (1280)",
       "expand": "fill"
     }
   },
@@ -87,6 +95,7 @@
     "Main.dc.html",
     "Compact.dc.html",
     "States.dc.html",
+    "LandingWbr.dc.html",
     "Levers.dc.html",
     "Lever.dc.html",
     "Trends.dc.html",
@@ -100,7 +109,7 @@
       "y": -300,
       "text": "Levers ⌘6: the landing page and its states",
       "kind": "title1",
-      "maxW": 3744
+      "maxW": 5104
     },
     "row2": {
       "x": 0,
@@ -111,18 +120,18 @@
     },
     "row3": {
       "x": 0,
-      "y": 4550,
+      "y": 4830,
       "text": "Moved out of Levers: Inbox ⌘1 and Repos ⌘2",
       "kind": "title1",
       "maxW": 2640
     },
     "spec": {
-      "x": 3824,
+      "x": 5184,
       "y": 0,
       "w": 520,
       "size": "m",
       "fill": "orange",
-      "text": "How to build from this canvas\n\n• Shell, tokens and components are the Electron app's (docs/design/DS-691). Geist / Geist Mono, shadcn zinc, light theme drawn; the dark tokens sit in each board's style block.\n• Every value is in the board CSS: copy px, colours and radii from there, not from the screenshot.\n• Each board's strip names its route, the view.json slice it reads and its ticket area.\n• Numbers: real from view.json of 28 Nov where the page has them; lever counts are Jim's raw counts, i.e. what the page shows once the evidence fix lands. Guardrail estimates on board 4 and before/after figures marked 'sample' are sample numbers.\n• One term per idea: being tested · ready to decide · kept · off · on by hand · before levers · change.\n• Never print 0 for a number desk doesn't have: print — and say why.\n• Never print shell commands, file paths, test emails or Jira field IDs in body copy. The Inbox 'Runs:' footnote is the one exception (DS-691 §11b.3)."
+      "text": "How to build from this canvas\n\n• Shell, tokens and components are the Electron app's (docs/design/DS-691). Geist / Geist Mono, shadcn zinc, light theme drawn; the dark tokens sit in each board's style block.\n• Every value is in the board CSS: copy px, colours and radii from there, not from the screenshot.\n• Each board's strip names its route, the view.json slice it reads and its ticket area.\n• Time range: every trend chart flips between Last 30 days (default) and 6 weeks · 12 months (Amazon WBR style); boards 1 and 1b draw 30 days, 1c and 5 draw 6 weeks · 12 months.\n• Time per ticket (median hours, first start to merge) is a headline metric beside cost and tokens. Every time figure is a sample until the time metric ticket lands.\n• Numbers: real from view.json of 28 Nov where the page has them; lever counts are Jim's raw counts, i.e. what the page shows once the evidence fix lands. Guardrail estimates on board 4 and before/after figures marked 'sample' are sample numbers.\n• One term per idea: being tested · ready to decide · kept · off · on by hand · before levers · change.\n• Never print 0 for a number desk doesn't have: print — and say why.\n• Never print shell commands, file paths, test emails or Jira field IDs in body copy. The Inbox 'Runs:' footnote is the one exception (DS-691 §11b.3)."
     }
   },
   "designSystems": []

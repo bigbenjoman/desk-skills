@@ -183,7 +183,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 </style>
 </helmet>
 <div class="board">
-  <div class="ann"><b>3 · /levers/levers</b><span>route <i>/levers/levers</i></span><span>reads <i>GET /api/levers/levers</i> = panels.board.levers (one cell per enrolled repo) + panels.status</span><span>area <i>Levers table</i></span><span>row = one lever; groups in fixed order; a whole row is the link to /levers/:lever</span><span>table min-width 900px in an overflow-x:auto box</span></div>
+  <div class="ann"><b>3 · /levers/levers</b><span>route <i>/levers/levers</i></span><span>reads <i>GET /api/levers/levers</i> = panels.board.levers (one cell per enrolled repo) + panels.status</span><span>area <i>Levers table</i></span><span>row = one lever; groups in fixed order; a whole row is the link to /levers/:lever</span><span>table min-width 900px in an overflow-x:auto box</span><span>"What desk sees so far" names cost and time once a lever is ready; <i>sample</i>: wrappers' 7% and 8%</span></div>
   <div class="win">
     <div class="tb">
       <div class="tbxl"><div class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></div><div class="wm"><span class="mark"><i></i></span>Desk</div><span class="pgname">Levers</span></div>
@@ -246,7 +246,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
                   <td style="padding: 10px 16px; border-bottom: 1px solid var(--border)"><a href="Lever.dc.html" style="font: 600 13px/18px var(--font-mono); color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--ring)">wrappers</a><div class="note">Runs common commands through approved wrappers, so workers hit fewer permission prompts.</div></td>
                   <td style="padding: 0 12px; border-bottom: 1px solid var(--border)"><span class="badge b-out"><span class="dot run"></span>Ready to decide</span></td>
                   <td style="padding: 0 12px; border-bottom: 1px solid var(--border)"><div class="num" style="font-weight: 500">52 on · 51 off</div><div style="display: flex; align-items: center; gap: 8px; margin-top: 4px"><span class="bar" style="width: 88px"><i class="run" style="width: 100%"></i></span><span class="note" style="white-space: nowrap">needs 30 each</span></div></td>
-                  <td style="padding: 0 12px; border-bottom: 1px solid var(--border)">Both sides have enough. desk decides at midnight.</td>
+                  <td style="padding: 0 12px; border-bottom: 1px solid var(--border)">Both sides have enough. So far 7% cheaper and 8% faster with it on. desk decides at midnight.</td>
                   <td style="border-bottom: 1px solid var(--border); text-align: center; color: var(--muted-fg)"><svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></td>
                 </tr>
                 <tr style="height: 60px">
@@ -341,7 +341,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
   <div class="note" style="padding: 0 4px">Row hover (wrappers): background color-mix(in srgb, var(--muted) 60%, transparent), lever name underlined. Lever descriptions come from the lever registry; the text drawn here is illustrative. Counts are tickets whose outcome is in, after the evidence fix (Jim's raw counts, 28 Nov).</div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1470}}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1490}}'>
 class Component extends DCLogic {
   renderVals() { return {}; }
 }
