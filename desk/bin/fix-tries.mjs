@@ -407,7 +407,7 @@ const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), wh
 export function fixCall(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const done = t.fix_tries ?? [];
-  const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
+  const dirty = prInConflict(s);
   const tree = dirty ? null : treeHeld(t, s);
   const conflict = dirty || !!tree;
   let fix, split, base, now, built = null, waiting = false;
@@ -1325,7 +1325,7 @@ export function gateTry(t, s, ctx) {
 }
 // A PR's gate, read only where it is red with nothing pending and no conflict holds it; else null.
 function readGate(s, ctx) {
-  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') return null;
+  if (prInConflict(s)) return null;
   const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   return gate.state === 'fail' && !gate.pending.length ? gate : null;
 }

@@ -44,7 +44,7 @@
 //   external-seen {key, pr, head, login, reviewedAtHead, last}   an outside reviewer's review read on a ready PR
 //   external-wait {key, pr, head, login, line}   the PR waits on that reviewer: `line` is its report line, which
 //                                       the pass prints unless that reviewer reads as down (gate-reviewer.mjs)
-import { baseHeldAt, fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
+import { prInConflict, resumeConflict, baseHeldAt, fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { OUTAGE_MS, outageWait } from './deadlines.mjs';
 import { externalReview } from '../review-threads.mjs';
@@ -179,11 +179,71 @@ export function tryLabel(f) {
   return `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`;
 }
 
+// The §3 row a PR's conflict goes to a fix worker under: pr-conflict-reviewed where anyone but the user's
+// handle, and not a bot, reviewed or commented on it, else pr-conflict-unreviewed. -> { row, perm, key }
+function* conflictRow(t, n, rows) {
+  const row = (yield { type: 'human-seen', key: t.key, pr: n }) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
+  return { row, ...rows[row] };
+}
+
+// ---- a Stage 7 resume whose PR is in conflict (issue-1669) -------------------
+// A requeued ticket about to resume at Stage 7 whose open PR conflicts with the base, or whose requeue
+// note names a conflict, goes to a conflict fix try (merge the base in, resolve, run the targeted
+// suites, push) rather than a Stage 7 session, which reads its PR as done and pushes nothing
+// (fix-tries.mjs resumeConflict). So does a ticket whose Stage 7 session finished with its PR in
+// conflict, which the advance step parked for it (pass/advance.mjs). A conflict alone goes to a worker
+// only under the §3 row a ready PR's conflict reads (conflictRow); a note naming it is the instruction to
+// resolve it. Otherwise, and once the PR's conflict tries are spent, it is parked naming the conflict,
+// its handoff stage kept so a requeue once the person has resolved it resumes at Stage 7 (a ticket
+// parked so stays parked). One the advance step parked whose PR no longer conflicts is requeued to
+// finish Stage 7.
+//
+// The snapshot: { resumes: [{ t, s (its PR's status), parked (the advance step's park), notes (the
+// answers recorded since its last park) }], base, dry, conflictRows (as decideFixTries's) }.
+// Actions, beside `set` and `report` ("->" is what the handler returns):
+//   human-seen {key, pr}             -> as decideFixTries's
+//   conflict-files {key, branch}     -> as decideFixTries's
+//   park {key, question}             park it, its handoff cleared and its handoff stage kept
+//   requeue {key}                    -> { ok, out }: queue.mjs requeue
+//   apply {key, pr, head, call, parked}   -> whether the try was written (the pass's applyFix, which
+//                                    requeues a parked ticket and clears the handoff and its stage)
+export function* decideResumeConflicts(s) {
+  for (const { t, s: p, parked, notes } of s.resumes) {
+    const n = p.pr;
+    const c = resumeConflict(t, p, { base: s.base, files: null, notes });
+    if (!c) {
+      if (!parked || s.dry) continue;
+      const rq = yield { type: 'requeue', key: t.key };
+      yield say(t.key, rq?.ok ? 'recovered' : 'waiting', `${t.key}: PR #${n} no longer conflicts with ${s.base}: ${rq?.ok ? 'requeued to finish Stage 7' : `its requeue was refused (${lastOf(rq?.out)})`}`);
+      continue;
+    }
+    if (c.call === 'stuck') { yield* parkResume(t, parked, s.dry, `CONFLICT — ${c.why}: not resumed at Stage 7, which would push nothing. Resolve it on the PR's branch and push`); continue; }
+    if (!c.noted) {
+      const { perm, key } = yield* conflictRow(t, n, s.conflictRows);
+      if (perm !== 'yes') { yield* parkResume(t, parked, s.dry, `CONFLICT — ${c.why}, and config §3 ${key} is "${perm}", so no fix worker resolves it and it is not resumed at Stage 7: resolve it on the PR's branch and push`); continue; }
+    }
+    // The files are read only for a try that goes ahead.
+    const files = yield { type: 'conflict-files', key: t.key, branch: p.branch ?? t.branch };
+    const call = resumeConflict(t, p, { base: s.base, files, notes });
+    const wrote = yield { type: 'apply', key: t.key, pr: n, head: p.head, call, parked };
+    // A try the pass did not write (its class waits, or a dry run) leaves a parked ticket parked; one
+    // about to resume at Stage 7 is parked instead, as Stage 7 would push nothing.
+    if (!wrote && !parked && !s.dry) yield* parkResume(t, false, false, `CONFLICT — ${c.why}, and no conflict fix try was sent for it this pass: not resumed at Stage 7, which would push nothing. Resolve it on the PR's branch and push`);
+  }
+}
+const lastOf = (s) => String(s ?? '').split('\n').filter(Boolean).at(-1) ?? '';
+function* parkResume(t, parked, dry, why) {
+  if (parked) { yield waiting(t.key, `${t.key}: ${why}`); return; }
+  if (dry) { yield waiting(t.key, `${t.key} (dry run): would park instead of resuming at Stage 7: ${why}`); return; }
+  yield { type: 'park', key: t.key, question: why };
+  yield say(t.key, 'parked', `${t.key}: ${why}`);
+}
+
 function* fixTry(t, p, s) {
   const n = p.pr;
   // A conflict goes to a fix worker only under the §3 row the base's conflict reads too, and so does a
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
-  const dirty = p.mergeable === 'CONFLICTING' || p.mergeState === 'DIRTY';
+  const dirty = prInConflict(p);
   const tree = dirty ? null : treeHeld(t, p);
   // Each file a ready PR conflicts on goes on the conflict record, whoever then resolves it.
   const dirtyFiles = dirty ? yield { type: 'conflict-files', key: t.key, branch: t.branch } : null;
@@ -209,8 +269,7 @@ function* fixTry(t, p, s) {
   if (gated) { yield* heldTry(t, p, s); return; }
   yield { type: 'gate-hold', key: t.key, on: false };
   if (dirty || tree) {
-    const row = (yield { type: 'human-seen', key: t.key, pr: n }) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
-    const { perm, key } = s.conflictRows[row];
+    const { perm, key } = yield* conflictRow(t, n, s.conflictRows);
     if (perm !== 'yes') {
       const what = tree ? `merged into ${s.base}, fails §4 Merged-tree check \`${tree.command}\`` : `conflicts with ${s.base}`;
       const fix = tree ? `merge ${s.base} into the PR's branch, fix what the check names, and push` : "resolve it on the PR's branch and push";

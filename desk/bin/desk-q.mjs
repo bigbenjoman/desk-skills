@@ -66,7 +66,7 @@ import { metricsPath } from './pass-metrics.mjs';
 import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
 import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade, prInConflict } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, wquantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, calibration, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, fullWindow, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
@@ -497,7 +497,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // wedged, and only a new commit (or a new PR) gives it a fresh one (merge-driver.sh unknown_age).
   const ref = /^merge ref: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (ref) return needs({ code: 'merge-ref', text: ref[1] }, [ref[1], WARN], [' · push a new commit', null]);
-  if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
+  if (prInConflict(ps)) {
     // A conflict has its own tries (fix-tries.mjs conflictTriesMade), whatever other kinds have used.
     const made = conflictTriesMade(t.fix_tries);
     if (made >= FIX_TRIES_MAX) return needs({ code: 'conflict', base: ctx.base }, [`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
