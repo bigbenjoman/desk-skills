@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readRegister, lookup, putOffEntry, addPutOff, clearPutOff, parseInputs, refreshInputs, notNowPath, questionKey, NOT_NOW } from '../desk/bin/not-now.mjs';
+import { readRegister, lookup, putOffEntry, addPutOff, clearPutOff, parseInputs, refreshInputs, notNowPath, questionKey, NOT_NOW, addClaim, claimOf, clearClaim } from '../desk/bin/not-now.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -87,6 +87,16 @@ t('check with changed inputs asks, with the line', `${changed.code} ${changed.ou
 t('bad inputs are refused with exit 11', run(['check', Q, '--inputs', '[1]']).code, 11);
 t('a bad ticket id is refused with exit 11', run(['add', '../x', Q]).code, 11);
 t('the key is the question\'s', JSON.parse(readFileSync(notNowPath(sdir), 'utf8').trim()).key, questionKey(Q));
+
+// issue-1687: a session's claim on a needs-you item is an entry of its own, read by claimOf, cleared by
+// clearClaim, never put off, and left out of `list`.
+addClaim({ item: 'follow:V-9', session: 'sess-9', ticket: 'V-9', at: '2026-11-28T09:00:00.000Z' }, sdir);
+t('issue-1687 claimOf reads the claim and when it was made', JSON.stringify(claimOf(readRegister(sdir), 'follow:V-9')), JSON.stringify({ item: 'follow:V-9', session: 'sess-9', at: '2026-11-28T09:00:00.000Z' }));
+t('issue-1687 another item has no claim', claimOf(readRegister(sdir), 'follow:V-8'), null);
+t('issue-1687 the item itself is not put off by its claim', lookup(readRegister(sdir), { question: 'follow:V-9', inputs: {} }).status, 'ask');
+const listed = run(['list']);
+t('issue-1687 list leaves the claim out and still lists the put-off question', `${listed.code} ${listed.out.includes('sess-9') || listed.out.includes('follow:V-9')} ${listed.out.includes(Q)}`, `0 false true`);
+t('issue-1687 clearClaim clears it, and a second clear finds none', `${clearClaim('follow:V-9', sdir)} ${claimOf(readRegister(sdir), 'follow:V-9')} ${clearClaim('follow:V-9', sdir)}`, 'true null false');
 
 rmSync(dir, { recursive: true, force: true });
 t('cleaned up', existsSync(dir), false);

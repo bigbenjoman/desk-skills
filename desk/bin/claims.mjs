@@ -24,6 +24,22 @@ export function claimHours(raw = E.configValue('claim-release')) {
   if (/^\d+(\.\d+)?$/.test(v)) return { hours: Number(v) };
   return { bad: `config §3b "${CLAIM_ROW}" is "${raw}" — want a number of hours, or 0 to never release a claim` };
 }
+// claimHours of repo `slug`'s row, as desk-q and needs-you read another repo's config; an unreadable
+// config reads as unset.
+export function claimHoursOf(slug) {
+  let raw = null;
+  try { raw = E.repoConfigValue(slug, 'claim-release'); } catch { /* an unreadable config reads as unset */ }
+  return claimHours(raw);
+}
+// Whether a session's claim made at `at` still holds: its transcript `tr` (transcriptOf) is there and has
+// changed within `hours` of `now`, counted from the claim at the latest. With no transcript it has
+// lapsed; with `hours` 0, or unset because the row is bad (claimHours), it never lapses while the
+// transcript is there.
+export function claimLive(tr, at, hours, now = Date.now()) {
+  if (!tr) return false;
+  if (!(hours > 0)) return true;
+  return now - Math.max(tr.mtimeMs, Date.parse(at) || 0) <= hours * 3600e3;
+}
 
 // Config §3b "Plan-first wait before needs-you (hours)", in milliseconds: how long a plan-first ticket
 // no session has claimed waits before it reaches needs-you. Unset, or a value that does not read, is 4

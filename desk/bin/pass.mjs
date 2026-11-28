@@ -54,7 +54,7 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond, commitOnBranch } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
-import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
+import { claimHours, claimLive, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn, isBot } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
@@ -2267,7 +2267,7 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
     report.clears.push(`${t.key}: session ${c.session} is active again, so it works the ticket and the note on its uncommitted changes is cleared`);
     continue;
   }
-  if (tr && Date.now() - since <= CLAIMS.hours * 3600e3) continue;
+  if (claimLive(tr, c.at, CLAIMS.hours)) continue;
   const idle = `session ${c.session} has been idle since ${new Date(since).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
   // A claim whose transcript is gone and whose uncommitted work its park's question already names
   // needs nothing more from a pass: the person already sees it.
