@@ -57,7 +57,12 @@ export const chainName = (f) => {
 export const unstarted = (t) => ['queued', 'triaged', 'parked'].includes(t.state) && !t.spawned_at;
 // A ticket the re-sort may move: unstarted, and nobody placed it.
 export const resortable = (t) => unstarted(t) && !t.placed;
-export function resortQueue(tickets, { scope, fileCount, cloud = () => false }) {
+// With `rank(key)` (priorityRank: lower is higher priority) and `priority` strict or soft, a higher
+// priority starts first within each kind's list, before SPAWN_ORDER_RULE: the per-person constraint on
+// the throughput order (§3b "Queue order: priority"). At `off`, or without `rank`, priority is not read.
+// `rank` is inherited through blocker links (inheritedRank) before it is read.
+export function resortQueue(tickets, { scope, fileCount, cloud = () => false, rank: own = null, priority = 'off' }) {
+  const rank = own && inheritedRank(tickets, own);
   const open = tickets.filter(unstarted);
   const movable = open.filter(resortable);
   const openKeys = new Set(open.map((t) => t.key));
@@ -72,10 +77,13 @@ export function resortQueue(tickets, { scope, fileCount, cloud = () => false }) 
     gates[t.key] = [...reach(t.key, from, succ)].filter((k) => openKeys.has(k)).length;
   }
   const was = new Map(movable.map((t, i) => [t.key, i]));
+  const ranked = rank && priority !== 'off';
+  const rankOf = (k) => (ranked ? rank(k) : 0);
+  const throughput = bySpawnOrder(gates, (r) => fileCount(r.ticket), (r) => was.get(r.ticket));
   const kind = new Map(movable.map((t) => [t.key, !!cloud(t)]));
   const sortKind = (c) => {
     const list = movable.filter((t) => kind.get(t.key) === c).map((t) => ({ ticket: t.key }));
-    const sorted = list.sort(bySpawnOrder(gates, (r) => fileCount(r.ticket), (r) => was.get(r.ticket)));
+    const sorted = list.sort((a, b) => rankOf(a.ticket) - rankOf(b.ticket) || throughput(a, b));
     return blockersFirst(sorted.map((r) => r.ticket), (k) => blockersOf(byKey[k]).filter((p) => kind.get(p) === c));
   };
   const lists = { true: sortKind(true), false: sortKind(false) };
@@ -86,7 +94,7 @@ export function resortQueue(tickets, { scope, fileCount, cloud = () => false }) 
     const passed = order.filter((o) => kind.get(o) === kind.get(k) && was.get(o) < was.get(k) && now.get(o) > now.get(k));
     if (!passed.length) continue;
     const tie = passed.find((o) => gates[o] === gates[k] && shared(k, o).length);
-    const why = tie ? `clears ${chainName(shared(k, tie)[0])} chain` : gates[k] > 0 ? `gates ${gates[k]}` : 'fills an idle slot';
+    const why = passed.some((o) => rankOf(o) > rankOf(k)) ? 'higher priority' : tie ? `clears ${chainName(shared(k, tie)[0])} chain` : gates[k] > 0 ? `gates ${gates[k]}` : 'fills an idle slot';
     moved.push({ key: k, why });
   }
   return { order, gates, moved, changed: moved.length > 0 };
@@ -147,19 +155,20 @@ const laidKeys = (tickets, order) => laidOrder({ tickets: Object.fromEntries(tic
 // the moves already taken. -> resortQueue's result for the queue with those tickets let go, plus
 // `placedMoved`: [{ key, from, to, gainH }], `from` and `to` its
 // 1-based place among the unfinished tickets before and after, `gainH` the hours its own move saved.
-// `cloud` is resortQueue's, so a placed ticket let go moves only among the places of its own kind.
-export function placedMoves(tickets, { scope, fileCount, cloud, finish, thresholdH, finished = () => false }) {
+// `cloud`, `rank` and `priority` are resortQueue's, so a placed ticket let go moves only among the places
+// of its own kind, and lands behind every higher priority as an unplaced one does.
+export function placedMoves(tickets, { scope, fileCount, cloud, rank = null, priority = 'off', finish, thresholdH, finished = () => false }) {
   const byKey = new Map(tickets.map((t) => [t.key, t]));
   const openKeys = (ts, order) => laidKeys(ts, order).filter((k) => unstarted(byKey.get(k)));
   const as = (released) => tickets.map((t) => (released.has(t.key) ? { ...t, placed: false } : t));
   let released = new Set();
-  let best = resortQueue(tickets, { scope, fileCount, cloud });
+  let best = resortQueue(tickets, { scope, fileCount, cloud, rank, priority });
   let bestH = finish(openKeys(tickets, best.order));
   const gains = [];
   for (const t of tickets.filter((x) => unstarted(x) && x.placed)) {
     const trial = new Set([...released, t.key]);
     const view = as(trial);
-    const r = resortQueue(view, { scope, fileCount, cloud });
+    const r = resortQueue(view, { scope, fileCount, cloud, rank, priority });
     const h = finish(openKeys(view, r.order));
     if (bestH - h > thresholdH) {
       gains.push({ key: t.key, gainH: bestH - h });
@@ -205,3 +214,98 @@ export function placedLanded(moves, w) {
 export const resortLine = (r) => (r.changed
   ? `spawn order re-sorted for throughput: ${r.order.join(', ')} (${r.moved.map((m) => `${m.key} ${m.why}`).join('; ')})`
   : null);
+
+// ---- priority: §3b "Queue order: priority" ----------------------------------------------------------
+export const PRIORITY_MODES = ['strict', 'soft', 'off'];
+// The row as read: `strict`, `soft` or `off`. Unset (missing, blank, TODO) is `soft`, the template's
+// default; anything else is said and read as `soft`. -> { mode, bad: null | message }
+export function priorityMode(raw, row = 'Queue order: priority') {
+  const v = String(raw ?? '').trim().replace(/^`|`$/g, '').toLowerCase();
+  if (PRIORITY_MODES.includes(v)) return { mode: v, bad: null };
+  if (v === '' || /^todo\b/.test(v)) return { mode: 'soft', bad: null };
+  return { mode: 'soft', bad: `config §3b "${row}" is "${raw}" — want \`strict\`, \`soft\` or \`off\`; read as soft` };
+}
+
+// Where a triage record's tracker priority (`priority`, ticket-facts.mjs) sits in `order`, §4 Priority's
+// values in lower case, highest first: lower is higher priority. A value unset or not listed, and a
+// ticket with no tracker priority (no tracker, or not a tracker ticket), ranks after every listed one,
+// so with no tracker every ticket ranks the same.
+export function priorityRank(rec, order) {
+  const v = String(rec?.priority ?? '').trim().toLowerCase();
+  const i = v ? order.indexOf(v) : -1;
+  return i < 0 ? order.length : i;
+}
+
+// Priority inheritance: `rank` (key -> priorityRank) with each ticket ranked as high as the highest
+// unstarted ticket it holds, directly or through any chain of blocker links, among `tickets` (the
+// queue's). A low ticket blocking a high one is then never held behind a ticket between them, which
+// would hold the high one for ever. Memoised: -> key -> rank
+export function inheritedRank(tickets, rank) {
+  const succ = {};
+  for (const t of tickets) if (unstarted(t)) for (const p of blockersOf(t)) (succ[p] ??= []).push(t.key);
+  const memo = new Map();
+  return (k) => {
+    if (!memo.has(k)) memo.set(k, Math.min(rank(k), ...[...reach(k, succ[k] ?? [], succ)].map(rank)));
+    return memo.get(k);
+  };
+}
+
+// What holds unstarted ticket `key` from starting now for a higher-priority one, or null.
+//   mode     strict, soft or off
+//   rank     key -> priorityRank (lower is higher priority), inherited through blocker links
+//            (inheritedRank)
+//   waiting  the keys of the unstarted tickets not started yet: each higher than `key` may hold it
+//   pending  those of them that may still start this pass (spawnable, not yet tried); the rest are held
+//            anyway (a file collision, a blocker, the test lock, an open question)
+//   free     the slots this pass has left, `key`'s own included
+//   files    key -> the files its work collides on
+//   blocks   (a, b) -> true where a holds b through blocker links: a higher ticket `key` itself holds
+//            never holds it, or neither would start
+// strict: any higher ticket waiting holds it. soft: one only where it would lose time, so `key` may
+// take a slot that would otherwise sit idle: the higher ones that may still start this pass hold it only
+// when they would need its slot, and one held anyway only where `key` shares a file with it. A hold for
+// a slot is `defer`: a higher ticket counted as pending may still be refused at spawn without taking a
+// slot, so the caller tries `key` again once every pending one has been tried (its pending then empty).
+// -> { key: the higher ticket, why, defer? } or null
+export function priorityHold(key, { mode, rank, waiting, pending = new Set(), free = 1, files, blocks = () => false }) {
+  if (mode === 'off') return null;
+  const higher = [...waiting].filter((h) => h !== key && rank(h) < rank(key) && !blocks(key, h));
+  if (!higher.length) return null;
+  if (mode === 'strict') return { key: higher[0], why: 'strict: a lower priority never starts first' };
+  const before = higher.filter((h) => pending.has(h));
+  if (before.length && before.length >= free) return { key: before[0], why: 'it may start this pass, and needs the slot', defer: true };
+  const mine = new Set(files(key));
+  for (const h of higher) {
+    if (pending.has(h)) continue;
+    const f = files(h).find((x) => mine.has(x));
+    if (f) return { key: h, why: `it is held, and shares ${f}` };
+  }
+  return null;
+}
+
+// The pass's spawn loop order: `list`, with each entry deferred while it is read pushed onto the end
+// and read again there. Yields { item, ahead, deferred, defer } per entry: `ahead` the entries not
+// reached yet, deferred retries included (so a deferred ticket still counts as pending for one behind
+// it); `deferred` whether this entry was deferred before; `defer()` pushes it onto the end, true, or
+// false once its key has been deferred `cap` times. With priorityHold a ticket defers only while a
+// higher one is ahead of it, and the highest left never does, so the order ends; the cap holds it anyway.
+export function* deferringOrder(list, keyOf = (x) => x, cap = list.length) {
+  const order = [...list];
+  const count = new Map();
+  for (let at = 0; at < order.length; at += 1) {
+    const item = order[at];
+    const key = keyOf(item);
+    const defer = () => {
+      const n = count.get(key) ?? 0;
+      if (n >= cap) return false;
+      count.set(key, n + 1);
+      order.push(item);
+      return true;
+    };
+    yield { item, ahead: order.slice(at + 1), deferred: count.has(key), defer };
+  }
+}
+
+// The pass's line for a ticket priorityHold holds.
+export const priorityHoldLine = (key, hold, mode, row = 'Queue order: priority') =>
+  `${key}: waits for ${hold.key}, a higher priority (§3b "${row}" ${mode}: ${hold.why})`;

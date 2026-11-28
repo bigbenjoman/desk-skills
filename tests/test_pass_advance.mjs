@@ -10,6 +10,8 @@ import { workerProcs } from '../desk/bin/worker-stop.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
+import { saveAnswer } from '../desk/bin/briefing.mjs';
+import { answers } from '../desk/bin/decider.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -317,6 +319,26 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('a park with no host fault in its log is the worker\'s own, as before', advance(snap(ticket('H-3'), logOf('H-3', 'AUTOPILOT_PARK: which colour?', [said('AUTOPILOT_PARK: which colour?'), RESULT])), { 'clears-when': null }).find((a) => a.type === 'park')?.question, 'which colour?');
 }
 
+// An answer recorded after the worker exited on its park, before this pass recorded the park, is the
+// park's answer: the park is dated by the log's last write, as its round is, not by the pass, and an
+// answer answer.mjs kept for it (early_answer) is replayed once the park and its inputs are written.
+{
+  const exitedAt = NOW - HOUR;
+  const as = advance(snap(ticket('AB-1'), logOf('AB-1', 'AUTOPILOT_PARK: which colour?', [said('AUTOPILOT_PARK: which colour?'), RESULT], { mtimeMs: exitedAt })));
+  const since = sets(as).find((f) => f.startsWith('park.since='))?.slice('park.since='.length);
+  t('issue-1668 the park is dated by the log\'s last write, as its round is', j([since, JSON.parse(sets(as).find((f) => f.startsWith('last_round=')).slice('last_round='.length)).at]), j([new Date(exitedAt).toISOString(), new Date(exitedAt).toISOString()]));
+  t('issue-1668 the park\'s date is set after the park is recorded, so the park does not overwrite it', as.findIndex((a) => a.type === 'park') < as.findIndex((a) => a.type === 'set' && a.fields.some((f) => f.startsWith('park.since='))), true);
+  const state = scratch('ab1668-');
+  saveAnswer(state, 'AB-1', 'Blue.', new Date(NOW - HOUR / 2).toISOString());
+  t('issue-1668 an answer given between the worker\'s exit and the pass is applied to the park (answered since it parked)', j(answers(state, { ticket: 'AB-1', at: since }).map((a) => a.text)), '["Blue."]');
+  t('issue-1668 an answer from before the worker parked is not taken as its answer', (() => { const s2 = scratch('ab1668-'); saveAnswer(s2, 'AB-1', 'Old.', new Date(NOW - 2 * HOUR).toISOString()); return answers(s2, { ticket: 'AB-1', at: since }).length; })(), 0);
+  const kept = advance(snap(ticket('AB-2', { early_answer: { text: 'Blue.', approve: false, by: 'person', session: null, at: new Date(NOW - HOUR / 2).toISOString() } }), logOf('AB-2', 'AUTOPILOT_PARK: which colour?', [said('AUTOPILOT_PARK: which colour?'), RESULT], { mtimeMs: exitedAt })));
+  const at = (pred) => kept.findIndex(pred);
+  t('issue-1668 an answer kept for the park is replayed after the park, its date and its inputs are written',
+    j([at((a) => a.type === 'early-answer') > at((a) => a.type === 'set' && a.fields.some((f) => f.startsWith('park.inputs='))), at((a) => a.type === 'early-answer') > at((a) => a.type === 'set' && a.fields.some((f) => f.startsWith('park.since=')))]), '[true,true]');
+  t('issue-1668 the replay is asked for even where the pass\'s snapshot holds no answer: one given since reaches the queue file only', as.some((a) => a.type === 'early-answer'), true);
+}
+
 // How an exited worker with no marker ended.
 {
   const dead = (key, extra = {}, mtimeMs = NOW - HOUR) => snap(ticket(key, extra), logOf(key, '', [said('working')], { mtimeMs }));
@@ -405,7 +427,7 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   const as = advance(s, { 'settle-links': [{ why: 'no grant', link: null }] });
   t('a park\'s question carries the links not made', as.find((a) => a.type === 'park')?.question, 'which colour?. Issue links not made: no grant');
   t('its reads and writes run in the pass\'s order', j(types(as).slice(types(as).indexOf('worker-head'))),
-    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","park-file","set","keep-links","decisions","report"]');
+    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","park-file","set","early-answer","keep-links","decisions","report"]');
   t('#775 the text a park awaits approval of is read for the question the worker parked on', j(as.find((a) => a.type === 'approval')), j({ type: 'approval', key: 'Q-1', question: 'which colour?' }));
   t('and it is reported parked', j(lines(as, 'parked')), j(['Q-1: which colour?. Issue links not made: no grant']));
   const off = advance(s, { register: { inputs: {}, status: 'put_off', entry: { at: '2026-11-01T00:00:00Z' } } });

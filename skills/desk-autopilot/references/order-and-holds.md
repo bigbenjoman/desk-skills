@@ -41,13 +41,21 @@ or by one of those, through any chain. Cloud-able tickets and local-only ones ar
 each in the places its own kind holds, so a free cloud session takes the first ready cloud-able ticket
 and a free local slot the first ready local-only one; gates and shared files still count across both. The pass report prints the new order only when it changed,
 and desk-q marks each ticket the re-sort moved ahead with `^` and why (`gates 4`, `clears
-desk-checkout chain`, `fills an idle slot`). Placed tickets stay put while config §3b "Queue order:
+desk-checkout chain`, `fills an idle slot`, `higher priority`). Config §3b "Queue order: priority"
+bounds both the re-sort and which ticket starts by the tracker priority (each triage record's
+`priority`, ranked by §4 Priority): at `strict` a lower priority never starts while a higher one waits
+to start; at `soft` (unset or invalid reads as `soft`) higher priorities sort first, and a lower one
+starts first only into a slot that would otherwise sit idle, or past a higher one held anyway (a file
+collision, a blocker, the test lock) that it shares no file with; at `off` priority is not read. A
+ticket that blocks a higher one is never held by it, nor is a ticket placed at the front that goes first
+for a file ahead of a handoff by a higher one waiting behind that handoff. A ticket priority holds is in the report's
+waiting list, naming the higher one. Placed tickets stay put while config §3b "Queue order:
 placed tickets" is `keep`. At `move-and-say` the pass also moves a placed ticket, one at a time in
 queue order and only among the places of its own kind (cloud-able or local-only), when that brings the projected finish of the whole queue forward by more than §3b
 "Queue order: move threshold" (minutes). The projection fills the batch's local slots and cloud sessions apart, in queue order,
 blockers and shared files holding as they do at spawn (other batches' tickets included), with each ticket's slot time read from its
 size: the repo's recent merge times (`desk-q-eta.mjs`) where it has enough, else a fixed time per
-size. A ticket it moves stays placed at its new place, so only another such move shifts it again. The pass report, the check-in digest ("Placed tickets
+size. A placed ticket it lets go lands behind every higher priority, as an unplaced one does. A ticket it moves stays placed at its new place, so only another such move shifts it again. The pass report, the check-in digest ("Placed tickets
 moved") and desk-q (`~`) each say what moved, from where to where, and the time saved, once the
 move is written to the queue: a move another writer's change overruled is not said. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`

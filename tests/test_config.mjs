@@ -818,6 +818,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'test-signin-permissions|4|Test sign-in permissions', // DS-1026
     'cloud-sessions|3b|Cloud sessions at once', // #1564
     'worker-memory|3b|Worker memory weight (GB)', // issue-1523
+    'queue-priority|3b|Queue order: priority', // #1624
     'placed-order|3b|Queue order: placed tickets', // #1625
     'move-threshold|3b|Queue order: move threshold', // #1625
   ];
@@ -862,7 +863,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['number', '1.5', 'soon', false], ['number-or-off', 'off', 'on', false], ['gb', '16', '0', false], ['port', '3228', '70000', false],
     ['subagent-cap', 'no cap', 'lots', false], ['concurrency', '2 / 3', 'two', false], ['times', '08:00, 17:00', 'morning', false],
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
-    ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false], ['placed-order', 'move-and-say', 'move', false],
+    ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false], ['queue-priority', 'strict', 'high', false],
+    ['placed-order', 'move-and-say', 'move', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
     ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['signin-permissions', 'apps/portal: HELP_ARTICLES, ADMIN', 'apps/portal: help articles', false],['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],

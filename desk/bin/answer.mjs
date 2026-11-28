@@ -26,6 +26,30 @@ crashShowsPerson();
 const QUEUE = join(runBin(), 'queue.mjs');
 
 const argv = process.argv.slice(2);
+// --replay <TICKET> is the pass, once it has recorded a park: it applies to that park the answer given
+// after the worker exited on it and before the pass saw it (early_answer, recorded below). That answer
+// is in the briefing already, so a replay writes only what an answer does to a park: its ask answered,
+// a put-off, a grant, a session step. An early answer from before the worker parked is not its answer,
+// and is only cleared. pass.mjs early-answer runs it.
+if (argv[0] === '--replay') {
+  const key = argv[1] ?? '';
+  if (!SAFE_ID.test(key) || key.includes('..')) {
+    console.error(`'${key}' is not usable as a ticket id`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  useTicketBatch(key);
+  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[key] : null;
+  const early = t?.early_answer;
+  // Kept until the park is in the queue file (a pass whose write was refused records it again next pass).
+  if (!early || t.state !== 'parked') process.exit(0);
+  const since = t.park?.since;
+  if (since && Date.parse(early.at) >= Date.parse(since)) {
+    console.log(`${key}: an answer given at ${early.at}, after its worker parked and before the pass saw the park, applied to it.`);
+    await parkEffects(key, stateDir(), { text: String(early.text ?? ''), approve: early.approve === true, by: early.by ?? 'person', session: early.session ?? null, stamp: early.at });
+  }
+  execFileSync('node', [QUEUE, 'set', key, 'early_answer=null'], { stdio: 'ignore' });
+  process.exit(0);
+}
 // --taken, before the ticket, is the decider taking the option a worker's park recommended
 // (decider.mjs may run answer.mjs only in this form). It takes the call as decisions.mjs log does,
 // '{"question","options","chose","category"}', and refuses an ask category before writing anything,
@@ -122,14 +146,14 @@ let waiting = false;
 let sessionId = null;
 let parkedReason = null;
 let heldNow = false;
-let parkSince = null;
+let running = false;
 try {
   const Q0 = JSON.parse(readFileSync(queueFile(), 'utf8'));
   const sid = Q0.tickets?.[ticket]?.session_id;
   sessionId = sid ?? null;
   const park = Q0.tickets?.[ticket]?.park;
   if (park) parkedReason = (park.question ?? JSON.stringify(park)).slice(0, 300);
-  if (Q0.tickets?.[ticket]?.state === 'parked') parkSince = park?.since ?? null;
+  running = Q0.tickets?.[ticket]?.state === 'running';
   heldNow = isHeld(Q0.tickets?.[ticket]);
   if (sid) {
     waiting = !!readRegistry().live?.some((a) => a.sessionId === sid);
@@ -170,13 +194,22 @@ if (waiting) {
 // survive there too — the answers file is consumed and deleted by the worker.
 saveAnswer(STATE, ticket, text, stamp);
 
-// An answer to a park answers its ask (ask-ledger.mjs): by the decider when taken, by default when the
-// pass took a recommended option (ASK_BY_ENV), else by the person, in the session it came from where one
-// is named. A "not now" puts the ask off, and answers nothing.
-if (parkSince && !heldNow && !putOffAnswer) {
-  const by = taken ? 'decider' : process.env[ASK_BY_ENV] === 'default' ? 'default' : 'person';
-  const session = by === 'default' ? null : process.env.CLAUDE_CODE_SESSION_ID ?? null;
-  for (const l of askAnswered(queueFile(), { key: ticket, since: parkSince, by, session, at: stamp }, { on: answerLedgerOn(), by: 'answer.mjs' })) console.error(l);
+// Who answered: the decider when taken, by default when the pass took a recommended option
+// (ASK_BY_ENV), else the person, in the session it came from where one is named.
+const by = taken ? 'decider' : process.env[ASK_BY_ENV] === 'default' ? 'default' : 'person';
+const session = by === 'default' ? null : process.env.CLAUDE_CODE_SESSION_ID ?? null;
+
+// A worker parks and exits at once, and the pass records the park later: until then the ticket reads
+// running with no worker live, and nothing here can act on a park the queue does not hold yet. The
+// answer is kept on the ticket, and the pass replays it on the park it records (--replay above). The
+// latest answer is the one kept, as a later answer takes a grant away.
+if (running && !waiting) {
+  try {
+    execFileSync('node', [QUEUE, 'set', ticket, `early_answer=${JSON.stringify({ text, approve: approveFlag, by, session, at: stamp })}`], { stdio: 'ignore' });
+    console.log(`${ticket}: it reads running with no worker live, so if its worker parked, the pass applies this answer to that park once it records it.`);
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but not kept for a park its worker may have left: ${e.message}`);
+  }
 }
 
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
@@ -190,75 +223,7 @@ if (taken) {
   }
 }
 
-// A "not now" answer to a park puts its question off: it goes in the register with the inputs it
-// depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an
-// earlier deferral, so the same question parked again is asked. Only a park is put off: a running
-// worker's question is not in the queue yet, and triage unknowns are counted down by any answer.
-try {
-  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
-  const question = t?.state === 'parked' && t.park?.question && !isHeld(t) ? t.park.question : null;
-  if (putOffAnswer && question) {
-    let by = null;
-    try { by = configValue('name') ?? null; } catch { /* outside a repo */ }
-    addPutOff(putOffEntry({ question, ticket, inputs: t.park.inputs ?? {}, by, at: stamp }), STATE);
-    console.log(`${ticket}: put off in ${notNowPath(STATE)}; it is not asked again until its inputs change.`);
-    // With the actions its needs-you item offers, so one it gains brings it back there.
-    try { (await import('./needs-you.mjs')).stampActions({ stateDir: STATE, ticket, question }); }
-    catch (e) { console.error(`${ticket}: put off, but without its actions, so a new one will not bring it back: ${e.message}`); }
-  } else if (putOffAnswer) {
-    console.log(`${ticket}: "not now", but it has no parked question to put off, so nothing went in the register.`);
-  } else if (question && clearPutOff(question, STATE).ok) {
-    console.log(`${ticket}: answered, so its question is no longer put off.`);
-  }
-} catch (e) {
-  console.error(`${ticket}: answer recorded in the briefing, but the not-now register was not updated: ${e.message}`);
-}
-
-// An answer approving the step a park was refused records it as the ticket's one-off grant, which the
-// next worker's settings allow as that exact command (worker-settings.mjs). A step no worker is ever
-// allowed gets no grant: a requeue would only park it again, so it is a session's. A grant is the latest
-// answer's: any later answer that records none takes an earlier one away.
-try {
-  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
-  let granted = false;
-  if (t?.state === 'parked' && !isHeld(t) && !putOffAnswer && refusedStep(t.park?.question)) {
-    const g = grantFor({ t, text, approve: approveFlag });
-    if (g.grant) {
-      execFileSync('node', [QUEUE, 'set', ticket, `grant=${JSON.stringify(g.grant)}`], { stdio: 'ignore' });
-      granted = true;
-      console.log(`${ticket}: approved once: its next worker may run \`git push --force-with-lease=${g.grant.branch}:${g.grant.lease} origin ${g.grant.branch}\`, and nothing wider.`);
-    } else if (neverStep(t.park?.question)) {
-      console.log(`${ticket}: ${g.why}: do not requeue it for a worker. Open an interactive session and run /desk-ticket ${ticket}.`);
-    } else {
-      console.log(`${ticket}: no grant recorded (${g.why}).`);
-    }
-  }
-  if (!granted && t?.grant) {
-    execFileSync('node', [QUEUE, 'set', ticket, 'grant=null'], { stdio: 'ignore' });
-    console.log(`${ticket}: its earlier one-off force-push grant is withdrawn: this answer approves none.`);
-  }
-} catch (e) {
-  console.error(`${ticket}: answer recorded in the briefing, but its grant was not: ${e.message}`);
-}
-
-// An answer approving a step its park says no worker can run makes the ticket a session item naming
-// that step (park.session_step): a requeue would only park it again. Once the person has run it, done
-// on that item hands the ticket back to a worker with the step recorded done (queue.mjs step-done).
-// Any later answer that approves nothing takes it back to an ordinary park.
-try {
-  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
-  const live = t?.state === 'parked' && !isHeld(t) && !putOffAnswer;
-  const step = live ? workerRefusedStep(t.park?.question) : null;
-  if (step && (approveFlag || approvesStep(text))) {
-    execFileSync('node', [QUEUE, 'set', ticket, `park.session_step=${JSON.stringify({ step, at: stamp })}`], { stdio: 'ignore' });
-    console.log(`${ticket}: you approved a step no worker can run (${step}), so it is a session item now, not a requeue: do it in an interactive session (/desk-ticket ${ticket}), then record done and it goes back to a worker with the step recorded done.`);
-  } else if (live && t.park?.session_step) {
-    execFileSync('node', [QUEUE, 'set', ticket, 'park.session_step=null'], { stdio: 'ignore' });
-    console.log(`${ticket}: this answer approves no step, so it is no longer a session item for the step approved earlier (${t.park.session_step.step}).`);
-  }
-} catch (e) {
-  console.error(`${ticket}: answer recorded in the briefing, but whether it approved a step no worker can run was not: ${e.message}`);
-}
+await parkEffects(ticket, STATE, { text, approve: approveFlag, by, session, stamp });
 
 // A triaged ticket's questions are its triage unknowns: a count reaching zero is what makes it eligible
 // to spawn. An answer settles one of them, or every one with --all, so a ticket answered one question
@@ -316,4 +281,97 @@ try {
 } catch (e) {
   console.error(`answer recorded, but the queue could not be updated: ${e.message}`);
   process.exit(EXIT.SHOW_PERSON);
+}
+
+// What an answer does to the ticket's park, where it holds one: an answer given now, or one given before
+// the pass recorded the park, replayed onto it (--replay). Each part reads the queue as it stands.
+async function parkEffects(ticket, STATE, { text, approve, by, session, stamp }) {
+  const putOffAnswer = NOT_NOW.test(text);
+  const now = () => (existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null);
+
+  // An answer to a park answers its ask (ask-ledger.mjs), by `by`. A "not now" puts the ask off, and
+  // answers nothing.
+  try {
+    const t = now();
+    if (t?.state === 'parked' && t.park?.since && !isHeld(t) && !putOffAnswer) {
+      for (const l of askAnswered(queueFile(), { key: ticket, since: t.park.since, by, session, at: stamp }, { on: answerLedgerOn(), by: 'answer.mjs' })) console.error(l);
+    }
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but not as its ask's answer: ${e.message}`);
+  }
+
+  // A "not now" answer to a park puts its question off: it goes in the register with the inputs it
+  // depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an
+  // earlier deferral, so the same question parked again is asked. Only a park is put off: a running
+  // worker's question is not in the queue yet, and triage unknowns are counted down by any answer.
+  try {
+    const t = now();
+    const question = t?.state === 'parked' && t.park?.question && !isHeld(t) ? t.park.question : null;
+    if (putOffAnswer && question) {
+      let name = null;
+      try { name = configValue('name') ?? null; } catch { /* outside a repo */ }
+      addPutOff(putOffEntry({ question, ticket, inputs: t.park.inputs ?? {}, by: name, at: stamp }), STATE);
+      console.log(`${ticket}: put off in ${notNowPath(STATE)}; it is not asked again until its inputs change.`);
+      // With the actions its needs-you item offers, so one it gains brings it back there.
+      try { (await import('./needs-you.mjs')).stampActions({ stateDir: STATE, ticket, question }); }
+      catch (e) { console.error(`${ticket}: put off, but without its actions, so a new one will not bring it back: ${e.message}`); }
+    } else if (putOffAnswer) {
+      console.log(`${ticket}: "not now", but it has no parked question to put off, so nothing went in the register.`);
+    } else if (question && clearPutOff(question, STATE).ok) {
+      console.log(`${ticket}: answered, so its question is no longer put off.`);
+    }
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but the not-now register was not updated: ${e.message}`);
+  }
+
+  // An answer approving the step a park was refused records it as the ticket's one-off grant, which the
+  // next worker's settings allow as that exact command (worker-settings.mjs). A step no worker is ever
+  // allowed gets no grant: a requeue would only park it again, so it is a session's. A grant is the latest
+  // answer's: any later answer that records none takes an earlier one away.
+  try {
+    const t = now();
+    let granted = false;
+    if (t?.state === 'parked' && !isHeld(t) && !putOffAnswer && refusedStep(t.park?.question)) {
+      const g = grantFor({ t, text, approve });
+      if (g.grant) {
+        execFileSync('node', [QUEUE, 'set', ticket, `grant=${JSON.stringify(g.grant)}`], { stdio: 'ignore' });
+        granted = true;
+        console.log(`${ticket}: approved once: its next worker may run \`git push --force-with-lease=${g.grant.branch}:${g.grant.lease} origin ${g.grant.branch}\`, and nothing wider.`);
+      } else if (neverStep(t.park?.question)) {
+        // What the answer still asks the worker to do decides it, not the park's words: an answer that
+        // drops or defers the step (anything but --approve or a plain yes to it, approvesStep) leaves the
+        // worker nothing it cannot run, so it is not a session's step.
+        console.log(approve || approvesStep(text)
+          ? `${ticket}: ${g.why}: do not requeue it for a worker. Open an interactive session and run /desk-ticket ${ticket}.`
+          : `${ticket}: its park names a step no worker can run (${neverStep(t.park.question)}), but this answer does not ask for it, so it is not flagged as a session's step.`);
+      } else {
+        console.log(`${ticket}: no grant recorded (${g.why}).`);
+      }
+    }
+    if (!granted && t?.grant) {
+      execFileSync('node', [QUEUE, 'set', ticket, 'grant=null'], { stdio: 'ignore' });
+      console.log(`${ticket}: its earlier one-off force-push grant is withdrawn: this answer approves none.`);
+    }
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but its grant was not: ${e.message}`);
+  }
+
+  // An answer approving a step its park says no worker can run makes the ticket a session item naming
+  // that step (park.session_step): a requeue would only park it again. Once the person has run it, done
+  // on that item hands the ticket back to a worker with the step recorded done (queue.mjs step-done).
+  // Any later answer that approves nothing takes it back to an ordinary park.
+  try {
+    const t = now();
+    const live = t?.state === 'parked' && !isHeld(t) && !putOffAnswer;
+    const step = live ? workerRefusedStep(t.park?.question) : null;
+    if (step && (approve || approvesStep(text))) {
+      execFileSync('node', [QUEUE, 'set', ticket, `park.session_step=${JSON.stringify({ step, at: stamp })}`], { stdio: 'ignore' });
+      console.log(`${ticket}: you approved a step no worker can run (${step}), so it is a session item now, not a requeue: do it in an interactive session (/desk-ticket ${ticket}), then record done and it goes back to a worker with the step recorded done.`);
+    } else if (live && t.park?.session_step) {
+      execFileSync('node', [QUEUE, 'set', ticket, 'park.session_step=null'], { stdio: 'ignore' });
+      console.log(`${ticket}: this answer approves no step, so it is no longer a session item for the step approved earlier (${t.park.session_step.step}).`);
+    }
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but whether it approved a step no worker can run was not: ${e.message}`);
+  }
 }

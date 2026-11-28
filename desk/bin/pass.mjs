@@ -79,7 +79,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf, FINISHED } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { slotCandidatesOn, slotLines } from './candidates.mjs';
+import { slotCandidatesOn, slotLines, priorityOf } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
@@ -87,7 +87,8 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, layOrder, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, placedLanded, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from './spawn-order.mjs';
+import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, placedLanded, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS,
+  priorityMode, priorityRank, priorityHold, priorityHoldLine, inheritedRank, deferringOrder, unstarted, reach } from './spawn-order.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
@@ -110,7 +111,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, cloudPrHere, cloudHead, verdictHandle, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, cloudHead, verdictHandle, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1434,6 +1435,7 @@ const ADVANCE_HANDLERS = {
   approval: (a) => parkApproval(STATE, a.key, a.question),
   'park-file': (a) => parkFileFault(STATE, a.key, a.question),
   'keep-links': (a, s) => keepLinks(s.t, a.needs, a.pr),
+  'early-answer': (a) => replayEarlyAnswer(a.key),
   decisions: (a, s) => logDecisions(s.t, s.log.path, a.pr),
   'refuse-lease': (a, s) => refuseUnnamedLease(s.t, a.question),
   handoff: (a, s) => { handedOff(s.t, a.said, { log: s.log.path, h: s.log.h, imgs: a.imgs, stopped: a.stopped }); },
@@ -2095,6 +2097,16 @@ const checkinTimesNow = () => { try { return checkinTimes(checkinRow()).times ??
 // When a check-in digest listed each ask of this batch (question-arms.mjs digestPresented), read once.
 let digestListed = null;
 const listedByDigest = () => (digestListed ??= digestPresented(QUEUE_FILE));
+// The answer given after a worker parked and before this pass recorded the park (answer.mjs
+// early_answer), applied to that park: answer.mjs --replay, once the park and its inputs are written.
+function replayEarlyAnswer(key) {
+  if (DRY) return;
+  flushQueue();
+  const r = shOut('node', [join(BIN, 'answer.mjs'), '--replay', key]);
+  if (!r.ok) report.failed.push(`${key}: the answer given before this pass saw its park was not applied to it (${lastLine(r.out)}): answer it again`);
+  else if (r.out) report.recovered.push(...r.out.split('\n').filter(Boolean));
+}
+
 // A take call parked with a recommended option: answer it with that option, requeue, log the call. One
 // the pass may not take applies by default at the first check-in pass after a digest listed it, where
 // the ticket's question-handling arm says so (question-arms.mjs defaultsAtCheckin): logged so the
@@ -2943,6 +2955,20 @@ const budgetFiles = (key) => {
   if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
+// Config §3b "Queue order: priority": the tracker priority (each triage record's `priority`, ranked by
+// §4 Priority) as a constraint on the re-sort's order (below) and on which ticket starts
+// (spawn-order.mjs priorityHold).
+const PRIORITY_ROW = E.CONFIG_ROWS['queue-priority'].row;
+const PRIORITY = priorityMode(E.configValue('queue-priority'), PRIORITY_ROW);
+let priorityOrder = [];
+try { priorityOrder = priorityOf(E.configValues('jira-priority')).order; } catch { /* no readable §4 Priority: every ticket ranks the same */ }
+const rankOfKey = new Map();
+const priorityRankOf = (k) => {
+  if (!rankOfKey.has(k)) rankOfKey.set(k, priorityRank(triageRec(k), priorityOrder));
+  return rankOfKey.get(k);
+};
+// The rank priorityHold reads: inherited through blocker links, as the re-sort's is (inheritedRank).
+const heldRankOf = inheritedRank(Object.values(fresh.tickets), priorityRankOf);
 // The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
 // its batch's queue and triage record, and those handed off there between sessions with `handoff: true`
 // (budgetHolds); a review try there fills none, as here. A queue that does not read counts nothing, and
@@ -3053,8 +3079,8 @@ const placesFor = (f) => {
 // each ticket's slot time read from its size as the forecast reads it. A ticket so moved stays placed
 // at its new place, so only another such move shifts it again. Each such move is said in the
 // report, on the ticket (`placed_move`, which desk-q shows, kept as `resort_why` is kept) and on this
-// pass's metrics line, which the check-in digest lists.
-const resortOpts = { scope: budgetFiles, fileCount: (k) => plannedFiles(triageRec(k)), cloud: startsInCloud };
+// pass's metrics line, which the check-in digest lists. Priority (above) bounds both orders.
+const resortOpts = { scope: budgetFiles, fileCount: (k) => plannedFiles(triageRec(k)), cloud: startsInCloud, rank: priorityRankOf, priority: PRIORITY.mode };
 const configOr = (id) => { try { return E.configValue(id); } catch { return null; } };
 const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
   const now = Date.now();
@@ -3085,6 +3111,7 @@ const RESORT = movesPlaced(configOr('placed-order')) ? (() => {
   });
 })() : { ...resortQueue(Object.values(fresh.tickets), resortOpts), placedMoved: [] };
 const orderLines = [];
+if (PRIORITY.bad) orderLines.push(PRIORITY.bad);
 if (RESORT.changed) {
   const placedNow = new Set(RESORT.placedMoved.map((m) => m.key));
   for (const m of RESORT.placedMoved) {
@@ -3183,9 +3210,10 @@ const collisionHolds = (r) => {
 // Which ticket goes first for a file a pending handoff and a front ticket above it both need, and why
 // (#1667): one line each, said once the candidates are read and before the spawn loop, which can still
 // skip the front ticket, so the line says the handoff waits for it to start, not that it has.
-const frontWins = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key)).flatMap((t) =>
-  budgetHolds(t).filter((h) => h.front.length).map((h) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'goes' : 'go'} first for it, ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
-    `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept, and its handoff deadline keeps running until ${h.front.length === 1 ? 'that ticket starts' : 'they start'}`));
+const handoffFronts = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key))
+  .flatMap((t) => budgetHolds(t).filter((h) => h.front.length).map((h) => ({ t, h })));
+const frontWins = () => handoffFronts().map(({ t, h }) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'goes' : 'go'} first for it, ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
+  `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept, and its handoff deadline keeps running until ${h.front.length === 1 ? 'that ticket starts' : 'they start'}`);
 const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The
@@ -4942,19 +4970,52 @@ const SPAWN_HANDLERS = {
 // Where in `spawnable` the loop stopped for want of a slot, or null; and the slots taken and workers
 // running as it began, so a stop on slots spent on tickets that did not start is told apart.
 let slotStopAt = null;
-// The local-only tickets after `t` in this pass's order: the local slots a cloud-able ticket leaves them.
-const localOnlyAhead = (t) => spawnable.slice(spawnable.indexOf(t) + 1).filter((x) => !startsInCloud(x)).length;
+// The local-only tickets the loop has still to read (`ahead`, deferringOrder's, priority's deferred
+// retries included): the local slots a cloud-able ticket leaves them.
+const localOnlyAhead = (ahead) => ahead.filter((x) => !startsInCloud(x)).length;
 const loopFrom = { attempts, running: localKeys().length };
 // The memory share a local start was refused: no later local ticket starts this pass, though a cloud one may.
 let memStop = false;
-for (const t of spawnable) {
+// Priority (§3b "Queue order: priority"): an unstarted ticket waits while a higher-priority unstarted one
+// would lose time by its start (spawn-order.mjs priorityHold); `startedNow` are those this loop started.
+// A ticket held only for a slot a pending higher one needs is deferred, not skipped: read again after
+// every ticket in `spawnable` (spawn-order.mjs deferringOrder), so a higher one the loop then refused
+// without taking a slot (a busy worktree, the lock queue) leaves that slot to it rather than idle. What
+// may still start is the entries not reached yet, deferred retries included, so a deferred ticket still
+// holds a lower one behind it.
+const startedNow = new Set();
+const blockerSucc = {};
+for (const x of Object.values(fresh.tickets)) for (const p of blockersOf(x)) (blockerSucc[p] ??= []).push(x.key);
+// A front ticket goes first for a file ahead of the pending handoffs it names here (#1667), so a higher
+// one held behind one of those handoffs waits for it to start, and holds it by priority not at all: the
+// two would hold each other, with the handoff, for good.
+const firstFor = {};
+for (const { t, h } of handoffFronts()) for (const k of h.front) (firstFor[k] ??= new Set()).add(t.key);
+const heldBehind = (x, handoffs) => budgetHolds(x).some((h) => h.handoff.some((k) => handoffs.has(k)));
+const priorityHeldBy = (t, ahead) => {
+  if (PRIORITY.mode === 'off' || !unstarted(t) || toResume(t) || toHandoff(t)) return null;
+  const mine = firstFor[t.key];
+  const waiting = Object.values(fresh.tickets).filter((x) => unstarted(x) && !startedNow.has(x.key) && !(mine && heldBehind(x, mine))).map((x) => x.key);
+  // The slot it would take, as decideSpawn places it: a cloud-able ticket with the cloud full may still
+  // take a local one (pass/shared.mjs priorityPool).
+  const pool = priorityPool(t, ahead, { local: (memStop ? 0 : localSlots) - attempts, cloud: cloudSlots - cloudAttempts,
+    localSpare: LOCAL_SPARE, personUse: PERSON.on });
+  if (!pool) return null;
+  return priorityHold(t.key, { mode: PRIORITY.mode, rank: heldRankOf, waiting, pending: pool.pending, free: pool.free, files: budgetFiles,
+    blocks: (a, b) => reach(a, blockerSucc[a] ?? [], blockerSucc).has(b) });
+};
+for (const step of deferringOrder(spawnable, (x) => x.key)) {
+  const t = step.item;
+  const pHold = priorityHeldBy(t, step.ahead);
+  if (pHold?.defer && step.defer()) continue;
+  if (pHold) { report.waiting.push(priorityHoldLine(t.key, pHold, PRIORITY.mode, PRIORITY_ROW)); continue; }
   const [verdict] = runSteps({
     name: 'spawn loop',
     // stop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it,
     // or a start in this loop met the limit.
     snapshot: () => ({ t, at: PASS_AT, dry: DRY, stop: baseHold || usageStop, attempts, slots: memStop ? 0 : localSlots,
       cloudAttempts, cloudSlots, cloudRunning: cloudRunning + cloudAttempts, cloudLimit: CLOUD.n, cloudHeld,
-      localSpare: LOCAL_SPARE, personUse: PERSON.on, reserve: localOnlyAhead(t),
+      localSpare: LOCAL_SPARE, personUse: PERSON.on, reserve: localOnlyAhead(step.ahead),
       rerun: rerunAllowed.has(t.key), resume: toResume(t), handoff: toHandoff(t),
       dbDown: !!dbDown, dbUp: !HEALTH.reused && HEALTH.results?.database?.ok === true, fetchLimit: SETUP_FETCH_S }),
     decide: decideSpawn,
@@ -4964,10 +5025,12 @@ for (const t of spawnable) {
   if (verdict?.type === 'skip' && verdict.stop) break;
   // Its slots full: a later ticket that starts in a cloud session may still start, on its own limit.
   if (verdict?.type === 'skip' && verdict.full) {
-    if (!verdict.cloud && !memStop && slotStopAt == null) slotStopAt = spawnable.indexOf(t);
+    // A deferred retry comes after every ticket in spawnable: none is left behind it.
+    if (!verdict.cloud && !memStop && slotStopAt == null) slotStopAt = step.deferred ? spawnable.length : spawnable.indexOf(t);
     continue;
   }
   if (verdict?.type !== 'start') continue;
+  startedNow.add(t.key);
   if (verdict.how === 'resume') {
     // eslint-disable-next-line no-await-in-loop
     await resumeKilled(t);
