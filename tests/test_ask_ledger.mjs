@@ -248,6 +248,13 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('issue-1668 a yes to a step no worker can run, given in that window, makes it a session item on replay', j([step.r.status, step.t.park?.session_step?.step]), j([0, 'scripts/provision.sh']));
   const before = early('E-4', ['Blue.'], { question: 'which colour?', since: new Date(Date.now() + 3600e3).toISOString() });
   t('issue-1668 an answer from before the worker parked is not that park\'s: cleared, and no ask answered', j([before.r.status, before.ev.length, before.t.early_answer ?? null]), j([0, 0, null]));
+  // A replay that finds the park not yet in the queue file (the pass's write refused) keeps the answer for the next.
+  {
+    const f = fixture({ version: 1, batch: 'b', tickets: { 'E-5': { key: 'E-5', lane: 'A', state: 'running', session_id: 'sess-E-5' } } });
+    run(f, ['E-5', 'Blue.']);
+    const r = run(f, ['--replay', 'E-5']);
+    t('issue-1668 a replay while the ticket still reads running keeps the answer, and answers nothing', j([r.status, ticketIn(f, 'E-5').early_answer?.text ?? null, log(f).filter((e) => e.type === 'ask_answered').length]), j([0, 'Blue.', 0]));
+  }
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');

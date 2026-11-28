@@ -336,7 +336,7 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const at = (pred) => kept.findIndex(pred);
   t('issue-1668 an answer kept for the park is replayed after the park, its date and its inputs are written',
     j([at((a) => a.type === 'early-answer') > at((a) => a.type === 'set' && a.fields.some((f) => f.startsWith('park.inputs='))), at((a) => a.type === 'early-answer') > at((a) => a.type === 'set' && a.fields.some((f) => f.startsWith('park.since=')))]), '[true,true]');
-  t('issue-1668 with no answer kept, nothing is replayed', as.some((a) => a.type === 'early-answer'), false);
+  t('issue-1668 the replay is asked for even where the pass\'s snapshot holds no answer: one given since reaches the queue file only', as.some((a) => a.type === 'early-answer'), true);
 }
 
 // How an exited worker with no marker ended.
@@ -427,7 +427,7 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   const as = advance(s, { 'settle-links': [{ why: 'no grant', link: null }] });
   t('a park\'s question carries the links not made', as.find((a) => a.type === 'park')?.question, 'which colour?. Issue links not made: no grant');
   t('its reads and writes run in the pass\'s order', j(types(as).slice(types(as).indexOf('worker-head'))),
-    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","park-file","set","keep-links","decisions","report"]');
+    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","park-file","set","early-answer","keep-links","decisions","report"]');
   t('#775 the text a park awaits approval of is read for the question the worker parked on', j(as.find((a) => a.type === 'approval')), j({ type: 'approval', key: 'Q-1', question: 'which colour?' }));
   t('and it is reported parked', j(lines(as, 'parked')), j(['Q-1: which colour?. Issue links not made: no grant']));
   const off = advance(s, { register: { inputs: {}, status: 'put_off', entry: { at: '2026-11-01T00:00:00Z' } } });

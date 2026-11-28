@@ -40,8 +40,9 @@ if (argv[0] === '--replay') {
   useTicketBatch(key);
   const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[key] : null;
   const early = t?.early_answer;
-  if (!early) process.exit(0);
-  const since = t.state === 'parked' ? t.park?.since : null;
+  // Kept until the park is in the queue file (a pass whose write was refused records it again next pass).
+  if (!early || t.state !== 'parked') process.exit(0);
+  const since = t.park?.since;
   if (since && Date.parse(early.at) >= Date.parse(since)) {
     console.log(`${key}: an answer given at ${early.at}, after its worker parked and before the pass saw the park, applied to it.`);
     await parkEffects(key, stateDir(), { text: String(early.text ?? ''), approve: early.approve === true, by: early.by ?? 'person', session: early.session ?? null, stamp: early.at });

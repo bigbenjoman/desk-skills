@@ -353,8 +353,10 @@ export function* decideAdvance(s) {
       ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
     // An answer given in that window found no park to act on (answer.mjs early_answer): applied to this
     // park now that it is recorded with its date and inputs, so its ask is answered and its grant or
-    // session step recorded, as for an answer given once the ticket read parked.
-    if (t.early_answer) yield { type: 'early-answer', key: t.key };
+    // session step recorded, as for an answer given once the ticket read parked. Asked for on every park,
+    // not only where `t` holds one: `t` was read at the start of the pass, and an answer given since
+    // reaches the queue file only, where the replay reads it.
+    yield { type: 'early-answer', key: t.key };
     yield { type: 'keep-links', key: t.key, needs: linkNeeds.map((n) => n.why), pr: t.result?.pr };
     // Before the requeue, which moves this round's log aside.
     yield { type: 'decisions', key: t.key, pr: null };
