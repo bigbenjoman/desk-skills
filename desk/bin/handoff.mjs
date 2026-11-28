@@ -63,9 +63,12 @@ export function readHandoff(stateDir, key) {
   if (!criteria.length) return { ok: false, why: `its handoff briefing ${path} lists no acceptance criteria` };
   const back = String(d.handed_back?.note ?? '').trim();
   const left = list(d.left);
+  const seats = list(d.seats);
+  const verdict = String(d.verdict ?? '').trim();
   return {
     ok: true,
     data: { criteria, lane: String(d.lane ?? '').trim() || 'not recorded', verification: list(d.verification), review: list(d.review), evidence: list(d.evidence),
+      ...(seats.length ? { seats } : {}), ...(verdict ? { verdict } : {}),
       ...(back ? { handedBack: { note: back, at: d.handed_back.at ?? null } } : {}),
       ...(left.length ? { midStage: { left, context: d.context ?? null, threshold: d.threshold ?? null } } : {}) },
   };
@@ -112,19 +115,21 @@ export function replaceUnreadable(stateDir, { key, stage }) {
 }
 
 const WRITE_USAGE = `usage: handoff.mjs write <TICKET> --stage <${RESUME_STAGES.join('|')}> --criterion <text> [--criterion <text> …] [--lane <text>] ` +
-  '[--verification <text> …] [--review <text> …] [--evidence <path> …] [--left <text> … --context <percent>]';
-const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification', '--review': 'review', '--evidence': 'evidence', '--left': 'left' };
+  '[--verification <text> …] [--review <text> …] [--evidence <path> …] [--seat <text> …] [--verdict <text>] [--left <text> … --context <percent>]';
+const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification', '--review': 'review', '--evidence': 'evidence', '--left': 'left', '--seat': 'seats' };
 
 // `handoff.mjs write`'s arguments as the briefing it writes, or { error }. Each flag takes the next
 // argument whole, whatever it starts with; the list flags repeat. `--left` makes it a mid-stage
 // handoff: what is left of the stage, with the context share it handed off at (`--context`) and the
 // handoff-threshold value the worker ran on (`env`'s DESK_HANDOFF_PCT, the ticket's raised one, else
-// its DESK_LEVER_VALUES, `config` with neither).
+// its DESK_LEVER_VALUES, `config` with neither). `--seat` is a review seat of the round in progress
+// (its role, ran or died, its findings and the SHA it read), and `--verdict` that round's verdict
+// draft, so the next session re-runs only the seats that did not finish.
 export function handoffFromArgs(args, env = process.env) {
   const [key, ...rest] = args;
   if (!key || key.startsWith('--')) return { error: WRITE_USAGE };
   if (!SAFE_ID.test(key) || key.includes('..')) return { error: `'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
-  const d = { ticket: key, stage: null, criteria: [], lane: '', verification: [], review: [], evidence: [], left: [] };
+  const d = { ticket: key, stage: null, criteria: [], lane: '', verification: [], review: [], evidence: [], left: [], seats: [], verdict: '' };
   for (let i = 0; i < rest.length; i += 2) {
     const flag = rest[i];
     const value = rest[i + 1];
@@ -132,6 +137,7 @@ export function handoffFromArgs(args, env = process.env) {
     if (WRITE_LISTS[flag]) d[WRITE_LISTS[flag]].push(value);
     else if (flag === '--stage') d.stage = value;
     else if (flag === '--lane') d.lane = value;
+    else if (flag === '--verdict') d.verdict = value;
     else if (flag === '--context') d.context = value;
     else return { error: `unknown argument ${flag}. ${WRITE_USAGE}` };
   }
@@ -146,6 +152,8 @@ export function handoffFromArgs(args, env = process.env) {
     d.context = pct;
     d.threshold = env.DESK_HANDOFF_PCT || (leverValue('handoff-threshold', env) ?? 'config');
   } else delete d.left;
+  if (!d.seats.length) delete d.seats;
+  if (!d.verdict.trim()) delete d.verdict;
   return { data: d };
 }
 
@@ -347,6 +355,7 @@ export function renderLastRound({ key, round, answers, branch, worktree, base, c
     `The last round of ${key} reached Stage ${round.stage} and parked. This session starts at Stage ${round.stage} rather than Stage 0: ` +
       `do not redo the stages before it. Check git status and git log in your worktree, and read your resume file ${resumePath} where there is one.`,
     '',
+    ...(roundStage(round.stage) === '7' ? pushFirst(null) : []),
     '### Park question',
     '',
     round.question || 'not recorded',
@@ -377,9 +386,23 @@ export function renderNoResume({ round, why, path }) {
   ].join('\n');
 }
 
+// What a Stage 7 session does before any review round: its work goes onto origin and into a draft PR
+// first, so a handoff partway through the round loses nothing. `pr` is the ticket's open PR, or null.
+export function pushFirst(pr) {
+  return [
+    '### Before any review round',
+    '',
+    pr != null
+      ? `Your PR #${pr} is open on this branch. Push every commit not on it yet (push-retry.mjs, after the Stage 5 file's §4 base check) before you start a review round, so a handoff partway through the round loses no work.`
+      : 'Where the branch has commits and no PR yet, push it (push-retry.mjs, after the Stage 5 file\'s §4 base check) and open the draft PR (desk-pr) before you run any review round, then post the review on it once the round is done: a handoff partway through the round then loses no work, and the next session finds the PR.',
+    '',
+  ];
+}
+
 // The briefing: the ticket key, its acceptance criteria, the branch and its commits, the lane, the
-// verification results, the self-review findings so far and the evidence paths, and nothing else.
-export function renderHandoff({ key, stage, data, branch, worktree, base, commits }) {
+// verification results, the self-review findings so far, the review seats and verdict draft of a round
+// in progress, and the evidence paths, and nothing else. A Stage 7 briefing opens with pushFirst(pr).
+export function renderHandoff({ key, stage, data, branch, worktree, base, commits, pr = null }) {
   const items = (xs, none) => (xs.length ? xs.map((x) => `- ${x}`) : [`- ${none}`]);
   return [
     `## Handoff: this session starts at Stage ${stage}`,
@@ -395,6 +418,7 @@ export function renderHandoff({ key, stage, data, branch, worktree, base, commit
         : [`An earlier session of this ticket finished Stages 0 to ${HANDOFF_STAGES[stage]} and ended so that this one starts fresh. This is everything it handed on.`]),
     '',
     ...(data.midStage ? [`### Left of Stage ${stage}`, '', ...items(data.midStage.left, 'not recorded'), ''] : []),
+    ...(stage === '7' ? pushFirst(pr) : []),
     '### Ticket',
     '',
     key,
@@ -421,6 +445,10 @@ export function renderHandoff({ key, stage, data, branch, worktree, base, commit
     '',
     ...items(data.review, 'none yet'),
     '',
+    ...(data.seats?.length ? ['### Review seats already run', '',
+      'The review round in progress when the last session handed off. Re-run only the seats not listed here as ran at the branch\'s head, and take the findings of those that did as this round\'s: do not start the round over.', '',
+      ...items(data.seats, 'none'), ''] : []),
+    ...(data.verdict ? ['### Verdict draft', '', data.verdict, ''] : []),
     '### Evidence captured',
     '',
     ...items(data.evidence, 'none'),

@@ -264,7 +264,10 @@ To hand off:
    ```
 
    One line, one flag per item, no `node` (it is refused with a `..`); no `--review` or `--evidence`
-   when there is nothing yet.
+   when there is nothing yet. **A handoff partway through a review round** (the context hook's, at
+   Stage 4b or 7) adds `--seat '<role: ran or died, its findings, the SHA it read>'` for each seat
+   dispatched and `--verdict '<the round's verdict draft>'`: the next session takes the seats that
+   ran at the branch's head as done and re-runs only the rest, rather than the whole round.
 3. **Update your resume file** (`$DESK_STATE/resume/<TICKET>.json`), then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
    your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
    is not done.

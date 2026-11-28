@@ -17,6 +17,14 @@ none comes, after config §3b Maintenance drain limit), uncounted as a kill, and
 where you stopped, pushing what you committed. A base conflict fix worker parks instead: nothing
 resumes its try from this marker.
 
+**At Stage 7, push and open the draft PR before any review round.** A session that enters Stage 7
+with commits and no PR pushes its branch (after §4's base check, below) and opens the draft PR
+(§5), and only then runs a review round (the fresh `desk-review` a resolved conflict needs, or a
+re-run at a moved head); it posts the review on the PR once the round is done. One with its PR open
+pushes each commit before a round. A handoff partway through the round then loses no work: the
+next session finds the PR, and after two Stage 7 handoffs with no new commit and no verdict posted
+the pass sends the PR's head to a review try rather than another Stage 7 session.
+
 ## 4. Before you push: rebase
 
 The default branch moves while you work. `git fetch origin`, and if
