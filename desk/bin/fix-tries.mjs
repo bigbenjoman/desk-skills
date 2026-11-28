@@ -34,8 +34,8 @@
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, loginIn, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
-import { IDLE_RECHECK_MS } from './batch-state.mjs';
-import { normaliseLine, readError } from './evidence.mjs';
+import { IDLE_RECHECK_MS, outsideRerunRecord } from './batch-state.mjs';
+import { normaliseLine, readError, pathsIn } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
 import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, nameable, personsCall, recommendedOf, spokenFor } from './accept-gaps.mjs';
@@ -1334,7 +1334,7 @@ export function draftGateTry(t, s, ctx) {
 // rerun once at its head first (classedRerun). ctx: { repo, operator, premerge (parsed), steps }, as
 // fixCall's, and classRerun { perm (§3 ci-rerun), reruns(name), rerunsOk(name), classes (the lever, on
 // unless false), changed ([path] the PR changes, or null unread) }. checks: its pr_status checks, which
-// hold each one's error lines and annotation paths.
+// hold each one's error lines, annotation paths and the paths its failed log names.
 const CLASSED = 'classed runner or resource';
 const OUTSIDE = 'its failed log names no file this PR changes';
 // Whether a check's error lines or annotation paths name a changed file: its full path, that path less
@@ -1348,11 +1348,29 @@ const GENERIC = new Set(['index', 'main', 'init', '__init__', 'setup', 'config',
   'function', 'group', 'operation']);
 const stem = (p) => String(p).split('/').pop().replace(/\.[^.]*$/, '');
 const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
+// Beyond those lines, every path the failed log names (log_paths, pass.mjs withErrors, read past the first
+// few error lines) is matched against each changed file, added, renamed or edited alike, by its file name, a
+// generic one too: the same repo path, or one ending in the other, has the same file name. A path the
+// failure itself names (on an error line, or an annotation's) also counts when it sits directly in a changed
+// file's own folder, as a suite's file sits beside the module it tests, or a repo-wide check names the
+// folder's files. Only that folder, as the repo names it or a package runner prints it: not its ancestors
+// or subfolders, and not a folder of the same name elsewhere (`packages/x/src/` for a change in `src/`); a
+// file directly in `tests/` has `tests/` as its own folder, so any failing suite there is related.
+const base = (p) => p.split('/').pop();
+const sameName = (p, ch) => base(p) === base(ch);
+const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+// A path as the repo names it, and less leading folders while two segments are left.
+const pathTails = (p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; };
+const inDir = (p, ch) => !!dirOf(ch) && pathTails(dirOf(ch)).includes(dirOf(p));
 function namesChanged(c, changed) {
-  const text = [...errorLines(c), ...(c?.error_paths ?? [])];
-  const tails = changed.flatMap((p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; });
+  const lines = errorLines(c);
+  const text = [...lines, ...(c?.error_paths ?? [])];
+  const tails = changed.flatMap(pathTails);
   const names = [...new Set(changed.map(stem))].filter((n) => n.length >= 4 && !GENERIC.has(n.toLowerCase())).map(wordIn);
-  return text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)));
+  if (text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)))) return true;
+  const failing = [...pathsIn(lines.join('\n')), ...(c?.error_paths ?? []), ...(c?.log_fail_paths ?? [])];
+  const all = [...failing, ...(c?.log_paths ?? [])];
+  return all.some((p) => changed.some((ch) => sameName(p, ch))) || failing.some((p) => changed.some((ch) => inDir(p, ch)));
 }
 // A `rerun` call while a rerun is left at this head, a `wait` while another job of a run to re-run is still
 // going (GitHub refuses a run in progress, and a refusal counts as a rerun tried) and the run is inside
@@ -1378,10 +1396,21 @@ function classedRerun(mine, checks, ctx) {
   const starts = inRuns.map((c) => Date.parse(c.started ?? '')).filter((x) => x > 0);
   const names = mine.map((f) => `"${f.name}"`).join(', '), one = mine.length === 1;
   if (going.length && starts.length && (ctx.now ?? Date.now()) - Math.min(...starts) < PENDING_LIMIT_MS) {
-    return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ${runner ? `ones ${CLASSED}` : names}, re-run once they finish` };
+    // The outside case says why it waits as the rerun does, so the ticket reads as waiting on checks
+    // (batch-state.mjs checksRerun) before the rerun as well as after it.
+    return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ${runner ? `ones ${CLASSED}` : `${names}, whose failed ${one ? 'log names' : 'logs name'} no file this PR changes`}, re-run once they finish` };
   }
   if (runner) return { call: 'rerun', why: `its ${names} ${one ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${one ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
   return { call: 'rerun', why: `its ${names} ${one ? 'check\'s failed log names' : 'checks\' failed logs name'} no file this PR changes, so ${one ? 'its run is' : 'their runs are'} re-run once at this head, every job, before any fix worker`, gate: { ...rerun.gate, full: true } };
+}
+// While that rerun runs, undraftCall reads only pending checks and waits on them: the wait's reason, as
+// the draft's record (pass/undraft.mjs), keeps saying whose rerun it is, so the ticket still reads as
+// waiting on checks (batch-state.mjs checksRerun). Only while the record before it is that rerun, or
+// this wait, on the same PR at the same head; null otherwise.
+export function outsideRerunWait(t, c, pr, head) {
+  const u = t?.undraft;
+  if (c?.call !== 'wait' || !/^checks still running/.test(c.why ?? '') || !outsideRerunRecord(u) || u.pr !== pr || u.sha !== head) return null;
+  return /no file this PR changes/.test(c.why) ? c.why : `${c.why} in the rerun of checks whose failed logs name no file this PR changes`;
 }
 // A fix try or stuck reason for checks classedRerun left to go ahead, saying so.
 function withRerunNote(c, note) {

@@ -72,13 +72,18 @@ export function toFront(q, key) {
 // `order <KEY>…`: the keys named take the places they hold now, in the order named. A ticket running,
 // finished or placed by the user keeps its place, and so does every ticket not named. -> the keys laid.
 export function layOrder(q, named) {
+  const { keys, order } = laidOrder(q, named);
+  q.tickets = Object.setPrototypeOf(Object.fromEntries(order.map((k) => [k, q.tickets[k]])), Object.getPrototypeOf(q.tickets));
+  return keys;
+}
+// What layOrder would lay, leaving q as it is -> { keys: the keys laid, order: every key of the queue
+// in its new order }. spawn-order.mjs projects the queue's finish from it.
+export function laidOrder(q, named) {
   const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
   const keys = [...new Set(named)].filter(free);
   const slots = new Set(keys);
   const next = keys[Symbol.iterator]();
-  const order = Object.keys(q.tickets).map((k) => (slots.has(k) ? next.next().value : k));
-  q.tickets = Object.setPrototypeOf(Object.fromEntries(order.map((k) => [k, q.tickets[k]])), Object.getPrototypeOf(q.tickets));
-  return keys;
+  return { keys, order: Object.keys(q.tickets).map((k) => (slots.has(k) ? next.next().value : k)) };
 }
 
 const pairsOf = (pairs) => pairs.map((p) => {

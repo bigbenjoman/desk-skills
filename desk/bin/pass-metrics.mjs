@@ -64,19 +64,29 @@ export function appendMetrics(state, line) {
   } catch (e) { return { ok: false, why: e.message }; }
 }
 
-// Every warning the batch's metrics file holds: [{at, text}], `at` the time it was written. A torn
-// line is skipped.
-export function readWarnings(state) {
+// Each line of the batch's metrics file that holds the field `field`, parsed. A torn line is skipped.
+function linesWith(state, field) {
   const path = metricsPath(state);
   if (!existsSync(path)) return [];
   let raw;
   try { raw = readFileSync(path, 'utf8'); } catch { return []; }
   const out = [];
   for (const l of raw.split('\n')) {
-    if (!l.includes('"warning"')) continue;
-    try { const e = JSON.parse(l); const at = e?.warned_at ?? e?.at; if (at && e.warning) out.push({ at, text: e.warning }); } catch { /* a torn line */ }
+    if (!l.includes(`"${field}"`)) continue;
+    try { const e = JSON.parse(l); if (e && typeof e === 'object') out.push(e); } catch { /* a torn line */ }
   }
   return out;
+}
+
+// Every warning the batch's metrics file holds: [{at, text}], `at` the time it was written.
+export function readWarnings(state) {
+  return linesWith(state, 'warning').flatMap((e) => { const at = e.warned_at ?? e.at; return at && e.warning ? [{ at, text: e.warning }] : []; });
+}
+
+// Every placed ticket a pass moved (§3b "Queue order: placed tickets" `move-and-say`), as the metrics
+// file holds them: [{at, key, from, to, gain_min, text}].
+export function readQueueMoves(state) {
+  return linesWith(state, 'queue_moves').flatMap((e) => (e.moved_at && Array.isArray(e.queue_moves) ? e.queue_moves.map((m) => ({ at: e.moved_at, ...m })) : []));
 }
 
 // setup-worktree.sh's `steps=` line as {step: seconds}, in the order run; null when the output has none.

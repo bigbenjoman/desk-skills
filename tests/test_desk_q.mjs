@@ -267,6 +267,19 @@ t('#1623 AC4 a placed row keeps * and gives no re-sort reason', `${/^\s+\*2\s+VP
 t('#1623 AC4 a started row and an unmoved one carry no mark', `${/\^|moved up/.test(rsRow('VPL-3'))} ${/\^|moved up/.test(rsRow('VPL-4'))}`, 'false false');
 t('#1623 AC4 the foot explains ^', rsOut.includes('^ moved up by the pass\'s re-sort, so the whole queue finishes soonest'), true);
 
+// #1625 AC4: a placed row the pass moved (placed_move; it stays placed) is marked ~ and says from where
+// to where and the gain, in place of any re-sort reason; placed again by the user (placed_move cleared,
+// queue.mjs), it shows * and no note.
+const PM = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
+  'VPL-1': { state: 'triaged', open_questions: 0, resort_why: 'gates 2' },
+  'VPL-2': { state: 'triaged', open_questions: 0, placed: true, resort_why: 'gates 1', placed_move: { from: 1, to: 2, gain_min: 45 } },
+  'VPL-3': { state: 'triaged', open_questions: 0, placed: true } } } } });
+const pmOut = lines(PM.run('--plain', 'voicepa').out);
+const pmRow = (k) => pmOut.find((l) => new RegExp(`\\s${k}\\s`).test(l)) ?? '';
+t('#1625 AC4 a moved placed row is marked ~ with from, to and the gain', `${/^\s+~2\s+VPL-2\s/.test(pmRow('VPL-2'))} ${pmRow('VPL-2').includes('· moved 1→2, 45m sooner')} ${pmRow('VPL-2').includes('moved up')}`, 'true true false');
+t('#1625 AC4 a row placed again shows * and no move note', `${/^\s+\*3\s+VPL-3\s/.test(pmRow('VPL-3'))} ${pmRow('VPL-3').includes('moved 1→')}`, 'true false');
+t('#1625 AC4 the foot explains ~', pmOut.some((l) => l.startsWith('~ placed by you, then moved by the pass')), true);
+
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
 const pq = qPath(W, 'pranicuk');
@@ -2763,6 +2776,28 @@ const r490 = Q.loadRepos(NOW).find((r) => r.name === 'stuck490');
 r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
+
+// ---- A draft whose red checks' logs name no file it changes, re-run once, waits on checks.
+const rerun1640 = { call: 'rerun', why: 'its "CI (shard 6/6)" check\'s failed log names no file this PR changes, so its run is re-run once at this head, every job, before any fix worker' };
+const wait1640 = { call: 'wait', why: 'checks still running (CI (shard 5/6)) in the run of "CI (shard 6/6)", whose failed log names no file this PR changes, re-run once they finish' };
+const red1640 = (undraft) => ({ ...prOn(1640, [okCheck('tests'), { name: 'CI (shard 6/6)', status: 'completed', conclusion: 'failure' }], { isDraft: true }), undraft });
+put(I.T, I.env, 'rerun1640', { port: 5691, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'rerun1640', concurrency: 3, supervised: true, tickets: {
+  'V-1640': red1640(rerun1640),
+  'V-1641': red1640(wait1640),
+  'V-1642': red1640({ call: 'rerun', why: 'its "CI (shard 6/6)" check was cancelled, so its run is re-run' }),
+  'V-1643': red1640({ call: 'wait', why: 'checks still running (CI (shard 6/6)) in the rerun of checks whose failed logs name no file this PR changes' }),
+} } });
+const r1640 = Q.loadRepos(NOW).find((r) => r.name === 'rerun1640');
+r1640.machine = { running: 0, cap: 10 };
+const screen1640 = railText(Q.ticketScreen(r1640, 'V-1640', { now: NOW }));
+t('#1640 AC4 a draft whose rerun is pending reads as waiting on checks', screen1640.includes('draft · waiting on checks: re-run once as their failed logs name no file this PR changes, out of draft once green'), true);
+t('#1640 AC4 not as cancelled checks re-run', screen1640.includes('cancelled checks re-run'), false);
+t('#1640 AC4 so does one waiting for its run to finish before the rerun', railText(Q.ticketScreen(r1640, 'V-1641', { now: NOW })).includes('draft · waiting on checks: re-run once after their run finishes as'), true);
+t('#1640 AC4 and one whose rerun is running', railText(Q.ticketScreen(r1640, 'V-1643', { now: NOW })).includes('draft · waiting on checks: re-run once (running now) as'), true);
+const state1640 = (k) => Q.shownState(r1640.q, r1640.q.tickets[k], r1640.ctx);
+t('#1640 AC4 its state is on checks, not done or merging, before, at and during the rerun; another rerun stays merging', ['V-1640', 'V-1641', 'V-1643', 'V-1642'].map(state1640).join(), 'checks,checks,checks,merging');
+t('#1640 AC4 the Queue row\'s state reads ▸ on checks, under Merging', lines(Q.repoScreen(r1640, { width: 160, now: NOW }).replace(ANSI, '')).find((l) => / V-1640 /.test(l))?.includes('▸ on checks'), true);
+t('#1640 AC4 the key says what on checks means', keyText(['checks'], 160).includes('▸ on checks: red checks re-run once, then it merges or gets a fix try'), true);
 
 // ---- With uploads paused on GitHub's page change (upload-queue.json `page`), a PR waiting to upload
 // reads as paused, a retry of one as well, and each screen names the pause once for the machine.

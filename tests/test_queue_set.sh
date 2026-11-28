@@ -124,6 +124,16 @@ q set A-3 placed=null; q order A-5 A-3; order
 check "#1623 a plain order lays the keys and places none"                  '[ $rc -eq 0 ] && [ "${out%% *}" = A-5 ] && [ "$(placed A-5)" = false ] && [ "$(placed A-3)" = false ]'
 q order A-3 A-5 --placed; order
 check "#1623 order --placed lays the keys and places each one"             '[ $rc -eq 0 ] && [ "${out%% *}" = A-3 ] && [ "$(placed A-3)" = true ] && [ "$(placed A-5)" = true ]'
+# A ticket the pass moved at move-and-say stays placed with its note (pass.mjs placed_move); the user
+# placing it again, by move, front --placed or order --placed, clears the note.
+moved(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]].placed_move !== undefined)' "$DESK_QUEUE" "$1"; }
+note='placed_move={"from":1,"to":3,"gain_min":45}'
+q set A-3 "$note"; q move A-3 1
+check "#1625 the user moving a ticket the pass moved clears its note"       '[ $rc -eq 0 ] && [ "$(moved A-3)" = false ] && [ "$(placed A-3)" = true ]'
+q set A-3 "$note"; q front A-3 --placed
+check "#1625 front --placed clears it too"                                  '[ $rc -eq 0 ] && [ "$(moved A-3)" = false ] && [ "$(placed A-3)" = true ]'
+q set A-3 placed=null; q set A-5 placed=null "$note"; q order A-3 A-5 --placed
+check "#1625 and order --placed"                                            '[ $rc -eq 0 ] && [ "$(moved A-5)" = false ] && [ "$(placed A-5)" = true ]'
 q set A-3 placed=null; q set A-5 placed=null
 
 # A triaged ticket with a triage question open never spawns, so the table and front say so.
@@ -147,6 +157,14 @@ q set A-5 open_questions=0 handoff=null handoff_stage=null
 # DS-419 AC4: a done ticket is DONE only once its PR has merged, or it finished with no PR.
 q set A-5 state=done result.pr=2289; q render
 check "DS-419 AC4: a done ticket whose PR is open is not listed as DONE"  '[ $rc -eq 0 ] && echo "$out" | grep -q "^  PR OPEN  A-5       PR #2289$"'
+# #1640 AC4: a draft whose red checks name no file it changes waits on their one rerun, not done.
+q set A-5 pr_status.pr=2289 pr_status.state=OPEN pr_status.isDraft=true 'undraft={"call":"rerun","why":"its \"CI (shard 6/6)\" check'"'"'s failed log names no file this PR changes, so its run is re-run once at this head, every job, before any fix worker"}'; q render
+check "#1640 AC4: a draft whose rerun is pending reads ON CHECKS, waiting on checks" '[ $rc -eq 0 ] && echo "$out" | grep -q "^  ON CHECKS A-5       PR #2289 draft, waiting on checks: re-run once as their failed logs name no file it changes$"'
+q set A-5 'undraft={"call":"wait","why":"checks still running (CI (shard 5/6)) in the run of \"CI (shard 6/6)\", whose failed log names no file this PR changes, re-run once they finish"}'; q render
+check "#1640 AC4: so does one waiting on its run before the rerun"         'echo "$out" | grep -q "^  ON CHECKS A-5 "'
+q set A-5 'undraft={"call":"rerun","why":"its checks were cancelled, so their runs are re-run"}'; q render
+check "#1640 AC4: another rerun stays PR OPEN"                             'echo "$out" | grep -q "^  PR OPEN  A-5       PR #2289$"'
+q set A-5 undraft=null pr_status.isDraft=null
 q set A-5 pr_status.pr=2289 pr_status.state=CLOSED; q render
 check "DS-419 AC4: one whose PR was closed unmerged reads CLOSED"         'echo "$out" | grep -q "^  CLOSED   A-5       PR #2289$"'
 q set A-5 pr_status.state=MERGED merged_at=2026-11-02T10:00:00.000Z; q render

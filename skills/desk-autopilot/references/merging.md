@@ -396,8 +396,10 @@ forever) and **no preview build starts without its team's preview-build lease** 
   spent, or when its red check is one §4 Checks workers can't fix names. With the `failure-class`
   lever on and §3 `ci-rerun` `yes`, a draft whose checks a worker would take all have error lines
   classed runner or resource is re-run once first; red again, its fix try says one rerun was tried.
-  With the lever on or off, so is one whose checks' error lines and annotation paths name no file the
-  PR changes (a flaky test elsewhere, or a job that crashed with no failed test), and that rerun
+  With the lever on or off, so is one whose checks' failed logs name no file the PR changes (a flaky
+  test elsewhere, or a job that crashed with no failed test): every path in the failed log is read,
+  not only its first error lines, and matched against the PR's added, renamed and edited files by
+  repo path and by file name; a path the failure names in a changed file's own folder counts too. That rerun
   takes every job of each run, so a job reading other jobs' results (a test-report gate) reads the
   new ones.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3

@@ -1,8 +1,9 @@
 // suite: the pass's re-sort (unstarted tickets nobody placed, in spawn order on the live queue, every pass)
 // layer: L1
 // covers: desk/bin/spawn-order.mjs desk/bin/queue-writer.mjs
-import { resortQueue, resortLine, chainName } from '../desk/bin/spawn-order.mjs';
-import { layOrder } from '../desk/bin/queue-writer.mjs';
+import { resortQueue, resortLine, chainName, placedMoves, projectedFinish, placedMoveText, placedMoveRecord, placedLanded, movesPlaced, moveThresholdMin, FALLBACK_SLOT_HOURS } from '../desk/bin/spawn-order.mjs';
+import { layOrder, laidOrder, applySet } from '../desk/bin/queue-writer.mjs';
+import { blockersOf } from '../desk/bin/queue-states.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -24,6 +25,8 @@ const why = (r) => r.moved.map((m) => `${m.key}: ${m.why}`).join(' | ');
   const r = run(ts, files);
   t('#1623 AC5 a hub gating three by blocker links overtakes two tickets gating none', laid(ts, r), 'H A B L1 L2 L3');
   t('#1623 AC4 and it is marked with its gates', why(r), 'H: gates 3');
+  const q = { tickets: Object.fromEntries(ts.map((x) => [x.key, x])) };
+  t('#1625 laidOrder gives the order layOrder lays, and leaves the queue as it was', `${laidOrder(q, r.order).order.join(' ')} | ${Object.keys(q.tickets).join(' ')}`, 'H A B L1 L2 L3 | A B H L1 L2 L3');
 }
 {
   // H shares a file with each of L1-L3, which share none with each other.
@@ -104,6 +107,93 @@ const cloudRun = (tickets, files) => resortQueue(tickets, { scope: (k) => files[
   const r = cloudRun(ts, { A: ['a'], B: ['b'], D: ['d'] });
   t('#1626 a blocker in the other list does not reorder this list', `${r.changed} ${r.order.join(' ')}`, 'false A B D');
 }
+// #1625: placed tickets under §3b "Queue order: placed tickets". X and Y are placed at the front and
+// gate nothing; H holds L1-L3 by blocker link. Two workers, X, Y and H take 1h each and the Ls 3h.
+{
+  const hours = { X: 1, Y: 1, H: 1, L1: 3, L2: 3, L3: 3 };
+  const files = { X: ['x', 'x2', 'x3'], Y: ['y', 'y2', 'y3'], H: ['h'], L1: ['l1'], L2: ['l2'], L3: ['l3'] };
+  const ts = () => [tk('X', { placed: true }), tk('Y', { placed: true }), tk('H'), ...['L1', 'L2', 'L3'].map((k) => tk(k, { state: 'parked', held_by: 'H' }))];
+  const byKey = Object.fromEntries(ts().map((x) => [x.key, x]));
+  const opts = {
+    scope: (k) => files[k] ?? [], fileCount: (k) => (files[k] ?? []).length,
+    finish: (keys) => projectedFinish(keys, { workers: 2, hoursOf: (k) => hours[k], scope: (k) => files[k] ?? [], blockers: (k) => blockersOf(byKey[k]) }),
+  };
+  t('#1625 the projection fills two slots in queue order, holding the Ls behind H', opts.finish(['X', 'Y', 'H', 'L1', 'L2', 'L3']), 8);
+
+  t('#1625 AC1 the row reads keep unless it says move-and-say', `${movesPlaced('keep')} ${movesPlaced(null)} ${movesPlaced('TODO')} ${movesPlaced(' Move-and-say ')}`, 'false false false true');
+  t('#1625 AC3 the move threshold is a whole number of minutes, 30 when unset', `${moveThresholdMin('45')} ${moveThresholdMin(null)} ${moveThresholdMin('soon')}`, '45 30 30');
+
+  const keep = run(ts(), files);
+  t('#1625 AC2 keep: the placed tickets stay where they were put', laid(ts(), keep), 'X Y H L1 L2 L3');
+
+  const moved = placedMoves(ts(), { ...opts, thresholdH: 30 / 60 });
+  const movedKeys = moved.placedMoved.map((m) => m.key);
+  const q = { tickets: Object.fromEntries(ts().map((x) => [x.key, movedKeys.includes(x.key) ? { ...x, placed: false } : x])) };
+  layOrder(q, moved.order);
+  t('#1625 AC3 move-and-say: a placed ticket moves when the queue then finishes more than the threshold sooner', Object.keys(q.tickets).join(' '), 'H Y L1 L2 L3 X');
+  t('#1625 AC4 the move is recorded with where it was, where it went and the gain',
+    moved.placedMoved.map((m) => `${m.key} ${m.from}->${m.to} ${Math.round(m.gainH * 60)}m`).join(' | '), 'X 1->6 60m');
+  t('#1625 AC4 and says so in words', placedMoveText(moved.placedMoved[0]), 'from 1 to 6, the queue finishes about 60m sooner');
+  // The record the pass writes for it: the queue.mjs set pairs, applied as queue.mjs applies them,
+  // clear placed for the order and leave placed_move for desk-q, then place it again where it went;
+  // the metrics entry carries the same for the digest.
+  const rec = placedMoveRecord(moved.placedMoved[0]);
+  const x = tk('X', { placed: true });
+  applySet(x, rec.set);
+  t('#1625 AC4/AC5 the move is recorded on the ticket: placed cleared for the order, placed_move from, to and the gain',
+    `${x.placed} ${JSON.stringify(x.placed_move)}`, 'null {"from":1,"to":6,"gain_min":60}');
+  applySet(x, rec.replace);
+  t('#1625 AC3 and once laid it is placed again where it went', `${x.placed} ${JSON.stringify(x.placed_move)}`, 'true {"from":1,"to":6,"gain_min":60}');
+  // So the next pass's re-sort leaves it there: only another move past the threshold, said as this
+  // one was, could shift it.
+  const next = Object.values(q.tickets).map((y) => (y.key === 'X' ? x : y));
+  const again = placedMoves(next, { ...opts, thresholdH: 30 / 60 });
+  t('#1625 AC3 the next pass leaves the moved ticket where it went, unsaid moves none', `${again.placedMoved.length} ${laid(next, again)}`, '0 H Y L1 L2 L3 X');
+  t('#1625 AC3 and the plain re-sort does not move it either', laid(next, run(next, files)), 'H Y L1 L2 L3 X');
+  t('#1625 AC4/AC5 and on the pass\'s metrics line for the check-in digest', JSON.stringify(rec.line),
+    '{"key":"X","from":1,"to":6,"gain_min":60,"text":"from 1 to 6, the queue finishes about 60m sooner"}');
+  t('#1625 AC3 a second placed ticket whose move gains nothing more stays placed', `${movedKeys.join(' ')} ${q.tickets.Y.placed}`, 'X true');
+
+  const under = placedMoves(ts(), { ...opts, thresholdH: 60 / 60 });
+  t('#1625 AC5 no move when the gain is not over the threshold', `${under.placedMoved.length} ${laid(ts(), under)}`, '0 X Y H L1 L2 L3');
+
+  // #1626's split holds for a placed ticket let go: X starting in the cloud, with no other cloud
+  // ticket, has no place of its own kind to move to, so it stays first; local Y moves instead.
+  const cloudTs = () => ts().map((y) => (y.key === 'X' ? { ...y, location: 'cloud' } : y));
+  const split = placedMoves(cloudTs(), { ...opts, cloud: (y) => y.location === 'cloud', thresholdH: 30 / 60 });
+  t('#1625 a placed cloud ticket let go moves only among cloud places, so a local one moves instead',
+    split.placedMoved.map((m) => `${m.key} ${m.from}->${m.to}`).join(' | '), 'Y 2->6');
+}
+t('#1625 a ticket sharing a file with one running waits for it, and a running ticket holds its slot',
+  projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['b'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }] }), 3);
+t('#1625 a file with two places lets a ticket start beside the one running on it, as the per-file budget does',
+  projectedFinish(['A', 'B'], { workers: 3, hoursOf: () => 2, scope: (k) => ({ R: ['f'], A: ['f'], B: ['f'] })[k] ?? [], blockers: () => [], running: [{ key: 'R', hours: 1 }], places: () => 2 }), 3);
+{
+  const mv = [{ key: 'X', from: 1, to: 4, gainH: 1 }, { key: 'Y', from: 2, to: 5, gainH: 1 }];
+  const show = (r) => `${r.said.map((m) => m.key).join(',') || '-'} ${r.unnote.join(',') || '-'}`;
+  t('#1625 AC4 a move written to the queue is said', show(placedLanded(mv, { ok: true, conflicts: [] })), 'X,Y -');
+  t('#1625 AC4 a refused write says no move, and has no note to take off', show(placedLanded(mv, { ok: false, conflicts: [] })), '- -');
+  t('#1625 AC4 another writer\'s order kept says no move, and takes off the notes that landed',
+    show(placedLanded(mv, { ok: true, conflicts: [{ ticket: null, field: 'order' }, { ticket: 'Y', field: 'placed_move' }] })), '- X');
+  t('#1625 AC4 a ticket another writer placed meanwhile is not said moved; the rest are',
+    show(placedLanded(mv, { ok: true, conflicts: [{ ticket: 'X', field: 'placed' }] })), 'Y X');
+}
+t('#1625 another batch\'s ticket on a file holds it as spawning does, and holds no slot of this batch',
+  `${projectedFinish(['A'], { workers: 1, hoursOf: () => 2, scope: () => ['f'], blockers: () => [], held: [{ key: 'O', hours: 1.5, files: ['f'] }] })} ${projectedFinish(['A'], { workers: 1, hoursOf: () => 2, scope: () => ['b'], blockers: () => [], held: [{ key: 'O', hours: 1.5, files: ['f'] }] })}`, '3.5 2');
+{
+  // Local slots and cloud sessions fill apart: a cloud ticket waits for a cloud session, not a local
+  // slot, and a cloud ticket running holds no local slot.
+  const two = { hoursOf: () => 2, scope: (k) => [k], blockers: () => [] };
+  const inCloud = (k) => k.startsWith('C');
+  t('#1625 one local slot and one cloud session run a local and a cloud ticket side by side',
+    `${projectedFinish(['L', 'C'], { ...two, workers: 1, cloudWorkers: 1, cloud: inCloud })} ${projectedFinish(['L', 'C'], { ...two, workers: 1 })}`, '2 4');
+  t('#1625 two cloud tickets queue for the one cloud session while the local slots stay free',
+    projectedFinish(['C1', 'C2'], { ...two, workers: 2, cloudWorkers: 1, cloud: inCloud }), 4);
+  t('#1625 a cloud ticket running holds no local slot',
+    projectedFinish(['L'], { ...two, workers: 1, cloudWorkers: 1, cloud: inCloud, running: [{ key: 'R', hours: 1, cloud: true }] }), 2);
+}
+t('#1625 a size reads a fixed slot time when there is no history', `${FALLBACK_SLOT_HOURS.M} ${FALLBACK_SLOT_HOURS.unknown}`, '2 2');
+
 t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainName('desk/bin/pass.mjs')} ${chainName('skills/desk-ticket/SKILL.md')}`, 'pass.mjs desk-ticket');
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
