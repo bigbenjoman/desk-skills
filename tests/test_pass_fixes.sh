@@ -1508,6 +1508,41 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-433 AC4 where no driver may merge, a PR with no verdict gets no review worker" \
   '[ "$(field M-6 state)" = "\"done\"" ] && [ "$(field M-6 fix_tries)" = null ] && [ "$(field M-6 stuck)" = null ]'
 
+# ---- issue-1669: a Stage 7 resume whose PR is in conflict goes to a conflict fix try in place of the
+# session, or is parked naming the conflict with its handoff stage kept. The fake gh answers from $T/fx.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+conflictcfg yes ask
+export DESK_CONFIG="$T/config-c.md" DESK_QUEUE="$T/queue-s7.json" DESK_AUTOPILOT_STATE="$T/state-s7"
+mkdir -p "$T/state-s7/logs"; q init s7; q set-batch concurrency=5
+q add S7-1; q set S7-1 state=triaged lane=A branch=fix/S7-1 draft_pr=1701 handoff=pending handoff_stage=7; fx 1701 "$H1" CONFLICTING tests:SUCCESS
+for k in 2 3; do q add "S7-$k"; q set "S7-$k" state=triaged lane=A "branch=fix/S7-$k" "draft_pr=170$k" handoff_stage=7; q park "S7-$k" "CONFLICT at Stage 7 — PR #170$k conflicts with main, and its Stage 7 session finished without bringing main in"; done
+fx 1702 "$H1" CONFLICTING tests:SUCCESS; fx 1703 "$H1" MERGEABLE tests:SUCCESS
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1669 AC1 a Stage 7 resume on a CONFLICTING PR gets a conflict fix try, its handoff and stage cleared" \
+  '[ "$(field S7-1 fix.kind)" = "\"conflict\"" ] && [ "$(field S7-1 fix.pr)" = 1701 ] && [ "$(field S7-1 handoff_stage)" = null ] && [ "$(field S7-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -qF "fix try 1 of 2: S7-1 sent for PR #1701 — conflicts with main, instead of resuming at Stage 7"'
+check "issue-1669 AC1 a ticket the advance step parked on the conflict is requeued for its try, its stage cleared" \
+  '[ "$(field S7-2 fix.kind)" = "\"conflict\"" ] && [ "$(field S7-2 handoff_stage)" = null ] && [ "$(field S7-2 park)" = null ] && echo "$out" | grep -qF "fix try 1 of 2: S7-2 requeued for PR #1702 — conflicts with main, instead of finishing Stage 7"'
+check "issue-1669 one whose conflict was resolved by hand is requeued to finish Stage 7, its stage kept" \
+  '[ "$(field S7-3 fix)" = null ] && [ "$(field S7-3 handoff_stage)" = 7 ] && echo "$out" | grep -qF "S7-3: PR #1703 no longer conflicts with main: requeued to finish Stage 7"'
+conflictcfg ask yes
+export DESK_QUEUE="$T/queue-s7b.json" DESK_AUTOPILOT_STATE="$T/state-s7b"
+mkdir -p "$T/state-s7b/logs"; q init s7b; q set-batch concurrency=5
+q add S7-4; q set S7-4 state=triaged lane=A branch=fix/S7-4 draft_pr=1704 handoff=pending handoff_stage=7; fx 1704 "$H1" CONFLICTING tests:SUCCESS
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1669 under a §3 conflict row that is not yes it is parked naming the conflict, not resumed" \
+  '[ "$(field S7-4 state)" = "\"parked\"" ] && [ "$(field S7-4 fix)" = null ] && [ "$(field S7-4 handoff)" = null ] && field S7-4 park.question | jq -r . | grep -qF "CONFLICT — PR #1704 conflicts with main, and config §3"'
+check "issue-1669 its handoff stage is kept, so a requeue once the person resolves it resumes at Stage 7" \
+  '[ "$(field S7-4 handoff_stage)" = 7 ] && ! grep -q "^S7-4" "$T/spawns"'
+
 # ---- #805: rerun.sh reruns every job of a run when the gate says full, and only the failed ones otherwise.
 mkdir -p "$T/rr805/bin" "$T/rr805/sd"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$T/rr805/calls" > "$T/rr805/bin/gh"; chmod +x "$T/rr805/bin/gh"

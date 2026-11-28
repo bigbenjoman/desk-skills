@@ -39,6 +39,7 @@
 //   upload {key, pr, dir}          put dir's screenshots in PR #pr's body
 //   open-question {key}            -> the question a live worker is waiting on, or null
 //   worker-head {key}              record the head the exited worker left
+//   pr-conflict {key, pr}         -> { base } where PR #pr is open and in conflict with that base, else null (unread too)
 //   done {key, pr, summary, line, sets}   record the ticket done
 //   settle-links {key}             -> the issue links the worker asked for that were not made
 //   park-links {key, needs, pr}    park a done ticket on the links not made
@@ -65,6 +66,7 @@ import { wroteSince, heartbeatOnly } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
+import { STAGE7_CONFLICT } from '../fix-tries.mjs';
 import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, TOOL_CALL_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
@@ -367,6 +369,20 @@ export function* decideAdvance(s) {
       yield { type: 'park', key: t.key, question: foreignQuestion(pr, foreign) };
       yield say(t.key, 'parked', `${t.key}: its worker reported PR #${pr}, which is not its own (${foreign}): parked, not recorded done`);
       return;
+    }
+    // A Stage 7 session that finishes with its PR in conflict with the base has not brought the base in
+    // (issue-1669): parked naming the conflict, not recorded done, and the pass sends it to a conflict
+    // fix try (pass.mjs). A fix try's own DONE is the fix tries' to judge.
+    if (pr && parseInt(stage ?? t.stage, 10) === 7 && !(t.fix && !t.fix.finished)) {
+      const conflict = yield { type: 'pr-conflict', key: t.key, pr };
+      if (conflict) {
+        const question = `${STAGE7_CONFLICT} PR #${pr} conflicts with ${conflict.base}, and its Stage 7 session finished without bringing ${conflict.base} in (it said: ${done.trim()}): not recorded done. It goes to a conflict fix try, which merges ${conflict.base} in, resolves the conflict, runs the targeted suites and pushes`;
+        yield { type: 'decisions', key: t.key, pr: null };
+        yield { type: 'park', key: t.key, question };
+        yield set(t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question, at: new Date(log.mtimeMs).toISOString() })}`);
+        yield say(t.key, 'parked', `${t.key}: ${question}`);
+        return;
+      }
     }
     // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
     // the stage its last handoff named.
