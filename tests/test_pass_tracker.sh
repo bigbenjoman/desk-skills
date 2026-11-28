@@ -130,6 +130,7 @@ case "\$*" in
   "api repos/"*"/check-runs/70/annotations?per_page=100") jq -c '.protected' "$FIX" ;;
   "api repos/"*"/check-runs/81/annotations?per_page=100") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
   "run view 8 "*"--job 81 --log-failed") printf 'Lint\tRun\t2026-10-23T10:00:00.000Z ReferenceError: React is not defined\n' ;;
+  "run view 7 "*"--job 70 --log-failed") printf 'Review gate\tRun\t2026-10-23T10:00:00.000Z ##[group]Run bash scripts/gate.sh\nReview gate\tRun\t2026-10-23T10:00:00.000Z ##[endgroup]\nReview gate\tRun\t2026-10-23T10:00:01.000Z ##[error]Error: approval required for .github/workflows/ci.yml\n' ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
 esac
@@ -147,6 +148,7 @@ check "DS-499 the next pass keeps a job's error without reading it again, and re
 check "DS-499 a job with no error line is not read again" '! grep -q "check-runs/" "$T/gh-calls"'
 check "DS-494 AC1 a job with no annotated error keeps what its failed log names" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Lint\") | .log_errors[0]" | grep -q "^ReferenceError: React is not defined$"'
 check "DS-494 and its log is not read again" '! grep -q "log-failed" "$T/gh-calls"'
+check "#1640 a failed job with annotated errors keeps every path its log names too, less the echoed step script" '[ "$(field GA-1 pr_status | jq -c ".checks[] | select(.name == \"Review gate\") | [.log_paths, .log_fail_paths, has(\"log_errors\")]")" = "[[\".github/workflows/ci.yml\"],[\".github/workflows/ci.yml\"],false]" ]'
 
 # ---- DS-175: a merge is recorded however the PR was merged, and a missing eta history is built once
 ago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 3600e3).toISOString())' "$1"; }

@@ -19,6 +19,10 @@ changed for someone, or what is now true that wasn't.
   the same ticket. With no tracker, PR numbers alone.
 - **Don't split for the sake of it.** PRs that all serve one outcome (a fix and its follow-up, a
   change split for review) stay one item. A ticket with one or two PRs is one item.
+- **A status move the Jira collector marks `(you)` is the person's own**: their account made it, by
+  hand or through a script or batch on their token. Report it as their move, even where a comment
+  or session says someone else would make it, and never put it under **Check before posting**. Only
+  a `then status: …, by <name>` line is someone else's.
 
 ## Work with no ticket
 

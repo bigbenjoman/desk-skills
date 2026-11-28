@@ -60,7 +60,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
-import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, pathsIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, grantedPost, RERUN_COOLDOWN_S } from './fix-tries.mjs';
@@ -5509,14 +5509,17 @@ function withHistory(s, was) {
 // annotations could not be read, so the next pass reads them again. `error_notes` keeps each failure's
 // path and title beside its line, for a §4 Known flaky checks test item. A job with no annotated error keeps
 // what its failed log names as `log_errors` instead, read the same way: only a test reporter that
-// annotates puts a failing test's line in `errors`.
+// annotates puts a failing test's line in `errors`. Every failed job also keeps each path its failed log
+// names (`log_paths`) and those on its error lines (`log_fail_paths`), for the rerun a failure naming none
+// of the PR's files gets: the error lines are only the first few, and a runner's headings can fill them.
 function withErrors(s, was) {
   if (s.state !== 'OPEN') return s;
-  const logErrors = (c, old) => {
-    if (old?.log_errors) return { log_errors: old.log_errors };
+  const logReads = (c, old, needErrors) => {
+    const kept = Array.isArray(old?.log_paths) && Array.isArray(old?.log_fail_paths);
+    if (kept && (!needErrors || old.log_errors)) return { log_paths: old.log_paths, log_fail_paths: old.log_fail_paths, ...(needErrors ? { log_errors: old.log_errors } : {}) };
     if (!c.runId) return {};
     const r = shOut('gh', ['run', 'view', String(c.runId), '--repo', GH_REPO, '--job', String(c.jobId), '--log-failed'], { maxBuffer: 64 * 1024 * 1024 });
-    return r.ok ? { log_errors: errorLinesIn(r.out) } : {};
+    return r.ok ? { log_paths: pathsIn(r.out), log_fail_paths: pathsIn(r.out, { failing: true }), ...(needErrors ? { log_errors: errorLinesIn(r.out) } : {}) } : {};
   };
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
@@ -5529,7 +5532,7 @@ function withErrors(s, was) {
     if (errors === undefined) return c;
     // The files its failure annotations point at, for the rerun a failure naming none of the PR's files gets.
     const paths = notes ? [...new Set(notes.filter((x) => x?.annotation_level === 'failure' && x.path).map((x) => String(x.path)))] : old?.error_paths ?? [];
-    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, found)) };
+    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...logReads(c, found, !errors.length) };
   });
   return { ...s, checks };
 }

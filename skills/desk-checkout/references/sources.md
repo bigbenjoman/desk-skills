@@ -7,9 +7,9 @@ the user once, then re-run with the flag the note names (`--include <slug>`, `--
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
-| **Jira** | `jira_activity.py`: REST through `desk-jira api` for each in-scope repo whose §4 Tracker is `jira` | `read-own-work` | Tickets raised, status moves, reassignments, field changes, the user's comments, and what others did to their tickets the same day |
+| **Jira** | `jira_activity.py`: REST through `desk-jira api` for each in-scope repo whose §4 Tracker is `jira` | `read-own-work` | Tickets raised, status moves with the account that made each and when, reassignments, field changes, the user's comments, and what others did to their tickets the same day |
 | **GitHub PRs** | `github_activity.py` via `gh` | `read-own-work`; everyone's merged count needs `read-others` | PRs opened, merged, closed or pushed to, with review decision and failing checks for open ones; reviews given; merged counts per repo, yours and everyone's |
-| **GitHub issues** | `github_activity.py`, the same run | `read-own-work` | Issues the user opened, closed or commented on in the window, grouped by repo, then by label (or the title's `prefix:`). Each gives number, title, state, and created or closed time. With §4 Tracker `none` these are the repo's tickets |
+| **GitHub issues** | `github_activity.py`, the same run | `read-own-work` | Issues the user opened, closed or commented on in the window, grouped by repo, then by label (or the title's `prefix:`, else a `#NNNN` or title word shared with another issue, else `other`). Each gives number, title, state, and created or closed time. With §4 Tracker `none` these are the repo's tickets |
 | **Work logs** | `worklog_activity.py`: the files or globs in each in-scope repo's §3b **Check-out work logs** row (default `none`) | `read-own-work` | Work done outside PRs and tickets that the user wrote down: entries on timestamped lines (`- HH:MM …` under a date heading, or ISO date-times), or a file's last lines when it has no times and was modified in the window |
 | **Desk's own records** | `worklog_activity.py`, the same run, from `~/.config/desk/repos/<slug>/` and `~/.desk-autopilot/<slug>/` | `read-own-work` | Settings and calls desk recorded itself, one fact each with its source: config rows changed (each `config.md.bak*` written in the window, diffed against the next copy), lever changes (`levers.jsonl`), logged decisions (`decisions.jsonl`, the repo's and each batch's) and needs-you items answered (the check-in digest's `answered.json`) |
 | **Claude Code** | `claude_activity.py` over every Claude login's `projects/*/*.jsonl` | `read-transcripts` | The *why* and the story: what they were chasing, what got found, work that never became a PR |
@@ -31,3 +31,7 @@ python3 $S/worklog_activity.py --day $D $W; python3 $S/claude_activity.py --day 
 **Searches that hit the cap.** GitHub's search returns at most 1000 results. Each search pages to
 that, and `github_activity.py` lists any search cut short under **Searches cut short**, with how many
 it found. A count from a capped search is a lower bound. Say so under **Check before posting**.
+
+**Rate limits.** A `gh` call GitHub rate-limits waits and retries for up to about 3 minutes. A search
+still limited then is skipped, and its section says so with the limit and when to retry; only the
+search of the user's own PRs ends the run. Name a skipped section under **Check before posting**.
