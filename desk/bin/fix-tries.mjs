@@ -376,7 +376,8 @@ export const prInConflict = (s) => s?.mergeable === 'CONFLICTING' || s?.mergeSta
 export const STAGE7_CONFLICT = 'CONFLICT at Stage 7 —';
 export const stageSevenConflictPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(STAGE7_CONFLICT);
 // t: the queue ticket (resumesAtSeven); s: its PR's status as readPrStatus reads it; base: the default
-// branch; files: () -> the files the PR conflicts on, or null (read only for a try); notes: the answers
+// branch; files: the files the PR conflicts on, or null (pass/fix-tries.mjs decideResumeConflicts reads
+// them only for a try that goes ahead); notes: the answers
 // recorded since its last park. -> null where Stage 7 goes ahead (the PR not open, or neither in
 // conflict nor named so), else fixCall's conflict answer: a requeue with the try, or stuck once the
 // PR's conflict tries are spent; `why` says which of the two sent it, and `noted` that the note did.
@@ -388,8 +389,7 @@ export function resumeConflict(t, s, { base, files, notes }) {
   const why = dirty ? `PR #${s.pr} conflicts with ${base}` : `its requeue note names a conflict with ${base}`;
   const done = t.fix_tries ?? [];
   if (conflictSpent(done, s.head)) return { call: 'stuck', why: `${why}, and it is ${stillInConflict(t, done, base, null)}`, noted };
-  const named = typeof files === 'function' ? files() : files;
-  return { ...nextConflictTry(done, s.pr, s.head, conflictTry(base, named, s.isDraft !== false, null)), why, noted };
+  return { ...nextConflictTry(done, s.pr, s.head, conflictTry(base, files, s.isDraft !== false, null)), why, noted };
 }
 // A merged-tree failure goes the conflict's way, as a base's does (base-fix.mjs), with the check's output.
 const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), what: `fails §4 Merged-tree check merged into ${base}`, check: { command: held.command, output: held.output } });

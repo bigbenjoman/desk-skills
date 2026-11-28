@@ -1444,17 +1444,16 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('issue-1669 nor one with an unfinished fix try, which keeps its own task', resumesAtSeven({ ...seven, fix: { kind: 'checks' } }), false);
   t('issue-1669 nor one still running', resumesAtSeven({ ...seven, state: 'running' }), false);
   const conflicting = pr([], { pr: 1655, mergeable: 'CONFLICTING', mergeState: 'DIRTY', isDraft: true });
-  let read = 0;
-  const files = () => { read += 1; return ['src/a.ts']; };
+  const files = ['src/a.ts'];
   const c = resumeConflict(seven, conflicting, { base: 'main', files, notes: [] });
   t('issue-1669 AC1 a CONFLICTING PR resumed at Stage 7 goes to a conflict fix try', JSON.stringify([c?.call, c?.fix?.kind, c?.fix?.try, c?.fix?.of, c?.fix?.pr, c?.fix?.head, c?.fix?.draft, c?.fix?.files, c?.noted]), JSON.stringify(['requeue', 'conflict', 1, FIX_TRIES_MAX, 1655, HEAD, true, ['src/a.ts'], false]));
   t('issue-1669 AC1 and says why', c?.why, 'PR #1655 conflicts with main');
   t('issue-1669 a ready PR\'s try is not marked draft', resumeConflict(seven, { ...conflicting, isDraft: false }, { base: 'main', files, notes: [] })?.fix?.draft, undefined);
   t('issue-1669 DIRTY alone is a conflict too', resumeConflict(seven, { ...conflicting, mergeable: 'UNKNOWN' }, { base: 'main', files, notes: [] })?.call, 'requeue');
   // Every other value GitHub sets: MERGEABLE or UNKNOWN with any merge state but DIRTY is no conflict.
-  const before = read;
+  // (decideResumeConflicts reads the files only for a try: tests/test_pass_fix_tries.mjs.)
   const clean = ['BEHIND', 'BLOCKED', 'CLEAN', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE'].flatMap((m) => ['MERGEABLE', 'UNKNOWN'].map((g) => resumeConflict(seven, { ...conflicting, mergeable: g, mergeState: m }, { base: 'main', files, notes: [] })));
-  t('issue-1669 a PR not in conflict resumes at Stage 7 as before, its files unread', JSON.stringify([clean.every((x) => x === null), read - before]), '[true,0]');
+  t('issue-1669 a PR not in conflict resumes at Stage 7 as before', clean.every((x) => x === null), true);
   t('issue-1669 a merged or closed PR is no try', JSON.stringify(['MERGED', 'CLOSED'].map((st) => resumeConflict(seven, { ...conflicting, state: st }, { base: 'main', files, notes: [] }))), '[null,null]');
   const mergeable = { ...conflicting, mergeable: 'MERGEABLE', mergeState: 'BLOCKED' };
   const noted = resumeConflict(seven, mergeable, { base: 'main', files, notes: ['Merge main in and resolve the conflict with #1656.'] });
