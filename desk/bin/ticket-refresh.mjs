@@ -2,7 +2,7 @@
 // before its worker spawns or resumes, so a criterion added to the issue after admission, in a body
 // edit or a comment, reaches the worker. Pure: pass.mjs reads the issue and writes the file.
 import { sections } from './desk-design.mjs';
-import { ticketDecisions } from './decisions-change.mjs';
+import { ticketDecisions, withDecisions, ANSWER_BY } from './decisions-change.mjs';
 
 // Whether the issue changed since its text was last read: its `updatedAt` after the time recorded
 // for the last read (the queue's `issue_read`), else after the ticket file was written.
@@ -19,21 +19,7 @@ export function issueChanged({ updatedAt, readAt, fileAt }) {
 // section is found as ticketDecisions reads it (desk-design.mjs `sections`), so the entries land
 // where the restart looks for them.
 export function issueText({ key, repo, n, issue, extra = [] }) {
-  const text = String(issue.body ?? '').replace(/\r\n/g, '\n').trimEnd();
-  const body = text.split('\n');
-  if (extra.length) {
-    const secs = sections(text);
-    const at = secs.findIndex((s) => /^decisions$/i.test(s.name));
-    // A body in Jira wiki headings is read in that form alone (`sections`), so the new heading matches it.
-    if (at < 0) body.push('', body.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? 'h2. Decisions' : '## Decisions', ...extra);
-    else {
-      // Each section after the first opens with its heading line, so the Decisions heading's index is
-      // the lines of every section before it plus their headings.
-      const heading = secs.slice(0, at).reduce((sum, s) => sum + s.lines.length, 0) + at - 1;
-      const filled = secs[at].lines.filter((l) => l.text.trim()).pop();
-      body.splice(filled ? filled.n : heading + 1, 0, ...extra);
-    }
-  }
+  const body = withDecisions(String(issue.body ?? '').replace(/\r\n/g, '\n').trimEnd(), extra).split('\n');
   const comments = (issue.comments ?? []).map((c) => `**${c.author?.login ?? 'unknown'}**, ${c.createdAt ?? 'undated'}:\n\n${String(c.body ?? '').replace(/\r\n/g, '\n').trim()}`);
   return [`# ${key}`, '', `Source: GitHub issue ${repo}#${n}`, '', String(issue.title ?? '').trim(), '', body.join('\n').trim(),
     ...(comments.length ? ['', '## Comments', '', comments.join('\n\n')] : []), ''].join('\n');
@@ -77,7 +63,8 @@ export function refreshTicket({ old, key, repo, n, issue, today, pr = null }) {
   const flatOld = squash(old);
   const comments = (issue.comments ?? []).filter((c) => squash(c.body) && !flatOld.includes(squash(c.body)));
   const freshDecisions = new Set(ticketDecisions(plain).map((d) => d.line));
-  const ours = new RegExp(`^\\d{4}-\\d{2}-\\d{2} ${ENTRY_BY} issue #${n} changed after PR #`);
+  // A refresh's own entries, and answer.mjs's (an answer settling a criterion): neither is on the issue.
+  const ours = new RegExp(`^\\d{4}-\\d{2}-\\d{2} (?:${ENTRY_BY} issue #${n} changed after PR #|[^:]* ${ANSWER_BY.replace(/[.()]/g, '\\$&')})`);
   const kept = ticketDecisions(old).filter((d) => ours.test(d.line) && !freshDecisions.has(d.line)).map((d) => `* ${d.line}`);
   const changed = added.length || removed.length || comments.length;
   const what = [

@@ -76,6 +76,27 @@ A call this ticket's worker logged amends a criterion only by choosing between i
 keeping a later-merged ticket's behaviour (below): any other that leaves a criterion unmet as worded
 amends nothing, and the gap is the worker's to close.
 
+**A dated Decisions entry settles the criterion it names.** An entry in the ticket's `## Decisions`
+section (`* <yyyy-mm-dd> <who>: <what>`) that names a criterion by its label (`AC3`), who decided
+(before the colon) and the evidence or the ruling (more than the label) settles that criterion: it is
+met, or met as the entry amends it, and is **never a gap**, `code` or `person`, on this round or any
+later one. Read the Decisions of the ticket text above, and, where `$DESK_STATE/tickets/<KEY>.md`
+exists (a GitHub issue's key too), that file's as well: `answer.mjs` writes an answer naming a
+criterion there (`* <date> <who> (answer.mjs): AC3: 212`), and a refresh from the issue keeps it. The
+reviewer (not Bea) puts each such criterion in the results file's `settled` list, quoting the entry,
+bullet dropped, on one line:
+
+```json
+"settled": [ { "gap": "AC3", "entry": "2026-11-26 ben: AC3 measured at 212 lines on the 2026-11-26 window, under 300" } ]
+```
+
+verdict.mjs refuses an entry that is not dated, names no one before its colon, does not name that
+criterion or says nothing past its label (`settlingEntry`), a criterion listed twice, or one also in
+`accepted` or `post_merge`. It changes no count. `node verdict.mjs --settled <results>` prints the
+`### Settled by the ticket's Decisions` section, citing each entry and who decided: it goes in the
+review body under the report. An entry that leaves a criterion unmet as worded and is not the person's
+ruling on it (a worker's own call, above) settles nothing.
+
 `settled_by` is `person` only when no change the ticket allows can close the gap, so all that is
 left is the person accepting it on the PR or amending the criterion: a value only the person holds,
 say, or a high-risk criterion that can pass only on a deployed build (*A criterion only a live system
@@ -104,6 +125,17 @@ recommendation, so name the pick last, after `Recommended:`, and nothing after i
 accepts the gap (`Recommended: accept AC2 as built`) is never carried out for the person: only their
 own comment accepts it (next), so no fix try, default or decider takes it, and desk-needs-you gives
 them the comment to post.
+
+**A measurement no worker can run.** A gap whose only missing piece is a number from a command no
+worker may run (refused for workers, and not in §4 Worker measuring commands) is `settled_by: person`,
+and names the command after `MEASURE:` in backticks, with no `Recommended:`:
+`- PERSON'S CALL · AC3: "<criterion>" — MEASURE: \`<command>\`: <why no worker can run it>`.
+The pass puts it to the person once, as a needs-you item reading "run this and reply with the number"
+(`desk/bin/fix-tries.mjs` `measureOf`); their answer, naming the criterion, goes into the ticket's
+Decisions through `answer.mjs`, which settles it (above). So once a Decisions entry or a recorded
+answer settles that criterion, it is **never raised again**: not as a gap, not as a request to run the
+command and post the count on the PR. Where a review raises it anyway, the pass sends it to a worker to
+post the verdict again citing the entry, not back to the person.
 
 `code_claim` answers one question: *would this still read as a defect with the ticket deleted?* A
 gap marked `yes` is a claim about code that nothing has refuted, so it is **never posted**: it goes

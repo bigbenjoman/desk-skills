@@ -18,6 +18,7 @@ import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { parseDecision } from './decisions.mjs';
+import { answerEntry, criteriaNamed, withDecisions } from './decisions-change.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { askAnswered, answerLedgerOn, ASK_BY_ENV } from './ask-ledger.mjs';
@@ -198,6 +199,32 @@ saveAnswer(STATE, ticket, text, stamp);
 // (ASK_BY_ENV), else the person, in the session it came from where one is named.
 const by = taken ? 'decider' : process.env[ASK_BY_ENV] === 'default' ? 'default' : 'person';
 const session = by === 'default' ? null : process.env.CLAUDE_CODE_SESSION_ID ?? null;
+
+// An answer naming a criterion (AC3) settles it, so it goes into the ticket file's Decisions section as
+// a dated entry naming who decided, where desk-review reads it as settling that criterion
+// (phase-5-requirements.md) and the pass restarts the worker for it (decisions-change.mjs). Only a
+// ticket file desk keeps ($DESK_STATE/tickets/<KEY>.md) is written: a tracker ticket's text is the
+// tracker's. A "not now" settles nothing, and nor does the decider's or a default's take: settling a
+// criterion is the person's ruling, and a recommendation that accepts a gap is never taken for them.
+if (!putOffAnswer && by !== 'person' && criteriaNamed(text).length) {
+  console.log(`${ticket}: it names ${criteriaNamed(text).join(', ')}, but it is the ${by}'s take, not the person's ruling, so it is not written into its ticket file's Decisions.`);
+} else if (!putOffAnswer) {
+  let who = null;
+  try { who = configValue('name') ?? null; } catch { /* outside a repo */ }
+  const entry = answerEntry({ text, who, today: stamp.slice(0, 10) });
+  const file = join(STATE, 'tickets', `${ticket}.md`);
+  if (entry && existsSync(file)) {
+    try {
+      const old = readFileSync(file, 'utf8');
+      if (!old.includes(entry.slice(2))) writeFileSync(file, `${withDecisions(old.trimEnd(), [entry])}\n`);
+      console.log(`${ticket}: it names ${criteriaNamed(text).join(', ')}, so it is in its ticket file's Decisions (${file}), which desk-review reads as settling ${criteriaNamed(text).length === 1 ? 'it' : 'them'}.`);
+    } catch (e) {
+      console.error(`${ticket}: answer recorded in the briefing, but not in its ticket file's Decisions: ${e.message}`);
+    }
+  } else if (entry) {
+    console.log(`${ticket}: it names ${criteriaNamed(text).join(', ')}, but desk keeps no ticket file for it, so it is not in a Decisions section: record it on the ticket itself for desk-review to read it as settled.`);
+  }
+}
 
 // A worker parks and exits at once, and the pass records the park later: until then the ticket reads
 // running with no worker live, and nothing here can act on a park the queue does not hold yet. The

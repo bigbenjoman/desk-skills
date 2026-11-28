@@ -7,8 +7,9 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects, validateResults, checkAnchors, anchorLine } from '../skills/desk-review/bin/verdict.mjs'
-import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
+import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, settledSection, settlingEntry, methodLine, CLEAN, VerdictError, gateRejects, validateResults, checkAnchors, anchorLine } from '../skills/desk-review/bin/verdict.mjs'
+import { reviewGaps, reviewFix, personGapsCall, personGapsIn, measureOf } from '../desk/bin/fix-tries.mjs'
+import { settledCriteria, answerEntry, ticketDecisions } from '../desk/bin/decisions-change.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
 import { scratch } from './scratch.mjs';
 
@@ -562,6 +563,53 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-1022 --anchors rewrites the file', written.map((x) => x.anchor ?? '-').join(), 'missing,missing,-')
   const bad = spawnSync('node', [SCRIPT, '--anchors', file, 'f'.repeat(40)], { cwd: dir, encoding: 'utf8' })
   t('DS-1022 --anchors exits 2 on a head it cannot find', `${bad.status} ${/is not a commit/.test(bad.stderr)}`, '2 true')
+}
+
+// ---- issue-1694: a dated Decisions entry naming the criterion, the evidence and who decided settles it
+{
+  const ENTRY = '2026-11-26 ben: AC3 measured at 212 lines on the 2026-11-26 window, under 300'
+  const settled = base({ gaps: 0, settled: [{ gap: 'AC3', entry: ENTRY }] })
+  t('issue-1694 AC1 a criterion a Decisions entry settles is no gap: the verdict reads clean', reads(settled), true)
+  const sec = settledSection(settled)
+  t('issue-1694 AC1 the verdict cites the entry and who decided', [sec.startsWith("### Settled by the ticket's Decisions"), sec.includes(`- AC3: decided by ben on 2026-11-26: "${ENTRY}"`)].join(' '), 'true true')
+  t('issue-1694 AC1 its heading never names requirement gaps, so the pass reads none open', reviewGaps([render(settled), '', '### Requirement gaps', 'None', '', sec].join('\n')).length, 0)
+  t('issue-1694 AC1 the section is empty when nothing is settled', settledSection(base()), '')
+  t('issue-1694 AC1 a bulleted entry reads the same', settlingEntry(`* ${ENTRY}`, 'AC3')?.who, 'ben')
+  const no = (entry, gap = 'AC3') => /settled criterion AC3: entry quotes/.test(refused(base({ settled: [{ gap, entry }] })))
+  t('issue-1694 AC1 an entry with no date, no one deciding, another criterion or nothing past the label settles nothing',
+    [no('ben: AC3 measured at 212'), no('2026-11-26 AC3 measured at 212'), no('2026-11-26 ben: AC4 measured at 212'), no('2026-11-26 ben: AC3.')].join(' '), 'true true true true')
+  t('issue-1694 AC1 a settled criterion is not also accepted or left for after the merge',
+    /also accepted/.test(refused(base({ settled: [{ gap: 'AC3', entry: ENTRY }], accepted: [{ gap: 'AC3', by: 'ben', at: '2026-11-26', url: 'https://github.com/a/b/pull/1#issuecomment-2' }] }))), true)
+  t('issue-1694 AC1 the desk pass\'s refresh entry names criteria changed, and settles none', settlingEntry('2026-11-27 desk pass: issue #1 changed after PR #9 was opened: acceptance criteria added or changed: "AC5: x"', 'AC5'), null)
+  t('issue-1694 AC1 nor listed twice', /listed twice/.test(refused(base({ settled: [{ gap: 'AC3', entry: ENTRY }, { gap: 'AC3', entry: ENTRY }] }))), true)
+  const file = ['# issue-1', '', '## Acceptance criteria', '1. AC3: under 300 lines', '', '## Decisions', `* ${ENTRY}`, '* 2026-11-27 ben: AC4', '* 2026-11-27 ben: the badge is blue', '* 2026-11-27 desk pass: issue #1 changed after PR #9 was opened, and this file was refreshed from it: acceptance criteria added or changed: "AC5: x"', ''].join('\n')
+  t('issue-1694 the pass reads the criteria a ticket file settles by the same rule', JSON.stringify(settledCriteria(file)), '["AC3"]')
+  const entry = answerEntry({ text: 'AC3: 212', who: 'ben', today: '2026-11-28' })
+  t('issue-1694 AC2 an answer naming a criterion is a Decisions entry desk-review reads as settling it', JSON.stringify([entry, settlingEntry(entry, 'AC3')?.criterion]), JSON.stringify(['* 2026-11-28 ben (answer.mjs): AC3: 212', 'AC3']))
+  t('issue-1694 AC2 an answer naming no criterion is no entry', answerEntry({ text: 'the short copy', who: 'ben', today: '2026-11-28' }), null)
+}
+
+// ---- issue-1694 AC3: a measurement no worker can run is asked once, naming the command
+{
+  const CMD = 'python3 scripts/claude_activity.py --window 2026-11-26'
+  const gap = `PERSON'S CALL · AC3: "under 300 lines on the 2026-11-26 window" — MEASURE: \`${CMD}\`: Python is refused for workers`
+  const review = { verdict: { p0: 0, p1: 0, p2: 0, deferred: 0, gaps: 1, unrefuted: 0, partial: 0 }, body: `### Requirement gaps\n- ${gap}\n` }
+  t('issue-1694 AC3 the gap names its command', measureOf(gap), CMD)
+  const asked = personGapsCall(review, { judgement: 'yes', settled: [] })
+  const item = personGapsIn(asked?.why)
+  t('issue-1694 AC3 unanswered, it goes to the person once, as one item: run this and reply with the number',
+    [asked?.call, item.length, item[0]?.includes(`run \`${CMD}\` and reply with the number, naming AC3 ("AC3: <number>")`)].join(' '), 'stuck 1 true')
+  t('issue-1694 AC3 it earns no fix try while unanswered', reviewFix({}, { pr: 1, head: 'a'.repeat(40), ...review }, { judgement: 'yes', settled: [] }), null)
+  // The person's answer, as answer.mjs keeps it, settles AC3 in the ticket file.
+  const file = ['# issue-1', '', '## Decisions', answerEntry({ text: 'AC3: 212 lines', who: 'ben', today: '2026-11-28' }), ''].join('\n')
+  const settled = () => settledCriteria(file)
+  t('issue-1694 AC3 once answered, it is never put to the person again', personGapsCall(review, { judgement: 'yes', settled }), null)
+  const sent = reviewFix({}, { pr: 1, head: 'a'.repeat(40), ...review }, { judgement: 'yes', settled })
+  t('issue-1694 AC3 a review that raises it anyway goes to a worker to cite the entry, untagged',
+    [sent?.call, sent?.fix?.gaps?.length, /PERSON'S CALL/.test(sent?.fix?.gaps?.[0]), /post the verdict again with it under settled/.test(sent?.fix?.gaps?.[0]), (sent?.fix?.person_gaps ?? []).length].join(' '), 'requeue 1 false true 0')
+  t('issue-1694 AC3 a measurement on a criterion nothing settles is still asked', personGapsCall(review, { judgement: 'yes', settled: () => ['AC4'] })?.call, 'stuck')
+  t('issue-1694 a gap with no MEASURE command is not a measurement', measureOf("PERSON'S CALL · AC2: \"x\" — pick one. Recommended: A"), null)
+  t('issue-1694 the Decisions entry is in the file where the restart reads it', ticketDecisions(file).length, 1)
 }
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')

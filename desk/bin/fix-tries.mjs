@@ -878,9 +878,28 @@ function takenGaps(person, judgement, alone, workerMay) {
 // A gap the review did not tag whose recommendation needs a denied route is the person's all the same:
 // tagged as their call wherever it is quoted, so a stuck reason gives it up to needs-you (personGapsIn).
 const personLabel = (workerMay) => (g) => (!personsCall(g) && deniedRoute(g, workerMay) ? `PERSON'S CALL · ${g}` : g);
+// A requirement gap whose only missing piece is a measurement no worker can run: tagged the person's
+// call, naming the command after `MEASURE:` in backticks (desk-review phase-5-requirements.md). -> the
+// command, or null.
+export const measureOf = (gap) => (personsCall(gap) ? /\bMEASURE:\s*`([^`\r\n]+)`/.exec(String(gap ?? ''))?.[1] ?? null : null);
+// A measurement gap on a criterion the ticket's Decisions already settle (`settled`, the labels
+// decisions-change.mjs settledCriteria reads, or a function returning them): it was asked and answered,
+// so it is never put to the person again. A worker posts the verdict again, citing the entry, and its
+// gap goes to that worker untagged, so if it outlasts the try it is not read back as the person's.
+const answeredMeasure = (gap, settled) => {
+  if (!measureOf(gap) || settled == null) return false;
+  const ac = gapAc(gap);
+  const have = typeof settled === 'function' ? settled() : settled;
+  return ac != null && Array.isArray(have) && have.includes(`AC${ac}`);
+};
+const ANSWERED_NOTE = ' [answered: the ticket\'s Decisions settle it, so post the verdict again with it under settled, citing the entry]';
 // A tagged gap as the person's item names: with a recommendation no worker may carry out, the action
-// and the row, so the person, or a session §3 grants it, does it without asking anyone else.
+// and the row, so the person, or a session §3 grants it, does it without asking anyone else; a
+// measurement, the command and the one reply that settles it.
 const personGapText = (gap, workerMay) => {
+  const cmd = measureOf(gap);
+  const ac = gapAc(gap);
+  if (cmd) return `${gap} [no worker can run this measurement: run \`${cmd}\` and reply with the number${ac ? `, naming AC${ac} ("AC${ac}: <number>")` : ''}; answer.mjs writes it into the ticket's Decisions, which settles it, so it is not asked again]`;
   const r = deniedRoute(gap, workerMay);
   return r ? `${gap} [no fix try: its recommendation, "${recommendedOf(gap)}", needs config §3 ${r.row}, which workers are not granted: ${r.action} on the PR's branch yourself, or from a session allowed to, or take the other option]` : gap;
 };
@@ -920,7 +939,7 @@ export function reviewFix(t, review, opts = {}) {
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
   // The person's: a gap tagged their call, or one whose recommendation needs a route §3 denies workers.
-  const persons = (g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null;
+  const persons = (g) => (personsCall(g) || deniedRoute(g, opts.workerMay) != null) && !answeredMeasure(g, opts.settled);
   const label = personLabel(opts.workerMay);
   const tagged = allGaps.filter(persons).map(label);
   // As personGapsCall reads a review with nothing open but the person's gaps.
@@ -951,7 +970,7 @@ export function reviewFix(t, review, opts = {}) {
   const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)) : [];
+  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)).map((g) => (answeredMeasure(g, opts.settled) ? `${g.replace(/PERSON['’]S CALL\s*·?\s*/, '')}${ANSWERED_NOTE}` : g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
   const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
@@ -1007,7 +1026,7 @@ export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
   // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
-  const person = reviewGaps(review.body).filter((g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null).map(personLabel(opts.workerMay));
+  const person = reviewGaps(review.body).filter((g) => (personsCall(g) || deniedRoute(g, opts.workerMay) != null) && !answeredMeasure(g, opts.settled)).map(personLabel(opts.workerMay));
   return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.map((g) => personGapText(g, opts.workerMay)).join('; ')}` } : null;
 }
 
