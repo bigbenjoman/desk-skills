@@ -169,7 +169,7 @@ export function decideReportLines(s) {
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
   const budgetText = (h) => {
     const off = (h.handoff ?? []).length + (h.elsewhere ?? []).filter((o) => o.handoff).length;
-    const names = [...h.by, ...(h.handoff ?? []).map((k) => `${k} (handed off)`),
+    const names = [...h.by, ...(h.handoff ?? []).map((k) => `${k} (handed off)`), ...(h.front ?? []).map((k) => `${k} (placed at the front)`),
       ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}${o.handoff ? ' (handed off)' : ''}`)];
     return `${h.file} has ${names.length} ${off ? 'running or handed off' : 'running'} of its ${h.k}: ${names.join(', ')}`;
   };
