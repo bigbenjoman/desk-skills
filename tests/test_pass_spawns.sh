@@ -350,6 +350,28 @@ printf '%s\n' '{"body":"Done.\n\n🤖 Generated with [Claude Code](https://claud
 : > "$T/gh-calls"
 out=$(DESK_CONFIG="$T/config-ai-ok.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 AC2 a PR that still carries it after one scrub parks, and is not edited again" '[ "$(field CW-9 state)" = "\"parked\"" ] && field CW-9 park.question | grep -q "It still does after the pass removed what it found once" && ! grep -q "pr edit" "$T/gh-calls"'
+# A cloud session pushes its screenshots to desk-shots/<branch> on origin. Once its PR
+# is found, the pass copies the screenshots at that ref's root into images/<KEY>/ for the undraft upload,
+# and deletes the ref on origin only where config §3 branch-delete is yes.
+node -e 'const fs = require("fs"); const [i, o] = process.argv.slice(1); fs.writeFileSync(o, fs.readFileSync(i, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `branch-delete` | Delete branches | `ask` | `yes` |"))' "$T/config.md" "$T/config-bd.md"
+shots_ticket(){ # <key> <pr number> <config>
+  rm -f "$T/cloud-prompt" "$T/cloud-view.json"; cloud_ticket "$1"
+  DESK_CONFIG="$3" node "$B/pass.mjs" > /dev/null 2>&1
+  q set "$1" "cloud=$(field "$1" cloud | jq -c --arg r "desk-shots/feat/$1" '.shots = $r')"
+  git clone -q "$T/origin.git" "$T/sh-$1"; git -C "$T/sh-$1" checkout -q --orphan "desk-shots/feat/$1"; git -C "$T/sh-$1" rm -rqf --ignore-unmatch .
+  printf png > "$T/sh-$1/after-save.png"; echo notes > "$T/sh-$1/notes.txt"; git -C "$T/sh-$1" add after-save.png notes.txt
+  git -C "$T/sh-$1" commit -q -m shots; git -C "$T/sh-$1" push -q origin "desk-shots/feat/$1"
+  node -e 'const [k, n, st] = process.argv.slice(1); console.log(JSON.stringify([{ number: +n, title: `feat(w): ${k} save`, url: "u", headRefName: `feat/${k}`, createdAt: new Date(Date.parse(JSON.parse(st)) + 600e3).toISOString() }]))' "$1" "$2" "$(field "$1" cloud.started)" > "$T/cloud-prs.json"
+  out=$(DESK_CONFIG="$3" node "$B/pass.mjs" 2>&1); }
+shots_ticket CW-20 66 "$T/config.md"
+check "issue-1550 AC4 a cloud PR's screenshots on its side ref are copied into its screenshot directory, and nothing else" '[ "$(field CW-20 state)" = "\"done\"" ] && [ "$(cat "$T/state-cl/images/CW-20/after-save.png")" = png ] && [ ! -e "$T/state-cl/images/CW-20/notes.txt" ] && echo "$out" | grep -qF "CW-20: 1 screenshot(s) from desk-shots/feat/CW-20 copied into $T/state-cl/images/CW-20, for the undraft step to upload into PR #66"'
+check "issue-1550 with branch-delete not yes, the side ref is left on origin and said, and no fetched ref is kept" 'git -C "$T/origin.git" rev-parse -q --verify refs/heads/desk-shots/feat/CW-20 > /dev/null && echo "$out" | grep -qF "desk-shots/feat/CW-20 on origin is left, since config §3 branch-delete is \"no\"" && [ -z "$(git -C "$T/repo" for-each-ref refs/desk-shots)" ]'
+check "issue-1550 AC4 with pr-images yes, nothing is asked: the undraft step uploads them" '[ "$(field CW-20 images_reported)" != true ] && ! echo "$out" | grep -qF "CW-20: screenshots for PR #66 are in"'
+node -e 'const fs = require("fs"); const [i, o] = process.argv.slice(1); fs.writeFileSync(o, fs.readFileSync(i, "utf8").replace(/^\| `pr-images` .*$/m, "| `pr-images` | Upload PR screenshots | `ask` | `ask` |"))' "$T/config.md" "$T/config-pi.md"
+shots_ticket CW-22 90 "$T/config-pi.md"
+check "issue-1550 AC4 with pr-images not yes, the upload is asked as a local worker's, and the undraft step holds on it" '[ "$(field CW-22 state)" = "\"done\"" ] && [ "$(field CW-22 images_reported)" = true ] && echo "$out" | grep -qF "CW-22: screenshots for PR #90 are in $T/state-cl/images/CW-22 — config §3 pr-images is \"ask\". Ask, then: DESK_UPLOAD_APPROVED=1 node "'
+shots_ticket CW-21 67 "$T/config-bd.md"
+check "issue-1550 with branch-delete yes, the side ref is deleted on origin once copied" '[ "$(field CW-21 state)" = "\"done\"" ] && [ -e "$T/state-cl/images/CW-21/after-save.png" ] && ! git -C "$T/origin.git" rev-parse -q --verify refs/heads/desk-shots/feat/CW-21 > /dev/null && ! echo "$out" | grep -q "desk-shots/feat/CW-21 on origin is left"'
 # A PR found only by the key in its title, off the session's branch and opened by someone else, may be a
 # teammate's: it parks, and nothing of it is rewritten or edited.
 cloud_ticket CW-10
