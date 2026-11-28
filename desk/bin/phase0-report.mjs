@@ -27,6 +27,7 @@ import * as E from './desk-env.mjs';
 import { archivedBatches, allBatches } from './batches.mjs';
 import { readLogFile, saidIn, markersIn } from './harvest.mjs';
 import { workerLogs, ticketCost, logUsage, spawnEvent, startFields } from './worker-cost.mjs';
+import { ranInCloud } from './cloud-worker.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
@@ -333,7 +334,8 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     if (!(at < until)) continue;
     const x = ticketFacts(state, t, t.added_at, records);
     // A cloud worker leaves no log here, so its run is read from the queue entry.
-    x.c ??= t.location === 'cloud' && t.cloud ? ticketCost(state, t) : null;
+    // A ticket moved local after its session went idle keeps that session's row, pinned or not (ranInCloud).
+    x.c ??= ranInCloud(t) && t.cloud ? ticketCost(state, t) : null;
     const size = sizeOf(state, t.key);
     const rework = ticketRework(x.logs, t, x.cost);
     const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];

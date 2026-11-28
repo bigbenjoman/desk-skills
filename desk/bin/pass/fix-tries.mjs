@@ -322,7 +322,7 @@ function* heldTry(t, p, s) {
   const fb = yield { type: 'feedback', key: t.key, pr: p.pr, gate: true };
   const atHead = !!fb && fb.head === p.head;
   const review = atHead ? fb.gateReview ?? fb.review : null;
-  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement, workerMay: s.workerMay }) : null;
+  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement, workerMay: s.workerMay, settled: reads.settled }) : null;
   // The hold is recorded, and listed, only where nothing goes to the PR's findings.
   yield { type: 'gate-hold', key: t.key, on: !worked };
   if (!atHead) return;
@@ -337,7 +337,7 @@ function* heldTry(t, p, s) {
 // The review fix a ready PR's review at its head that is not clean gets (reviewFix), marked ready.
 function findingsFix(t, p, s, fb, reads) {
   const comments = () => reads.comments(fb.review.id);
-  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, workerMay: s.workerMay, outside: reads.outside, title: reads.title });
+  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, workerMay: s.workerMay, outside: reads.outside, title: reads.title, settled: reads.settled });
   return rf?.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
 }
 
@@ -369,7 +369,7 @@ function* feedbackCall(t, p, s, waived, reads, settled = []) {
     : feedbackFix(t, { pr: n, head: p.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
   if (ff) return ff;
   // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
-  const gaps = fb.review ? personGapsCall(fb.review, { judgement, workerMay: s.workerMay }) : null;
+  const gaps = fb.review ? personGapsCall(fb.review, { judgement, workerMay: s.workerMay, settled: reads.settled }) : null;
   if (gaps) return gaps;
   // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.

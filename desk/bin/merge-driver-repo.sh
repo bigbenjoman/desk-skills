@@ -9,7 +9,8 @@
 #   - runs one loop of each covered batch's own driver in turn (merge-driver.sh --tickets <its tickets>,
 #     with --batch for a named batch), which reads that list instead of asking GitHub again, and merges
 #     onto that batch's base as a driver of its own would. A red base holds only its own batch's loop.
-# Then it waits 30s after any merge, 120s while any batch has ready PRs waiting, and otherwise backs off
+# Then it waits 30s after any merge, 120s while any batch has ready PRs waiting (or only until the
+# soonest confirmation hold a batch's loop reported ends), and otherwise backs off
 # as an idle driver does, ending the wait once a worker exits or any covered batch's PR leaves draft.
 # It holds the repo's lock, <state>/merge-driver/repo.lock.d of the standing batch (or of the one batch
 # named), and writes its pid into the lock of each batch it covers, and only while it covers it, so
@@ -100,6 +101,8 @@ say(){
 
 log "merge driver up for every batch: repo=$R_REPO author=$R_AUTHOR"
 OPEN_PRS="$R_STATE/merge-driver/open-prs.json"; GH_ERR="$R_STATE/merge-driver/gh-pr-list.err"; R_MARK="$R_STATE/merge-driver/sweep-began"
+# Each batch loop that leaves a PR confirming appends the epoch its hold ends (MERGE_DRIVER_DUE).
+DUE="$R_STATE/merge-driver/confirm-due"
 SWEEP=0
 while true; do
   stop_if_asked
@@ -144,12 +147,12 @@ EOF_P
     say "the open PR list reached its limit of $LIST_LIMIT, so each batch lists its own this sweep"; shared=""
   fi
 
-  merged=""; busy=""
+  merged=""; busy=""; : > "$DUE"
   while IFS="$TAB" read -r name state keys; do
     [ -n "$state" ] || continue
     set -- --tickets "$keys"
     [ "$name" = : ] || set -- --batch "$name" "$@"
-    MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_SWEEP=$$ MERGE_DRIVER_LOOP=$SWEEP MERGE_DRIVER_OPEN_PRS="$shared" \
+    MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_SWEEP=$$ MERGE_DRIVER_LOOP=$SWEEP MERGE_DRIVER_OPEN_PRS="$shared" MERGE_DRIVER_DUE="$DUE" \
       "$DESK_ENV_DIR/merge-driver.sh" "$@" ${LOG:+--log} </dev/null &
     CHILD=$!
     wait "$CHILD"; rc=$?
@@ -167,6 +170,8 @@ $COVER
 EOF_C
   # shellcheck disable=SC2034  # IDLE_RUN is read by idle_pause in merge-driver-lib.sh
   if [ -n "$merged" ]; then IDLE_RUN=0; pause 30
-  elif [ -n "$busy" ]; then IDLE_RUN=0; pause 120
+  elif [ -n "$busy" ]; then
+    IDLE_RUN=0; due=$(awk 'NR == 1 || $1 < m { m = $1 } END { print m }' "$DUE" 2>/dev/null)
+    if [ -n "$due" ]; then pause "$(hold_left "$due")"; else pause 120; fi
   else idle_pause "$R_MARK" sweep "${wakes[@]}"; fi
 done

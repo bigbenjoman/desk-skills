@@ -119,7 +119,7 @@
 // offered, that offers none it did not offer then; one put off is listed anyway while three or more
 // held tickets wait behind it. Exits 0, or 11
 // (show the person) on anything it refuses.
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { runOnce, outOrNull } from './build-memo.mjs';
@@ -128,7 +128,8 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
-import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
+import { conflictTriesMade, draftHasGaps, gapsFix, lastTrySaid, instructionFix, personGapsIn, personGapLines, ANSWERED_ITEM, personReviewFix, reviewGaps as reviewGapLines, stuckFindings, verdictReviewAt } from './fix-tries.mjs';
+import { settledCriteria } from './decisions-change.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
 import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
@@ -246,7 +247,9 @@ function draftGapsOf(r, t, reads) {
   const { v } = reads.pr(r, t.result.pr, ',reviews');
   const review = verdictReviewAt(v?.reviews, logins, at);
   const gaps = review ? reviewGapLines(review.body) : [];
-  return gaps.length ? gaps : null;
+  // A measurement asks for its command's number, and one the ticket file's Decisions settle is not asked again.
+  const settled = () => { try { return settledCriteria(readFileSync(join(r.stateDir, 'tickets', `${t.key}.md`), 'utf8')); } catch { return []; } };
+  return gaps.length ? personGapLines(gaps, { settled }) : null;
 }
 // The evidence a PR's body already holds for each gap only the person accepts (accept-gaps.mjs
 // acceptNeed): the body's lines naming the gap's criterion label, keyed by label (`AC2`), at most
@@ -598,7 +601,9 @@ function draftPlain(r, n, u, gapLines = null, t = null, reads = null) {
       const toAccept = `${accepts.length === 1 ? 'The gap' : 'Gaps'} only you can accept: ${acceptNeed(t.result.pr, ghRepoOf(r), accepts.map(one), prEvidence(r, t, reads, accepts))}`;
       return `${n} is a draft, and its code review left ${what}${rest.length ? `: ${rest.join('; ')}. ${settle}` : '.'} ${toAccept}`;
     }
-    if (gaps && gapLines?.length) return `${n} is a draft, and its code review left ${what}: ${gapLines.map((g) => one(g).replace(/[.;]$/, '')).join('; ')}. ${settle}`;
+    // Gaps all answered already in the ticket's Decisions ask nothing: a worker posts the verdict again.
+    const answered = gapLines?.length && gapLines.every((g) => g.endsWith(ANSWERED_ITEM));
+    if (gaps && gapLines?.length) return `${n} is a draft, and its code review left ${what}: ${gapLines.map((g) => one(g).replace(/[.;]$/, '')).join('; ')}.${answered ? '' : ` ${settle}`}`;
     if (gaps) return `${n} is a draft, and its code review left ${what}. Desk could not read the review to quote ${gaps === 1 ? 'the gap' : 'the gaps'}, so read ${gaps === 1 ? 'it' : 'them'} on the PR. ${settle}`;
     // No fix try ran on these: one that did and ran out is stuck (stuckPlain), so the reason is the review's.
     const it = found.length === 1 && found[0].startsWith('1 ') ? 'it' : 'them';

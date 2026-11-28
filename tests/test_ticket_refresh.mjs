@@ -1,13 +1,14 @@
 // suite: a GitHub issue's ticket file refreshed from the issue before its worker spawns (#1483)
 // layer: L1
 import { issueChanged, issueText, criteria, refreshTicket, refreshBrief } from '../desk/bin/ticket-refresh.mjs';
-import { ticketDecisions, newDecisions } from '../desk/bin/decisions-change.mjs';
+import { ticketDecisions, newDecisions, withDecisions } from '../desk/bin/decisions-change.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 t('AC3 an issue updated before the file was written has not changed', issueChanged({ updatedAt: '2026-11-20T10:00:00Z', fileAt: '2026-11-21T10:00:00Z' }), false);
 t('AC1 an issue updated after the file was written has changed', issueChanged({ updatedAt: '2026-11-22T10:00:00Z', fileAt: '2026-11-21T10:00:00Z' }), true);
 t('a recorded read later than the update is not a change, though the file is older', issueChanged({ updatedAt: '2026-11-22T10:00:00Z', readAt: '2026-11-22T10:00:00Z', fileAt: '2026-11-21T10:00:00Z' }), false);
+t('issue-1694 a recorded read wins over a later file write: an edit after the read is a change', issueChanged({ updatedAt: '2026-11-22T10:00:00Z', readAt: '2026-11-21T10:00:00Z', fileAt: '2026-11-23T10:00:00Z' }), true);
 t('an unreadable update time is no change', issueChanged({ updatedAt: '', fileAt: '2026-11-21T10:00:00Z' }), false);
 
 const body = '## Problem\nThe badge is missing.\n\n## Acceptance criteria\n- AC1: the badge shows on the card\n\n## Design\nNo UI.';
@@ -61,6 +62,16 @@ t('a comment already in a hand-written file is not new', refreshTicket({ ...args
 
 const b = refreshBrief({ key: 'issue-7', n: '7', file: '/s/tickets/issue-7.md', what: fromComment.what });
 t('the briefing for a session past Stage 0 names the file and what changed', [b.includes('/s/tickets/issue-7.md'), b.includes('ben at 2026-11-26T02:00:00Z')], [true, true]);
+
+// issue-1694: an answer.mjs entry is not on the issue, so a refresh keeps it; it lands in the Decisions section.
+{
+  const answered = withDecisions(admitted.trimEnd(), ['* 2026-11-28 ben (answer.mjs): AC1: shows on the card, checked at 3f2a1b0']);
+  t('issue-1694 AC2 an answer entry lands under a Decisions heading of its own where the file had none', ticketDecisions(answered).map((d) => d.line), ['2026-11-28 ben (answer.mjs): AC1: shows on the card, checked at 3f2a1b0']);
+  const kept = refreshTicket({ ...args, today: '2026-11-29', old: answered, issue: issue({ comments: [{ author: { login: 'ben' }, createdAt: '2026-11-29T01:00:00Z', body: 'one more thing' }] }), pr: 9 });
+  t('issue-1694 AC2 a refresh from the issue keeps the answer entry', ticketDecisions(kept.text).map((d) => d.line).filter((l) => l.includes('(answer.mjs)')), ['2026-11-28 ben (answer.mjs): AC1: shows on the card, checked at 3f2a1b0']);
+  const filled = withDecisions(issueText({ ...args, issue: issue({ body: `${body}\n\n## Decisions\n* 2026-11-20 ben: the badge is blue\n\n## Build on\nsrc/card.ts` }) }), ['* 2026-11-28 ben (answer.mjs): AC1: 2']);
+  t('issue-1694 AC2 into an existing Decisions section, after its last entry and before the next section', ticketDecisions(filled).map((d) => d.line), ['2026-11-20 ben: the badge is blue', '2026-11-28 ben (answer.mjs): AC1: 2']);
+}
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
 console.log('all passed');

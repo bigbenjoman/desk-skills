@@ -21,6 +21,16 @@ export { STATES, FINISHED };
 // A refusal list rather than a list of allowed keys, because pass.mjs writes many fields through set.
 const RESULT_KEYS = ['pr'];
 
+// Where a ticket runs, as `set <KEY> location=…` takes it (issue-1689): `local` pins it to this
+// computer, and placement at start (pass/shared.mjs cloudAble) honours that over triage's `runs:` call
+// until `auto` clears it; `cloud` runs it in a cloud session (the pass writes it when one starts); `auto`
+// leaves it to placement at start, stored as no location. `null` says none of these, so it is refused.
+export const LOCATIONS = ['local', 'cloud', 'auto'];
+const locationOf = (raw) => {
+  if (LOCATIONS.includes(raw)) return raw === 'auto' ? null : raw;
+  throw new Error(`location=${raw} does not say where it runs: use location=local (pin it to this computer), location=cloud (run it in a cloud session) or location=auto (clear the pin: placement at start decides). Nothing written.`);
+};
+
 export function setPath(obj, path, value) {
   const parts = path.split('.');
   let node = obj;
@@ -97,12 +107,25 @@ const pairsOf = (pairs) => pairs.map((p) => {
 // (bareHold): nothing else would, and it would sit held behind nothing. -> the words saying so, or ''.
 export function applySet(t, pairs, now = new Date().toISOString()) {
   const sets = pairsOf(pairs).map(([k, raw]) => {
-    const v = coerce(raw);
+    const v = k === 'location' ? locationOf(raw) : coerce(raw);
     if (k === 'state' && !STATES.includes(v)) throw new Error(`bad state "${v}" (want: ${STATES.join('|')})`);
     if (RESULT_KEYS.includes(k.split('.')[0])) throw new Error(`no ticket carries a top-level "${k}", so nothing would read it: did you mean result.${k}=${raw}? Nothing written.`);
     return [k, v];
   });
   const held = blockersOf(t).length > 0, bare = bareHold(t);
+  // A ticket running in a cloud session is watched only while its location reads cloud (pass/shared.mjs
+  // runsInCloud): pinned local, or unpinned (location=auto, stored as none), while it still runs there,
+  // no pass reads its PR, stop finds no session and requeue refuses it, so it stays running for good. It
+  // is stopped first. A write that moves it off running in the same set (the pass's own move, pass.mjs
+  // cloudUnfinished) is let through. Running in a cloud session is what queue.mjs stop reads as one: a
+  // local worker started on a ticket triage placed in the cloud records its session id first, and the
+  // pass's place handler then unpins it (location=auto), which is no cloud session to strand.
+  const loc = sets.findLast(([k]) => k === 'location');
+  const state = sets.findLast(([k]) => k === 'state')?.[1] ?? t.state;
+  const inCloudSession = t.state === 'running' && t.location === 'cloud' && t.cloud && !t.session_id;
+  if (loc && loc[1] !== 'cloud' && inCloudSession && state === 'running') {
+    throw new Error(`${t.key ?? 'this ticket'} is running in a cloud session, so its location cannot be changed while it runs there (location=${loc[1] ?? 'auto'}): queue.mjs stop ${t.key ?? '<KEY>'} first (it records the session abandoned), then pin it and requeue it. Nothing written.`);
+  }
   for (const [k, v] of sets) setPath(t, k, v);
   t.updated_at = now;
   const named = new Set(sets.map(([k]) => k.split('.')[0]));
