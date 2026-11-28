@@ -833,7 +833,8 @@ function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
 // A review try sent in place of a Stage 7 session (fix-tries.mjs emptySevenTry) whose worker finished on
 // PR #pr: the try is over and the PR kept as the ticket's, and `stage` is queued for a fresh session,
 // from a briefing rebuilt out of the Stage 7 one the try's spawn moved aside, with no Stage 7 leftovers in
-// it. With no readable briefing to rebuild from, it is recorded done instead, saying so.
+// it, and the try's round moved aside. With no readable briefing to rebuild from, it is recorded done
+// instead, saying so.
 function thenStage(t, { log, h, pr, stage, line }) {
   const path = handoffPath(STATE, t.key);
   if (!existsSync(path) && existsSync(`${path}.old`)) renameSync(`${path}.old`, path);
@@ -846,6 +847,9 @@ function thenStage(t, { log, h, pr, stage, line }) {
   const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
   q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=its worker finished; Stage ${stage} follows`, `result.pr=${pr}`, 'state=triaged', 'handoff=pending', `handoff_stage=${stage}`,
     ...(cost ? [`handoff_cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`] : []));
+  // The try's AUTOPILOT_DONE would keep the Stage `stage` session from spawning: its round moves aside,
+  // as a requeue does.
+  E.rotateRound(t.key);
   report.advanced.push(`${t.key}: ${line}: its review try on PR #${pr} is finished, and a fresh session from Stage ${stage} is queued for the tracker step`);
   return undefined;
 }
