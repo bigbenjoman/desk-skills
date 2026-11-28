@@ -1138,7 +1138,7 @@ export function repoRow(bs) {
     workers: Math.min(lead.cap, ok.reduce((a, b) => a + (b.workers ?? 0), 0)) };
 }
 // A merged row's batch whose queue cannot be read, said where its tickets would have been.
-const unreadableText = (b) => `${b.batch ? `Batch ${b.batch}` : 'The standing batch'}'s queue is unreadable, so its tickets are not counted: ${b.error}`;
+const unreadableText = (b) => `${b.batch ? `Batch ${b.batch}` : 'The default batch'}'s queue is unreadable, so its tickets are not counted: ${b.error}`;
 // Each repo in `list` once, in the order its first batch comes.
 export const byRepo = (list) => [...new Set(list.map((r) => r.slug))].map((s) => repoRow(list.filter((r) => r.slug === s)));
 // A repo's place shows every batch of it with a queue; a named batch's place shows that batch.
@@ -2537,8 +2537,8 @@ export function usageLines(u, opts) {
 const defaultLimitSegs = (name, l, now) => [[name, BOLD], [`, the default, is at its ${limitWord(l.type) ? `${limitWord(l.type)} ` : ''}limit`, GREY],
   ...(l.at != null ? [[' until ', GREY], [resetText(l.at * 1000, now), null], ['. Its workers start again then.', GREY]] : [['. Its workers start again once it lifts.', GREY]])];
 // Home's note while the Claude default is at its limit, which holds every repo not pinned elsewhere:
-// the same words, in the text colour as every note's are.
-const defaultOutNote = (s, now) => ({ tag: '▲ usage', sgr: WARN, text: defaultLimitSegs(s.name, s.limit, now).map(([t]) => [t, null]) });
+// the same words, in the text colour as every note's are, then the key that switches subscription.
+const defaultOutNote = (s, now) => ({ tag: '▲ usage', sgr: WARN, text: [...defaultLimitSegs(s.name, s.limit, now).map(([t]) => [t, null]), [' Press 6 to switch subscription and lift it sooner.', BOLD]] });
 
 // ---- Usage -------------------------------------------------------------------------------------
 // View 6: every Claude and Codex login on this computer, a table per tool, each login with its plan, its
@@ -2969,10 +2969,10 @@ const tildeOf = (s) => { const h = process.env.HOME || homedir(); return String(
 // What a pass's structured hold means for a person, after "nothing started or merged for <time>": what
 // is happening, then, where it clears by itself (`grey`), "Nothing to do: <when it clears>", else the
 // fix to run. A hold of no cause known here, or none (a pass from before holds were recorded), points at
-// the repo's own screen.   -> { what, grey, then }
+// the batch's own screen. A fix names the batch it acts on, since the Queue view shows every repo's and
+// the pass's own action command acts on whichever batch the shell it runs in is.   -> { what, grey, then }
 const NOTHING = 'Nothing to do: new workers start as running ones finish.';
 function holdCopy(h, r) {
-  const fixOf = (a) => (a?.cmd ? `Run: ${tildeOf(a.cmd)}` : null);
   const gb = (v) => (Number.isFinite(v) ? `${Math.round(v * 10) / 10} GB` : null);
   switch (h?.cause) {
     case 'machine': return { what: 'every worker this computer allows is running.', grey: true, then: NOTHING };
@@ -2988,12 +2988,14 @@ function holdCopy(h, r) {
       return r.q?.base_fix?.running
         ? { what: "the batch's base needs fixing before new work can start from it.", grey: true, then: 'Nothing to do: a worker is fixing it.' }
         : { what: "the batch's base cannot take the latest changes, so no new work starts from it.", grey: false, then: 'Run /desk-needs-you in a Claude session.' };
-    case 'concurrency': return { what: "the batch's worker count is 0.", grey: false, then: `Run: desk-q ${r.repo} workers 1` };
+    case 'concurrency': return { what: "the batch's worker count is 0.", grey: false, then: `Run: desk-q ${r.word} workers 1` };
     case 'usage': return { what: 'a usage limit is reached.', grey: false, then: 'Press 6 to switch subscription.' };
-    case 'budget': return { what: 'the batch has spent its budget.', grey: false, then: fixOf(h.action) ?? 'Run /desk-autopilot to raise it.' };
+    case 'budget': return { what: 'the batch has spent its budget.', grey: false, then: `Run /desk-autopilot in ${r.repo} to raise ${batchName(r)}'s budget.` };
     case 'health': return { what: 'a health check is failing.', grey: false, then: 'Run /desk-needs-you in a Claude session.' };
-    case 'config': return { what: 'a config row stops new work.', grey: false, then: fixOf(h.action) ?? 'Run /desk-setup in a Claude session.' };
-    default: return { what: '', grey: false, then: fixOf(h?.action) ?? `See why: desk-q ${r.repo}` };
+    case 'config': return /"ask"$/.test(h.detail ?? '')
+      ? { what: 'a config row asks for your approval before passes run.', grey: false, then: `Run /desk-autopilot in ${r.repo} to approve them.` }
+      : { what: 'a config row stops new work.', grey: false, then: `Run /desk-setup in ${r.repo}.` };
+    default: return { what: '', grey: false, then: `See why: desk-q ${r.word}` };
   }
 }
 
@@ -3038,25 +3040,20 @@ function quietNotes(shown) {
 
 // A run holding a test slot past OVERRUN times its usual time is called out in the test-lock note.
 const OVERRUN = 2;
-// Who a lock holder (suite-wait.mjs holderOf) is, as a person reads it: a ticket's run by its worktree's
-// name, else the run in the directory it works in.
-function holderName(h, lock) {
-  const run = SLOT_RUN[lock] ?? 'test run';
-  const dir = /^pid \d+$/.test(h.where ?? '') ? null : String(h.where ?? '').split('/').filter(Boolean).pop();
-  if (!dir) return `a ${run}${h.repo ? ` in ${String(h.repo).split('/').pop()}` : ''}`;
-  return /^[A-Z][A-Z0-9]*-\d+$/.test(dir) ? `${dir}'s ${run}` : `the ${run} in ${dir}`;
-}
-// One amber line for each holder in `queues` that has held its slot more than OVERRUN times its usual
-// time: who, how long against that time, and how to stop it.
+// One amber line for each holder (suite-wait.mjs holderOf) in `queues` that has held its slot more than
+// OVERRUN times its usual time: who, how long against that time, and how to stop it, which for a
+// ticket's run is stopping its worker, and never names a pid.
 function overrunLines(queues) {
   const seen = new Set(), out = [];
   for (const q of queues) {
     for (const h of q.holders ?? []) {
       if (!(Number.isFinite(h?.heldS) && Number.isFinite(h.expectedS) && h.expectedS > 0 && h.heldS > OVERRUN * h.expectedS)) continue;
-      if (h.pid != null && seen.has(h.pid)) continue;
+      if (seen.has(h.pid)) continue;
       seen.add(h.pid);
-      out.push([[`${capital(holderName(h, q.lock ?? 'test'))} has had a slot for ${span(h.heldS * 1000)}; it usually takes ${span(h.expectedS * 1000)}. `, WARN],
-        ...(Number.isInteger(h.pid) ? [['If it is stuck, stop it: ', WARN], [`kill ${h.pid}`, BOLD]] : [['If it is stuck, stop it in its own session.', WARN]])]);
+      const run = slotRun(q.lock ?? 'test', h.where), repo = h.repo ? String(h.repo).split('/').pop() : null;
+      out.push([[`${capital(run.name)} has had a slot for ${span(h.heldS * 1000)}; it usually takes ${span(h.expectedS * 1000)}. `, WARN],
+        ...(run.ticket ? [["If it is stuck, stop its worker: ", WARN], [`node ~/.claude/desk/bin/queue.mjs stop ${run.ticket}`, BOLD], [repo ? `, in ${repo}.` : '.', WARN]]
+          : [['If it is stuck, stop it in the terminal that started it.', WARN]])]);
     }
   }
   return out;
@@ -3073,7 +3070,7 @@ function throttleNote(rs) {
   for (const r of [...rs].sort((a, b) => (a.last ?? -Infinity) - (b.last ?? -Infinity))) {
     const n = r.stall.hold.numbers ?? {};
     if (!n.stall) continue;
-    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots, holders: r.stall.hold.holders }]) {
+    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }]) {
       if (Number.isFinite(q?.waiting) && Number.isFinite(q.slots)) byLock.set(q.lock ?? 'test', q);
     }
   }
@@ -3236,9 +3233,8 @@ function withoutHidden(notes, hidden) {
 // The note for a session-run batch the repo sets to the supervisor: running, its next batch hands
 // over; stopped, how to resume it, which hands it over.
 function handOverNote(r) {
-  const text = r.live ? 'set to the supervisor, but a session runs this batch. Its next batch hands over.'
-    : `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.repo}; it hands the batch to the supervisor.`;
-  return warnNote(`▲ ${r.repo}`, text);
+  if (r.live) return greyNote(r.repo, 'set to the supervisor, but a session runs this batch. Nothing to do: its next batch hands over.');
+  return warnNote(`▲ ${r.repo}`, `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.repo}; it hands the batch to the supervisor.`);
 }
 
 const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKILL.md'));
@@ -3473,15 +3469,22 @@ function stuckNote(l, repos, now) {
 // a batch's port range, what a slot's run is and where, a preview build's PR, else the label itself.
 // `repo` is the owner/name the label names, where it names one.
 const SLOT_RUN = { test: 'test run', tsc: 'typecheck', lint: 'lint run', browser: 'browser run', light: 'light run' };
+// A run holding a `lock` slot from directory `where` (a path, or `pid <n>` where none was read), as a
+// person reads it: a ticket's by its worktree's name, else the run in the folder it works in, never the
+// path. -> { name, ticket }, `ticket` null where the folder is no ticket's.
+function slotRun(lock, where) {
+  const run = SLOT_RUN[lock] ?? `${lock} run`;
+  const dir = /^pid \d+$/.test(where ?? '') ? null : String(where ?? '').split('/').filter(Boolean).pop();
+  if (!dir) return { name: `a ${run}`, ticket: null };
+  const ticket = /^[A-Z][A-Z0-9]*-\d+$/.test(dir) ? dir : null;
+  return { name: ticket ? `${ticket}'s ${run}` : `the ${run} in ${dir}`, ticket };
+}
 function leaseHolder(kind, label) {
   const s = printable(String(label ?? ''));
   const port = kind === 'port' && /^(\S+\/\S+) (\S+) (\S+)$/.exec(s);
-  if (port) return port[3] === 'range' ? { name: `the session running ${port[2] === 'standing' ? 'the standing batch' : `batch ${port[2]}`}`, repo: port[1] } : { name: port[3], worker: true, repo: port[1] };
+  if (port) return port[3] === 'range' ? { name: `the session running ${port[2] === 'standing' ? 'the default batch' : `batch ${port[2]}`}`, repo: port[1] } : { name: port[3], worker: true, repo: port[1] };
   const slot = kind === 'slot' && /^([\w-]+) (\S+): /.exec(s);
-  if (slot) {
-    const dir = slot[2].split('/').pop();
-    return { name: `a ${SLOT_RUN[slot[1]] ?? `${slot[1]} run`} in ${/^[A-Z][A-Z0-9]*-\d+$/.test(dir) ? `${dir}'s worktree` : slot[2]}` };
-  }
+  if (slot) return { name: slotRun(slot[1], slot[2]).name };
   const pr = kind === 'preview-build' && /^(\S+\/\S+?)(#\d+|@\S+)$/.exec(s);
   if (pr) return { name: pr[2].startsWith('#') ? `PR ${pr[2]}` : `branch ${pr[2].slice(1)}`, repo: pr[1] };
   return { name: s || 'an unlabelled holder' };

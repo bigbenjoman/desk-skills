@@ -1649,8 +1649,8 @@ const cell215 = (name) => coloured(ovRow(S215, name))[0] ?? '';
 t('DS-215 AC1 a handed-over batch with its agent loaded, on time: ● supervisor in green', `${cell215('sup')} ${/^ {2}sup +● supervisor · 2m ago {2}/.test(rowOf(ov215, 'sup') ?? '')}`, '38;5;108:● supervisor · 2m ago true');
 t('DS-215 AC2 a session-run batch set to session or unset: ● session in green, and no note names it',
   `${cell215('sess')} ${notes215.some((l) => /▲ sess\b/.test(l))}`, '38;5;108:● session · 1m ago false');
-t('DS-215 AC3 a session-run batch set to the supervisor: ▲ session in amber, and one amber note', `${cell215('over')} ${notes215.filter((l) => l.includes('▲ over')).join('|')}`,
-  `38;5;180:▲ session · 3m ago ${notes215.find((l) => l.includes('▲ over'))?.startsWith('note') ? 'note' : '    '}  ▲ over          set to the supervisor, but a session runs this batch. Its next batch hands over.`);
+t('DS-215 AC3 / DS-1049 AC1 a session-run batch set to the supervisor: ▲ session in amber, and one grey note saying nothing needs doing', `${cell215('over')} ${notes215.filter((l) => l.includes(' over ')).join('|')}`,
+  `38;5;180:▲ session · 3m ago ${notes215.find((l) => l.includes(' over '))?.startsWith('note') ? 'note' : '    '}  · over          set to the supervisor, but a session runs this batch. Nothing to do: its next batch hands over.`);
 const bandAt = lines(ov215).indexOf(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on');
 const needsAt = lines(ov215).findIndex((l) => l.startsWith('◆ '));
 t('DS-215 AC4 a handed-over batch whose agent is not loaded: ✕ supervisor off in red at once, and the red band above the header names the fix',
@@ -1733,7 +1733,7 @@ t('DS-215 AC9 neither macOS nor Linux: every repo reads session, with no supervi
 t('DS-215 AC9 and a repo screen offers no supervisor fix', /Supervisor's last log line|supervisor on/.test(halt215l), false);
 const plain215 = I.run('--plain').out;
 t('DS-215 AC10 --plain: the same words and glyphs, no colour, the band and notes as plain lines',
-  `${plain215.includes('\x1b')} ${lines(plain215).includes(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on')} ${lines(plain215).some((l) => /^(note| {4}) {2}▲ over {10}set to the supervisor/.test(l))} ${/ ✕ supervisor off · \d+m /.test(rowOf(plain215, 'off') ?? '')}`, 'false true true true');
+  `${plain215.includes('\x1b')} ${lines(plain215).includes(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on')} ${lines(plain215).some((l) => /^(note| {4}) {2}· over {10}set to the supervisor/.test(l))} ${/ ✕ supervisor off · \d+m /.test(rowOf(plain215, 'off') ?? '')}`, 'false true true true');
 t('DS-215 AC11 a repo screen\'s second header line: who runs it, the last pass, workers and cap, the batch',
   [lines(Q.repoScreen(at215('sup'), { now: NOW }))[2], lines(Q.repoScreen(at215('sess'), { now: NOW }))[2]].join(' | '),
   '● supervisor  last pass 2m ago │ workers 1 of 2 · cap 3 · machine 11 of 10 │ batch sup | ● session  last pass 1m ago │ workers 0 of 2 · cap 3 · machine 11 of 10 │ batch sess');
@@ -2735,7 +2735,7 @@ t('DS-454 AC1 three batches held by the repo\'s shared cap: one note, timed from
   `${cap3notes.length} ${cap3notes[0]?.startsWith('nothing started or merged for 3h 5m. ')}`, '1 true');
 t('DS-454 AC2 two batches held for different reasons: each reason once, each note naming its batch',
   notes454('mixed').join(' / '),
-  'the default batch: nothing started or merged for 3h 5m. See why: desk-q mixed / batch KAN-9: nothing started or merged for 3h 20m. See why: desk-q mixed');
+  'the default batch: nothing started or merged for 3h 5m. See why: desk-q mixed / batch KAN-9: nothing started or merged for 3h 20m. See why: desk-q mixed:KAN-9');
 t('DS-454 AC3 a single held batch reads as before', notes454('solo').join(' / '), 'nothing started or merged for 3h 5m. See why: desk-q solo');
 t('DS-454 AC4 two repos held for the same reason each keep their note',
   `${notes454('one').join(' / ')} | ${notes454('two').join(' / ')}`,
@@ -2829,7 +2829,11 @@ t('DS-1049 snapshot: the 2026-11-26 scenario is one grey test-lock note of three
 put1048('svb', 5910, lockQ1049(['SV-3643'], [run1049('~/studia/desk-skills-worktrees/DS-777', 2500, 600, 4242), run1049('~/studia/desk-skills', 700, 600, 4243)]));
 const over1049 = throttleBlock(lines(ov1049(['sva', 'svb'])));
 t('DS-1049 AC4 a holder well past its usual time adds one amber line naming its run, its time against its usual one and how to stop it',
-  `${over1049.length} ${over1049.at(-1)}`, "4 DS-777's test run has had a slot for 41m; it usually takes 10m. If it is stuck, stop it: kill 4242");
+  `${over1049.length} ${over1049.at(-1)}`, "4 DS-777's test run has had a slot for 41m; it usually takes 10m. If it is stuck, stop its worker: node ~/.claude/desk/bin/queue.mjs stop DS-777, in x.");
+// A run past its usual time in a folder that is no ticket's is named by that folder, and stopped where it started.
+put1048('svb', 5910, lockQ1049(['SV-3643'], [run1049('~/studia/desk-skills', 2500, 600, 4244)]));
+t('DS-1049 AC4 a run past its usual time outside a ticket\'s worktree names its folder and how to stop it, with no pid',
+  throttleBlock(lines(ov1049(['sva', 'svb']))).at(-1), 'The test run in desk-skills has had a slot for 41m; it usually takes 10m. If it is stuck, stop it in the terminal that started it.');
 t('DS-1049 AC4 a note with a run past its usual time is a new warning, so one hidden before it shows again',
   /⧗ tests queued/.test(ov1049(['sva', 'svb'], { hidden: new Map([['⧗ tests queued hold test-lock machine', NOW]]) })), true);
 // A note Ben can act on: a batch's worker count at 0, a usage hold; one that clears itself: the machine full.
@@ -2842,8 +2846,17 @@ put(I.T, I.env, 'actd', { port: 5960, conc: '2 / 3', beat: 1, queue: { batch: 'a
 const act1049 = lines(ov1049(['acta', 'actb', 'actc', 'actd']));
 t('DS-1049 AC2 a batch whose worker count is 0: amber, ending with the desk-q command that raises it',
   notesIn(act1049, 'acta').join(' / '), "nothing started or merged for 3h 5m: the batch's worker count is 0. Run: desk-q acta workers 1");
-t('DS-1049 AC2 a batch that spent its budget: amber, ending with the command the pass gave, home as ~',
-  notesIn(act1049, 'actc').join(' / '), 'nothing started or merged for 3h 5m: the batch has spent its budget. Run: node ~/.claude/desk/bin/queue.mjs set-batch budget_usd=none');
+t('DS-1049 AC2 a batch that spent its budget: amber, ending with where to raise it, never the pass\'s own command, which acts on the shell\'s batch',
+  notesIn(act1049, 'actc').join(' / '), "nothing started or merged for 3h 5m: the batch has spent its budget. Run /desk-autopilot in actc to raise the default batch's budget.");
+// A named batch at 0 workers beside its repo's default batch: the command names the batch it raises.
+put454('actn', 5970, null, mem454, 185, memHold1048);
+put454('actn', 5970, 'B3', 'concurrency 0', 185, hold1049('concurrency', 'batch', { numbers: { concurrency: 0 } }));
+t('DS-1049 AC2 a named batch whose worker count is 0: the desk-q command names that batch, not the default one',
+  notesIn(lines(ov1049(['actn'])), 'actn').join(' / '), "batch B3: nothing started or merged for 3h 5m: the batch's worker count is 0. Run: desk-q actn:B3 workers 1");
+// A config row set to ask: amber, naming the repo to approve its passes in, never the pass's command.
+put1048('actf', 5980, hold1049('config', 'repo', { detail: 'config §3 autopilot-merge is "ask"', action: { text: 'confirm', cmd: 'AUTOPILOT_USER_APPROVED=1 node /b/pass.mjs' } }));
+t('DS-1049 AC2 a config row set to ask: amber, ending with where to approve the passes',
+  notesIn(lines(ov1049(['actf'])), 'actf').join(' / '), 'nothing started or merged for 3h 5m: a config row asks for your approval before passes run. Run /desk-autopilot in actf to approve them.');
 t('DS-1049 AC2 a usage hold: amber, ending with the key that switches subscription',
   /Press 6 to switch subscription and lift it sooner\.$/.test(notesIn(act1049, 'actd').join(' / ')), true);
 t('DS-1049 every worker this computer allows running: grey, nothing to do, and none of the budget\'s own words',
@@ -2851,9 +2864,11 @@ t('DS-1049 every worker this computer allows running: grey, nothing to do, and n
   'nothing started or merged for 3h 5m: every worker this computer allows is running. Nothing to do: new workers start as running ones finish. | 0');
 // AC5: no note on any of these screens has a formula, a worktree path, a test command, a PID word, an
 // exit code or an internal word.
-const banned1049 = /\b(hold|share|room|gate|suite-bound)\b|standing batch|Stage 4|exit \d|\(exit|worktrees\/|--maxWorkers|tests\/run\.sh|\bpid\b|ceil\(| = \d|of the §3b cap|this pass/i;
+const banned1049 = /\b(hold|share|room|gate|suite-bound)\b|standing batch|Stage 4|exit \d|\(exit|worktrees\/|--maxWorkers|tests\/run\.sh|\bpid\b|kill \d|\b(4242|4243|4244|4101|4102)\b|budget_usd|AUTOPILOT_USER_APPROVED|ceil\(| = \d|of the §3b cap|this pass/i;
 const noteBlock = (ls) => { const at = ls.findIndex((l) => l.startsWith('note ')); return at < 0 ? [] : ls.slice(at, ls.indexOf('', at) < 0 ? ls.length : ls.indexOf('', at)); };
 const bands = (ls) => ls.filter((l) => /^ [✕·] /.test(l));
+// The screen with a ticket's run past its usual time, whose holder's pid is 4242.
+put1048('svb', 5910, lockQ1049(['SV-3643'], [run1049('~/studia/desk-skills-worktrees/DS-777', 2500, 600, 4242)]));
 const screens1049 = [snap1049, lines(ov1049(['sva', 'svb'])), act1049, lines(ov1048), lines(ov219), lines(ov991), lines(ov454)];
 t('DS-1049 AC5 no note or band names a formula, a worktree path, a full test command, a PID, an exit code or an internal word',
   screens1049.flatMap((ls) => [...noteBlock(ls), ...bands(ls)]).filter((l) => banned1049.test(l)).join(' // '), '');
@@ -3564,7 +3579,7 @@ try {
   t('DS-959 AC5 one grey note per kind on trial with a clash today: the count, the latest clash, that it went through and when the trial ends',
     leaseNote(clashNotes).join('\n'),
     [`2 clashes today: DS-806 was given port 3204 while DS-796 held it, at ${hhmm(2)}. / Leases are on trial, so it went through. The trial ends ${ends}.`,
-      `1 clash today: a test run in DS-1's worktree was given a heavy slot while a test run in DS-2's worktree held it, at ${hhmm(3)}. / Leases are on trial, so it went through. The trial ends ${ends}.`].join('\n'));
+      `1 clash today: DS-1's test run was given a heavy slot while DS-2's test run held it, at ${hhmm(3)}. / Leases are on trial, so it went through. The trial ends ${ends}.`].join('\n'));
   const portOn = join(L.T, 'machine-port-on.md');
   writeFileSync(portOn, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| lease-kinds | `port=on` | x |\n');
   t('DS-959 AC6 a kind that is on shows no note for its clashes or refusals, while a kind on trial still does',

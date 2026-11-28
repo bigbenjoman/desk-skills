@@ -176,9 +176,9 @@ t('AC7 and the narrowest drop RUNS ON too', heads.at(-1).includes('RUNS ON'), fa
 // ---- AC8: the default at its 5-hour limit until 14:05
 claudeReading(null, [1, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
 const h8 = home();
-t('AC8 Home\'s ▲ usage note names the default, its limit and when its workers start again',
+t('AC8 / DS-1049 AC2 Home\'s ▲ usage note names the default, its limit, when its workers start again and the key that switches subscription',
   h8.find((l) => l.includes('▲ usage'))?.replace(/^note {2}▲ usage +/, ''),
-  'ben.lavender@me.com, the default, is at its 5-hour limit until 14:05. Its workers start again then.');
+  'ben.lavender@me.com, the default, is at its 5-hour limit until 14:05. Its workers start again then. Press 6 to switch subscription and lift it sooner.');
 t('AC8 the Claude line still names the default, its 5h bar full', lines()[0].startsWith('Claude  ben.lavender@me.com  5h ██████████ 100% 14:05'), true);
 t('AC9 with the default at its limit', quiet(h8), true);
 claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
