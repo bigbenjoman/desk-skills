@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
 import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
 import { modeLine as personModeLine } from './person-use.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
+import { isHeld, stoppedHold, bareHold, bareHoldText, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -81,7 +81,7 @@ import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY } from './cloud-worker.mjs';
-import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
+import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount, followCheckText } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
@@ -101,7 +101,7 @@ const groupOf = (k) => GROUP_OF[k] ?? k;
 // A reason key draws as its group: the same glyph, word and colour (STATE_SGR), unless it has a word of its own.
 const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] ??= m[groupOf(k)]; return m; };
 // Every label desk-q can draw, by state key; exported for the test that each one shown has key text.
-export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing', checks: '▸ on checks' });
+export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', follow: '▹ check', finishing: '◑ finishing', checks: '▸ on checks' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -294,6 +294,8 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   if (day) return { k: 'waiting', text: `held until ${day.until}, by its label ${day.label}` };
   // Neither the pass nor the merge driver lets a ticket start whose hold names no blocker.
   if (stoppedHold(t)) return { k: 'needs', text: 'its worker was stopped: let it start', act: releaseCmd(t.key) };
+  // A bare hold the next pass releases (pass.mjs) waits on it while passes run.
+  if (bareHold(t)) return ctx.live ? { k: 'waiting', text: `${bareHoldText(t.key)}, or the next pass releases it` } : { k: 'needs', text: bareHoldText(t.key), act: releaseCmd(t.key) };
   if (!blockersOf(t).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
@@ -1096,7 +1098,10 @@ export function probesDue(repos, { now } = {}) {
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
-const attention = (r) => (r.error || (!r.q && !r.asks?.length) ? 0 : needsCount(r).shown);
+// The repo's needsCount where it has one to count (a readable batch, or a session's ask), else null.
+const countOf = (r) => (r.error || (!r.q && !r.asks?.length) ? null : needsCount(r));
+// A check after merge nobody has taken on is something for the user too, though not counted as needing them.
+const attention = (r) => { const c = countOf(r); return c ? c.shown + (c.follows?.length ?? 0) : 0; };
 // A repo with no batch still has a row while a session's ask waits on the person (asks.mjs).
 const hasBatch = (r) => r.q != null || r.error != null || r.asks?.length > 0;
 
@@ -1395,7 +1400,7 @@ const HUE = LIGHT ? { green: '32', cyan: '36', blue: '34', yellow: '33', magenta
   : TRUECOLOR ? { green: '38;2;152;195;121', cyan: '38;2;86;182;194', blue: '38;2;97;175;239', yellow: '38;2;229;192;123', magenta: '38;2;208;139;227', red: '38;2;240;124;132' }
     : { green: '38;5;108', cyan: '38;5;73', blue: '38;5;75', yellow: '38;5;180', magenta: '38;5;176', red: '38;5;210' };
 // A Needs you row put off with not-now (PUT_OFF) is grey: it is not counted until its inputs change.
-const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.blue, waiting: HUE.yellow, needs: HUE.magenta, putoff: GREY });
+const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.blue, waiting: HUE.yellow, needs: HUE.magenta, putoff: GREY, follow: HUE.cyan });
 // The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).
 // The band, when nothing can run, is bold and reversed on red.
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;
@@ -1523,7 +1528,7 @@ const ownLabel = (k) => LABEL[k] !== LABEL[groupOf(k)];
 // label where a row draws it, then each label of its own a row draws; one no row shows is left out.
 function keyLabels(ks) {
   const on = new Set(ks);
-  return [...shownOf(ks), ...(on.has(PUT_OFF) ? [PUT_OFF] : [])].flatMap((g) => {
+  return [...shownOf(ks), ...[AFTER, PUT_OFF].filter((k) => on.has(k))].flatMap((g) => {
     const of = [...on].filter((k) => groupOf(k) === g);
     return [...(of.some((k) => !ownLabel(k)) ? [g] : []), ...of.filter(ownLabel)];
   });
@@ -2317,8 +2322,12 @@ const joined = (s) => [...s.head, ...s.rows, ...s.foot].map(textOf).join('\n');
 
 // Header segments are split by a grey bar.
 const BAR = [' │ ', GREY];
-// "◆ 3 tickets need you", bold magenta, or grey when none do.
-const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's need'} you`, YOU_BOLD] : ['◆ nothing needs you', GREY]);
+// "◆ 3 tickets need you", bold magenta, or grey when none do, then "· 6 checks after merge" where any
+// follow steps wait (needsCount's follows and checking), which never count as needing the user.
+// -> a list of runs
+const needsYou = (you, checks = 0) => [you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's need'} you`, YOU_BOLD] : ['◆ nothing needs you', GREY],
+  ...(checks ? [[' · ', GREY], [`${checks} check${checks === 1 ? '' : 's'} after merge`, STATE_SGR[AFTER]]] : [])];
+const checksOf = (c) => (c.follows?.length ?? 0) + (c.checking?.length ?? 0);
 
 // The overview's first line: how many tickets need the user, then each repo's share, most first;
 // labels grey, figures bright. The count is followed by how long the oldest question has waited,
@@ -2336,7 +2345,8 @@ function needsLine(list, now, count = needsCount) {
     .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n(r)), BOLD]]);
   const first = oldestNeed(ok, c);
   const oldest = first != null ? [['  oldest ', GREY], [since(Math.max(0, now - first)), null]] : [];
-  return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
+  const checks = ok.reduce((a, r) => a + checksOf(c.get(r)), 0);
+  return segLine([...needsYou(you, checks), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
 
 // The overview's second line: workers running, the machine cap, the GB their weights hold of the memory
@@ -3479,7 +3489,8 @@ function barWrap(line, width) {
 // the merged tickets left off the list, then each merge driver running: its age and the last line it logged.
 const DRIVER_LAST_W = 100;
 function countsLine(r, now = Date.now()) {
-  const segs = [needsYou(needsCount(r).shown)];
+  const nc = needsCount(r);
+  const segs = needsYou(nc.shown, checksOf(nc));
   // Running tickets in a cloud session are told apart from the local ones: they take no local slot.
   const cloud = cloudRunning(r);
   const text = (k) => (k === 'running' && cloud ? `${LABEL[k][0]} ${count(r, k) - cloud} local · ☁ ${cloud} cloud` : `${LABEL[k][0]} ${count(r, k)} ${k}`);
@@ -3800,6 +3811,9 @@ const queueHead = ({ kw, ww, nw, sw, hw, tw }, width = null) => bold(cutLine([` 
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
 const PUT_OFF = 'putoff';
+// A follow step (a check after a merge) goes under Checks after merge, after Needs you: counted apart,
+// never as needing the user. One a session claimed (needs-you.mjs claim) says so in WHAT IT NEEDS.
+const AFTER = 'follow';
 // TITLE for a Needs you item that is not a ticket row, by its kind; any other kind shows as itself.
 const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // A Queue row for a counted item that is not a ticket row, in group `k`. A follow item's need leads
@@ -3809,8 +3823,8 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // How long an item has waited, for WAITING, or ''.
 const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
 const itemRowOf = (r, k, { now, kw, ww, nw, sw, hw, tw, width = null }) => ({ r: b, t, item }) => {
-  const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
-  const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
+  const checks = followCheckText(item);
+  const shown = item.claim ? `checking (${item.claim.session}) · ${checks}` : checks;
   const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
   return segRow(null, cutRuns([
     [[`  ${rpad('-', 4)}  ${cutPad(itemKey(t, item), kw)}`, null]], [[pad(LABEL[k], STATE_W), STATE_SGR[k]]],
@@ -3819,7 +3833,7 @@ const itemRowOf = (r, k, { now, kw, ww, nw, sw, hw, tw, width = null }) => ({ r:
     ...tailCells({ sw, hw, tw }, '—', '—', what),
   ], width), null);
 };
-const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
+const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Checks after merge', AFTER], ['Put off', PUT_OFF]];
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
@@ -3889,10 +3903,11 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   // Needs you row too, so the count above never names more than the table shows.
   // A put-off item goes under Put off, grey, as a put-off ticket row does.
   const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
+  const after = epic ? [] : [...nc.follows, ...nc.checking];
   // A row in Merging or Needs you says in WAITING how long it has been there (ageOf), a Merging PR's
   // amber or red by that age.
   const wait = (x) => { const g = ageOf(x, now); return g == null ? '' : span(g); };
-  const its = [...items, ...offItems];
+  const its = [...items, ...after, ...offItems];
   // A ticket with a PR open has started and has no ship date of its own.
   const starts = (x) => { const a = afterPrs(of(x), x); return x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
   const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
@@ -3915,14 +3930,14 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...tailCells(w, starts(x), ships(x), tt(summary(x))),
   ], width), { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
   const itemRow = (k) => itemRowOf(r, k, { now, ...w, width });
-  const extraOf = { needs: items, [PUT_OFF]: offItems };
+  const extraOf = { needs: items, [AFTER]: after, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);
     const extra = extraOf[k] ?? [];
     const n = g.length + extra.length;
     return n ? [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${n}`, GREY]], null), ...g.map(row), ...extra.map(itemRow(k))] : [];
   });
-  const shownKs = [...list.map(gk), ...items.map(() => 'needs'), ...offItems.map(() => PUT_OFF)];
+  const shownKs = [...list.map(gk), ...items.map(() => 'needs'), ...after.map(() => AFTER), ...offItems.map(() => PUT_OFF)];
   const foot = !shownKs.length ? ['  No unfinished tickets.'] : ['', ...stateKey(shownKs, width)];
   if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: letting it start or a requeue leaves it where it is');
   if (list.some(resortedWhy)) foot.push('', '^ moved up by the pass\'s re-sort, so the whole queue finishes soonest');
@@ -3932,7 +3947,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
 
 // What each shown state means, for the key line under a Queue.
 const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', merging: 'merges by itself once green', waiting: 'moves by itself',
-  needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes',
+  needs: 'nothing moves until you act', [AFTER]: 'a check after merge: say done once it has run, or a session claims it', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes',
   finishing: 'worker done, the next pass records it', checks: 'red checks re-run once, then it merges or gets a fix try' };
 // The key line: each label on screen (keyLabels) in its colour, its meaning grey. Narrower than the
 // line, it breaks between labels, each further line indented under the first.
@@ -4574,7 +4589,7 @@ function repoFigures(r, needs, now, checkin) {
   if (r.error) return { ...id, error: r.error };
   return { ...id, error: null, live: !!r.live, last_pass_at: isoOf(r.last), last_pass: lastPass(r, now)[0],
     running: count(r, 'running'), ready: count(r, 'ready'), merging: count(r, 'merging'), waiting: count(r, 'waiting'),
-    needs_you: needs.shown, put_off: needs.putOff, done: r.done,
+    needs_you: needs.shown, put_off: needs.putOff, after_merge: checksOf(needs), done: r.done,
     workers: { running: workersRunning(r), allowed: r.workers, cap: r.cap, ready_no_slot: Math.max(0, unslotted(r)) },
     all_done_by: queueDone(r, now, checkin), wait_cause: waitCause(r) ?? null };
 }
@@ -4600,7 +4615,7 @@ export function homeJson(repos, { all = false, now = Date.now(), avail = availab
   const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
   const parts = overviewParts(repos, { all, now, avail, cap, gate, perWorker, checkin });
   return envelope('home', now, { queues: queueAges(list, now), usage: inputAge(usage.reading?.at, now), levers: inputAge(levers.builtAt, now), memory: inputAge(now, now) }, {
-    needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
+    needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), after_merge: ok.reduce((a, r) => a + checksOf(needs.get(r)), 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
     machine: (() => {
       const mem = machineMemory(repos, { cap });
       const w = weightedRoom(headroom({ running, cap, avail, gate, perWorker }), mem);
@@ -4932,8 +4947,9 @@ export function interactive({
   // A view the new place lacks gives way to its nearest: Costs and Usage to the Queue, Epics to the Timeline.
   const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' || tab === 'usage' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
-  // The parked note is shown while any ticket in view waits on the user, or c is on.
-  const badge = (rs) => (checkin || rs.some((r) => attention(r) > 0) ? parkedBadge(checkin) : '');
+  // The parked note is shown while any ticket in view waits on the user, or c is on: a check after merge
+  // has no date for c to set, so it never shows the note.
+  const badge = (rs) => (checkin || rs.some((r) => (countOf(r)?.shown ?? 0) > 0) ? parkedBadge(checkin) : '');
 
   // The breadcrumb's parts, each with the place a click on it goes to; the last is where you are.
   function crumbParts() {

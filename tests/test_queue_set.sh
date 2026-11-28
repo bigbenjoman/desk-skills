@@ -209,6 +209,29 @@ q set L-1 location=auto
 check "issue-1689 AC1 location=auto clears the pin" '[ $rc -eq 0 ] && [ "$(loc)" = null ]'
 q set L-1 location=local
 check "issue-1689 AC1 location=local pins it too" '[ $rc -eq 0 ] && [ "$(loc)" = "\"local\"" ]'
+# #1681: clearing the last blocker from a hold's held_by releases it in the same write, and says so;
+# a hold with a blocker left, or a date to wait for, stays held.
+parkq(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(t.park?.question ?? null))' "$DESK_QUEUE" "$1"; }
+for k in W-5 W-6 W-7 W-8; do q add "$k"; q set "$k" state=triaged lane=A; done
+q hold W-5 B-2
+qs set W-5 held_by=null
+check "#1681 AC1: clearing held_by on a hold releases it to triaged and says so" '[ $rc -eq 0 ] && [ "$(held W-5)" = "null triaged" ] && [ "$(parkq W-5)" = null ] && [ "$out" = "W-5: held_by=null; no blocker is left, so it is released: state=triaged park=null" ]'
+q hold W-6 B-2 B-4
+qs set W-6 held_by=B-4
+check "#1681 AC1: a hold with a blocker left stays held"                    '[ $rc -eq 0 ] && [ "$(held W-6)" = "B-4 parked" ] && [ "$out" = "W-6: held_by=B-4" ]'
+q set W-6 held_label=blocked-until-2099-01-01
+qs set W-6 held_by=null
+check "#1681 AC1: a hold with its date label left stays held on the date"   '[ $rc -eq 0 ] && [ "$(held W-6)" = "null parked" ] && [ "$out" = "W-6: held_by=null" ]'
+# A hold left with no blocker by a write that named its state is shown as such, not "held behind ?",
+# and `set state=triaged`, as it says, releases it with its park.
+q hold W-7 B-2; q set W-7 state=parked held_by=null; q render
+check "#1681 AC2: a hold with no blocker reads HELD, with the release command" '[ $rc -eq 0 ] && echo "$out" | grep -q "^  HELD     W-7       held, no blocker: release with queue.mjs set W-7 state=triaged$" && ! echo "$out" | grep -q "held behind ?"'
+qs set W-7 state=triaged
+check "#1681 AC2: and set state=triaged releases it, its park too"           '[ $rc -eq 0 ] && [ "$(held W-7)" = "null triaged" ] && [ "$(parkq W-7)" = null ] && [ "$out" = "W-7: state=triaged; its hold is lifted: park=null" ]'
+# A park of its own is no hold, so clearing its held_by leaves it parked.
+q set W-8 state=parked held_by=B-2 'park={"question":"which colour?"}'
+qs set W-8 held_by=null
+check "#1681 a park of its own is not released by clearing held_by"          '[ "$(held W-8)" = "null parked" ] && [ "$(parkq W-8)" = "\"which colour?\"" ]'
 
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"

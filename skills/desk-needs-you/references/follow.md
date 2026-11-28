@@ -23,6 +23,12 @@ other step. Each checker step is an item of its own (`follow:<KEY>:checked:<id>`
 is a step that waits a set time after the merge (`follow:<KEY>:later:<id>`), so `done` on one item never
 settles a step another holds.
 
+Before you start running steps, take the item on, so desk-q shows it as `checking (<session>)` and
+leaves it out of the user's count meanwhile: `node ~/.claude/desk/bin/needs-you.mjs claim <repo>
+<item> --by <your session id>`. The claim ends with `done`, or once your session has been idle past
+§3b Release idle claims after (hours). Claim only an item you are about to run: while the claim lasts
+it is off the user's list, so a step you then leave to them is asked in this session.
+
 When every step ran clean, `record` the item `done` without asking, and say what each run showed.
 Otherwise ask, and say in the question which steps you settled and how. Where the PR's evidence
 covers every step you did not run clean, offer `done` as recommended, naming the test or check: the

@@ -19,7 +19,7 @@ const SET_UP = { wt: '/wt/A', kept: false, renamed: '', ok: true, exitOk: true, 
 // What each read answers when a case gives nothing: the ticket spawns as nothing holds it.
 const READS = {
   'file-budget': false, 'fix-try-stale': false, shipped: null, fresh: true, placement: null, 'rows-needed': null, busy: null, 'lock-queue': false,
-  'claim-upload': { ok: true, up: null }, 'read-repos': [], login: PICK, setup: SET_UP,
+  'claim-upload': { ok: true, up: null }, 'read-repos': [], login: PICK, setup: SET_UP, 'cloud-archive-wait': 'its session is recorded abandoned',
 };
 const WRITES = ['set', 'report', 'busy-held', 'lock-queue-held', 'place', 'take-slot', 'take-cloud-slot', 'remote-hung', 'db-down', 'skip', 'record-done', 'park', 'park-ask', 'hand-away', 'start'];
 const handlersFor = (answers = {}, extra = {}) => Object.fromEntries([...Object.keys(READS), ...WRITES].map((type) => [type, (a) => {
@@ -201,6 +201,24 @@ const { threw, calls } = withNoIo(() => {
       t(`a cloud ticket back for a ${kind} fix try on its PR is set up for a local worker`, j([types(back.actions).includes('setup'), back.verdict.how]), j([true, 'local']));
     }
     t('so is one back for more work on its PR with no try', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 } }))).verdict.how, 'local');
+    // issue-1552: a fix try the pass routes to the cloud (pass/shared.mjs cloudFixRoute).
+    const onPr = ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'checks', try: 1, of: 2, pr: 31 }, cloud: { session: 'session_x', pr_at: AT } });
+    const sent = step(snap(onPr, { cloudFix: 'send', attempts: 2, slots: 2, cloudSlots: 0 }));
+    t('issue-1552 AC1 a fix try sent to its live session starts with no slot of either kind', j([sent.verdict.how, types(sent.actions).filter((x) => /slot|setup|login|place/.test(x))]), j(['send', []]));
+    t('issue-1552 the send is held as any fix try is, by the file budget and a stale try', j([step(snap(onPr, { cloudFix: 'send' }), { 'file-budget': true }).verdict.type, step(snap(onPr, { cloudFix: 'send' }), { 'fix-try-stale': true }).verdict.type]), j(['skip', 'skip']));
+    const anew = step(snap(onPr, { cloudFix: 'new' }));
+    t('issue-1552 AC2 a fix try whose session is gone starts a new cloud session, on a cloud slot', j([anew.verdict.how, types(anew.actions).includes('take-cloud-slot'), types(anew.actions).includes('setup')]), j(['cloud', true, false]));
+    t('issue-1552 AC2 with the cloud full it waits for a cloud session, as a cloud-able ticket does', j(step(snap(onPr, { cloudFix: 'new', cloudSlots: 0 })).verdict), j({ type: 'skip', key: 'A', full: true, cloud: true }));
+    t('issue-1552 AC2 and with a local slot spare all last pass it takes that, as placement says', step(snap(onPr, { cloudFix: 'new', cloudSlots: 0, localSpare: true })).verdict.how, 'local');
+    // Comment AC: a try that writes to the branch, other than a send, waits for the old session to be archived.
+    for (const [what, more] of [['a local one', { cloudFix: null }], ['a new cloud session', { cloudFix: 'new' }]]) {
+      const held = step(snap(onPr, { ...more, archiveWait: 'https://claude.ai/code/session_x' }), { 'cloud-archive-wait': 'its session is recorded abandoned' });
+      t(`issue-1552 ${what} waits, taking no slot, until the PR's session is archived`, j([held.verdict.type, types(held.actions).filter((x) => /slot|setup|login|place|start/.test(x)), types(held.actions).includes('cloud-archive-wait')]), j(['skip', [], true]));
+      t(`issue-1552 and ${what} says why and what clears it`, /cloud session https:\/\/claude\.ai\/code\/session_x may still push to: its session is recorded abandoned\. It starts once that session is archived/.test(lines(held.actions).join()), true);
+    }
+    const stale = step(snap(onPr, { cloudFix: null, archiveWait: 'session_x' }), { 'fix-try-stale': true });
+    t('issue-1552 a try its PR no longer needs is ended before the wait, and abandons no session', j([stale.verdict.type, types(stale.actions).includes('fix-try-stale'), types(stale.actions).includes('cloud-archive-wait')]), j(['skip', true, false]));
+    t('issue-1552 a send to the live session is not held by it', step(snap(onPr, { cloudFix: 'send', archiveWait: 'session_x' })).verdict.how, 'send');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
   }
 

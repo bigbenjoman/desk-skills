@@ -34,16 +34,22 @@ SCOPE_LABELS = {
 SCOPE_ORDER = {"this": 0, "side": 1, "other": 2, "none": 3}
 
 
-def desk_script(name):
-    """argv prefix that runs desk/bin/<name> with node: beside $DESK_ENV_MJS, else ~/.claude/desk/bin,
-    else this checkout's desk/bin; None when none holds it."""
+def desk_file(name):
+    """Path of desk/bin/<name>: beside $DESK_ENV_MJS, else ~/.claude/desk/bin, else this checkout's
+    desk/bin; None when none holds it."""
     env_mjs = os.environ.get("DESK_ENV_MJS")
     for d in (os.path.dirname(env_mjs) if env_mjs else None,
               os.path.join(HOME, ".claude", "desk", "bin"),
               os.path.normpath(os.path.join(_HERE, "..", "..", "..", "desk", "bin"))):
-        if d and os.path.isfile(os.path.join(d, name)) and shutil.which("node"):
-            return ["node", os.path.join(d, name)]
+        if d and os.path.isfile(os.path.join(d, name)):
+            return os.path.join(d, name)
     return None
+
+
+def desk_script(name):
+    """argv prefix that runs desk/bin/<name> with node (desk_file finds it); None when none holds it."""
+    path = desk_file(name)
+    return ["node", path] if path and shutil.which("node") else None
 
 
 def desk_env_cmd():

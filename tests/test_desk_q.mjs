@@ -1292,6 +1292,26 @@ const nyFirst = NYs.frame().slice(3).find((l) => !l.startsWith(' ✕ ')) ?? '';
 t('DS-187 AC1 on the screen it is the first line under the tabs and bands', `${NYs.frame()[1].startsWith('1 Queue')} ${nyFirst.startsWith('◆ ')} ${nyFirst === unbanded(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
 NYs.ui.finish(0);
 
+// issue-1687 AC1: follow steps (checks after merge) are counted apart from what needs the person: the
+// headline adds "· N checks after merge", and NEEDS YOU counts only the parked ticket.
+{
+  const merged1687 = (pr, step) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, follow_on: [{ step, row: null }] });
+  const F = world({ voicepa: null, 'pr-ninja': null, pranicuk: null, 'desk-skills': null, followq: { port: 3700, conc: '2 / 3', beat: 1, perms: { 'autopilot-merge': 'yes' }, queue: { batch: 'fq', concurrency: 2, tickets: {
+    'FQ-1': { state: 'parked', park: { question: 'which copy?' } },
+    'FQ-2': merged1687(71, 'check the invoice totals'), 'FQ-3': merged1687(72, 'check the export opens'),
+  } } } });
+  const ov1687 = unbanded(F.run('--plain').out);
+  t('issue-1687 AC1 the overview headline counts the checks after merge apart from what needs you', ov1687[0], '◆ 1 ticket needs you · 2 checks after merge │ followq 1');
+  // The cell under the NEEDS YOU heading, cut at the heading's place in the line.
+  const head1687 = ov1687.find((l) => l.startsWith('  REPO ')) ?? '', at1687 = head1687.indexOf('NEEDS YOU');
+  t('issue-1687 AC1 NEEDS YOU counts only the parked ticket',
+    `${at1687 > 0} ${(rowOf(ov1687.join('\n'), 'followq') ?? '').slice(at1687, at1687 + 'NEEDS YOU'.length).trim()}`, 'true 1');
+  const q1687 = lines(F.run('--plain', 'followq').out);
+  t('issue-1687 AC1 the repo\'s counts line too', q1687[1], '◆ 1 ticket needs you · 2 checks after merge │ ✓ 2 done, not shown');
+  t('issue-1687 AC1 the follow steps are listed under Checks after merge, after Needs you',
+    `${q1687.findIndex((l) => /^ {2}Needs you · 1$/.test(l)) < q1687.findIndex((l) => /^ {2}Checks after merge · 2$/.test(l))} ${q1687.filter((l) => /▹ check/.test(l)).length}`, 'true 3');
+}
+
 // mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
 dated('mixed', 4830, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: {
   'M-1': { state: 'parked', park: { question: 'which copy?' } }, 'M-2': { ...ready, branch: 'feat/M-2-x', collides_with: 'M-5' },
@@ -1492,13 +1512,15 @@ t('DS-716 AC1 a lane C park held behind a running sibling: waiting, behind it', 
 t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: tests running | after #177');
 t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
 t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');
-t('DS-217 (DS-279 AC16) a hold that names no blocker: needs you, since nothing lets it start', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: let it start');
+t('#1681 AC2 (DS-279 AC16) a hold that names no blocker, passes running: waiting on the next pass, with the release command', cells217('holdsup', 'W-0'), '· waiting | held, no blocker: release with queue.mjs set W-0 …');
+t('#1681 AC2 with no pass running it needs you, and gives the release command', JSON.stringify(Q.holdOf({ tickets: {} }, { key: 'W-0', ...heldBy('') })),
+  JSON.stringify({ k: 'needs', text: 'held, no blocker: release with queue.mjs set W-0 state=triaged', act: 'node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null, then node ~/.claude/desk/bin/queue.mjs front W-0' }));
 t('DS-742 AC2 a ticket queue.mjs stop held: needs you, to let it start', cells217('holdsup', 'W-0S'), '◆ needs you | its worker was stopped: let it start');
 // The page's rail, its wrapped lines joined.
 const railText = (page) => lines(page).filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ');
 const w0 = Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED });
-t('DS-217 (DS-218 AC1) its page says so on the rail and gives the release command, each on a line of its own',
-  `${railText(w0)} | ${lines(w0).includes('node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null')}`, 'Needs you. Held behind no recorded blocker: let it start. Run, in holdsup: | true');
+t('#1681 AC2 (DS-218 AC1) its page says so on the rail, the next pass releasing it',
+  railText(w0), 'Moves without you: held, no blocker: release with queue.mjs set W-0 state=triaged, or the next pass releases it.');
 t('DS-217 AC3 (DS-280 AC9) behind a draft: waiting on the draft, which needs you', cells217('hold', 'W-3'), '· waiting | behind #175, which needs you');
 // hold's: W-7 by its hold, B-PARK's question, B-RED's stopped worker, W-8 and W-9 held outside the
 // batch, and the PRs of B-DRAFT and B-READY; W-3 and W-4 wait on those PRs, so count once.
