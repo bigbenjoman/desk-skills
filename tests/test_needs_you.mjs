@@ -1250,6 +1250,9 @@ put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-5': { state: 'triaged', lane: 'A', collides_with: 'F-1' },
   'F-6': { state: 'triaged', lane: 'A' },
   'F-7': { state: 'triaged', lane: 'A' },
+  // F-8 was held on a file of two places behind F-1 and F-9, and F-9 has since finished.
+  'F-8': { state: 'triaged', lane: 'A' },
+  'F-9': { state: 'done', lane: 'A' },
 } });
 // The last pass held F-2, F-3, F-6 and F-7 behind F-1 on a shared file's budget (pass.mjs budgetHolds).
 const phiState = join(env.HOME, '.desk-autopilot', 'acme__phi');
@@ -1259,6 +1262,7 @@ writeFileSync(join(phiState, 'passes.jsonl'), `${JSON.stringify({ at: new Date()
   phiHold('F-2', [{ file: 'a.mjs', k: 1, with: ['F-1'] }]), phiHold('F-3', [{ file: 'a.mjs', k: 1, with: ['F-1'] }]),
   phiHold('F-6', [{ file: 'src/one.ts', k: 1, with: ['F-1'] }, { file: 'src/big.ts', k: 2, with: ['F-1', 'X-9 in batch X'] }]),
   { key: 'F-7', with: ['F-1'], files: ['a.mjs'] },
+  phiHold('F-8', [{ file: 'src/two.ts', k: 2, with: ['F-1', 'F-9'] }]),
 ] })}\n`);
 const phr = loadRepos().find((x) => x.slug === 'acme__phi');
 const phiText = (k) => rowText(phr, phr.rows.find((x) => x.t.key === k));
@@ -1274,6 +1278,8 @@ t('DS-1033 AC2 a ready ticket whose collides_with names a running one, but which
 t('DS-1033 AC1 a ready ticket the pass held names every file at its budget, its places and the holders, whatever its collides_with',
   phiText('F-6'), 'waits for F-1, X-9 in batch X (collides on src/one.ts, 1 of 1 place taken; src/big.ts, 2 of 2 places taken)');
 t('DS-1033 a pass line from before holds were recorded still says the ticket shares files', phiText('F-7'), 'waits for F-1 (shared files)');
+t('DS-1033 AC2 a ticket held on a file whose holder has since finished, freeing a place, starts at the next pass',
+  `${phiText('F-8')} ${/F-8 +○ ready +starts at the next pass/.test(phi)}`, 'starts at the next pass true');
 
 // ---- DS-378: a PR item says in plain words what is wrong and what happens once the person acts, and
 // done reads the PR on GitHub there and then.

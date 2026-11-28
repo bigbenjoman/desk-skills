@@ -7538,7 +7538,7 @@ if (!DRY) {
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
     // `holds`: each file at its budget, its places and the tickets that fill them, so desk-q names the
-    // same file, places and holders the pass held the ticket on (DS-1033).
+    // same file, places and holders the pass held the ticket on.
     return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.handoff, ...h.front, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file),
       holds: holds.map((h) => ({ file: h.file, k: h.k, with: [...h.by, ...h.handoff, ...h.front, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) };
   });

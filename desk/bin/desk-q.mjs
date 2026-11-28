@@ -888,7 +888,7 @@ function passHolds(stateDir) {
       return Object.fromEntries((rec.collisions ?? []).filter((c) => c?.key && Array.isArray(c.with)).map((c) => [c.key, {
         with: c.with,
         // Each file at its budget with its places and the tickets filling them, where the pass recorded
-        // them (DS-1033); a line from before that records none, and desk-q then names no file.
+        // them; a line from before that records none, and desk-q then names no file.
         holds: (Array.isArray(c.holds) ? c.holds : []).filter((h) => typeof h?.file === 'string' && Number.isInteger(h.k) && Array.isArray(h.with)),
       }]));
     } catch { /* a torn line */ }
@@ -3514,16 +3514,19 @@ function countsLine(r, now = Date.now()) {
 const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
 // A recorded holder is a key, or "key in batch x" for another batch's ticket.
 const holderHolds = (r, w) => stillHolds(r.q?.tickets?.[String(w).split(' in ')[0]]);
-// "waits for F-1 (collides on src/f.ts, 1 of 1 place taken; …)": the holders that still hold, then each
-// file the pass held the ticket on with its places and how many of them those holders take (DS-1033).
-// A pass line that recorded no files says only that the ticket shares them.
+// "waits for F-1 (collides on src/f.ts, 1 of 1 place taken; …)": each file the pass held the ticket on
+// whose places the holders that still hold fill, as budgetHolds counts them, with those holders. A file
+// one of them has since left has a free place, so it holds nothing. A pass line that recorded no files
+// says only that the ticket shares them, while any of its holders still holds.
 function heldWords(r, rec) {
+  if (rec?.holds?.length) {
+    const files = rec.holds.map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w)) })).filter((h) => h.with.length >= h.k);
+    if (!files.length) return null;
+    const who = [...new Set(files.flatMap((h) => h.with))];
+    return `waits for ${who.join(', ')} (collides on ${files.map((h) => `${h.file}, ${h.with.length} of ${h.k} place${h.k === 1 ? '' : 's'} taken`).join('; ')})`;
+  }
   const clash = (rec?.with ?? []).filter((w) => holderHolds(r, w));
-  if (!clash.length) return null;
-  const files = (rec.holds ?? []).map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w)) })).filter((h) => h.with.length);
-  const who = files.length ? [...new Set(files.flatMap((h) => h.with))] : clash;
-  const why = files.length ? `collides on ${files.map((h) => `${h.file}, ${h.with.length} of ${h.k} place${h.k === 1 ? '' : 's'} taken`).join('; ')}` : 'shared files';
-  return `waits for ${who.join(', ')} (${why})`;
+  return clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
 }
 function startWait(r, t) {
   const held = heldWords(r, r.passHolds?.[t.key]);
