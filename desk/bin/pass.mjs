@@ -36,7 +36,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
+import { cloudPrompt, deskReviewEnabled, startCloud, findCloudPr, cloudWall, cloudName, cloudStall, cloudEta, sendCloud, cloudFixMsg, cloudFixPrompt, CLOUD_FIX_WAIT_MS, handOver, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS, CLOUD_COST_UNKNOWN, readArchived, attributionFound, authorMismatches, stripAttribution, rewriteCommits } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
@@ -111,7 +111,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, cloudFixRoute, cloudSessionLive, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, cloudFixRoute, cloudSessionLive, cloudArchiveWait, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1150,12 +1150,6 @@ function cloudFixPr(t, c, where) {
     const ended = v.state === 'MERGED' ? 'merged' : 'closed unmerged';
     if (!DRY) q('set', t.key, 'state=done', `cloud=${JSON.stringify(rest)}`, `result.pr=${f.pr}`, `result.summary=PR #${f.pr} ${ended} while its ${label} was out to its cloud session`);
     report.done.push(`${t.key}: PR #${f.pr} ${ended} while its ${label} was out to cloud session ${where}: done on it again`);
-    return null;
-  }
-  if (f.head == null) {
-    // A try that recorded no head: the head at the first read stands for it, and a push is one past that.
-    if (!DRY) q('set', t.key, `cloud=${JSON.stringify({ ...c, fix: { ...f, head: v.headRefOid } })}`);
-    report.quiet.push(`${t.key}: its ${label} is out to cloud session ${where}, no push to PR #${f.pr} yet`);
     return null;
   }
   if (v.headRefOid !== f.head) return { number: v.number ?? f.pr, title: v.title, url: v.url, headRefName: v.headRefName, createdAt: v.createdAt };
@@ -3378,8 +3372,13 @@ const cloudFixOf = (t) => cloudFixRoute(t, { effort: leverFor('effort', t) });
 // session is gone), and those that would take a local slot: the rest, and the cloud-able ones too where
 // LOCAL_SPARE lets them. A fix try sent to its session takes neither.
 const cloudStartable = (t) => startsInCloud(t) || cloudFixOf(t) === 'new';
-const spawnableCloud = spawnable.filter(cloudStartable);
-const spawnableLocal = spawnable.filter((t) => cloudFixOf(t) !== 'send' && (!cloudStartable(t) || LOCAL_SPARE));
+// The cloud sessions the person has said are archived (cloud-worker.mjs readArchived), read once: a fix
+// try that writes to a cloud PR's branch, other than one sent to its live session, waits for that PR's
+// session to be among them (pass/shared.mjs cloudArchiveWait), and takes no slot of either kind meanwhile.
+const ARCHIVED = readArchived(STATE);
+const archiveWaitOf = (t) => (cloudFixOf(t) === 'send' ? null : cloudArchiveWait(t, ARCHIVED));
+const spawnableCloud = spawnable.filter((t) => cloudStartable(t) && !archiveWaitOf(t));
+const spawnableLocal = spawnable.filter((t) => cloudFixOf(t) !== 'send' && !archiveWaitOf(t) && (!cloudStartable(t) || LOCAL_SPARE));
 // §3b "Cloud sessions at once" (read here, counted below): with this batch's own cloud sessions alone
 // the cloud cannot take every cloud-able ticket, so the rest want local room counted, and the lock that
 // borrowing and a sibling batch's shared cap count it under (cloudOverflow).
@@ -4397,7 +4396,12 @@ function spawnCloud(t, pick) {
   // A fix try on its PR whose session is gone (cloudFixRoute 'new'): the new session works the PR's
   // branch, and the ticket keeps pr_at, so it stays on that PR, with the try out to it in `cloud.fix`.
   const f = cloudPrHere(t) && t.fix && !t.fix.finished ? t.fix : null;
-  const onPr = f ? { pr_at: t.cloud?.pr_at ?? PASS_AT, fix: cloudFixOut(f, started) } : {};
+  const head = f ? cloudFixHead(f.pr) : null;
+  if (head && !head.head) {
+    report.waiting.push(`${t.key}: its ${tryLabel(f)} on PR #${f.pr} was not started in a new cloud session, since the PR's head could not be read (${head.why}), and its push is told from it. It stays queued; the next pass tries again`);
+    return;
+  }
+  const onPr = f ? { pr_at: t.cloud?.pr_at ?? PASS_AT, fix: cloudFixOut(f, started, head.head) } : {};
   // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
   // which moves it off running. `cloud` holds `started` from here, so a refused write of the session
   // below still leaves a running ticket the pass watches for its PR (advanceCloud) rather than skips.
@@ -4427,10 +4431,20 @@ function spawnCloud(t, pick) {
 }
 
 // The record of fix try `f` out to a cloud session (`cloud.fix`), sent at `at`: advanceCloud reads its PR
-// for a head past `head`, the one the try was made for (null where the try did not record one: the
-// first read records it).
-function cloudFixOut(f, at) {
-  return { try: f.try ?? null, of: f.of ?? null, kind: f.kind, pr: f.pr, head: f.head ?? null, sent_at: at };
+// for a head past `head`, the PR's head read just before the send (cloudFixHead), so only a push after
+// it counts as the session's.
+function cloudFixOut(f, at, head) {
+  return { try: f.try ?? null, of: f.of ?? null, kind: f.kind, pr: f.pr, head, sent_at: at };
+}
+
+// PR #`pr`'s head now, read fresh before a fix try goes out to a cloud session: -> { head } or { why }.
+// Neither the try's own head (drafted when its findings were read) nor a later read can stand in for it:
+// a push between the two would be taken for the session's, or missed.
+function cloudFixHead(pr) {
+  const got = shOut('gh', ['pr', 'view', String(pr), '--repo', GH_REPO, '--json', 'headRefOid'], { fresh: true });
+  let head = null;
+  try { head = got.ok ? JSON.parse(got.out)?.headRefOid ?? null : null; } catch { head = null; }
+  return head ? { head } : { why: got.ok ? 'no head in its reply' : (got.out.split('\n').pop() || 'gh failed') };
 }
 
 // Records ticket `t`'s cloud session abandoned (`cloud.abandoned_at`, and `why` as `send_error` where a
@@ -4465,9 +4479,14 @@ function sendCloudFix(t) {
   if (DRY) { report.spawned.push(`${t.key} (dry run: its ${tryLabel(f)} on PR #${f.pr} not sent to cloud session ${where})`); return; }
   // Recorded running before the send, which cannot be taken back: a refused write sends nothing. What
   // the session's first round left (a scrub, an unfinished PR's follow-ups, a retry) does not carry over.
+  const head = cloudFixHead(f.pr);
+  if (!head.head) {
+    report.waiting.push(`${t.key}: its ${tryLabel(f)} was not sent to cloud session ${where}, since PR #${f.pr}'s head could not be read (${head.why}), and a push is told from it. It stays queued; the next pass tries again`);
+    return;
+  }
   const at = new Date().toISOString();
   const { scrubbed: _s, unfinished: _u, retried_at: _r, ...round } = c;
-  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ ...round, fix: cloudFixOut(f, at) })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'spawn_failed=null'],
+  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ ...round, fix: cloudFixOut(f, at, head.head) })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'spawn_failed=null'],
     `its ${tryLabel(f)} was not sent to cloud session ${where}`)) return;
   const sent = sendCloud(c.session, cloudFixMsg({ pr: f.pr, branch: t.branch, fix: f, rules: cloudRules() }), { env: cloudEnv(c) });
   if (sent.error) {
@@ -5085,6 +5104,13 @@ const SPAWN_HANDLERS = {
     report.parked.push(`${a.key}: ${a.line}`);
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),
+  // A fix try held until its cloud PR's session is archived: a live one is recorded abandoned and put on
+  // needs-you's archive list first (abandonCloud), so it is asked about once.
+  'cloud-archive-wait': (a, s) => {
+    if (!cloudSessionLive(s.t)) return 'its session is recorded abandoned, and needs-you asks you to archive it';
+    if (DRY) return 'its session would be recorded abandoned (dry run: nothing recorded)';
+    return abandonCloud(s.t, null);
+  },
   start: () => {},
 };
 // Where in `spawnable` the loop stopped for want of a slot, or null; and the slots taken and workers
@@ -5092,8 +5118,8 @@ const SPAWN_HANDLERS = {
 let slotStopAt = null;
 // The local-only tickets the loop has still to read (`ahead`, deferringOrder's, priority's deferred
 // retries included): the local slots a cloud-able ticket leaves them. A fix try sent to its cloud
-// session takes no slot of either kind.
-const localOnlyAhead = (ahead) => ahead.filter((x) => !cloudStartable(x) && cloudFixOf(x) !== 'send').length;
+// session, or waiting on that session's archive, takes no slot of either kind.
+const localOnlyAhead = (ahead) => ahead.filter((x) => !cloudStartable(x) && cloudFixOf(x) !== 'send' && !archiveWaitOf(x)).length;
 const loopFrom = { attempts, running: localKeys().length };
 // The memory share a local start was refused: no later local ticket starts this pass, though a cloud one may.
 let memStop = false;
@@ -5137,7 +5163,7 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     snapshot: () => ({ t, at: PASS_AT, dry: DRY, stop: baseHold || usageStop, attempts, slots: memStop ? 0 : localSlots,
       cloudAttempts, cloudSlots, cloudRunning: cloudRunning + cloudAttempts, cloudLimit: CLOUD.n, cloudHeld,
       localSpare: LOCAL_SPARE, personUse: PERSON.on, reserve: localOnlyAhead(step.ahead),
-      rerun: rerunAllowed.has(t.key), resume: toResume(t), handoff: toHandoff(t), cloudFix: cloudFixOf(t),
+      rerun: rerunAllowed.has(t.key), resume: toResume(t), handoff: toHandoff(t), cloudFix: cloudFixOf(t), archiveWait: archiveWaitOf(t),
       dbDown: !!dbDown, dbUp: !HEALTH.reused && HEALTH.results?.database?.ok === true, fetchLimit: SETUP_FETCH_S }),
     decide: decideSpawn,
     handlers: SPAWN_HANDLERS,
@@ -5258,15 +5284,13 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.
-    `upload_round=${sid}`]);
+    `upload_round=${sid}`,
+    // A fix try a stopped cloud session kept (queue.mjs stopCloud) is this local worker's now, not out to
+    // that session (pass/shared.mjs fixInCloud).
+    ...(t.cloud?.fix ? [`cloud=${JSON.stringify((({ fix: _f, ...rest }) => rest)(t.cloud))}`] : [])]);
   if (!recorded) continue;
-  // A local try that writes to a cloud PR's branch while its session may still push there (the effort
-  // lever on, or a kind no session takes) records that session abandoned first, so the two never both
-  // push to it. A review or capture try writes nothing to the branch.
-  const writesBranch = t.fix && !t.fix.finished && !['rereview', 'capture'].includes(t.fix.kind);
-  if (cloudPrHere(t) && cloudSessionLive(t) && writesBranch && !DRY) {
-    report.advanced.push(`${t.key}: its ${tryLabel(t.fix)} on PR #${t.fix.pr} runs as a local worker, so ${abandonCloud(t, null)}`);
-  }
+  // A local try that writes to a cloud PR's branch started only once that PR's session was archived
+  // (decideSpawn's archiveWait hold), so the two never both push to it.
   // Only once the round is recorded: a refused write leaves last_round, and a resume file kept beside
   // it is what still rules out resuming that round on the next pass (resumeCheck).
   // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.

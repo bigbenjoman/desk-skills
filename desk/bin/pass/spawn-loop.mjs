@@ -80,6 +80,15 @@ export function* decideSpawn(s) {
     if (yield { type: 'fix-try-stale', key }) return yield skip;
     return yield { type: 'start', key, how: 'send' };
   }
+  // Any other try that writes to a cloud PR's branch, a local worker's or a new cloud session's, waits,
+  // taking no slot, until the person has archived that PR's session, which is recorded abandoned and put
+  // on needs-you's archive list first: until then the old session may still push there, and two writers
+  // race each other's pushes, or its late push is read as the new session's.
+  if (s.archiveWait) {
+    const done = yield { type: 'cloud-archive-wait', key };
+    yield wait(`its fix try on PR #${t.fix.pr} writes to the PR's branch, which cloud session ${s.archiveWait} may still push to: ${done}. It starts once that session is archived (needs-you: done on its cloud-archive item)`);
+    return yield skip;
+  }
   // Where it starts is decided now, not at admission (pass/shared.mjs placeAtStart): a cloud-able ticket
   // goes to the cloud while §3b "Cloud sessions at once" has room, and takes a local slot only as that
   // says; a local-only one, and a resume or handoff (which run here), takes a local slot. A fix try on
@@ -95,14 +104,6 @@ export function* decideSpawn(s) {
     return yield { ...skip, full: true, ...(place.full === 'cloud' ? { cloud: true } : {}) };
   }
   const cloud = place.where === 'cloud';
-  // A local try that writes to a cloud PR's branch waits, taking no slot, until the person has archived
-  // that PR's session, which is recorded abandoned and put on needs-you's archive list first: until
-  // then the session may still push there, and two writers race each other's pushes and reviews.
-  if (!cloud && s.archiveWait) {
-    const done = yield { type: 'cloud-archive-wait', key };
-    yield wait(`its fix try on PR #${t.fix.pr} runs as a local worker and writes to the PR's branch, which cloud session ${s.archiveWait} may still push to: ${done}. It starts once that session is archived (needs-you: done on its cloud-archive item)`);
-    return yield skip;
-  }
   // A resume or handoff of a ticket whose cloud session is over runs here, as before.
   const offHere = cloud || ((s.resume || s.handoff) && runsInCloud(t));
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.

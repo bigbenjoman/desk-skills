@@ -222,7 +222,10 @@ export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != nu
 // reviewer's threads, each of which the PR shows it. A conflict, a sync, a person's call and the
 // review and capture tries need this computer.
 export const CLOUD_FIX_KINDS = ['review', 'checks', 'feedback'];
-export const fixInCloud = (t) => t?.location === 'cloud' && Boolean(t.cloud?.fix);
+// A fix try out to a cloud session: `cloud.fix`, on a session not recorded abandoned. A stopped session
+// (queue.mjs stopCloud) keeps its `cloud.fix`, which a requeue keeps too, and a local worker started on
+// the try after it must not count as running in the cloud.
+export const fixInCloud = (t) => t?.location === 'cloud' && Boolean(t.cloud?.fix) && !t.cloud.abandoned_at;
 export const runsInCloud = (t) => t?.location === 'cloud' && (!cloudPrHere(t) || fixInCloud(t));
 // A cloud session that may still push to its PR's branch: recorded, and not recorded abandoned.
 export const cloudSessionLive = (t) => Boolean(t?.cloud?.session) && !t.cloud.abandoned_at;
