@@ -670,7 +670,7 @@ export const ROWS = Object.freeze([
   p('pr-auto-merge', forces(settledBy('repo-merge-settings', { clause: AUTO_MERGE_OFF }, 'no', 'gh pr merge --auto cannot arm where the repo has auto-merge off'))),
   p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
   p('pr-conflict-unreviewed'), p('pr-conflict-reviewed'), p('ci-rerun'), p('codex-review'), p('ci-protection'),
-  p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'), p('gh-issue-edit'),
+  p('gh-close-linked-issue'), p('gh-issue-close'), p('gh-issue-create'), p('gh-issue-comment'), p('gh-issue-edit'),
   // §3 Autopilot
   p('autopilot-workers'), p('autopilot-worker-mode', { type: 'text', example: 'dontAsk' }), p('autopilot-merge'), p('merge-hold-routine'),
   p('batch-base-push'), p('autopilot-judgement'), p('accept-review-gaps'), p('autopilot-reclaim'), p('machine-reboot'),

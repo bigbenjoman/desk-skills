@@ -149,6 +149,18 @@ every ticket linking it and their merged PRs, once all of those tickets are done
 another ticket still holds open stays open. Relay each line it prints. A ticket with no such link
 prints nothing. The merge driver runs this itself after its own move to Done.
 
+**With §4 Tracker (`desk-env get tracker`) `none`, once the PR has merged, make sure its issue closed**:
+
+```bash
+node ~/.claude/desk/bin/issue-close.mjs issue-<n> --pr <pr>
+```
+
+The PR's `Closes #<n>` closes the issue at merge into the default branch. Where it did not (another
+base, a squash that dropped the keyword), this closes it with a "Merged in #<pr>" comment (§3
+`gh-issue-close`; short of `yes` it names the issue as ready to close instead). A follow step left
+for later does not hold it open: it stays on needs-you. Relay the line it prints. The merge driver
+runs this itself after its own merges.
+
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
   checks entry (`desk-env list required-checks`) completed with success (a skipped one passes, as branch protection counts it); no other check failed, errored, timed out

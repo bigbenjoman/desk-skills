@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { strayClosings, closesOnly } from '../desk/bin/closing-keywords.mjs';
+import { strayClosings, closesOnly, withCloses, ticketIssue, closesIssue } from '../desk/bin/closing-keywords.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -61,6 +61,20 @@ t('AC1 the command fails a flagged body', bad.code, 1);
 t('AC1 and names the line', bad.out.split('\n')[0].startsWith('line 3: Close #1090 would close that issue at merge: AC1 can only'), true);
 t('the command wants one file', run(null, []).code, 2);
 t('an unreadable file is a usage error', run(null, [join(dir, 'missing.md')]).code, 2);
+
+// #1709: with Tracker none the ticket is a GitHub issue, and its PR body closes it.
+t('#1709 an issue-<n> ticket names its issue', [ticketIssue('issue-1689'), ticketIssue('DS-12'), ticketIssue('issue-12-x'), ticketIssue('fix-export')], [1689, null, null, null]);
+t('#1709 AC1 a body without the keyword gets a Closes line of its own', withCloses('intro\n\n### Changes\n- a\n', 'issue-1689'), 'intro\n\n### Changes\n- a\n\nCloses #1689');
+t('#1709 AC1 and that body passes the check', strayClosings(withCloses('intro', 'issue-1689')), []);
+t('#1709 AC1 a body that already closes it is left as it is', withCloses('intro\n\nFixes #1689\n', 'issue-1689'), 'intro\n\nFixes #1689\n');
+t('#1709 AC1 closing another issue is not closing this one', withCloses('Closes #12', 'issue-1689'), 'Closes #12\n\nCloses #1689');
+t('#1709 AC1 another repo\'s #n is not this repo\'s issue', closesIssue('Closes acme/other#1689', 1689), false);
+t('#1709 AC1 a ticket that is no issue gets no keyword', withCloses('intro', 'DS-12'), 'intro');
+const tk = run('intro\n\n### Changes\n', [join(dir, 'body.md'), '--ticket', 'issue-1689']);
+t('#1709 AC1 --ticket fails a body with no Closes for the ticket\'s issue', [tk.code, tk.out.split('\n')[0]], [1, 'no line closes #1689, the issue issue-1689 works from: add "Closes #1689" on a line of its own, so GitHub closes it at merge']);
+t('#1709 AC1 --ticket passes the body that closes it', run('intro\n\nCloses #1689\n', [join(dir, 'body.md'), '--ticket', 'issue-1689']).code, 0);
+t('#1709 --ticket with any other key checks only the keywords', run('intro\n', [join(dir, 'body.md'), '--ticket', 'DS-12']).code, 0);
+t('#1709 --ticket wants a key', run('intro\n', [join(dir, 'body.md'), '--ticket']).code, 2);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

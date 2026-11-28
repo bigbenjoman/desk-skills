@@ -824,7 +824,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'cloud-env|3b|Cloud environment',
     'stale-check-paths|4|Stale-check paths', // DS-1055
   ];
-  const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps']; // DS-550, #1383, #1434
+  const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit', 'accept-review-gaps', 'gh-issue-close']; // DS-550, #1383, #1434, #1709
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
   t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));

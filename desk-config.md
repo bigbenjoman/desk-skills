@@ -176,6 +176,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `codex-review` | Send diffs to OpenAI Codex for cross-vendor refutation | `yes` | `TODO` |
 | `ci-protection` | Change branch protection, rulesets or the default workflow token (`/desk-ci protection restore`, `pin`, `token`), after showing the exact change | `ask` | `TODO` |
 | `gh-close-linked-issue` | Close a GitHub issue in this repo that your tickets' web links name, with a comment naming them and their PRs, once every ticket linking it is done | `yes` | `TODO` |
+| `gh-issue-close` | Close the GitHub issue a ticket works from (§4 Tracker `none`) once its PR has merged and its `Closes #<n>` did not close it (a merge into another base, a squash that dropped the keyword), with a "Merged in #<pr>" comment | `yes` | `TODO` |
 | `gh-issue-create` | Open a GitHub issue in this repo (a follow-up, or a ticket where §4 Tracker is `none`), its exact text printed as it goes | `ask` | `TODO` |
 | `gh-issue-comment` | Comment on a GitHub issue in this repo, its exact text printed as it goes (never on the issue a ticket in progress works from: its PR closes that one) | `ask` | `TODO` |
 | `gh-issue-edit` | Edit a GitHub issue's body in this repo, its exact text printed as it goes: `/desk-admit` writing the sections triage drafted (acceptance criteria, `No UI.`, Out of scope, Verification) into an issue it would otherwise refuse | `ask` | `TODO` |

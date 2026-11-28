@@ -14,6 +14,10 @@ tickets parked in §4 Review state. Two exceptions only: **a multi-part ticket w
 still open** (comment what landed, transition on the last part), and **no ticket key in the branch
 or title at all**. **§4 Tracker `none`: skip this step entirely** — there is no ticket to move.
 
+**With §4 Tracker `none`, a merged PR whose branch or title names `issue-<n>` gets its issue
+closed** where its `Closes #<n>` did not (§3 `gh-issue-close`): run
+`node ~/.claude/desk/bin/issue-close.mjs issue-<n> --pr <n>` and relay its line.
+
 **Report** stale worktrees and branches, never delete them: a worktree carries
 `.claude/desk-ticket-<TICKET>.json`, which desk-ticket resumes from. **desk-cleanup** removes them.
 

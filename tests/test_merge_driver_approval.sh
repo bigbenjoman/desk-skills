@@ -115,6 +115,29 @@ check "DS-336 AC3: with jira-close-own-merged not yes, a merge moves nothing" '[
 mpj "$T/config-close.md"
 check "DS-336 AC4: a ticket done with no PR merged (a triage already-fixed) is never closed" '! grep -q "T-33" "$T/jira-close.log" && [ "$(grep -c "^transition" "$T/jira-close.log")" = 1 ]'
 
+# ---- #1709: with Tracker none, a merged issue-<n> ticket's issue closes where its keyword did not ----
+awk '{ print } /^\| `pr-ready`/ { print "| `gh-issue-close` | Close a merged ticket issue | `yes` | `yes` |" }' "$T/config.md" > "$T/config-issue.md"
+SHA41=d111111111111111111111111111111111111111; SHA42=d222222222222222222222222222222222222222
+cat > "$T/prs.json" <<EOF
+{
+  "141": { "head": "fix/issue-41", "base": "main", "sha": "$SHA41", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "142": { "head": "fix/issue-42", "base": "main", "sha": "$SHA42", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "closes": [42] }
+}
+EOF
+printf '{"42": "CLOSED"}' > "$T/issues.json"
+q init merge-issue
+for k in issue-41 issue-42; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#issue-}"; done
+q set issue-41 'follow_on=[{"step":"check the export on staging","row":1}]'
+: > "$T/merges.log"; : > "$T/gh.log"
+iloop(){ out=$(DESK_CONFIG="$T/config-issue.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "issue-41 issue-42" 2>&1); rc=$?; }
+iloop; iloop
+check "#1709 AC2: a merged PR whose keyword did not close its issue has it closed with a Merged in comment" 'grep -qx "141 main $SHA41" "$T/merges.log" && grep -qxF "issue close 41 --repo acme/widgets --comment Merged in #141." "$T/gh.log" && echo "$out" | grep -qF "#141 issue-41 acme/widgets#41 closed: Merged in #141."'
+check "#1709 AC3: the follow step it left does not hold the issue open, and stays on the ticket" '[ "$(qf issue-41 ".follow_on | length")" = 1 ] && [ "$(jq -r ".[\"41\"]" "$T/issues.json")" = CLOSED ]'
+iloop; o1=$out; iloop; out="$o1
+$out"
+check "#1709 AC4: where the keyword closed the issue at merge, nothing is closed or commented" 'grep -qx "142 main $SHA42" "$T/merges.log" && ! grep -q "issue close 42" "$T/gh.log" && echo "$out" | grep -qF "#142 issue-42 acme/widgets#42 already closed"'
+rm -f "$T/issues.json"
+
 # ---- DS-347: a clean desk-review verdict at the head settles the desk-review threads before it -----
 # The payloads are #282 and #271's real GraphQL responses (review-threads.mjs query): a round-4 P0
 # thread, fixed, with clean verdicts since. They were recorded after the threads were resolved by

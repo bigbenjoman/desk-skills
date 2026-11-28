@@ -96,6 +96,9 @@ if (a[0] === 'pr' && a[1] === 'list') {
   const m = p.premergedBy ?? p.mergedBy;
   out({ state: 'premergedBy' in p ? 'MERGED' : String(p.state ?? '').toUpperCase(), headRefOid: p.premergedHead ?? p.sha ?? null,
     mergedBy: m === null ? null : { login: m ?? 'tester' } });
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state,closingIssuesReferences') {
+  // issue-close.mjs's read: a PR's state, and the issues its "closes" names (its body's closing keywords).
+  out({ state: String(prs[a[2]]?.state ?? '').toUpperCase(), closingIssuesReferences: (prs[a[2]]?.closes ?? []).map((number) => ({ number })) });
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
