@@ -31,7 +31,9 @@ held (`local` for a new config), and you say so.
    environment needs set, by name only (with §3b Cloud environment providing `db`, it holds §4
    Database URL variable's names too). Never read out or write a value. A `SET` line, printed where
    §3b Cloud environment names an environment, is the one variable desk gives a value: the person
-   sets it as printed, as each cloud prompt's first step checks it. Then say the `NOTE` line
+   sets it as printed, as each cloud prompt's first step checks it. `hosts` reads the row from the
+   written config, so before step 5 writes a new or changed row it prints no `SET` line, or the old
+   name: step 5 runs `hosts` again after the write for that line. Then say the `NOTE` line
    plainly: every variable in the one shared environment reaches every desk repo's sessions in it,
    so a secret set for this repo is readable by the others' sessions too.
 3. **The first start.** Run `$CE first-start`. It starts `claude --cloud` under this repo's
