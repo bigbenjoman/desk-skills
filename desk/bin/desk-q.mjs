@@ -47,7 +47,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud, toHandoff, toResume, reviewOnlyTry, cloudAble } from './pass/shared.mjs';
+import { runsInCloud, startsInCloud, toHandoff, placedFront, keysOf, cloudAble } from './pass/shared.mjs';
 import { modeLine as personModeLine } from './person-use.mjs';
 import { isHeld, stoppedHold, bareHold, bareHoldText, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
@@ -217,7 +217,7 @@ export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, pus
 // The park a requeue cleared on a ticket its worktree then held back, before any worker started on it
 // (queue.mjs keeps it as `prev_park`; a spawn sets `session_id`): why its last worker stopped.
 export const busyPark = (t) => (worktreeBusy(t) && t.session_id == null && t.prev_park?.question ? t.prev_park : null);
-export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
+export { keysOf };
 // The open Jira blockers outside the batch the last pass recorded.
 export const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
 // A held ticket with a question of its own: it needs the user for that, whatever its blockers do.
@@ -3522,8 +3522,7 @@ function countsLine(r, now = Date.now()) {
 const stillHolds = (o) => !o || o.state === 'running' || (o.state === 'triaged' && toHandoff(o));
 const frontHolds = (r, k, o, held) => {
   const h = r.q?.tickets?.[held];
-  if (!o?.placed || o.state !== 'triaged' || !h || !toHandoff(h)) return false;
-  if (toHandoff(o) || toResume(o) || reviewOnlyTry(o) || (o.open_questions ?? 0) !== 0 || keysOf(o.cycle_link).length) return false;
+  if (!placedFront(o) || !h || !toHandoff(h)) return false;
   const order = Object.keys(r.q.tickets);
   return order.indexOf(k) < order.indexOf(held);
 };

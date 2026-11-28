@@ -111,7 +111,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, pinnedLocal, fromCloudPr, cloudFixRoute, cloudSessionLive, cloudArchiveWait, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, pinnedLocal, fromCloudPr, cloudFixRoute, cloudSessionLive, cloudArchiveWait, reviewOnlyTry, placedFront, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -3264,8 +3264,7 @@ const alreadyFinished = (r) => {
 // login), so the handoff's deadline keeps running and a front ticket that never starts escalates it.
 const spawnPos = new Map(Object.keys(fresh.tickets).map((k, i) => [k, i]));
 const above = (a, b) => (spawnPos.get(a) ?? Infinity) < (spawnPos.get(b) ?? Infinity);
-const atFront = (t) => !!t?.placed && t.state === 'triaged' && !toHandoff(t) && !toResume(t) && !reviewOnlyTry(t)
-  && !runningKeys.has(t.key) && (t.open_questions ?? 0) === 0 && keysOf(t.cycle_link).length === 0 && !alreadyFinished(t);
+const atFront = (t) => placedFront(t) && !runningKeys.has(t.key) && !alreadyFinished(t);
 // Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
 // them (`by`), its handoffs waiting for their next session (`handoff`; for a ticket not itself handed
 // off, leaving out those below it where it is at the front), the tickets at the front above it that
