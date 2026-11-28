@@ -201,6 +201,15 @@ const { threw, calls } = withNoIo(() => {
       t(`a cloud ticket back for a ${kind} fix try on its PR is set up for a local worker`, j([types(back.actions).includes('setup'), back.verdict.how]), j([true, 'local']));
     }
     t('so is one back for more work on its PR with no try', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 } }))).verdict.how, 'local');
+    // issue-1552: a fix try the pass routes to the cloud (pass/shared.mjs cloudFixRoute).
+    const onPr = ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'checks', try: 1, of: 2, pr: 31 }, cloud: { session: 'session_x', pr_at: AT } });
+    const sent = step(snap(onPr, { cloudFix: 'send', attempts: 2, slots: 2, cloudSlots: 0 }));
+    t('issue-1552 AC1 a fix try sent to its live session starts with no slot of either kind', j([sent.verdict.how, types(sent.actions).filter((x) => /slot|setup|login|place/.test(x))]), j(['send', []]));
+    t('issue-1552 the send is held as any fix try is, by the file budget and a stale try', j([step(snap(onPr, { cloudFix: 'send' }), { 'file-budget': true }).verdict.type, step(snap(onPr, { cloudFix: 'send' }), { 'fix-try-stale': true }).verdict.type]), j(['skip', 'skip']));
+    const anew = step(snap(onPr, { cloudFix: 'new' }));
+    t('issue-1552 AC2 a fix try whose session is gone starts a new cloud session, on a cloud slot', j([anew.verdict.how, types(anew.actions).includes('take-cloud-slot'), types(anew.actions).includes('setup')]), j(['cloud', true, false]));
+    t('issue-1552 AC2 with the cloud full it waits for a cloud session, as a cloud-able ticket does', j(step(snap(onPr, { cloudFix: 'new', cloudSlots: 0 })).verdict), j({ type: 'skip', key: 'A', full: true, cloud: true }));
+    t('issue-1552 AC2 and with a local slot spare all last pass it takes that, as placement says', step(snap(onPr, { cloudFix: 'new', cloudSlots: 0, localSpare: true })).verdict.how, 'local');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
   }
 

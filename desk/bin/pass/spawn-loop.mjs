@@ -23,6 +23,8 @@
 //   dbDown     a worktree setup earlier this pass found the local database down
 //   dbUp       the database health check answered on this pass
 //   fetchLimit the seconds a worktree setup's git fetch is given
+//   cloudFix   where its unfinished fix try on a cloud PR goes (pass/shared.mjs cloudFixRoute): 'send'
+//              to its live session, 'new' for a new cloud session on the PR's branch, or null
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
 //   file-budget {key}    -> true where a file it names is at its per-file budget, counting the tickets
@@ -55,8 +57,9 @@
 //   park {key, line}                          park it
 //   park-ask {key, line}                      park it with a question for the person, no slot taken
 //   hand-away {key, placement}                admit it in the repo its code is in
-//   start {key, how, pick?, setup?, place?}   start it: `how` is resume, handoff, cloud or local; a local
-//                                             one carries its place ({where, why}), recorded once it runs
+//   start {key, how, pick?, setup?, place?}   start it: `how` is resume, handoff, send (its fix try to its
+//                                             cloud session), cloud or local; a local one carries its
+//                                             place ({where, why}), recorded once it runs
 
 import { set, say, runsInCloud, startsInCloud, placeAtStart } from './shared.mjs';
 
@@ -66,11 +69,19 @@ export function* decideSpawn(s) {
   const skip = { type: 'skip', key };
   const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
   if (s.stop) return yield { ...skip, stop: true };
+  // A fix try on a cloud PR sent to its live session takes no slot of either kind: that session is
+  // running already. The checks that stop any fix try's spawn stop the send too.
+  if (s.cloudFix === 'send') {
+    if (yield { type: 'file-budget', key }) return yield skip;
+    if (yield { type: 'fix-try-stale', key }) return yield skip;
+    return yield { type: 'start', key, how: 'send' };
+  }
   // Where it starts is decided now, not at admission (pass/shared.mjs placeAtStart): a cloud-able ticket
   // goes to the cloud while §3b "Cloud sessions at once" has room, and takes a local slot only as that
-  // says; a local-only one, and a resume or handoff (which run here), takes a local slot.
+  // says; a local-only one, and a resume or handoff (which run here), takes a local slot. A fix try on
+  // a cloud PR whose session is gone (cloudFix 'new') is placed as a cloud-able ticket is.
   const place = placeAtStart({
-    able: startsInCloud(t), cloudRoom: (s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0), localRoom: s.attempts < s.slots,
+    able: startsInCloud(t) || s.cloudFix === 'new', cloudRoom: (s.cloudAttempts ?? 0) < (s.cloudSlots ?? 0), localRoom: s.attempts < s.slots,
     localSpare: !!s.localSpare, reserve: s.reserve ?? 0, free: s.slots - s.attempts, personUse: !!s.personUse,
     ...(s.cloudLimit != null && !s.cloudHeld ? { cloudRunning: s.cloudRunning, cloudLimit: s.cloudLimit } : {}),
   });

@@ -210,17 +210,36 @@ export const liveReadsUnparsed = (readRow) => (readRow.errors.length
 
 // A review try (kind rereview) reviews its PR's head and changes no file.
 export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
-// A cloud ticket runs in the cloud only until its PR is read (advanceCloud records result.pr and
-// cloud.pr_at): the session is then over, and its branch is on origin with no session pushing to it.
-// Any work after that, a fix try of any kind or a rework, is a local worker's on that branch at
-// origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there; nothing reads it
-// for a cloud session again. cloud.pr_at outlives the local spawn, which clears result; a new cloud
-// start resets it.
+// A cloud ticket runs in the cloud until its PR is read (advanceCloud records result.pr and
+// cloud.pr_at), and its branch is then on origin. A fix try of a kind the session can work from what
+// the PR shows (CLOUD_FIX_KINDS) goes back to that session (cloudFixRoute), or to a new cloud session
+// on the PR's branch where it is gone, and runs in the cloud while it is out (`cloud.fix`, fixInCloud).
+// Any other work after the PR, another kind of fix try or a rework, is a local worker's on that branch
+// at origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there. cloud.pr_at
+// outlives the local spawn, which clears result; a new cloud start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
-export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// The fix tries a cloud session takes on its own PR: review findings and gaps, red checks and a
+// reviewer's threads, each of which the PR shows it. A conflict, a sync, a person's call and the
+// review and capture tries need this computer.
+export const CLOUD_FIX_KINDS = ['review', 'checks', 'feedback'];
+export const fixInCloud = (t) => t?.location === 'cloud' && Boolean(t.cloud?.fix);
+export const runsInCloud = (t) => t?.location === 'cloud' && (!cloudPrHere(t) || fixInCloud(t));
+// A cloud session that may still push to its PR's branch: recorded, and not recorded abandoned.
+export const cloudSessionLive = (t) => Boolean(t?.cloud?.session) && !t.cloud.abandoned_at;
+// Where a cloud ticket's unfinished fix try on its PR goes, decided as its turn in the spawn loop comes:
+// 'send' to its live session (cloud-worker.mjs sendCloud), 'new' for a new cloud session on the PR's
+// branch where it has none, or null for a local worker: not a cloud PR's, a kind no session takes, a
+// resume or handoff (which run here), or with the effort lever on (`effort`), which no cloud session
+// can be given.
+export function cloudFixRoute(t, { effort = false } = {}) {
+  const f = t?.fix;
+  if (!cloudPrHere(t) || !f || f.finished || !CLOUD_FIX_KINDS.includes(f.kind)) return null;
+  if (toResume(t) || toHandoff(t) || effort) return null;
+  return cloudSessionLive(t) ? 'send' : 'new';
+}
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so it holds
-// no local slot and the maintenance window neither waits for one nor stops it, in any repo; a review try
-// on a cloud ticket's PR runs here.
+// no local slot and the maintenance window neither waits for one nor stops it, in any repo, a fix try
+// sent to one included; a review try on a cloud ticket's PR runs here.
 export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
 // A killed worker waiting to resume, and a session handed off to its next stage (both run here).
 export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);

@@ -414,6 +414,67 @@ export function cloudFollowUpMsg({ pr, head, mark, checks = [] }) {
     'and when it is finished take WIP and what is left out of the PR title and body, and say there what changed and how you tested it. If you cannot finish, say why in the PR body.';
 }
 
+// ---- a fix try on a cloud PR ------------------------------------------------------------------------
+// A fix try of a kind the session can work from the PR (pass/shared.mjs CLOUD_FIX_KINDS) goes to the
+// ticket's own session as a follow-up, or to a new session on the PR's branch where it has none. One
+// that has not pushed CLOUD_FIX_WAIT_MS after the send is counted gone, and the try goes to a new
+// session (pass.mjs advanceCloud).
+export const CLOUD_FIX_WAIT_MS = 2 * 3_600_000;
+
+// What the fix try `fix` (a ticket's `fix` record) asks of PR #`pr`, as lines: the findings and gaps of a
+// review, the red checks it is to fix and those it is to leave red, or the review threads and body findings.
+function fixAsks(fix) {
+  const f = fix ?? {};
+  const lines = [];
+  const list = (head, items) => { if (items.length) lines.push('', head, '', ...items.map((x) => `- ${x}`)); };
+  if (f.kind === 'review') {
+    lines.push(`The review posted on its head ${String(f.head ?? '').slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
+    list('Fix each finding it lists:', (f.findings ?? []).map((x) => `${x.sev ? `${x.sev}: ` : ''}${x.text ?? x}`));
+    list('Close each requirement gap it lists, or, where the code should stand, say why in a PR comment:', f.gaps ?? []);
+    list('Settle each of these as the review recommends:', (f.taken ?? []).map((g) => `${g.gap} Recommended: ${g.answer}`));
+  } else if (f.kind === 'checks') {
+    lines.push(`These checks are red at ${String(f.head ?? '').slice(0, 12)}${f.draft ? ', so it cannot leave draft' : ''}.`);
+    list('Fix each of them (read the failing log of each run):', (f.checks ?? []).map((c) => `${c.name}: ${c.url ?? 'no run URL reported'}${c.own_tests?.length ? `; it is red on the base too, but these failing tests are yours: ${c.own_tests.join(', ')}` : ''}`));
+    list('Leave these red: they are not yours to fix.', [...(f.not_mine ?? []).map((c) => c.name), ...(f.builds ?? []), ...(f.base_red ?? [])]);
+  } else if (f.kind === 'feedback') {
+    lines.push(f.external ? `${f.external.login}'s review of its head is not clean, and its "${f.external.check}" check stays red until it is.` : 'Its review feedback is still open.');
+    const threads = f.threads ?? [];
+    list('Its unresolved review threads:', threads.filter((x) => x.id || !x.body).map((x) => x.text));
+    list('Findings in the review body:', threads.filter((x) => !x.id && x.body).map((x) => x.text));
+    lines.push('', 'Fix what is right, and answer each thread with a PR comment naming it, saying what you changed or why the code stands. Do not resolve threads yourself.');
+  }
+  return lines;
+}
+
+// The follow-up a fix try sends the ticket's own session: what to fix on PR #`pr`, on `branch`.
+export function cloudFixMsg({ pr, branch, fix, rules }) {
+  return [
+    `desk has a fix try for PR #${pr}, which you opened on \`${branch}\` (${fix?.try != null ? `try ${fix.try} of ${fix.of}` : 'one try'}).`,
+    ...fixAsks(fix),
+    '',
+    `Fix these on \`${branch}\` and push to that same branch: open no new PR, and leave the PR's draft state as it is. ` +
+      'Run the tests for what you change before you push. Anything you cannot fix, say in a PR comment, with why.',
+    ...rulesSection(rules),
+  ].join('\n');
+}
+
+// A new session's whole brief for a fix try on PR #`pr`, whose own session is gone: the fix, and the
+// ticket's text for what the PR is for.
+export function cloudFixPrompt({ key, repo, pr, branch, fix, rules, text }) {
+  return [
+    `Work a fix try on PR #${pr} of ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in a PR comment. ` +
+      `The PR is open on \`${branch}\`: check that branch out from origin and work on it.`,
+    '',
+    cloudFixMsg({ pr, branch, fix, rules }),
+    '',
+    'Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.',
+    '',
+    `## The ticket`,
+    '',
+    String(text ?? '').trim(),
+  ].join('\n');
+}
+
 // Session start to PR, in ms, or null while there is no PR.
 export const cloudWall = (cloud) => {
   const ms = Date.parse(cloud?.pr_at ?? '') - Date.parse(cloud?.started ?? '');
