@@ -74,9 +74,22 @@ PR_IN_COMMAND = re.compile(r"gh pr (?:merge|ready|view|edit|checks|review|commen
 PR_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
 SELF_MARKER = "desk-checkout"
 HEADLESS = ("sdk-cli", "sdk-ts", "sdk-py")
+
+
+def triage_openings():
+    """How triage.sh's two passes open their prompts, from desk/bin/triage-openings.json (cache-report.mjs
+    reads it too); none when it cannot be read, so no session reads as triage."""
+    path = desk_repos.desk_file("triage-openings.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return tuple(json.load(fh)["openings"])
+    except (TypeError, OSError, ValueError, KeyError):
+        return ()
+
+
 # How an autopilot batch opens each session's prompt: triage's passes, then a worker's (a fix try's
 # carries its task after the opening).
-TRIAGE_OPENINGS = ("Triage ticket ", "A first triage pass put ticket ")
+TRIAGE_OPENINGS = triage_openings()
 WORKER_OPENING = "Follow the autopilot worker contract"
 # A batch ticket in a repo with no tracker: issue-<n>, in the branch (fix/issue-12-x) or the prompt.
 ISSUE_IN_BRANCH = re.compile(r"(?:^|/)issue-(\d+)(?=-|$)")
