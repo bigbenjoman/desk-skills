@@ -169,6 +169,10 @@ sloop; sloop
 check "DS-407 AC3: once the step is lifted, it merges with no other answer, pinned to its head" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
 
 # ---- DS-1031 AC2: a merge-order hold on another ticket's unmerged PR holds a green PR's merge -------
+# The block above merged #161, so it is open and green again here.
+cat > "$T/prs.json" <<EOF
+{ "161": { "head": "fix/T-61", "base": "main", "sha": "$SHA61", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }
+EOF
 q init merge-order
 q add T-61 Story A; q set T-61 branch=fix/T-61 state=done result.pr=161 merge_order=T-60
 : > "$T/merges.log"
