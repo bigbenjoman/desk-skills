@@ -3530,18 +3530,19 @@ const holderHolds = (r, w, held) => {
 // whose places the holders that still hold fill, as budgetHolds counts them, with those holders. A file
 // one of them has since left has a free place, so it holds nothing. A pass line that recorded no files
 // says only that the ticket shares them, while any of its holders still holds.
-function heldWords(r, rec) {
+function heldWords(r, key) {
+  const rec = r.passHolds?.[key];
   if (rec?.holds?.length) {
-    const files = rec.holds.map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w, rec.key)) })).filter((h) => h.with.length >= h.k);
+    const files = rec.holds.map((h) => ({ ...h, with: h.with.filter((w) => holderHolds(r, w, key)) })).filter((h) => h.with.length >= h.k);
     if (!files.length) return null;
     const who = [...new Set(files.flatMap((h) => h.with))];
     return `waits for ${who.join(', ')} (collides on ${files.map((h) => `${h.file}, ${h.with.length} of ${h.k} place${h.k === 1 ? '' : 's'} taken`).join('; ')})`;
   }
-  const clash = (rec?.with ?? []).filter((w) => holderHolds(r, w, rec.key));
+  const clash = (rec?.with ?? []).filter((w) => holderHolds(r, w, key));
   return clash.length ? `waits for ${clash.join(', ')} (shared files)` : null;
 }
 function startWait(r, t) {
-  const held = heldWords(r, r.passHolds?.[t.key]);
+  const held = heldWords(r, t.key);
   // A ticket that starts in a cloud session waits on shared files, which the pass holds a cloud start
   // behind too (spawn-loop's file-budget step), then only on §3b "Cloud sessions at once", never on a
   // worker or machine slot, counted over every batch of its repo (loadRepos repoCloud). A resume or
