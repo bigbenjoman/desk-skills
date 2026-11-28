@@ -69,7 +69,7 @@ check "AC1: the driver says it is up once, for every batch, and each batch's loo
 check "one gh pr list serves the whole sweep" '[ "$(lists)" = 1 ]'
 check "a first sweep confirms the green heads and merges nothing" '[ ! -s "$T/merges.log" ] && echo "$out" | grep -q "#201 green at 111111111" && echo "$out" | grep -q "#202 green at 222222222"'
 check "AC3: feat/y's red base holds its own PR, naming the check" 'echo "$out" | grep -q "HOLDING on red feat/y" || echo "$out" | grep -q "red .*feat/y"'
-check "with green heads waiting, the sweep pauses 120s" '[ "$(cat "$T/sleeps")" = 120 ]'
+check "with green heads confirming, the sweep pauses only until the soonest hold ends: the 1s floor at a 0s hold" '[ "$(cat "$T/sleeps")" = 1 ]'
 check "the driver's exit lets every lock go, and it writes the one exit line" '[ "$(locks)" = "- - - -" ] && [ "$(echo "$out" | grep -c "merge driver exited")" = 1 ] && echo "$out" | tail -1 | grep -q "merge driver exited 143$"'
 
 # ---- AC2 and AC3: each green PR merges onto its own base; the red base holds only its own -------
@@ -91,6 +91,16 @@ sweep
 check "two sweeps in one run read the PRs once each" '[ "$(lists)" = 2 ] && [ "$(wc -l < "$T/sleeps" | tr -d " ")" = 2 ]'
 check "a PR's unchanged state is logged once across sweeps" '[ "$(echo "$out" | grep -c "#204 red at 444444444: required check")" = 1 ]'
 check "each batch's loop says it is up only on the first sweep" '[ "$(echo "$out" | grep -c "merge driver up: .*base=feat/x")" = 1 ]'
+
+# ---- a PR left confirming is looked at again as its hold ends, not after 120s -------------------
+checks204(){ node -e 'const f = process.argv[1]; const p = JSON.parse(require("fs").readFileSync(f, "utf8")); p["204"].checks = [["test", process.argv[2]]]; require("fs").writeFileSync(f, JSON.stringify(p))' "$T/prs.json" "$1"; }
+checks204 SUCCESS; rm -f "$XS/merge-driver/green-204"
+: > "$T/gh.log"; rm -f "$T/sleeps"; out=$(MERGE_DRIVER_GREEN_SECS=60 bash "$B/merge-driver.sh" --all-batches 2>&1); rc=$?
+s=$(cat "$T/sleeps")
+check "a sweep that leaves a PR first seen green pauses until its 60s hold ends, not 120s" '! grep -q "^204 " "$T/merges.log" && echo "$out" | grep -q "#204 green at 444444444" && [ "$s" -ge 50 ] && [ "$s" -le 60 ]'
+checks204 PENDING; rm -f "$XS/merge-driver/green-204"
+: > "$T/gh.log"; rm -f "$T/sleeps"; out=$(MERGE_DRIVER_GREEN_SECS=60 bash "$B/merge-driver.sh" --all-batches 2>&1); rc=$?
+check "a sweep with ready PRs and none confirming still pauses 120s" '[ "$(cat "$T/sleeps")" = 120 ]'
 
 # ---- TERM between sweeps lets every lock go -----------------------------------------------------
 touch "$T/sleep.real"; rm -f "$T/sleep.pass" "$T/sleeps"
