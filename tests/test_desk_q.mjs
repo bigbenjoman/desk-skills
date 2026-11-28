@@ -1302,7 +1302,10 @@ NYs.ui.finish(0);
   } } } });
   const ov1687 = unbanded(F.run('--plain').out);
   t('issue-1687 AC1 the overview headline counts the checks after merge apart from what needs you', ov1687[0], '◆ 1 ticket needs you · 2 checks after merge │ followq 1');
-  t('issue-1687 AC1 NEEDS YOU counts only the parked ticket', (rowOf(ov1687.join('\n'), 'followq') ?? '').trim().split(/\s+/).slice(6, 12).join(' ').includes(' 1 '), true);
+  // The cell under the NEEDS YOU heading, cut at the heading's place in the line.
+  const head1687 = ov1687.find((l) => l.startsWith('  REPO ')) ?? '', at1687 = head1687.indexOf('NEEDS YOU');
+  t('issue-1687 AC1 NEEDS YOU counts only the parked ticket',
+    `${at1687 > 0} ${(rowOf(ov1687.join('\n'), 'followq') ?? '').slice(at1687, at1687 + 'NEEDS YOU'.length).trim()}`, 'true 1');
   const q1687 = lines(F.run('--plain', 'followq').out);
   t('issue-1687 AC1 the repo\'s counts line too', q1687[1], '◆ 1 ticket needs you · 2 checks after merge │ ✓ 2 done, not shown');
   t('issue-1687 AC1 the follow steps are listed under Checks after merge, after Needs you',

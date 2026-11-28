@@ -2393,6 +2393,10 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   NN.addClaim({ item: 'follow:P-1', session: 'sess-1687', ticket: 'P-1', at: new Date(NOW - 13 * 3600e3).toISOString() }, join(env.HOME, '.desk-autopilot', 'acme__phi934'));
   utimesSync(TR1687, old, old);
   t('issue-1687 AC2 a claim whose session is idle past §3b Release idle claims after lapses', `${phiCount().checking.length} ${phiCount().follows.length}`, '0 1');
+  // A fresh claim, live while its transcript is there, lapses once the transcript is gone, whatever its age.
+  writeFileSync(TR1687, '{}\n');
+  NN.addClaim({ item: 'follow:P-1', session: 'sess-1687', ticket: 'P-1', at: new Date().toISOString() }, join(env.HOME, '.desk-autopilot', 'acme__phi934'));
+  t('issue-1687 AC2 a fresh claim with its transcript there is live', phiCount().checking.length, 1);
   rmSync(TR1687);
   t('issue-1687 AC2 a claim whose session has no transcript lapses', `${phiCount().checking.length} ${phiCount().follows.length}`, '0 1');
   writeFileSync(TR1687, '{}\n');

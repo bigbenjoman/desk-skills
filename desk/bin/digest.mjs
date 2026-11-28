@@ -29,7 +29,7 @@ import { describeCond } from './clears-when.mjs';
 import { isHeld, heldBehindOf, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR, newHoldPrs } from './desk-q.mjs';
-import { followChecks } from './needs-you.mjs';
+import { followChecks, followCheckText } from './needs-you.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
@@ -422,16 +422,6 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       }
       lines.push('');
     }
-    // Follow steps after the questions: each is a check after a merge, not a question, so it is listed
-    // apart; one a session has claimed (needs-you.mjs claim) says which session is checking it.
-    if (g.follows?.length) {
-      lines.push('### Checks after merge', '');
-      for (const f of g.follows) {
-        lines.push(`- [ ] \`${f.ticket}\`: ${f.claim ? `checking (${f.claim}) · ` : ''}${f.text}`);
-        lines.push(`  once it has run, say done on \`${f.key}\` in /desk-needs-you`);
-      }
-      lines.push('');
-    }
     if (g.sessions?.length) {
       lines.push('### Being worked in a session', '');
       for (const s of g.sessions) lines.push(`- \`${s.ticket}\`: being worked in session ${s.session}`);
@@ -458,6 +448,17 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     if (g.held?.length) {
       lines.push('### Now needs your merge', '');
       for (const h of g.held) lines.push(`- \`${h.ticket}\` ${h.url ? `[#${h.pr}](${h.url})` : `#${h.pr}`}: ${h.text}, changed after it opened under §4 Merge holds`);
+      lines.push('');
+    }
+    // Follow steps after everything that needs the person (questions, decisions, merges): each is a check
+    // after a merge, so it is listed apart; one a session has claimed (needs-you.mjs claim) says which
+    // session is checking it.
+    if (g.follows?.length) {
+      lines.push('### Checks after merge', '');
+      for (const f of g.follows) {
+        lines.push(`- [ ] \`${f.ticket}\`: ${f.claim ? `checking (${f.claim}) · ` : ''}${f.text}`);
+        lines.push(`  once it has run, say done on \`${f.key}\` in /desk-needs-you`);
+      }
       lines.push('');
     }
     if (g.moves?.length) {
@@ -502,10 +503,7 @@ const followOnWarnings = (r) => Object.values(everyTicket(attachArchive(readJson
 export function followsOf(r, register = readRegister(r.state), checks = followChecks) {
   let fs;
   try { fs = checks({ slug: r.slug, stateDir: r.state, q: readJson(r.queue, null) }, register); } catch { return []; }
-  return fs.map(({ t, item }) => {
-    const need = String(item.need ?? '').replace(/\s+/g, ' ').trim().replace(/ Then say done\.$/, '');
-    return { key: t.key, ticket: item.ticket, text: need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need, claim: item.claim?.session ?? null };
-  });
+  return fs.map(({ t, item }) => ({ key: t.key, ticket: item.ticket, text: followCheckText(item).replace(/ Then say done\.$/, ''), claim: item.claim?.session ?? null }));
 }
 
 export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {

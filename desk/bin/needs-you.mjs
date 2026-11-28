@@ -147,7 +147,7 @@ import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord, BATCH_MERGES, HOLD_CAVEAT, batchMerging } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey, addClaim, claimOf, clearClaim } from './not-now.mjs';
-import { claimHours, transcriptOf, SESSION_ID, DEFAULT_CLAIM_HOURS } from './claims.mjs';
+import { claimHoursOf, claimLive, transcriptOf, SESSION_ID } from './claims.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
 import { followKind, checkOf, settled, broken, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS, FOLLOW_BROKEN_RETRY_MS } from './follow-steps.mjs';
@@ -1223,18 +1223,18 @@ function followItems(r, reads = null) {
 const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
 // A session's claim on follow item `key` (needs-you.mjs claim), { item, session, at }, while it is live:
 // the session's transcript has changed within the repo's §3b "Release idle claims after (hours)", counted
-// from the claim at the latest, as a ticket's claim is (pass.mjs). 0 never lapses while a transcript is
-// there; with none the claim has lapsed, and the item needs the person again. Null where none is live.
+// from the claim at the latest (claimLive, as pass.mjs releases a ticket's claim). 0 never lapses while a
+// transcript is there; with none the claim has lapsed, and the item needs the person again. Null where
+// none is live.
 export function liveClaim(r, key, register = readRegister(r.stateDir), now = Date.now()) {
   const c = claimOf(register, key);
-  if (!c) return null;
-  const tr = transcriptOf(c.session);
-  if (!tr) return null;
-  let raw = null;
-  try { raw = repoConfigValue(r.slug, 'claim-release'); } catch { /* an unreadable config reads as unset */ }
-  const { hours = DEFAULT_CLAIM_HOURS } = claimHours(raw);
-  const since = Math.max(tr.mtimeMs, Date.parse(c.at) || 0);
-  return hours > 0 && now - since > hours * 3600e3 ? null : c;
+  return c && claimLive(transcriptOf(c.session), c.at, claimHoursOf(r.slug).hours, now) ? c : null;
+}
+// A follow item's need from its first "Check: " on (followItem's wording), whitespace folded: what
+// desk-q's and the digest's Checks after merge show. Any other item's need is kept whole.
+export function followCheckText(item) {
+  const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
+  return item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
 }
 // The batch's listed follow items (neither put off nor dropped), each with `item.claim` where a session
 // has a live claim on it: desk-q's and the check-in digest's "Checks after merge". Those put off go in
@@ -2946,9 +2946,7 @@ export function claim({ word = null, item, session, now = Date.now(), repos = lo
   const [i] = hits;
   if (!transcriptOf(session)) return { ok: false, line: `no transcript for session ${session} on this computer, so nothing was claimed: --by wants the id of a session here.` };
   addClaim({ item: i.t.key, session, ticket: i.ticket, at: new Date(now).toISOString() }, i.r.stateDir);
-  let raw = null;
-  try { raw = repoConfigValue(i.r.slug, 'claim-release'); } catch { /* unset */ }
-  const { hours = DEFAULT_CLAIM_HOURS } = claimHours(raw);
+  const { hours } = claimHoursOf(i.r.slug);
   const until = hours > 0 ? `, or session ${session} has been idle past §3b Release idle claims after (${hours} hours)` : '';
   return { ok: true, line: `${i.r.repo} ${i.t.key}: claimed by session ${session}. desk-q shows it as checking (${session}) and leaves it out of your count until it is done${until}.` };
 }

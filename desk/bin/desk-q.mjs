@@ -81,7 +81,7 @@ import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY } from './cloud-worker.mjs';
-import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
+import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount, followCheckText } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
@@ -1096,8 +1096,10 @@ export function probesDue(repos, { now } = {}) {
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
+// The repo's needsCount where it has one to count (a readable batch, or a session's ask), else null.
+const countOf = (r) => (r.error || (!r.q && !r.asks?.length) ? null : needsCount(r));
 // A check after merge nobody has taken on is something for the user too, though not counted as needing them.
-const attention = (r) => (r.error || (!r.q && !r.asks?.length) ? 0 : ((c) => c.shown + (c.follows?.length ?? 0))(needsCount(r)));
+const attention = (r) => { const c = countOf(r); return c ? c.shown + (c.follows?.length ?? 0) : 0; };
 // A repo with no batch still has a row while a session's ask waits on the person (asks.mjs).
 const hasBatch = (r) => r.q != null || r.error != null || r.asks?.length > 0;
 
@@ -3819,8 +3821,7 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // How long an item has waited, for WAITING, or ''.
 const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
 const itemRowOf = (r, k, { now, kw, ww, nw, sw, hw, tw, width = null }) => ({ r: b, t, item }) => {
-  const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
-  const checks = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
+  const checks = followCheckText(item);
   const shown = item.claim ? `checking (${item.claim.session}) · ${checks}` : checks;
   const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
   return segRow(null, cutRuns([
@@ -4944,8 +4945,9 @@ export function interactive({
   // A view the new place lacks gives way to its nearest: Costs and Usage to the Queue, Epics to the Timeline.
   const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' || tab === 'usage' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
-  // The parked note is shown while any ticket in view waits on the user, or c is on.
-  const badge = (rs) => (checkin || rs.some((r) => attention(r) > 0) ? parkedBadge(checkin) : '');
+  // The parked note is shown while any ticket in view waits on the user, or c is on: a check after merge
+  // has no date for c to set, so it never shows the note.
+  const badge = (rs) => (checkin || rs.some((r) => (countOf(r)?.shown ?? 0) > 0) ? parkedBadge(checkin) : '');
 
   // The breadcrumb's parts, each with the place a click on it goes to; the last is where you are.
   function crumbParts() {

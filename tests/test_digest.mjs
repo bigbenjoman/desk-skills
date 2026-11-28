@@ -317,17 +317,18 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   const { renderPage } = await import('../desk/bin/digest.mjs');
   const follows = [{ key: 'follow:W-8', ticket: 'W-8', text: 'Check: check the invoice totals look right.', claim: null },
     { key: 'follow:W-9', ticket: 'W-9', text: 'Check: check the export opens in Excel.', claim: 'sess-9' }];
-  const page = renderPage({ slot: '2026-11-28T08:00', since: null, groups: [{ slug: 'acme__w', questions: [{ ticket: 'W-1', kind: 'parked', text: 'which copy?' }], decisions: [], follows }] });
+  const held = [{ ticket: 'W-2', pr: 12, url: null, text: 'touches .github/workflows' }];
+  const page = renderPage({ slot: '2026-11-28T08:00', since: null, groups: [{ slug: 'acme__w', questions: [{ ticket: 'W-1', kind: 'parked', text: 'which copy?' }], decisions: [], held, follows }] });
   const at = (s) => page.indexOf(s);
-  t('issue-1687 AC3 the digest lists checks after merge under their own heading, after the questions',
-    `${at('### Questions') >= 0 && at('### Questions') < at('### Checks after merge')} ${at('- [ ] `W-1` (parked)') < at('### Checks after merge')}`, 'true true');
+  t('issue-1687 AC3 the digest lists checks after merge under their own heading, after the questions and the merges that need the person',
+    `${at('### Questions') >= 0 && at('### Questions') < at('### Checks after merge')} ${at('- [ ] `W-1` (parked)') < at('### Checks after merge')} ${at('### Now needs your merge') >= 0 && at('### Now needs your merge') < at('### Checks after merge')}`, 'true true true');
   t('issue-1687 AC3 each check says what to check and how to close it, a claimed one who is checking it',
     `${page.includes('- [ ] `W-8`: Check: check the invoice totals look right.\n  once it has run, say done on `follow:W-8` in /desk-needs-you')} ${page.includes('- [ ] `W-9`: checking (sess-9) · Check: check the export opens in Excel.')}`, 'true true');
   t('issue-1687 AC3 the summary counts them apart from the questions', page.includes('1 question(s) to answer, 2 check(s) after merge, 0 decision(s) taken'), true);
   const alone = renderPage({ slot: '2026-11-28T08:00', since: null, groups: [{ slug: 'acme__w', questions: [], decisions: [], follows: follows.slice(0, 1) }] });
   t('issue-1687 AC3 a page whose only news is a check after merge still shows it', `${alone.includes('Nothing to answer')} ${alone.includes('### Checks after merge')}`, 'false true');
   const { followsOf } = await import('../desk/bin/digest.mjs');
-  const fake = () => [{ t: { key: 'follow:W-8' }, item: { ticket: 'W-8', need: 'W-8 is on main since 2026-11-27. Check: check the totals. Then say done.', claim: { session: 'sess-8' } } }];
+  const fake = () => [{ t: { key: 'follow:W-8' }, item: { kind: 'follow', ticket: 'W-8', need: 'W-8 is on main since 2026-11-27. Check: check the totals. Then say done.', claim: { session: 'sess-8' } } }];
   t('issue-1687 AC3 followsOf gives each follow step from its check on, and the session claiming it',
     JSON.stringify(followsOf({ slug: 'acme__w', state: '/nonexistent', queue: '/nonexistent/q.json' }, { ok: true, entries: new Map() }, fake)),
     JSON.stringify([{ key: 'follow:W-8', ticket: 'W-8', text: 'Check: check the totals.', claim: 'sess-8' }]));
