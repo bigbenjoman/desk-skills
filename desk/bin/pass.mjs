@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, STAGELESS_RAISE, raisedThreshold, sessionThreshold } from './handoff.mjs';
-import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief } from './decisions-change.mjs';
+import { lastReviewAt, decisionsSince, newDecisions, decisionsBrief, settledCriteria } from './decisions-change.mjs';
 import { issueChanged, refreshTicket, refreshBrief } from './ticket-refresh.mjs';
 import { workerMarkers, saidDone, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
@@ -6371,7 +6371,7 @@ runSteps({
         return { behind: x.behind, reopen: again ? {} : x.reopen };
       },
       baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
-      outside: scopeOutside, title: triageTitle,
+      outside: scopeOutside, title: triageTitle, settled: settledOf,
       evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), evidenceHold: (n) => evidenceHold(STATE, n),
       uploadHold: (n, t, shots) => uploadHold(STATE, n, ticketShotDir(t, STATE), shots),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
@@ -6631,6 +6631,11 @@ function scopeOutside(n, head, key) {
   const files = Array.isArray(scope) ? prFiles(n, head) : null;
   return files ? outOfScope(files, scope, incidental) : null;
 }
+// The criteria a ticket file's Decisions settle (decisions-change.mjs), so a measurement asked and
+// answered is not asked again; [] with no ticket file.
+function settledOf(key) {
+  try { return settledCriteria(readFileSync(join(STATE, 'tickets', `${key}.md`), 'utf8')); } catch { return []; }
+}
 function triageTitle(key) {
   try { return readTriage(STATE, key)?.summary ?? null; } catch { return null; }
 }
@@ -6654,6 +6659,8 @@ function fixReads(t, s, dirty, dirtyFiles) {
     moves: () => baseMoves(t, s.head),
     outside: () => scopeOutside(n, s.head, t.key),
     title: () => triageTitle(t.key),
+    // The criteria the ticket file's Decisions settle, so a measurement asked and answered is not asked again.
+    settled: () => settledOf(t.key),
     comments: (id) => {
       const r = reviewComments(id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);

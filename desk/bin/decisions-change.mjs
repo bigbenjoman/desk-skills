@@ -1,7 +1,19 @@
 // A ticket file's Decisions entries added since its PR's last review. A requeued ticket whose ticket
 // file gained one restarts at Stage 3 for it, not at the PR stage, where the worker would see the open
 // PR and its review and take the ticket as done. Pure: pass.mjs reads the file and the PR.
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sections } from './desk-design.mjs';
+import { skillsDir } from './desk-env.mjs';
+
+// desk-review's own reading of a Decisions entry (verdict.mjs settlingEntry), so the pass and the review
+// apply one rule: from this checkout's skills beside desk/bin, else the installed skills. With neither,
+// nothing reads as settled, so a gap is still put to the person rather than dropped.
+const VERDICT = [join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills'), skillsDir()]
+  .map((d) => join(d, 'desk-review', 'bin', 'verdict.mjs')).find((f) => existsSync(f));
+let settlingEntry = () => null;
+try { if (VERDICT) ({ settlingEntry } = await import(pathToFileURL(VERDICT).href)); } catch { /* read as nothing settled */ }
 
 // The entries under a ticket's `## Decisions` heading, as desk-jira's ticket template writes them
 // (`* <yyyy-mm-dd> <who>: <what>`, or a `-` bullet), each { date, line }. A line with no date is left out.
@@ -11,6 +23,46 @@ export function ticketDecisions(text) {
     const m = raw.match(/^\s*[-*]\s+(\d{4}-\d{2}-\d{2})\b/);
     return m ? [{ date: m[1], line: raw.trim().replace(/^[-*]\s+/, '') }] : [];
   });
+}
+
+// `text` with `extra` (whole entry lines, `* <yyyy-mm-dd> <who>: <what>`) added at the end of its
+// Decisions section, or under a new one at its end. The section is found as ticketDecisions reads it
+// (desk-design.mjs `sections`), so the entries land where the restart and the review look for them. A
+// text in Jira wiki headings is read in that form alone, so a new heading matches it.
+export function withDecisions(text, extra) {
+  const body = String(text ?? '').split('\n');
+  if (!extra.length) return body.join('\n');
+  const secs = sections(text);
+  const at = secs.findIndex((s) => /^decisions$/i.test(s.name));
+  if (at < 0) {
+    while (body.length && !body.at(-1).trim()) body.pop();
+    body.push('', body.some((l) => /^\s*h[1-6]\.\s+/i.test(l)) ? 'h2. Decisions' : '## Decisions', ...extra);
+    return body.join('\n');
+  }
+  // Each section after the first opens with its heading line, so the Decisions heading's index is
+  // the lines of every section before it plus their headings.
+  const heading = secs.slice(0, at).reduce((sum, s) => sum + s.lines.length, 0) + at - 1;
+  const filled = secs[at].lines.filter((l) => l.text.trim()).pop();
+  body.splice(filled ? filled.n : heading + 1, 0, ...extra);
+  return body.join('\n');
+}
+
+// Who an answer.mjs entry names after its decider (`<yyyy-mm-dd> <who> (answer.mjs): <answer>`), which
+// tells it apart from the issue's own entries, so a refresh from the issue keeps it (ticket-refresh.mjs).
+export const ANSWER_BY = '(answer.mjs):';
+// The criterion labels a text names (AC3, DoD2), upper-cased, once each.
+export const criteriaNamed = (text) => [...new Set((String(text ?? '').match(/\b(?:AC|DoD)\s?\d+\b/gi) ?? []).map((c) => c.replace(/\s+/g, '').toUpperCase()))];
+// The Decisions entry an answer naming a criterion is kept as, on one line, or null for one naming none.
+export function answerEntry({ text, who, today }) {
+  const one = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!one || !criteriaNamed(one).length) return null;
+  return `* ${today} ${String(who ?? '').replace(/[:\s]+/g, ' ').trim() || 'the person'} ${ANSWER_BY} ${one}`;
+}
+
+// The criteria a ticket's Decisions entries settle, as desk-review reads them: each label an entry names
+// that verdict.mjs settlingEntry reads it as settling. Upper-cased labels (AC3, DOD2), once each.
+export function settledCriteria(text) {
+  return [...new Set(ticketDecisions(text).flatMap(({ line }) => criteriaNamed(line).filter((c) => settlingEntry(line, c))))];
 }
 
 // When the PR was last reviewed: the latest of the person's desk reviews (a review whose body carries a
