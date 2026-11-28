@@ -88,6 +88,8 @@ if [ -e "${T}/write-w-in" ]; then f=$(printf '%s' "$*" | grep -oE '[^ ]*/\\.pref
 if [ -e "${T}/write-reread" ] && [ "\${DESK_AUTOPILOT_WORKER-}" = 1 ] && [ "\${DESK_ALLOW_REREAD-}" != 1 ]; then mkdir -p "$DESK_HOME/worker-reread/sess-1"; echo '{}' > "$DESK_HOME/worker-reread/sess-1/r.json"; fi
 # The model list (model-list.mjs): the initialize response, naming each model in $T/models, and no turn.
 case "$*" in *--input-format*) printf '{"type":"control_response","response":{"subtype":"success","request_id":"desk-model-list","response":{"models":[%s]}}}\\n' "$(cat "${T}/models")"; exit 0 ;; esac
+# While $T/reject-model exists, a call on the model it names is refused, as the CLI refuses a model it cannot start on.
+if [ -e "${T}/reject-model" ] && printf '%s' "$*" | grep -qF -- "--model $(cat "${T}/reject-model")"; then echo "There's an issue with the selected model"; exit 1; fi
 # $T/reply.first, while it exists, answers one call in place of $T/reply.
 if [ -e "${T}/reply.first" ]; then cat "${T}/reply.first"; rm -f "${T}/reply.first"; else cat "${T}/reply"; fi
 `);
@@ -307,6 +309,33 @@ t('DS-1021 the reread opt-out in the environment does not read as hooks that did
 t('DS-1021 the preflight session\'s records and its read file are tidied', [existsSync(rereadDir), existsSync(join(T, 'state', 'workers', `${KEY}.preflight-read.txt`))], [false, false]);
 rmSync(join(T, 'write-reread'));
 rmSync(join(hooksDir, 'desk-worker-reread.py'));
+say('reply', result(GOOD));
+
+// DS-1036: a model a lever drew that the CLI rejects is that lever's, so the preflight says drawn-only and
+// records no step of the preflight lever (on here); the row's own models, and anything failing beside a
+// drawn model, stay the preflight's.
+const leverSteps = () => { const f = join(T, 'state', 'workers', `${KEY}.runs.jsonl`); return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter((l) => l.includes('"lever_step"')).length : 0; };
+const drawnRun = (extra, reply = GOOD) => {
+  rmSync(record, { force: true }); rmSync(passes, { force: true }); say('reply', result(reply));
+  const before = leverSteps();
+  const p = preflight(extra);
+  return { ...p, stepped: leverSteps() - before, drawnOnly: /^\[preflight\] drawn-only/m.test(p.out) };
+};
+say('reject-model', 'haiku');
+r = drawnRun({ AUTOPILOT_FINDER_DRAWN: 'haiku' });
+t('DS-1036 a drawn finder the CLI rejects fails as its lever\'s: drawn-only, no preflight step recorded', [r.status, /FINDER-DRAWN +FAIL/.test(r.out), r.drawnOnly, r.stepped], [1, true, true, 0]);
+r = drawnRun({ AUTOPILOT_FINDER_MODEL: 'haiku' });
+t('DS-1036 the row\'s finder rejected is the preflight\'s own step', [r.status, r.drawnOnly, r.stepped], [1, false, 1]);
+r = drawnRun({ AUTOPILOT_FINDER_MODEL: 'haiku', AUTOPILOT_FINDER_DRAWN: 'opus' });
+t('DS-1036 the row\'s finder is still proved beside a drawn one that passes, and its rejection stops the start', [r.status, /^ +FINDER +FAIL/m.test(r.out), r.drawnOnly], [1, true, false]);
+r = drawnRun({ AUTOPILOT_FINDER_DRAWN: 'haiku' }, GOOD.replace('DENY=BLOCKED', 'DENY=OK'));
+t('DS-1036 a drawn finder rejected beside a boundary failure is not drawn-only, and is the preflight\'s step', [r.status, r.drawnOnly, r.stepped], [1, false, 1]);
+say('reject-model', 'opus');
+r = drawnRun({ AUTOPILOT_MODEL: 'opus', AUTOPILOT_MODEL_DRAWN: '1' });
+t('DS-1036 a drawn worker model the CLI rejects is drawn-only, with no preflight step', [r.status, /MODEL +FAIL/.test(r.out), r.drawnOnly, r.stepped], [1, true, true, 0]);
+r = drawnRun({ AUTOPILOT_MODEL: 'opus' });
+t('DS-1036 the row\'s worker model rejected is the preflight\'s own step', [r.status, r.drawnOnly, r.stepped], [1, false, 1]);
+rmSync(join(T, 'reject-model'));
 say('reply', result(GOOD));
 
 console.log(fails ? `${fails} failed` : 'all passed');

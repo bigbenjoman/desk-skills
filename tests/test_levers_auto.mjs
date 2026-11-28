@@ -59,7 +59,7 @@ Object.assign(process.env, {
 const { assignPin, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
 const { seededRandom } = await import('../desk/bin/seeded-random.mjs');
 const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
-const { REGISTRY, ENTRIES, loadRegistry, preconditions } = await import('../desk/bin/lever-registry.mjs');
+const { REGISTRY, ENTRIES, loadRegistry, preconditions, armOn } = await import('../desk/bin/lever-registry.mjs');
 const { leverRow, LEVERS } = await import('../desk/bin/desk-env.mjs');
 // Each lever's state for a levers row, as desk-env's leverStates gives it for the config's row.
 const rowStates = (row) => { const r = leverRow([row]); return Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : r.auto ? 'auto' : 'off'])); };
@@ -200,7 +200,7 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   const onTrial = [...TRIAL, ...VALUED, ...QUALITY].sort();
   t('AC3 an arm per lever on trial', Object.keys(pin.arms).sort(), onTrial);
   t('AC3 a trial id per lever on trial', Object.keys(pin.trial_ids).sort(), onTrial);
-  t('AC3 a quality-risk lever is drawn off while it would be the only ticket in flight', QUALITY.map((l) => pin.arms[l]), QUALITY.map(() => 'off'));
+  t('AC3 a quality-risk lever is drawn off while it would be the only ticket in flight, a model lever on its baseline', QUALITY.map((l) => pin.arms[l]), QUALITY.map((l) => REGISTRY[l].baseline ?? 'off'));
   t('AC3 the trial id names the repo, the lever and the trial', pin.trial_ids.wrappers, 'ac3/wrappers/initial');
   t('AC3 a fingerprint entry per registry lever', Object.keys(pin.fp).sort(), Object.keys(REGISTRY).sort());
   t('AC3 the time it was pinned', pin.at, NOW.toISOString());
@@ -452,27 +452,40 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   const local = admitQ('q5', 150, { prefix: 'L' });
   t('AC5 Worker location local: effort is drawn', local.some((p) => p.set.includes('effort')) && local.every((p) => ['on', 'off'].includes(p.arms.effort)), true);
 
-  // DS-1000: finder-model is drawn beside the other quality-risk trials, and never where §3b Worker
-  // models' finder= is already its on-arm alias.
-  const fm = admitQ('ds1000', 200, { prefix: 'FM' });
+  // finder-model and worker-model are drawn beside the other quality-risk trials, each a model against
+  // `config`, the row's; finder-model never where §3b Worker models' finder= already names one of them.
+  const fm = admitQ('ds1000', 300, { prefix: 'FM' });
   const fmEvents = read('ds1000', { kinds: ['assign'] }).events;
   // Exclusive: a ticket drawn on for one quality-risk trial has no arm in the others (AC1 above).
-  const QR = ['codex', 'review-reuse', 'effort', 'finder-model'];
-  const onOther = (e) => QR.some((l) => l !== 'finder-model' && e.arms[l] === 'on');
-  const onNone = (e) => QR.every((l) => e.arms[l] !== 'on');
-  const onFm = fmEvents.filter((e) => e.arms['finder-model'] === 'on');
-  t('DS-1000 AC5 an assign event drawn on for none carries a finder-model arm beside codex, review-reuse and effort, each off', fmEvents.filter(onNone).every((e) => QR.every((l) => e.arms[l] === 'off')), true);
+  const QR = ['codex', 'review-reuse', 'effort', 'finder-model', 'worker-model'];
+  const isOn = (l, a) => armOn(REGISTRY[l], a);
+  const offArm = (l) => (REGISTRY[l].values ? REGISTRY[l].baseline : 'off');
+  const onOther = (e) => QR.some((l) => l !== 'finder-model' && isOn(l, e.arms[l]));
+  const onNone = (e) => QR.every((l) => !isOn(l, e.arms[l]));
+  const onFm = fmEvents.filter((e) => isOn('finder-model', e.arms['finder-model']));
+  t('DS-1036 an assign event drawn on for none carries every quality-risk arm off, a model lever\'s on config', fmEvents.filter(onNone).every((e) => QR.every((l) => e.arms[l] === offArm(l))), true);
   t('DS-1000 AC5 and a trial id for it', fmEvents.filter((e) => !onOther(e)).every((e) => e.trial_ids['finder-model'] === 'ds1000/finder-model/initial'), true);
   t('DS-1000 AC5 one drawn on for finder-model has no arm in the others', onFm.every((e) => QR.filter((l) => l !== 'finder-model').every((l) => e.arms[l] == null)), true);
   t('DS-1000 AC5 one drawn on for another trial carries no finder-model arm', fmEvents.filter(onOther).every((e) => e.arms['finder-model'] == null), true);
   t('DS-1000 AC5 all three kinds were drawn', [fmEvents.some(onNone), onFm.length > 0, fmEvents.some(onOther)], [true, true, true]);
+  t('DS-1036 AC3 drawn on, finder-model carries sonnet or haiku, and both are drawn', [...new Set(onFm.map((e) => e.arms['finder-model']))].sort(), ['haiku', 'sonnet']);
+  t('DS-1036 AC3 its pin\'s value is the model it drew, config where it drew none', fm.every((p) => p.values?.['finder-model'] === (isOn('finder-model', p.arms['finder-model']) ? p.arms['finder-model'] : 'config')), true);
   t('DS-1000 AC5 some tickets draw it on, and carry no other quality-risk lever', fm.some((p) => p.set.includes('finder-model')) && fm.filter((p) => p.set.includes('finder-model')).every((p) => quality(p).join() === 'finder-model'), true);
+  const onWm = fmEvents.filter((e) => isOn('worker-model', e.arms['worker-model']));
+  t('DS-1036 AC2 drawn on for worker-model, the assign event names sonnet, the model it drew, in its arms and values', onWm.length > 0 && onWm.every((e) => e.arms['worker-model'] === 'sonnet' && e.values['worker-model'] === 'sonnet' && e.set.includes('worker-model')), true);
+  t('DS-1036 AC2 and carries no other quality-risk lever', fm.filter((p) => p.set.includes('worker-model')).every((p) => quality(p).join() === 'worker-model'), true);
   only('ds1000-same', 'finder-model');
   const same = admitQ('ds1000-same', 150, { values: { ...LOCAL, 'worker-finder-model': 'sonnet' }, prefix: 'FS' });
-  t('DS-1000 AC4 finder= already sonnet: no ticket on a finder-model trial', same.every((p) => !p.set.includes('finder-model') && p.arms['finder-model'] == null), true);
-  only('ds1000-haiku', 'finder-model');
-  const haiku = admitQ('ds1000-haiku', 150, { values: { ...LOCAL, 'worker-finder-model': 'haiku' }, prefix: 'FH' });
-  t('DS-1000 AC4 finder=haiku: finder-model is drawn', haiku.some((p) => p.set.includes('finder-model')) && haiku.every((p) => ['on', 'off'].includes(p.arms['finder-model'])), true);
+  t('DS-1036 finder= already sonnet, one of its models: no ticket on a finder-model trial', same.every((p) => !p.set.includes('finder-model') && p.arms['finder-model'] == null), true);
+  only('ds1000-opus', 'finder-model');
+  const opus = admitQ('ds1000-opus', 150, { values: { ...LOCAL, 'worker-finder-model': 'opus' }, prefix: 'FH' });
+  t('DS-1036 finder=opus: finder-model is drawn, each arm one of its values', opus.some((p) => p.set.includes('finder-model')) && opus.every((p) => REGISTRY['finder-model'].values.includes(p.arms['finder-model'])), true);
+  // finder-model's events from when it had two arms (on meant sonnet) replay with a value, so the
+  // draw has one to run on rather than refusing.
+  const legacy = (e) => leverStatesIn([{ id: 'l1', at: '2026-11-01T00:00:00Z', lever: 'finder-model', actor: 'ben', reason_code: 'ben_override', reason: 'x', ...e }])['finder-model'];
+  t('DS-1036 an old finder-model override to on reads as overridden to sonnet', legacy({ kind: 'override', to: 'on', value: 'on' }), { state: 'overridden', at: '2026-11-01T00:00:00Z', id: 'l1', value: 'sonnet' });
+  t('DS-1036 one to off reads as overridden to its baseline', legacy({ kind: 'override', to: 'off', value: 'off' }).value, 'config');
+  t('DS-1036 an old adopt with no value reads as kept on sonnet', [legacy({ kind: 'transition', to: 'adopted' }).state, legacy({ kind: 'transition', to: 'adopted' }).value].join(), 'adopted,sonnet');
 
   // AC9: two kept alone: the next tickets are drawn into a trial of the pair.
   only('q9', 'codex', 'review-reuse');

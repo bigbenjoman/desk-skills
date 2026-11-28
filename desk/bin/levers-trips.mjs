@@ -44,7 +44,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REGISTRY, KEPT_STATES, isValued } from './lever-registry.mjs';
+import { REGISTRY, KEPT_STATES, armOn } from './lever-registry.mjs';
 import { appendWith, isStateChange, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId } from './levers-auto.mjs';
 import { runsPath } from './findings.mjs';
@@ -126,8 +126,7 @@ export function onArm(t, lever, s, slug, events, registry = REGISTRY) {
   const pin = t?.levers;
   if (!pin || typeof pin !== 'object' || Array.isArray(pin)) return false;
   // A lever with more than two arms is on its arm on any value but its baseline.
-  const l = registry[lever];
-  const on = isValued(l) ? l.values.includes(pin.arms?.[lever]) && pin.arms[lever] !== l.baseline : pin.arms?.[lever] === 'on';
+  const on = armOn(registry[lever], pin.arms?.[lever]);
   if (s.state === 'trial') return on && pin.trial_ids?.[lever] === trialId(slug, lever, s);
   if (KEPT_STATES.includes(s.state)) {
     if (!(pin.set ?? []).includes(lever)) return false;

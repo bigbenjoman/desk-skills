@@ -31,7 +31,8 @@ const env = (cfg) => ({ ...process.env, DESK_CONFIG: cfg, DESK_MACHINE: join(T, 
 const levers = (cfg, ...a) => execFileSync('node', [ENV_BIN, 'levers', ...a], { encoding: 'utf8', env: env(cfg), stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const noRow = config('');
 t('AC5: no levers row: every lever is off', LEVERS.map((l) => levers(noRow, l)).every((v) => v === 'off'), true);
-t('AC5: no levers row: a lever with more than two arms reads off, not its baseline', LEVERS.filter((l) => isValued(REGISTRY[l])).map((l) => levers(noRow, l)).join(' '), 'off off');
+const valued = LEVERS.filter((l) => isValued(REGISTRY[l]));
+t('AC5: no levers row: a lever with more than two arms reads off, not its baseline', `${valued.length} ${valued.map((l) => levers(noRow, l)).join(' ')}`, `4 ${valued.map(() => 'off').join(' ')}`);
 t('AC5: no levers row: nothing on', levers(noRow).split('\n')[0], 'on: none');
 t('AC5: the template TODO is off', levers(config('| Phase 0 levers | `none` | `TODO` (names) |'), 'codex'), 'off');
 t('AC5: none is off', levers(config('| Phase 0 levers | `none` | `none` |')).split('\n')[0], 'on: none');
@@ -108,6 +109,11 @@ t('AC8: an empty byte count is null', `${line.system_bytes} ${line.prompt_bytes}
 t('AC8: records are read back', spawnRecords(S).length, 2);
 t('the spawn line records the effort', JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', effort: 'high', installed: null, levers: { on: [], unknown: [] } })).effort, 'high');
 t('the spawn line reads default with no effort passed', line.effort, 'default');
+const fell = JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', model: 'default', modelFallback: 'sonnet', installed: null, levers: { on: ['worker-model'], unknown: [] } }));
+t('DS-1036 AC5 a start that fell back from its drawn model records the model it ran and the one it drew', `${fell.model} ${fell.model_fallback}`, 'default sonnet');
+t('DS-1036 a start that did not fall back carries no model_fallback', 'model_fallback' in line, false);
+const fellF = JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', model: 'default', finderFallback: 'haiku', installed: null, levers: { on: ['finder-model'], unknown: [] } }));
+t('DS-1036 AC5 a start whose drawn finder model fell back records the finder model it drew', `${fellF.finder_fallback} ${'model_fallback' in fellF} ${'finder_fallback' in line}`, 'haiku false false');
 
 // ---- the claude version and lever-code fingerprints on the spawn line ------------------------
 const TREE = join(T, 'tree');

@@ -385,7 +385,7 @@ t('DS-999 a new helper that runs code on load, or an edit that does not stand al
 ], ['a top-level statement that runs code when the module loads changed: const b = read();', 'a top-level statement that runs code when the module loads changed: export function f() {} main();', 'f does not stand alone', 'g moved',
   'the new b is a let, or a name already in use']);
 // DS-1003: a constant set by Object.freeze of a literal only holds data, so an edit to it narrows by name.
-const leversOld = schema.replace("'review-reuse', 'wrappers']);", "'review-reuse']);");
+const leversOld = schema.replace("'worker-model', 'wrappers']);", "'worker-model']);");
 const levers = byName(N('desk/bin/config-schema.mjs', leversOld, schema));
 // AC1: adding a lever reads as an edit to LEVERS by name, not as load-time code,
 // but TYPES, built on load, reaches LEVERS (through leverRow), so the real edit stays full and the reason says why.

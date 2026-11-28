@@ -25,7 +25,9 @@
 // repo's kept quality-risk lever: one of them, at random, while two are kept and not yet proven
 // together. A ticket is drawn on for a quality-risk trial only while the tickets in flight carrying an
 // unproven quality-risk lever, this one counted, stay within 30% (`cap`) of the tickets in flight, this
-// one counted; so with fewer than three others in flight, none is. Two quality-risk levers kept alone, past their holdbacks, are tried as a
+// one counted; so with fewer than three others in flight, none is. A quality-risk lever with more than
+// two arms has its values for arms: drawn on, a ticket carries one of its values but the baseline, each
+// as likely, and its off arm is the baseline. Two quality-risk levers kept alone, past their holdbacks, are tried as a
 // pair: the pair's `on` arm carries both, its `off` arm the kept set as it stands. A pair's state is
 // its latest `pair` event for that trial (levers-evaluate.mjs writes them): adopted or settled is the
 // repo's default, both on; reverted ends the trial with the levers kept alone.
@@ -53,7 +55,8 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { leverStates, leversFrozen, queueFile, repoSlug, stateDir, SAFE_ID } from './desk-env.mjs';
-import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText, isValued } from './lever-registry.mjs';
+import { MODEL_LEGACY_ON, legacyModelValue } from './config-schema.mjs';
+import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText, isValued, armOn } from './lever-registry.mjs';
 import { appendWith, isStateChange, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -100,10 +103,14 @@ export function leverStatesIn(events, registry = REGISTRY) {
     const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off') && e.value === e.to;
     // A lever the registry does not trial (the ledger) is never on trial, whatever the log says.
     const state = pinned ? 'overridden' : STATES.includes(e.to) && !(e.to === 'trial' && !registry[e.lever].trialled) ? e.to : 'off';
-    const value = pinned ? e.to : e.value;
+    // A model lever's event from when it had two arms names `on` or `off`, or (an adopt) no value: the
+    // model its on arm meant, or its baseline.
+    const legacy = Object.hasOwn(MODEL_LEGACY_ON, e.lever);
+    const value = legacyModelValue(e.lever, pinned ? e.to : e.value);
     const from = e.kind === 'override' && e.restores && typeof e.restores === 'object' ? e.restores : { at: e.at, id: e.id };
     // A value carries from adopted to settled with no event naming it again.
-    const keptValue = typeof e.value === 'string' ? e.value : KEPT_STATES.includes(out[e.lever].state) ? out[e.lever].value : undefined;
+    const keptValue = typeof value === 'string' ? value : KEPT_STATES.includes(out[e.lever].state) ? out[e.lever].value
+      : legacy && KEPT_STATES.includes(state) ? MODEL_LEGACY_ON[e.lever] : undefined;
     const kept = KEPT_STATES.includes(state) && isValued(registry[e.lever]) && keptValue ? { value: keptValue } : {};
     // An overridden lever with more than two arms carries the value it was set to, or none where the
     // override named no value of its own (the draw refuses it then).
@@ -229,11 +236,11 @@ export function qualityTrials({ slug, events, states, values = repoValues(), reg
 // carried it since it reached that share (its last ramp, or the trial's start) have merged, so ran to
 // the end with every hard trip able to fire. `merged` holds the repo's merged ticket keys.
 //   -> { share, step, carried }
-export function exposureOf(events, trial, ramp, merged = new Set()) {
+export function exposureOf(events, trial, ramp, merged = new Set(), registry = REGISTRY) {
   const ramps = events.filter((e) => e.kind === 'ramp' && e.trial_id === trial.id && Number.isFinite(e.to));
   const share = ramps.at(-1)?.to ?? ramp.ramp[0];
   const from = ramps.length ? events.indexOf(ramps.at(-1)) : -1;
-  const carried = new Set(events.slice(from + 1).filter((e) => e.kind === 'assign' && e.arms?.[trial.key] === 'on' && e.trial_ids?.[trial.key] === trial.id && merged.has(e.ticket)).map((e) => e.ticket)).size;
+  const carried = new Set(events.slice(from + 1).filter((e) => e.kind === 'assign' && armOn(registry[trial.key], e.arms?.[trial.key]) && e.trial_ids?.[trial.key] === trial.id && merged.has(e.ticket)).map((e) => e.ticket)).size;
   return { share, step: ramp.ramp.indexOf(share), carried };
 }
 
@@ -243,7 +250,7 @@ export function exposureOf(events, trial, ramp, merged = new Set()) {
 function rampDue({ slug, key, events, states, values, registry, now, merged }) {
   for (const t of qualityTrials({ slug, events, states, values, registry })) {
     const ramp = registry[t.levers[0]].ramp;
-    const x = exposureOf(events, t, ramp, merged);
+    const x = exposureOf(events, t, ramp, merged, registry);
     if (x.step < 0 || x.step >= ramp.ramp.length - 1 || x.carried < ramp.step_after) continue;
     const to = ramp.ramp[x.step + 1];
     const pct = (v) => `${Math.round(v * 100)}%`;
@@ -256,8 +263,8 @@ function rampDue({ slug, key, events, states, values, registry, now, merged }) {
   return null;
 }
 
-// Whether a pin carries an unproven quality-risk lever: drawn `on` for a quality-risk trial.
-const carriesUnproven = (pin, registry) => Object.entries(pin?.arms ?? {}).some(([k, a]) => a === 'on' && QUALITY_KEY(k, registry));
+// Whether a pin carries an unproven quality-risk lever: drawn on for a quality-risk trial.
+const carriesUnproven = (pin, registry) => Object.entries(pin?.arms ?? {}).some(([k, a]) => armOn(registry[k], a) && QUALITY_KEY(k, registry));
 
 // The repo's tickets: the keys of those merged, from every batch with archived tickets and archived
 // batches included (batches.mjs repoTickets), so the ramp counts a carrier a pass archived; and the pins
@@ -300,6 +307,12 @@ export function pendingPins(events, { saved, merged, key, now }) {
   return [...latest.values()];
 }
 
+// One of a lever with more than two arms' values other than its baseline, each as likely.
+const onValue = (l, random) => {
+  const others = l.values.filter((v) => v !== l.baseline);
+  return others[Math.min(others.length - 1, Math.floor(random() * others.length))];
+};
+
 // The quality-risk part of a ticket's draw: { set, arms, trialIds }.
 function qualityDraw({ slug, events, byLever, states, frozen, values, random, now, registry, inFlight }) {
   const q = qualityLevers({ states, values, byLever, registry });
@@ -313,7 +326,7 @@ function qualityDraw({ slug, events, byLever, states, frozen, values, random, no
     const carrying = live.filter((p) => carriesUnproven(p, registry)).length;
     const cap = registry[trials[0].levers[0]].ramp.cap;
     if ((carrying + 1) / (live.length + 1) <= cap) {
-      const shares = trials.map((t) => exposureOf(events, t, registry[t.levers[0]].ramp).share);
+      const shares = trials.map((t) => exposureOf(events, t, registry[t.levers[0]].ramp, undefined, registry).share);
       const total = shares.reduce((n, s) => n + s, 0);
       const scale = total > 1 ? 1 / total : 1;
       const u = random();
@@ -323,9 +336,11 @@ function qualityDraw({ slug, events, byLever, states, frozen, values, random, no
         if (u < acc) { picked = t; break; }
       }
     }
+    // A lever with more than two arms is drawn one of its other values on, and its baseline off.
     for (const t of trials) {
       if (picked && picked !== t) continue;
-      out.arms[t.key] = picked === t ? 'on' : 'off';
+      const l = registry[t.key];
+      out.arms[t.key] = !isValued(l) ? (picked === t ? 'on' : 'off') : picked === t ? onValue(l, random) : l.baseline;
       out.trialIds[t.key] = t.id;
     }
   }
@@ -379,7 +394,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
     if (isValued(l) && s.state !== 'off') leverValues[name] = ['overridden', ...KEPT_STATES].includes(s.state) ? s.value : l.baseline;
     // Set by hand: pinned to its value, with no arm, whatever the freeze or the layer.
     if (s.state === 'overridden') {
-      if (isValued(l) ? s.value !== l.baseline : s.value === 'on') set.push(name);
+      if (armOn(l, s.value)) set.push(name);
       continue;
     }
     // The quality-risk layer is drawn as one, below.
@@ -393,7 +408,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
       arms[name] = blockedArm(name, b.members, random, isValued(l) ? l.values : ON_OFF, perBlock);
       trialIds[name] = trialId(slug, name, s);
       if (isValued(l)) leverValues[name] = arms[name];
-      if (isValued(l) ? arms[name] !== l.baseline : arms[name] === 'on') set.push(name);
+      if (armOn(l, arms[name])) set.push(name);
     } else if (inHoldback(s, l, now.getTime())) {
       arms[name] = random() < l.ramp.holdback ? 'holdback' : 'adopted';
       trialIds[name] = trialId(slug, name, s);
@@ -409,6 +424,14 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
   for (const n of qd.set) if (!set.includes(n)) set.push(n);
   Object.assign(arms, qd.arms);
   Object.assign(trialIds, qd.trialIds);
+  // A quality-risk lever with more than two arms runs on the value it drew, else on its kept or set
+  // value where the ticket carries it, and on its baseline where it does not (its holdback arm, or
+  // another quality-risk lever drawn or kept in its place).
+  for (const [name, l] of Object.entries(registry)) {
+    if (l.layer !== 'quality-risk' || !isValued(l) || !Object.hasOwn(leverValues, name)) continue;
+    if (l.values.includes(arms[name])) leverValues[name] = arms[name];
+    else if (!set.includes(name)) leverValues[name] = l.baseline;
+  }
   const at = now.toISOString();
   const valued = Object.keys(leverValues).length ? { values: leverValues } : {};
   const pin = { set, arms, trial_ids: trialIds, ...valued, fp: leverFingerprints(registry).fp, block, at };

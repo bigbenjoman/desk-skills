@@ -9,7 +9,7 @@
 //       each costing the ticket's whole spend; `carried_in` is the in-window spend of tickets
 //       admitted earlier, so rows plus carried_in equal the report's total for the same --days, and
 //       `rework` is the rows' cost-weighted rework share by cause (rework.mjs)
-//   node phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>]
+//   node phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>] [--model-fallback <m>] [--finder-fallback <m>]
 //       [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]
 //       one JSON line for spawn-worker.sh to append to $DESK_STATE/workers/<KEY>.runs.jsonl, and with
 //       --log the desk_spawn line worker-cost.mjs reads appended to that log
@@ -55,11 +55,15 @@ export function claudeVersion(run = () => spawnSync('claude', ['--version'], { e
 // One worker start: when, which session and stage, its model and effort, the desk commit installed,
 // the levers on, the claude version, a hash of each lever's installed code (and any listed file that
 // was missing), and the bytes of the system prompt and first message it was handed.
-export function spawnLine({ ticket, session, stage = null, model = null, effort = null, systemBytes = null, promptBytes = null, now = new Date(),
+export function spawnLine({ ticket, session, stage = null, model = null, effort = null, modelFallback = null, finderFallback = null, systemBytes = null, promptBytes = null, now = new Date(),
   installed = readInstalled(), levers = E.levers(), claude = claudeVersion(), fingerprints = leverFingerprints() }) {
   const n = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
   return JSON.stringify({
     at: now.toISOString(), ticket, session, ...startFields({ stage, model, effort }),
+    // The model the worker-model lever drew that the CLI could not start on, so `model` ran instead; and
+    // the finder model the finder-model lever drew, so its finders ran on §3b Worker models' finder.
+    ...(modelFallback ? { model_fallback: modelFallback } : {}),
+    ...(finderFallback ? { finder_fallback: finderFallback } : {}),
     desk_commit: installed?.commit ?? null, levers: levers.on, unknown_levers: levers.unknown,
     claude_version: claude, lever_fp: fingerprints.fp, lever_fp_missing: fingerprints.missing,
     system_bytes: n(systemBytes), prompt_bytes: n(promptBytes),
@@ -341,6 +345,8 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
       levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
       lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
+      ...(s?.model_fallback ? { model_fallback: s.model_fallback } : {}),
+      ...(s?.finder_fallback ? { finder_fallback: s.finder_fallback } : {}),
     }));
     rows.push({
       slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,
@@ -356,8 +362,9 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       ci_reds: ciRuns ? reds.length : null, ci_reds_by_job: ciRuns ? ciCounts(reds) : null,
       desk_commits: [...new Set(starts.map((s) => s.desk_commit).filter(Boolean))],
       start_records: starts, login: t.login?.name ?? null, pin: pinOf(t.levers),
-      // A start that recorded levers other than the pin's set: false with no pin.
-      pin_mismatch: starts.some((s) => pinDisagrees(t.levers?.set, s.levers)),
+      // A start that recorded levers other than the pin's set, or ran on another model than the one its
+      // worker-model or finder-model lever drew: false with no pin.
+      pin_mismatch: starts.some((s) => pinDisagrees(t.levers?.set, s.levers) || !!s.model_fallback || !!s.finder_fallback),
       // What the starts after the first cost, as a share of `cost`, by cause and failure class (rework.mjs).
       rework_share: rework.share, rework_cost: rework.cost, rework_by_cause: rework.by_cause, rework_by_class: rework.by_class,
       rework_starts: rework.starts,
@@ -592,10 +599,10 @@ if (isMain()) {
     if (args[0] === 'spawn-line') {
       const ticket = opt('--ticket');
       const session = opt('--session');
-      if (!ticket || !session) { console.error('usage: phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>] [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]'); process.exit(2); }
+      if (!ticket || !session) { console.error('usage: phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>] [--model-fallback <m>] [--finder-fallback <m>] [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]'); process.exit(2); }
       const start = { session, stage: opt('--stage'), model: opt('--model'), effort: opt('--effort') };
       if (opt('--log')) { try { appendFileSync(opt('--log'), spawnEvent(start)); } catch { /* a record that cannot be written never stops a spawn */ } }
-      console.log(spawnLine({ ticket, ...start, systemBytes: opt('--system-bytes'), promptBytes: opt('--prompt-bytes') }));
+      console.log(spawnLine({ ticket, ...start, modelFallback: opt('--model-fallback'), finderFallback: opt('--finder-fallback'), systemBytes: opt('--system-bytes'), promptBytes: opt('--prompt-bytes') }));
     } else if (args.includes('--per-ticket')) {
       const usage = 'usage: phase0-report.mjs --per-ticket [--json] [--days <n> | --since <iso> [--until <iso>]] [--no-ci]';
       const until = opt('--until') == null ? Date.now() : Date.parse(opt('--until'));

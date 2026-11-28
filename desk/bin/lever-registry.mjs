@@ -6,11 +6,11 @@
 // desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
 //   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording,
-//            leverFingerprints, isValued } from './lever-registry.mjs'
+//            leverFingerprints, isValued, armOn, armOff } from './lever-registry.mjs'
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, repoConfigValues, configValues, LEVERS, FINDER_MODEL_LEVER, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, repoConfigValues, configValues, LEVERS, MODEL_BASELINE, parseLevers, HOME, deskHome } from './desk-env.mjs';
 import { ALIAS, ROWS } from './config-schema.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
@@ -62,15 +62,24 @@ const AUDIT_P0 = Object.freeze({ id: 'audit-p0', by: 'levers-audit.mjs', when: '
 const CODEX_DEAD_SEATS = Object.freeze({ id: 'codex-dead-seats', exits: Object.freeze([124, 75]), calls: 10, rate: 0.2, when: 'more than 20% of the last 10 desk-codex calls on on-arm tickets died (exit 124 or 75)' });
 const ownStepError = (step) => Object.freeze({ id: 'own-step-error', step, when: `a start on an on-arm ticket records ${step} exiting non-zero` });
 
+// The models each model lever tries against its baseline.
+const FINDER_MODELS = Object.freeze(['sonnet', 'haiku']);
+const WORKER_MODELS = Object.freeze(['sonnet']);
+const MODEL_KINDS = Object.freeze(['finder', 'worker']);
+
 const code = (path, part) => Object.freeze(part ? { path, part } : { path });
 const metric = (name, minimum) => Object.freeze({ metric: name, direction: 'down', minimum, minimum_set: minimum != null });
 
 // `minimum` is the relative decrease an adopt needs (0.3 is down 30%); null is not yet set, and no
 // lever with an unset minimum can be adopted. `trialled: false` is declared but not yet put on trial.
 // A lever with more than an on and an off arm declares `values`, two or more arm names, and which of
-// them is its `baseline`, the arm a ticket runs on outside a trial. Only a low-risk lever may: each
-// ticket is drawn one of its values in blocks, and every other value is weighed against the baseline
-// (levers-auto.mjs, levers-evaluate.mjs). A lever with no `values` is on or off. A lever weighed on
+// them is its `baseline`, the arm a ticket runs on outside a trial. A low-risk one is drawn one of its
+// values in blocks; a quality-risk one is drawn on for its trial by exposure, as any quality-risk lever
+// is, and a ticket drawn on carries one of its other values (levers-auto.mjs). Every other value is
+// weighed against the baseline (levers-evaluate.mjs). A lever with no `values` is on or off. A model
+// lever names in `model` the §3b Worker models model it moves (`worker`, every start's, or `finder`,
+// desk-review's Claude finders'): its baseline is `config`, that model as the row names it, and each
+// other value is a model to run instead (a finder's an Agent tool alias). A lever weighed on
 // only some of its tickets names them in `rows`; one with a guardrail of its own declares it in
 // `guardrails`, beside the shared ones, its breach code `guardrail_` and its key in snake_case.
 export const ENTRIES = Object.freeze({
@@ -123,14 +132,27 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/desk-env.mjs', 'effort')],
     preconditions: [Object.freeze({ id: 'worker-location', want: 'local', status: 'needs local workers', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
-  // desk-review's Claude finder seats on `model` (the on arm) against the finders' model today. Bea, the
-  // refuters, codex and the audit keep theirs.
+  // desk-review's Claude finder seats on each model against §3b Worker models' finders (`config`). Bea,
+  // the refuters, codex and the audit keep theirs.
   'finder-model': {
-    layer: 'quality-risk', trialled: true, model: FINDER_MODEL_LEVER,
+    layer: 'quality-risk', trialled: true, model: 'finder', values: [MODEL_BASELINE, ...FINDER_MODELS], baseline: MODEL_BASELINE,
     mechanism: metric('dollars per start', null),
     trips: [POST_MERGE_REVERT, ownStepError('desk-env model finder'), AUDIT_P0],
     code: [code('desk/bin/desk-env.mjs', 'model finder')],
-    preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODEL_LEVER, status: `finders already on ${FINDER_MODEL_LEVER}`, why: `§3b Worker models already runs its finders on ${FINDER_MODEL_LEVER}, so both arms would be the same` })],
+    preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODELS, status: `finders already on ${FINDER_MODELS.join('/')}`, why: `§3b Worker models already runs its finders on one of ${FINDER_MODELS.join(', ')}, so that value would be the baseline` })],
+  },
+  // Every start of a ticket on each model in place of §3b Worker models' standard and high models
+  // (`config`), its Stage 7 text model and its finders' left as they are (pass.mjs startModel). A model
+  // the CLI cannot start on runs the start on the row's model instead, recorded as model_fallback.
+  'worker-model': {
+    layer: 'quality-risk', trialled: true, model: 'worker', values: [MODEL_BASELINE, ...WORKER_MODELS], baseline: MODEL_BASELINE,
+    mechanism: metric('dollars per ticket', null),
+    trips: [POST_MERGE_REVERT, AUDIT_P0],
+    code: [code('desk/bin/pass.mjs', 'startModel')],
+    preconditions: [
+      Object.freeze({ id: 'worker-location', want: 'local', status: 'needs local workers', why: 'the model is set on the local claude launch; a cloud worker never takes it' }),
+      Object.freeze({ id: 'worker-model', not: WORKER_MODELS, status: `workers already on ${WORKER_MODELS.join('/')}`, why: `§3b Worker models already runs its standard workers on one of ${WORKER_MODELS.join(', ')}, so that value would be the baseline` }),
+    ],
   },
   // How a parked ticket's question reaches the person (question-arms.mjs): `batched` waits for the
   // check-in digest, where a recommended call applies by default; `one-at-a-time` pushes each ask as it
@@ -244,7 +266,11 @@ function valuesOf(name, e) {
   const wrong = v.find((x) => typeof x !== 'string' || !VALUE.test(x) || RESERVED_ARMS.includes(x));
   if (wrong !== undefined) throw bad(`has value "${wrong}"; want a lower-case word other than ${RESERVED_ARMS.join(', ')}`);
   if (!v.includes(e.baseline)) throw bad(`has baseline "${e.baseline}"; want one of its values (${v.join(', ')})`);
-  if (e.layer !== 'low-risk') throw bad('declares "values" on the quality-risk layer; only a low-risk lever may have more than two arms');
+  if ('model' in e) {
+    if (e.baseline !== MODEL_BASELINE) throw bad(`has model "${e.model}" and baseline "${e.baseline}"; a model lever's baseline is ${MODEL_BASELINE}`);
+    const alias = e.model === 'finder' && v.find((x) => x !== MODEL_BASELINE && !ALIAS.test(x));
+    if (alias) throw bad(`has finder model "${alias}"; want an Agent tool alias`);
+  }
   return { values: Object.freeze([...v]), baseline: e.baseline };
 }
 
@@ -282,7 +308,8 @@ export function loadRegistry(entries = ENTRIES, names = LEVERS) {
     if (!Array.isArray(e.code) || !e.code.length || e.code.some((c) => !c?.path)) throw missing('code');
     for (const key of ['trips', 'preconditions']) if (!Array.isArray(e[key])) throw missing(key);
     if (typeof e.trialled !== 'boolean') throw missing('trialled');
-    if ('model' in e && !ALIAS.test(e.model ?? '')) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want an Agent tool alias`);
+    if ('model' in e && !MODEL_KINDS.includes(e.model)) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want ${MODEL_KINDS.join(' or ')}`);
+    if ('model' in e && !('values' in e)) throw missing('values');
     if ('rows' in e && !(typeof e.rows === 'string' && e.rows)) throw missing('rows');
     out[name] = Object.freeze({
       name, layer: e.layer, trialled: e.trialled, ...('model' in e ? { model: e.model } : {}), ...valuesOf(name, e), mechanism: Object.freeze({ ...e.mechanism }),
@@ -297,6 +324,11 @@ export const REGISTRY = loadRegistry();
 export const lever = (name, registry = REGISTRY) => registry[name] ?? null;
 // Whether a registry lever has more than two arms, each a value.
 export const isValued = (l) => Array.isArray(l?.values);
+// Whether a ticket's trial arm `arm` for registry lever `l` (undefined for a pair key) is its on arm:
+// `on`, or for a lever with more than two arms any of its values but the baseline; and its off arm:
+// `off`, or the baseline.
+export const armOn = (l, arm) => (isValued(l) ? arm !== l.baseline && l.values.includes(arm) : arm === 'on');
+export const armOff = (l, arm) => (isValued(l) ? arm === l.baseline : arm === 'off');
 // The choices `levers decide` takes for a lever: off or trial, or a lever with more than two arms'
 // values or trial.
 export const decideChoices = (name, registry = REGISTRY) => (isValued(registry[name]) ? [...registry[name].values, 'trial'] : ['off', 'trial']);
@@ -318,15 +350,18 @@ export function trialable(items, registry = REGISTRY) {
 // repo's (the levers view). `worker-finder-model` is §3b Worker models' `finder=`, `none` when unset,
 // and null when the row cannot be read (a malformed row holds spawns on its own).
 const finderOf = (read) => { try { return read().finder ?? 'none'; } catch { return null; } };
+// `worker-model` is its standard model, `default` for a row of `default`, null when unreadable.
+const standardOf = (read) => { try { const m = read(); return m.off ? 'default' : m.standard; } catch { return null; } };
 // `ledger` is `on` where the Phase 0 levers row names the ledger lever, as the ledger's writers read it
 // (queue-ledger.mjs ledgerOn), else `off`; null when the row cannot be read.
 const ledgerOf = (read) => { try { return parseLevers(read()).on.includes('ledger') ? 'on' : 'off'; } catch { return null; } };
-export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels), ledger: ledgerOf(() => configValues('levers')) });
+export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels), 'worker-model': standardOf(workerModels), ledger: ledgerOf(() => configValues('levers')) });
 export function repoValuesOf(slug, root) {
   const raw = (id) => repoConfigValue(slug, id, root) ?? ROWS.find((e) => e.id === id).default;
   let location = null;
   try { location = parseWorkerLocation(raw('worker-location')); } catch { /* unreadable: left null */ }
-  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models'))), ledger: ledgerOf(() => repoConfigValues(slug, 'levers', root)) };
+  const models = () => parseWorkerModels(raw('worker-models'));
+  return { 'worker-location': location, 'worker-finder-model': finderOf(models), 'worker-model': standardOf(models), ledger: ledgerOf(() => repoConfigValues(slug, 'levers', root)) };
 }
 
 // Where install.sh puts a registry code path: `desk/<rest>` under DESK_HOME, anything else (`hooks/…`)
@@ -357,13 +392,14 @@ export function leverFingerprints(registry = REGISTRY, resolve = installedPath) 
 
 // Whether a lever is eligible in a repo, given its config values (repoValues() for this one). A lever
 // the registry does not declare is never eligible. A precondition holds where the value is its `want`,
-// or, for one declaring `not` instead, where the value is anything but `not`.
+// or, for one declaring `not` instead (a value or a list of them), where the value is none of `not`.
 //   -> { eligible, reasons: [text], failed: [precondition] }
+const notOf = (p) => [p.not].flat();
 export function preconditions(name, values = repoValues(), registry = REGISTRY) {
   const l = registry[name];
   if (!l) return { eligible: false, reasons: [`"${name}" is not declared in the lever registry`], failed: [] };
-  const failed = l.preconditions.filter((p) => ('not' in p ? values?.[p.id] === p.not : values?.[p.id] !== p.want));
-  const reasons = failed.map((p) => ('not' in p ? `${name} is ineligible: config "${p.id}" is already ${p.not} (${p.why})`
+  const failed = l.preconditions.filter((p) => ('not' in p ? notOf(p).includes(values?.[p.id]) : values?.[p.id] !== p.want));
+  const reasons = failed.map((p) => ('not' in p ? `${name} is ineligible: config "${p.id}" is already ${values?.[p.id]} (${p.why})`
     : `${name} is ineligible: config "${p.id}" is ${values?.[p.id] ?? 'unset'}, want ${p.want} (${p.why})`));
   return { eligible: reasons.length === 0, reasons, failed };
 }

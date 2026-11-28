@@ -67,7 +67,8 @@ import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, red
 import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
-import { leverOnFor } from './lever-pin.mjs';
+import { leverOnFor, leverValueFor } from './lever-pin.mjs';
+import { ALIAS } from './config-schema.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, notStarted, FIX_TRIES_MAX, START_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, readBaseRed, readGreenRec, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
@@ -4023,17 +4024,68 @@ function refusedOf(login) { return refusedIn(HEALTH, login, OWN_LOGIN); }
 // preflight, so a value the CLI rejects stops the ticket before any worker of it runs. `cost` is the
 // preflight call's { usd, turns }, each null when it reported none, and `skipped` when spawn-worker.sh
 // made no call because a pass on the same fingerprint stands.
-function preflight(key, wt, workerEnv) {
+// `drawnFinder`, the finder-model lever's drawn alias, is proved on its own line beside the row's.
+// `drawnOnly`: every failure was a model a lever drew (spawn-worker.sh's drawn-only line).
+function preflight(key, wt, workerEnv, drawnFinder = null) {
   const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_FINDER_MODEL: models.finder ?? '', AUTOPILOT_TEXT_MODEL: models.text ?? '', AUTOPILOT_PREFLIGHT: '1' },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_FINDER_MODEL: models.finder ?? '', AUTOPILOT_FINDER_DRAWN: drawnFinder ?? '', AUTOPILOT_TEXT_MODEL: models.text ?? '', AUTOPILOT_PREFLIGHT: '1' },
   }).out;
   const m = /\[preflight\] cost=(\S+) turns=(\S+)/.exec(pre);
   const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
   const cost = { usd: num(m?.[1]), turns: num(m?.[2]), skipped: /^\[preflight\] skipped/m.test(pre) };
   const failure = /\[preflight\] pass/.test(pre) ? null : `${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}\n${preflightNote(cost)}`;
   // A call refused at the usage limit (spawn-worker.sh says so): nothing about the worker failed.
-  return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre) };
+  return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre), drawnOnly: !!failure && /^\[preflight\] drawn-only/m.test(pre) };
+}
+// The model a ticket's start runs on: the model its pin's worker-model lever drew, other than the
+// baseline, else `base`, §3b Worker models' model for the start. A pin that cannot be read keeps `base`.
+function startModel(t, base) {
+  let v = null;
+  try { v = leverValueFor('worker-model', t); } catch { /* a mangled pin: the row's model */ }
+  return v && v !== E.MODEL_BASELINE ? v : base;
+}
+// A start's preflight on workerEnv's model. Where that is the model the worker-model lever drew and the
+// CLI cannot start on it (the MODEL check fails), the start runs on `base` instead: workerEnv is moved to
+// it, with AUTOPILOT_MODEL_FALLBACK naming the drawn model for the start's record, and preflighted
+// again. The same for the finder-model lever's drawn finder model and the FINDER check.
+//   -> preflight's result, every call's cost, `fellBack`, the drawn model, and `finderFellBack`, the
+//   drawn finder model, each where it fell back.
+function preflightStart(t, wt, workerEnv, base) {
+  const drew = workerEnv.AUTOPILOT_MODEL;
+  const drawn = drew !== base && drew === startModel(t, base);
+  // The alias the finder-model lever drew is proved too, beside the row's finder.
+  let finder = startFinder(t);
+  // On a drawn model, AUTOPILOT_MODEL_DRAWN tells spawn-worker.sh that a model the CLI rejects is the
+  // worker-model lever's, retried below, so it is not recorded as the preflight lever's own step failing.
+  let pre = preflight(t.key, wt, drawn ? { ...workerEnv, AUTOPILOT_MODEL_DRAWN: '1' } : workerEnv, finder);
+  const sum = (a, b) => (a == null || b == null ? null : a + b);
+  const retry = (out) => {
+    const again = preflight(t.key, wt, workerEnv, finder);
+    const cost = again.cost.skipped ? out.cost : { usd: sum(out.cost.usd, again.cost.usd), turns: sum(out.cost.turns, again.cost.turns), skipped: false };
+    return { ...again, cost, fellBack: out.fellBack, finderFellBack: out.finderFellBack };
+  };
+  if (pre.failure && !pre.limit && drawn && /^\s*MODEL\s+FAIL/m.test(pre.failure)) {
+    workerEnv.AUTOPILOT_MODEL = base;
+    workerEnv.AUTOPILOT_MODEL_FALLBACK = drew;
+    pre = retry({ ...pre, fellBack: drew });
+  }
+  // A drawn finder model the CLI cannot start on: the finders run on the row's model, the worker told so
+  // by AUTOPILOT_FINDER_FALLBACK (spawn-worker.sh moves its value back to the baseline). Only where that
+  // was the only failure: a breach or any other check failing beside it stops the start as it stands.
+  if (pre.failure && !pre.limit && pre.drawnOnly && finder && /^\s*FINDER-DRAWN\s+FAIL/m.test(pre.failure)) {
+    workerEnv.AUTOPILOT_FINDER_FALLBACK = finder;
+    const finderFellBack = finder;
+    finder = null;
+    pre = retry({ ...pre, finderFellBack });
+  }
+  return pre;
+}
+// The Agent tool alias the ticket's pin's finder-model lever drew, other than its baseline, or null.
+function startFinder(t) {
+  let v = null;
+  try { v = leverValueFor('finder-model', t); } catch { /* a mangled pin: the row's finder */ }
+  return v && v !== E.MODEL_BASELINE && ALIAS.test(v) ? v : null;
 }
 // A preflight the usage limit refused on the repo's login holds the batch: the ticket keeps its place
 // and state, and nothing else spawns or preflights this pass. The probe names the limit where it can.
@@ -4118,8 +4170,11 @@ async function resumeKilled(t) {
     report.parked.push(`${t.key}: ${line}`);
     return undefined;
   }
+  // The model its session started on, and the drawn model it fell back from, if it did.
   const model = t.model && t.model !== 'default' ? t.model : '';
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir), ...handoffPctEnv(t) };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model,
+    ...(t.model_fallback ? { AUTOPILOT_MODEL_FALLBACK: t.model_fallback } : {}),
+    ...(t.finder_fallback ? { AUTOPILOT_FINDER_FALLBACK: t.finder_fallback } : {}), ...loginVars(loginDir), ...handoffPctEnv(t) };
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) {
     if (preflightHitLimit(t, pre.cost, login)) report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login`);
@@ -4588,15 +4643,17 @@ async function spawnHandoff(t, pick) {
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
   const briefPath = writeBrief(t, t.worktree, `${restart?.brief ?? refreshed.brief}${renderHandoff({ key: t.key, stage: handedTo, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits })}`);
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
-  // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
-  // requeue raises the same tier it would have.
+  // A Stage 7 session runs on §3b Worker models' text model where one is set, which the worker-model
+  // lever leaves alone; the tier is kept, so a requeue raises the same tier it would have.
   const tier = tierFor(t);
-  const model = stage === '7' && models.text ? models.text : models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars, ...handoffPctEnv(t) };
+  const text = stage === '7' && models.text;
+  const base = text ? models.text : models.off ? '' : models[tier];
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: text ? base : startModel(t, base), ...pick.vars, ...handoffPctEnv(t) };
   const fail = (why) => {
     markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
   };
-  const pre = preflight(t.key, t.worktree, workerEnv);
+  const pre = preflightStart(t, t.worktree, workerEnv, base);
+  const model = workerEnv.AUTOPILOT_MODEL;
   if (pre.limit) {
     // Refused on the default, with new work moved to the fallback: the handoff starts there instead.
     const again = preflightHitLimit(t, pre.cost, pick.login) ? repoLogin() : null;
@@ -4610,7 +4667,7 @@ async function spawnHandoff(t, pick) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   if (!recordRunning(t.key, [`session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t)],
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, `model_fallback=${pre.fellBack ?? 'null'}`, `finder_fallback=${pre.finderFellBack ?? 'null'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t)],
   `no Stage ${stage} session was started; the handoff waits for the next pass`)) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
@@ -5313,10 +5370,11 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
   // setup-worktree.sh names the per-ticket database it created, or says `none` (every database
   // variable blanked). One source, never re-derived here.
   const database = [...setup.matchAll(/\[setup-worktree\] database=(\S+)/g)].pop()?.[1] ?? 'none';
-  // The preflight runs on the worker's own model, so a model the CLI rejects fails it here.
+  // The preflight runs on the worker's own model, so a model the CLI rejects fails it here: one the
+  // worker-model lever drew falls back to the tier's (preflightStart).
   const tier = tierFor(t);
-  const model = models.off ? '' : models[tier];
-  const baseEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
+  const base = models.off ? '' : models[tier];
+  const baseEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: startModel(t, base) };
   let workerEnv = { ...baseEnv, ...pick.vars };
 
   // A fix try keeps its own task (fixTask); any other ticket with a PR whose Decisions changed since its
@@ -5335,7 +5393,7 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
-  let pre = preflight(t.key, wt, workerEnv);
+  let pre = preflightStart(t, wt, workerEnv, base);
   // Refused at the usage limit: preflightHitLimit runs once per refused preflight. Refused on the
   // default, with new work moved to the fallback, this ticket starts there instead; otherwise the batch
   // holds.
@@ -5344,12 +5402,14 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     pick = repoLogin();
     if (!pick) continue;
     workerEnv = { ...baseEnv, ...pick.vars };
-    pre = preflight(t.key, wt, workerEnv);
+    pre = preflightStart(t, wt, workerEnv, base);
     if (pre.limit) {
       preflightHitLimit(t, pre.cost, pick.login);
       break;
     }
   }
+  // The model the start runs on: the drawn one, or `base` where the CLI could not start on it.
+  const model = workerEnv.AUTOPILOT_MODEL;
   if (pre.failure) {
     logPreflight(t.key, pre.cost);
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
@@ -5384,7 +5444,7 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', ...keepMergedPr(t), 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
-    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, `model_fallback=${pre.fellBack ?? 'null'}`, `finder_fallback=${pre.finderFellBack ?? 'null'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'handoff_mid=null', 'handoff_repeats=null', 'handoff_head=null', 'handoff_stuck=null', 'handoff_pct=null', 'images_dir=null',
@@ -5431,7 +5491,7 @@ for (const step of deferringOrder(spawnable, (x) => x.key)) {
   // So the restart's own handoffs and later requeues compare the entries with this spawn, not the review.
   if (restart) q('set', t.key, `decisions_seen=${restart.seen}`);
   refreshDelivered(t, refreshed);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${refreshed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pre.fellBack ? ` (the worker-model lever drew ${pre.fellBack}, which the CLI could not start on)` : ''}${pre.finderFellBack ? ` (finders on the row's model: the finder-model lever drew ${pre.finderFellBack}, which the CLI could not start on)` : ''}${pick.line}${renamed}${resumed.line}${refreshed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   actedOn(t);

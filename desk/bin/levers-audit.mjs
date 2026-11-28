@@ -30,7 +30,7 @@
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { batchPaths, expandHome, workerModels } from './desk-env.mjs';
-import { REGISTRY } from './lever-registry.mjs';
+import { REGISTRY, armOn, armOff } from './lever-registry.mjs';
 import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, pairTrial, qualityTrials, isPairKey, trialId } from './levers-auto.mjs';
 import { REVERTIBLE, applyTrips, tripEvents, lines as rowsOf } from './levers-trips.mjs';
@@ -86,17 +86,19 @@ export function liveTrials({ slug, events, states, registry = REGISTRY }) {
 export function sampleAudits({ slug, events, tickets, states, registry = REGISTRY, now = Date.now() }) {
   const merged = tickets.filter((t) => t?.key && mergedPr(t) != null && t.levers && typeof t.levers === 'object');
   const trials = liveTrials({ slug, events, states, registry, now });
-  const drawn = (t) => trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.key]));
+  // A lever with more than two arms is on on any value but its baseline, and off on the baseline.
+  const onOff = (key, a) => armOn(registry[key], a) || armOff(registry[key], a);
+  const drawn = (t) => trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && onOff(x.key, t.levers.arms?.[x.key]));
   const armsOf = (t) => Object.fromEntries(drawn(t).map((x) => [x.key, t.levers.arms[x.key]]));
   // The trial each of those arms was drawn under, so a P0 trips only that trial and not a fresh one.
   const idsOf = (t) => Object.fromEntries(drawn(t).map((x) => [x.key, x.id]));
   const out = [];
   const seen = new Set();
   for (const { key, lever, id, pair } of trials) {
-    const arm = (a) => merged.filter((t) => t.levers.trial_ids?.[key] === id && t.levers.arms?.[key] === a)
+    const arm = (side) => merged.filter((t) => t.levers.trial_ids?.[key] === id && side(registry[key], t.levers.arms?.[key]))
       .sort((x, y) => Date.parse(x.merged_at) - Date.parse(y.merged_at) || (x.key < y.key ? -1 : 1));
-    const on = arm('on');
-    const off = arm('off');
+    const on = arm(armOn);
+    const off = arm(armOff);
     const n = Math.floor(Math.min(on.length, off.length) / EVERY);
     for (const [a, list] of [['on', on], ['off', off]]) {
       for (let k = 1; k <= n; k++) {
@@ -307,7 +309,7 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   const drawnUnder = (lever) => item.trial_ids?.[lever] ?? (lever === item.lever && !item.pair ? item.trial_id : null);
   const sameTrial = (lever) => byLever[lever]?.state !== 'trial' || drawnUnder(lever) == null || trialId(slug, lever, byLever[lever]) === drawnUnder(lever);
   const trips = Object.entries(item.arms ?? {})
-    .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state) && sameTrial(lever))
+    .filter(([lever, a]) => armOn(registry[lever], a) && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state) && sameTrial(lever))
     .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, from_id: byLever[lever].id, file, line,
       why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
   events.push(...applyTrips({ slug, name, repo, trips, registry, now: Date.parse(at) }));

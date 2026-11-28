@@ -223,10 +223,14 @@ export function parseCloudEnv(raw) {
 // the caller to name, and is never on.
 //   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
 //   parseLevers -> { on, unknown }
-export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'ledger', 'ledger-record', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
-// The finder-model lever's on arm: the Agent tool alias desk-review's Claude finder seats run on while
-// the lever is on (desk-env model finder). One of the aliases parseWorkerModels takes for `finder=`.
-export const FINDER_MODEL_LEVER = 'sonnet';
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'handoff-threshold', 'ledger', 'ledger-record', 'memory', 'preflight', 'question-handling', 'review-reuse', 'worker-model', 'wrappers']);
+// A model lever's baseline arm (lever-registry.mjs `model`): the model §3b Worker models names for the
+// start, so a ticket on it runs as it would with no trial. Every other value is a model name.
+export const MODEL_BASELINE = 'config';
+// The model a model lever's on arm meant while it had two arms, by lever: a log event or a ticket's pin
+// written then names `on` (or `off`, the baseline), never a value, and reads as this model.
+export const MODEL_LEGACY_ON = Object.freeze({ 'finder-model': 'sonnet' });
+export const legacyModelValue = (lever, v) => (Object.hasOwn(MODEL_LEGACY_ON, lever) ? (v === 'on' ? MODEL_LEGACY_ON[lever] : v === 'off' ? MODEL_BASELINE : v) : v);
 export const LEVERS_AUTO = 'auto';
 export const leverWords = (items) => [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean))];
 export function leverRow(items) {

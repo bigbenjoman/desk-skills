@@ -2572,4 +2572,48 @@ check "question handling: a production-broken park raised by the pass's own push
   'echo "$out" | grep -q "PUSH: QH-6: PRODUCTION BROKEN" && [ "$(qh_raised QH-6 | jq -c "map(.[0])")" = "[\"one-at-a-time\"]" ]'
 export DESK_CONFIG="$AK_CONFIG"
 
+# ---- DS-1036: a ticket the worker-model lever drew a model for starts on it; a model the CLI cannot
+# start on (the preflight's MODEL check fails) runs the worker on the row's model, and the start says so.
+export DESK_QUEUE="$T/queue-wm.json" DESK_AUTOPILOT_STATE="$T/state-wm"; mkdir -p "$T/state-wm/logs"
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+EOF
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then
+  echo "\$1 model=\${AUTOPILOT_MODEL:-} drawn=\${AUTOPILOT_MODEL_DRAWN:-} finder=\${AUTOPILOT_FINDER_MODEL:-} drawn_finder=\${AUTOPILOT_FINDER_DRAWN:-}" >> "$T/wm-preflights"
+  # WM-5's drawn finder fails beside a boundary check, so the preflight does not call it drawn-only.
+  if [ "\$1" = WM-5 ]; then echo "[preflight] \$1"; echo "  W_OUT  OK       FAIL (wanted BLOCKED)"; echo "  FINDER-DRAWN  FAIL     (the CLI did not answer on haiku)"; exit 1; fi
+  if [ "\${AUTOPILOT_FINDER_DRAWN:-}" = haiku ]; then echo "[preflight] \$1"; echo "  FINDER-DRAWN  FAIL     (the CLI did not answer on haiku)"; echo "[preflight] drawn-only: every failure is a model a lever drew"; exit 1; fi
+  if [ "\$1" = WM-2 ] && [ -n "\${AUTOPILOT_MODEL:-}" ]; then echo "[preflight] \$1"; echo "  MODEL  FAIL     (no check answered on --model \$AUTOPILOT_MODEL)"; echo "[preflight] drawn-only: every failure is a model a lever drew"; exit 1; fi
+  echo "[preflight] pass"; exit 0
+fi
+echo "\$1 model=\${AUTOPILOT_MODEL:-} fallback=\${AUTOPILOT_MODEL_FALLBACK:-}\${AUTOPILOT_FINDER_FALLBACK:+ finder_fallback=\$AUTOPILOT_FINDER_FALLBACK}" >> "$T/wm-spawns"; echo "[spawn] ticket=\$1"
+EOF
+: > "$T/wm-spawns"; : > "$T/wm-preflights"
+# The repo's worker cap is 3 and X-1's running X-9 holds one: free it, so WM-1 to WM-3 all start, and
+# start WM-4 in a pass of its own once they are done.
+DESK_QUEUE="$X1Q" q set X-9 state=done session_id=null
+q init wm; q set-batch concurrency=3
+wm_pin(){ printf 'levers={"set":[%s],"arms":{"worker-model":"%s"},"trial_ids":{},"values":{"worker-model":"%s"},"at":"2026-11-27T00:00:00Z"}' "$2" "$1" "$1"; }
+q add WM-1; q set WM-1 state=triaged lane=A branch=feat/WM-1 "$(wm_pin sonnet '"worker-model"')"
+q add WM-2; q set WM-2 state=triaged lane=A branch=feat/WM-2 "$(wm_pin sonnet '"worker-model"')"
+q add WM-3; q set WM-3 state=triaged lane=A branch=feat/WM-3 "$(wm_pin config '')"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1036 AC2 a ticket that drew sonnet starts on sonnet, and its queue entry names it" \
+  'grep -qx "WM-1 model=sonnet fallback=" "$T/wm-spawns" && [ "$(field WM-1 model)" = "\"sonnet\"" ] && [ "$(field WM-1 model_fallback)" = null ]'
+check "DS-1036 a ticket on config starts on the row's model" 'grep -qx "WM-3 model= fallback=" "$T/wm-spawns" && [ "$(field WM-3 model)" = "\"default\"" ]'
+check "DS-1036 AC5 a drawn model the CLI cannot start on: the worker runs on the row's model, and its start names the model it drew" \
+  'grep -qx "WM-2 model= fallback=sonnet" "$T/wm-spawns" && [ "$(field WM-2 state)" = "\"running\"" ] && [ "$(field WM-2 model)" = "\"default\"" ] && [ "$(field WM-2 model_fallback)" = "\"sonnet\"" ] && echo "$out" | grep -q "WM-2 .*model=default (the worker-model lever drew sonnet, which the CLI could not start on)"'
+check "DS-1036 the drawn model's preflight tells spawn-worker.sh it was drawn, so a rejection is not the preflight lever's step; the baseline's retry does not" \
+  'grep -qx "WM-2 model=sonnet drawn=1 finder= drawn_finder=" "$T/wm-preflights" && grep -qx "WM-2 model= drawn= finder= drawn_finder=" "$T/wm-preflights" && grep -qx "WM-3 model= drawn= finder= drawn_finder=" "$T/wm-preflights"'
+for k in WM-1 WM-2 WM-3; do q set "$k" state=done session_id=null; done
+fm_pin='levers={"set":["finder-model"],"arms":{"finder-model":"haiku"},"trial_ids":{},"values":{"finder-model":"haiku"},"at":"2026-11-27T00:00:00Z"}'
+q add WM-4; q set WM-4 state=triaged lane=A branch=feat/WM-4 "$fm_pin"
+q add WM-5; q set WM-5 state=triaged lane=A branch=feat/WM-5 "$fm_pin"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-1036 AC5 a drawn finder model the CLI cannot start on: proved beside the row's, then the finders run on the row's, and the start says so" \
+  'grep -qx "WM-4 model= drawn= finder= drawn_finder=haiku" "$T/wm-preflights" && [ "$(grep -c "^WM-4 model= drawn= finder= drawn_finder=$" "$T/wm-preflights")" = 1 ] && grep -qx "WM-4 model= fallback= finder_fallback=haiku" "$T/wm-spawns" && [ "$(field WM-4 finder_fallback)" = "\"haiku\"" ] && [ "$(field WM-1 finder_fallback)" = null ] && echo "$out" | grep -q "WM-4 .*the finder-model lever drew haiku, which the CLI could not start on"'
+check "DS-1036 a drawn finder model failing beside another check is no fallback: the preflight's failure stands and nothing starts" \
+  '[ "$(grep -c "^WM-5 " "$T/wm-preflights")" = 1 ] && ! grep -q "^WM-5 " "$T/wm-spawns" && [ "$(field WM-5 state)" != "\"running\"" ] && [ "$(field WM-5 finder_fallback)" = null ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

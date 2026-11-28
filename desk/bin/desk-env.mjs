@@ -61,9 +61,9 @@
 //   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
 //                                             when nothing may merge this batch's green PRs
 //   node desk-env.mjs model finder|text [--row] print §3b Worker models' finder or text model, `none` if
-//                                             unset (no override), exit 4 if the row is malformed; with
-//                                             the finder-model lever on, finder prints its on-arm alias;
-//                                             `--row` prints the row's value whatever the lever
+//                                             unset (no override), exit 4 if the row is malformed; finder
+//                                             prints the alias the finder-model lever drew, where it drew
+//                                             one; `--row` prints the row's value whatever the lever
 //   node desk-env.mjs effort <start>          print the effort a worker session starting there runs at
 //                                             (`default` with the lever off), exit 4 if §3b Worker
 //                                             effort is malformed
@@ -210,7 +210,7 @@ import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import { quantile } from './quantile.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
-  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, parseCloudEnv, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
+  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, parseCloudEnv, LEVERS, LEVERS_AUTO, MODEL_BASELINE, legacyModelValue, ALIAS, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
   signinPermissionsOf,
@@ -322,7 +322,7 @@ export { PERMISSION_KEYS, CONFIG_ROWS };
 // The row grammars live in the schema as its types; each is re-exported here under its own name.
 export {
   DeskConfigError, isNone, parseCommandItem, parseServicePort, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
-  parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
+  parseWorkerLocation, LEVERS, LEVERS_AUTO, MODEL_BASELINE, leverRow, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
   CODEX_DEFAULTS, parseCodexReview,
 };
 
@@ -1128,12 +1128,22 @@ export function leverValue(name, env = process.env) {
   }
   return null;
 }
-// The model desk-review's Claude finder seats run on (`desk-env model finder`): the finder-model
-// lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset. The row
-// is parsed either way, so a malformed one is refused on both arms.
-export function finderModel(l = levers()) {
+// The model a model lever (lever-registry.mjs `model`) drew for this worker: its value in
+// DESK_LEVER_VALUES, or null on its baseline (`config`, the §3b model stands) or with none.
+export function leverModel(name, env = process.env) {
+  const v = leverValue(name, env);
+  return v && v !== MODEL_BASELINE ? v : null;
+}
+// The model desk-review's Claude finder seats run on (`desk-env model finder`): the alias the
+// finder-model lever drew for this ticket, else §3b Worker models' `finder=`, null when unset. The row
+// is parsed either way, so a malformed one is refused on every arm. A drawn value that is no Agent
+// tool alias is not passed on. A pin from when the lever had two arms has it on with no value: the
+// model its on arm meant.
+export function finderModel(env = process.env) {
   const { finder = null } = workerModels();
-  return leverOn('finder-model', l) ? FINDER_MODEL_LEVER : finder;
+  const drew = leverModel('finder-model', env)
+    ?? (leverValue('finder-model', env) == null && leverOn('finder-model', levers(env)) ? legacyModelValue('finder-model', 'on') : null);
+  return drew && ALIAS.test(drew) ? drew : finder;
 }
 
 // Where each lever's state comes from: `pinned` (named in the row, or in this ticket's pin), `auto`
@@ -2935,7 +2945,7 @@ if (isMain) {
       case 'model': {
         // §3b Worker models' finder or text model; `none` when it is unset (no override). Exits 0
         // either way, so a worker reads the answer without a compound `; echo $?`. The finder model
-        // is the finder-model lever's on-arm alias while the lever is on (finderModel); `--row` reads
+        // is the alias the finder-model lever drew for the ticket (finderModel); `--row` reads
         // the row alone, for desk-review's simplicity seat, which the lever does not move.
         const row = args[1] === '--row';
         if (!EXTRA_MODELS.includes(args[0]) || (args[1] != null && !row)) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')} [--row]`);

@@ -146,10 +146,10 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
   w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
   const c = cell(view(m), 'finder-model');
   t('DS-1000 AC4 the cell reads ineligible', c.state, 'ineligible');
-  t('DS-1000 AC4 one line says both arms would be the same', c.note, 'not tested in desk-skills: §3b Worker models already runs its finders on sonnet, so both arms would be the same');
+  t('DS-1036 one line says that model would be the baseline', c.note, 'not tested in desk-skills: §3b Worker models already runs its finders on one of sonnet, haiku, so that value would be the baseline');
   t('DS-1000 AC4 the other levers are unaffected', cell(view(m), 'codex').state, 'off');
-  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=haiku\` |\n`);
-  t('DS-1000 AC4 finder=haiku: finder-model reads off, as any lever with no evaluation yet', cell(view(m), 'finder-model').state, 'off');
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=opus\` |\n`);
+  t('DS-1036 finder=opus, none of its models: finder-model reads off, as any lever with no evaluation yet', cell(view(m), 'finder-model').state, 'off');
 }
 // DS-1000 AC4: the daily evaluation still writes the ineligible lever a trial row; the view keeps
 // saying why rather than reading it as testing, and a kept lever keeps its result.
@@ -158,7 +158,7 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
   w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
   const c = cell(view(m), 'finder-model');
   t('DS-1000 AC4 an evaluated trial row: the cell still reads ineligible', c.state, 'ineligible');
-  t('DS-1000 AC4 an evaluated trial row: its reason is kept apart for the page', c.why, '§3b Worker models already runs its finders on sonnet, so both arms would be the same');
+  t('DS-1000 AC4 an evaluated trial row: its reason is kept apart for the page', c.why, '§3b Worker models already runs its finders on one of sonnet, haiku, so that value would be the baseline');
   t('DS-1000 AC4 an evaluated trial row: an eligible lever keeps its evaluation', cell(view(m), 'wrappers').state, 'trial');
   const k = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('finder-model', { state: 'adopted' })]) } });
   w(join(k.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);

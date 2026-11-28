@@ -95,6 +95,7 @@ export const MECHANISMS = Object.freeze({
   // Dollars at list prices over every measured step of the ticket's asks (withAsks), per asking ticket.
   'question-handling': { num: (r) => r.ask_usd, den: () => 1 },
   'handoff-threshold': { num: (r) => r.cost, den: () => 1 },
+  'worker-model': { num: (r) => r.cost, den: () => 1 },
 });
 
 // The tickets a lever is weighed on, by the registry's `rows`: every ticket unless it names some.
@@ -255,12 +256,23 @@ function askReport(rows) {
 // Per value of `rows` (a valued lever's tickets, each with its `arm`; in a holdback, `adopted` read as the
 // adopted `value` and `holdback` as the `baseline`), the tickets, dollars per ticket and handoffs to a
 // fresh session per ticket: what the handoff-threshold lever's row shows for each value.
+const namedArms = (rows, value, baseline) => rows.map((r) => {
+  const a = r.pin?.arms?.[r.lever] ?? r.arm;
+  return a === 'adopted' && value ? { ...r, arm: value } : a === 'holdback' ? { ...r, arm: baseline } : r;
+});
+
+const costByArm = (rows, value, baseline, more = () => ({})) =>
+  byArm(namedArms(rows, value, baseline), (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), ...more(rs) }));
+
 export function handoffReport(rows, value, baseline) {
-  const named = rows.map((r) => {
-    const a = r.pin?.arms?.[r.lever] ?? r.arm;
-    return a === 'adopted' && value ? { ...r, arm: value } : a === 'holdback' ? { ...r, arm: baseline } : r;
-  });
-  return byArm(named, (rs) => ({ tickets: rs.length, usd_per_ticket: per(rs, (r) => fin(r.cost)), handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)) }));
+  return costByArm(rows, value, baseline, (rs) => ({ handoffs_per_ticket: per(rs, (r) => fin(r.handoffs)) }));
+}
+// The same per value of a model lever (lever-registry.mjs `model`): the tickets and dollars per ticket,
+// and for each value but the baseline its own decision against the baseline (`decided`, by value).
+export function valueReport(rows, value, baseline, decided = {}) {
+  const out = costByArm(rows, value, baseline);
+  for (const [v, d] of Object.entries(decided)) if (out[v]) out[v] = { ...out[v], decision: d.decision, reason: d.reason };
+  return out;
 }
 
 // ---- outcome files -----------------------------------------------------------------------------------
@@ -723,6 +735,7 @@ export function evaluate({
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
         ...(reg.rows === ASKING ? { ask_report: askReport(used) } : {}),
         ...(lever === 'handoff-threshold' ? { handoff_report: handoffReport(used.map((x) => ({ ...x, lever })), s.value ?? null, reg.baseline) } : {}),
+        ...(reg.model ? { value_report: valueReport(used.map((x) => ({ ...x, lever })), s.value ?? null, reg.baseline, Object.fromEntries(Object.entries(perValue ?? {}).map(([v, x]) => [v, x.d]))) } : {}),
         ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });

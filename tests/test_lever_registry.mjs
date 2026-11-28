@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES, isValued } from '../desk/bin/lever-registry.mjs';
-import { LEVERS, FINDER_MODEL_LEVER, parseLevers, parseWorkerModels } from '../desk/bin/desk-env.mjs';
+import { LEVERS, MODEL_BASELINE, parseLevers, parseWorkerModels } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,7 +14,7 @@ const without = (name, drop) => ({ ...ENTRIES, [name]: drop({ ...ENTRIES[name], 
 // AC1: all seven, in their layers, and the same names desk-env levers parses.
 const byLayer = (layer) => Object.values(REGISTRY).filter((l) => l.layer === layer).map((l) => l.name).sort().join(' ');
 t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class handoff-threshold ledger ledger-record memory preflight question-handling wrappers');
-t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort finder-model review-reuse');
+t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort finder-model review-reuse worker-model');
 const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex'));
 t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
 t('AC1 an entry desk-env does not know fails loading, by name', loadError({ ...ENTRIES, turbo: ENTRIES.memory }), 'lever-registry: entry "turbo" is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)');
@@ -58,19 +58,33 @@ t('AC4 effort with a local worker location is eligible', preconditions('effort',
 t('AC4 a lever with no precondition is eligible with a cloud worker location', preconditions('memory', { 'worker-location': 'cloud' }).eligible, true);
 t('AC4 an undeclared lever is never eligible', preconditions('turbo', { 'worker-location': 'local' }).eligible, false);
 
-// DS-1000: the finder-model lever, its on-arm alias, and its precondition on §3b Worker models' finder=.
-t('DS-1000 AC1 the entry records its on-arm alias, the one config-schema names', `${lever('finder-model').model} ${lever('finder-model').model === FINDER_MODEL_LEVER}`, 'sonnet true');
-t('DS-1000 AC1 the alias is one the finder= check takes', parseWorkerModels(`default finder=${lever('finder-model').model}`).finder, 'sonnet');
+// The finder-model lever: its models against the row's finders, and its precondition on §3b Worker
+// models' finder=.
+const fm = lever('finder-model');
+t('DS-1036 AC3 finder-model carries sonnet and haiku against config, the row\'s finders', `${fm.model} ${fm.values.join(',')} ${fm.baseline} ${fm.baseline === MODEL_BASELINE}`, 'finder config,sonnet,haiku config true');
+t('DS-1000 each model is one the finder= check takes', fm.values.filter((v) => v !== fm.baseline).map((v) => parseWorkerModels(`default finder=${v}`).finder).join(' '), 'sonnet haiku');
 t('DS-1000 a lever with no model carries none', 'model' in lever('effort'), false);
-t('DS-1000 a model that is no alias fails loading', loadError(without('finder-model', (e) => { e.model = 'claude-sonnet-5-5'; return e; })), 'lever-registry: lever "finder-model" has model "claude-sonnet-5-5"; want an Agent tool alias');
-t('DS-1000 quality-risk, dollars per start, minimum unset', `${lever('finder-model').layer} ${lever('finder-model').mechanism.metric} ${lever('finder-model').mechanism.minimum}`, 'quality-risk dollars per start null');
-t('DS-1000 trips: post-merge revert, its own step, a blind-audit P0', lever('finder-model').trips.map((x) => `${x.id}${x.step ? `:${x.step}` : ''}`).join(' '), 'post-merge-revert own-step-error:desk-env model finder audit-p0');
-t('DS-1000 its code is desk-env model finder', JSON.stringify(lever('finder-model').code), '[{"path":"desk/bin/desk-env.mjs","part":"model finder"}]');
-t('DS-1000 AC4 a repo whose finder= is already the alias is ineligible', preconditions('finder-model', { 'worker-finder-model': 'sonnet' }).eligible, false);
-t('DS-1000 AC4 and the reason says both arms would be the same', /worker-finder-model" is already sonnet .*both arms would be the same/.test(preconditions('finder-model', { 'worker-finder-model': 'sonnet' }).reasons[0]), true);
+t('DS-1036 a finder model that is no alias fails loading', loadError(without('finder-model', (e) => { e.values = ['config', 'claude-sonnet-5-5']; return e; })), 'lever-registry: lever "finder-model" has finder model "claude-sonnet-5-5"; want an Agent tool alias');
+t('DS-1036 a model kind desk has not got fails loading', loadError(without('finder-model', (e) => { e.model = 'sonnet'; return e; })), 'lever-registry: lever "finder-model" has model "sonnet"; want finder or worker');
+t('DS-1036 a model lever with no values fails loading', loadError(without('finder-model', (e) => { delete e.values; delete e.baseline; return e; })), 'lever-registry: lever "finder-model" is missing "values"');
+t('DS-1036 a model lever\'s baseline is config', loadError(without('finder-model', (e) => { e.baseline = 'sonnet'; return e; })), 'lever-registry: lever "finder-model" has model "finder" and baseline "sonnet"; a model lever\'s baseline is config');
+t('DS-1000 quality-risk, dollars per start, minimum unset', `${fm.layer} ${fm.mechanism.metric} ${fm.mechanism.minimum}`, 'quality-risk dollars per start null');
+t('DS-1000 trips: post-merge revert, its own step, a blind-audit P0', fm.trips.map((x) => `${x.id}${x.step ? `:${x.step}` : ''}`).join(' '), 'post-merge-revert own-step-error:desk-env model finder audit-p0');
+t('DS-1000 its code is desk-env model finder', JSON.stringify(fm.code), '[{"path":"desk/bin/desk-env.mjs","part":"model finder"}]');
+t('DS-1036 a repo whose finder= is already one of its models is ineligible', ['sonnet', 'haiku'].map((m) => preconditions('finder-model', { 'worker-finder-model': m }).eligible).join(' '), 'false false');
+t('DS-1036 and the reason names the model, which would be the baseline', /worker-finder-model" is already haiku .*that value would be the baseline/.test(preconditions('finder-model', { 'worker-finder-model': 'haiku' }).reasons[0]), true);
 t('DS-1000 AC4 finder= unset is eligible', preconditions('finder-model', { 'worker-finder-model': 'none' }).eligible, true);
-t('DS-1000 AC4 finder= on another alias is eligible', preconditions('finder-model', { 'worker-finder-model': 'haiku' }).eligible, true);
+t('DS-1036 finder= on another model is eligible', preconditions('finder-model', { 'worker-finder-model': 'opus' }).eligible, true);
 t('DS-1000 AC4 an unreadable row does not make it ineligible', preconditions('finder-model', { 'worker-finder-model': null }).eligible, true);
+
+// The worker-model lever: every start on its model against the row's.
+const wm = lever('worker-model');
+t('DS-1036 AC1 worker-model is a quality-risk lever with values and a baseline, on trial', `${wm.layer} ${wm.model} ${wm.values.join(',')} ${wm.baseline} ${wm.trialled}`, 'quality-risk worker config,sonnet config true');
+t('DS-1036 AC1 a quality-risk lever with values loads', loadError({ ...ENTRIES, codex: { ...ENTRIES.codex, values: ['a', 'b'], baseline: 'a' } }), 'loaded');
+t('DS-1036 weighed on dollars per ticket, its code pass.mjs startModel', `${wm.mechanism.metric} ${wm.mechanism.minimum} | ${JSON.stringify(wm.code)}`, 'dollars per ticket null | [{"path":"desk/bin/pass.mjs","part":"startModel"}]');
+t('DS-1036 trips: post-merge revert and a blind-audit P0', wm.trips.map((x) => x.id).join(' '), 'post-merge-revert audit-p0');
+t('DS-1036 needs local workers', `${preconditions('worker-model', { 'worker-location': 'local', 'worker-model': 'default' }).eligible} ${preconditions('worker-model', { 'worker-location': 'cloud', 'worker-model': 'default' }).eligible}`, 'true false');
+t('DS-1036 a repo whose standard= is already its model is ineligible', `${preconditions('worker-model', { 'worker-location': 'local', 'worker-model': 'sonnet' }).eligible} ${preconditions('worker-model', { 'worker-location': 'local', 'worker-model': 'opus' }).eligible}`, 'false true');
 
 // AC5: the mechanism metric with its minimum, and the epic's guardrail margins.
 const min = (name) => `${lever(name).mechanism.metric} ${lever(name).mechanism.direction} ${lever(name).mechanism.minimum}`;
@@ -89,7 +103,7 @@ t('AC5 decision rule', `${DECISION_RULE.probability} ${DECISION_RULE.cost_ratio_
 
 // The rest of each entry: trips and ramps.
 t('every lever reverts on a post-merge revert', Object.values(REGISTRY).every((l) => l.trips.some((x) => x.id === 'post-merge-revert')), true);
-t('every lever reverts on its own step failing', Object.values(REGISTRY).every((l) => l.trips.some((x) => x.id === 'own-step-error' && x.step)), true);
+t('every lever with a step of its own reverts on it failing', Object.values(REGISTRY).filter((l) => l.name !== 'worker-model').every((l) => l.trips.some((x) => x.id === 'own-step-error' && x.step)), true);
 t('preflight trips on a skipped preflight failing', lever('preflight').trips.some((x) => x.id === 'skipped-preflight-failure'), true);
 t('failure-class trips after 48 hours waiting', lever('failure-class').trips.find((x) => x.id === 'stale-wait')?.hours, 48);
 t('low-risk ramp: a factorial at one half', `${lever('memory').ramp.on_share} ${lever('memory').ramp.exclusive}`, '0.5 false');
@@ -110,7 +124,6 @@ t('a baseline that is not one of the values fails loading', loadError(valued(['a
 t('a single value fails loading', loadError(valued(['a'], 'a')), 'lever-registry: lever "memory" has "values" that are not two or more distinct arm names');
 t('a value named like an on/off arm fails loading', loadError(valued(['on', 'b'], 'b')), 'lever-registry: lever "memory" has value "on"; want a lower-case word other than on, off, adopted, holdback');
 t('a value DESK_LEVER_VALUES could not carry fails loading', /has value "a b"/.test(loadError(valued(['a b', 'c'], 'c'))), true);
-t('values on the quality-risk layer fail loading', loadError({ ...ENTRIES, codex: { ...ENTRIES.codex, values: ['a', 'b'], baseline: 'a' } }), 'lever-registry: lever "codex" declares "values" on the quality-risk layer; only a low-risk lever may have more than two arms');
 
 // Question handling: three arms, batched the baseline, on trial.
 const qh = lever('question-handling');
