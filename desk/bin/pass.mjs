@@ -1185,8 +1185,11 @@ function cloudUnfinished(t, c, pr, view, mark, where) {
     const { unfinished: _u, fix: _f, ...rest } = c;
     const line = `cloud session ${where} left PR #${pr.number} unfinished (${mark}) and has not pushed since ${d.record.pushed_at ?? 'it opened'}, after ${d.record.sent} follow-ups, ` +
       `so it was moved to this computer: pinned local (queue.mjs set ${t.key} location=auto clears that), a local worker carries on from ${pr.headRefName}`;
+    // start_place local too, so clearing the pin later (location=auto) never sends it back to the cloud.
+    const at = new Date().toISOString();
     q('set', t.key, 'state=triaged', 'stage=null', 'session_id=null', 'location=local', `branch=${pr.headRefName}`,
-      `cloud=${JSON.stringify({ ...rest, pr_at: pr.createdAt, moved_local_at: new Date().toISOString() })}`, `requeued_at=${new Date().toISOString()}`);
+      `cloud=${JSON.stringify({ ...rest, pr_at: pr.createdAt, moved_local_at: at })}`, `requeued_at=${at}`,
+      `start_place=${JSON.stringify({ where: 'local', why: `moved here: cloud session ${where} went idle on PR #${pr.number}`, at })}`);
     report.advanced.push(`${t.key}: ${line}`);
     return;
   }

@@ -333,7 +333,8 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     if (!(at < until)) continue;
     const x = ticketFacts(state, t, t.added_at, records);
     // A cloud worker leaves no log here, so its run is read from the queue entry.
-    x.c ??= t.location === 'cloud' && t.cloud ? ticketCost(state, t) : null;
+    // A ticket moved local after its session went idle (location=local, issue-1689) keeps that session's row.
+    x.c ??= ['cloud', 'local'].includes(t.location) && t.cloud ? ticketCost(state, t) : null;
     const size = sizeOf(state, t.key);
     const rework = ticketRework(x.logs, t, x.cost);
     const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];

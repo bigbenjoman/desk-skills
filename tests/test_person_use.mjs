@@ -88,6 +88,8 @@ const PS = [
     [startsInCloud({ cloud_ok: true, location: 'local' }), startsInCloud({ cloud_ok: true, location: null })], [false, true]);
   t('issue-1689 AC3 a ticket moved local after its cloud session opened a PR goes on from that branch on origin; a plain pin is cut afresh',
     [fromCloudPr({ location: 'local', cloud: { pr_at: 'x' } }), fromCloudPr({ location: 'local' }), fromCloudPr({ location: 'cloud', cloud: { pr_at: 'x' } })], [true, false, true]);
+  t('issue-1689 with its pin cleared (location=auto, stored as none), a ticket moved local still goes on from its PR branch and never back to the cloud',
+    [fromCloudPr({ location: null, cloud_ok: true, cloud: { pr_at: 'x' } }), cloudAble({ location: null, cloud_ok: true, cloud: { pr_at: 'x' } })], [true, false]);
   const p = (o) => placeAtStart({ able: true, cloudRoom: false, localRoom: true, localSpare: true, free: 1, ...o }).where;
   t('issue-1587 AC2 cloud full: a local slot only with one free all last pass, one free now beyond the local-only reserve, and the person away',
     [p({}), p({ localSpare: false }), p({ reserve: 1 }), p({ personUse: true }), p({ localRoom: false, free: 0 })], ['local', null, null, null, null]);

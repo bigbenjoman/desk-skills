@@ -139,7 +139,8 @@ check results; with no push an hour after that, a second; and an hour after the 
 push, it is moved to this computer: pinned local and requeued, a local worker carrying on from the
 PR's branch, and the pass names the session URL. A push starts the count over. **A pin to this
 computer**: `queue.mjs set <KEY> location=local` (or `queue.mjs local <KEY>`) keeps a ticket off the
-cloud whatever its `runs:` line said, until `location=auto` clears it; `location=null` is refused. The session starts on the login a local worker for the repo would get, its §3b
+cloud whatever its `runs:` line said, until `location=auto` clears it; `location=null` is refused, and so
+is a pin on a ticket still running in a cloud session (`queue.mjs stop` it first, then pin and requeue). The session starts on the login a local worker for the repo would get, its §3b
 Subscription row and never the fallback, and the spawn line and the desk-q row name its account.
 A start that fails parks with the CLI's error and is never run locally without asking; one that does
 not answer within its timeout parks naming the login and the one-time `claude --cloud` to run on it

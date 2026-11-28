@@ -177,6 +177,19 @@ check "issue-1553 the cloud ticket is held as a stopped worker is"          '[ "
 check "issue-1553 the abandoned session goes on needs-you's archive list"     '[[ "$out" == *"needs-you asks you to archive it"* ]] && node -e "import(process.argv[1]).then((m) => process.exit(m.readPending(process.argv[2]).some((d) => d.session === \"session_01abc\" && d.key === \"C-1\") ? 0 : 1))" "$B/cloud-worker.mjs" "$T/state"'
 q requeue C-1
 check "issue-1553 after the stop, requeue works with no local worker"         '[ $rc -eq 0 ] && [ "$(f C-1 state)" = "\"triaged\"" ] && [ "$(f C-1 location)" = "\"cloud\"" ] && [ "$(f C-1 cloud)" = null ]'
+# issue-1689: a ticket running in a cloud session is not pinned local while it runs there (no pass would
+# read its PR again, and stop and requeue would both refuse it): it is stopped first, then pinned, then
+# requeued to a local worker.
+q add C-2; q set C-2 state=triaged lane=A location=cloud branch=feat/C-2
+q set C-2 state=running stage=cloud 'cloud={"session":"session_02abc","url":"https://claude.ai/code/session_02abc","name":"widgets-ticket-C-2","started":"2026-11-27T02:29:00Z"}'
+before=$(sum); q local C-2
+check "issue-1689 queue.mjs local refuses a ticket running in a cloud session, naming stop, and writes nothing" '[ $rc -ne 0 ] && [[ "$out" == *"running in a cloud session"* ]] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q set C-2 location=local
+check "issue-1689 and so does set location=local"                            '[ $rc -ne 0 ] && [[ "$out" == *"queue.mjs stop C-2 first"* ]] && [ "$(sum)" = "$before" ]'
+q stop C-2; q local C-2
+check "issue-1689 once stopped it is pinned local"                           '[ $rc -eq 0 ] && [ "$(f C-2 location)" = "\"local\"" ]'
+q requeue C-2
+check "issue-1689 and requeue sends the stopped, pinned ticket to a local worker" '[ $rc -eq 0 ] && [ "$(f C-2 state)" = "\"triaged\"" ] && [ "$(f C-2 location)" = "\"local\"" ]'
 
 # A worker paused at a usage limit whose process is gone: stop finds nothing to end and the pass waits
 # for its own login's limit, so requeue sends it to a new worker, its worktree committed first.

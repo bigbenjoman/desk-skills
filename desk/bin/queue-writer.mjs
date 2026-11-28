@@ -113,6 +113,15 @@ export function applySet(t, pairs, now = new Date().toISOString()) {
     return [k, v];
   });
   const held = blockersOf(t).length > 0, bare = bareHold(t);
+  // A ticket running in a cloud session is watched only while its location reads cloud (pass/shared.mjs
+  // runsInCloud): pinned local while it still runs there, no pass reads its PR, stop finds no session
+  // and requeue refuses it, so it stays running for good. It is stopped first. A write that moves it
+  // off running in the same set (the pass's own move, pass.mjs cloudUnfinished) is let through.
+  const loc = sets.find(([k]) => k === 'location');
+  const state = sets.findLast(([k]) => k === 'state')?.[1] ?? t.state;
+  if (loc?.[1] === 'local' && t.state === 'running' && t.location === 'cloud' && state === 'running') {
+    throw new Error(`${t.key ?? 'this ticket'} is running in a cloud session, so it cannot be pinned local while it runs there: queue.mjs stop ${t.key ?? '<KEY>'} first (it records the session abandoned), then pin it and requeue it. Nothing written.`);
+  }
   for (const [k, v] of sets) setPath(t, k, v);
   t.updated_at = now;
   const named = new Set(sets.map(([k]) => k.split('.')[0]));
