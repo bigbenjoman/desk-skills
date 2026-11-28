@@ -654,7 +654,7 @@ describe('items that answer differently', () => {
       artifacts: ['done', 'not-now'], 'plan-first': ['open', 'not-now'], follow: ['done', 'not-now'], 'base-red': ['done', 'not-now'], duplicate: ['drop', 'not-now'],
       'browser-signin': ['done', 'not-now'], 'upload-page': ['done', 'not-now'], 'lease-trial': ['done', 'not-now'], ask: ['Plan2', 'A', 'done', 'not-now'],
       proposal: ['promote', 'reject', 'not-now'], 'ci-red': ['done', 'not-now'], ticketless: ['done', 'not-now'], 'cloud-archive': ['done', 'not-now'], stalled: ['done', 'not-now'],
-      'subscription-off': ['done', 'not-now'], 'base-sync': ['done', 'not-now'] };
+      'subscription-off': ['done', 'not-now'], 'base-sync': ['done', 'not-now'], 'base-fix-start': ['done', 'not-now'] };
     // Every kind needs-you.mjs sets, as a literal or through its named constant, has a fixture here.
     // Vitest runs in desk/ui, and jsdom's import.meta.url is not a file URL.
     const src = readFileSync(`${process.cwd()}/../bin/needs-you.mjs`, 'utf8');
