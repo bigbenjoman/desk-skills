@@ -95,10 +95,11 @@ export function latestReview(reviews, handle) {
 // A cloud ticket's verdict is read as a local one is: whoever ran desk-review, it is the handle's
 // desk-format review at the head. `cloudHead` (pass/shared.mjs cloudHead) is the head its cloud session
 // left, which no local review try has reviewed: a verdict at it is the session's own, so `location`
-// says `cloud`, and any other verdict `local`.
-export function verdictReadAt(reviews, handle, head, cloudHead = null) {
-  const sha = latestReview(reviews, handle)?.verdict?.sha;
-  if (!sha || !head || !head.startsWith(sha)) return null;
+// says `cloud`, and any other verdict `local`. A verdict `carried` to the head from an older commit
+// (verdictAtHead's `carried`, that commit's SHA) is read where it was reviewed, at that commit.
+export function verdictReadAt(reviews, handle, head, cloudHead = null, carried = null) {
+  const sha = carried || latestReview(reviews, handle)?.verdict?.sha;
+  if (!sha || !head || (!carried && !head.startsWith(sha))) return null;
   return { sha, location: cloudHead && cloudHead.startsWith(sha) ? 'cloud' : 'local' };
 }
 
@@ -795,7 +796,8 @@ export function undraftCall(t, pr, cfg) {
   // the inline comments it reads by the review's id.
   // Under a plain-text row the latest review may still be a desk-review verdict (plainVerdictAt reads
   // it against desk-review's own counts), and its P0s and P1s go the same way.
-  const { plain, review, verdict, v, found, carried, range, targeted } = verdictAtHead(pr.reviews, cfg.handle, pr.head, clean, pr.carry, pr.scope);
+  // `verdictHandle`, where given, is the logins whose verdict counts on this PR (pass/shared.mjs verdictHandle).
+  const { plain, review, verdict, v, found, carried, range, targeted } = verdictAtHead(pr.reviews, cfg.verdictHandle ?? cfg.handle, pr.head, clean, pr.carry, pr.scope);
   const withCarried = (c) => (carried ? { ...c, carried, ...(range ? { range } : {}) } : c);
   // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
   const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;

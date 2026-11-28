@@ -6,6 +6,7 @@ import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
+import { verdictHandle } from '../desk/bin/pass/shared.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
 import { errorLinesIn, readError, pathsIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
@@ -1099,8 +1100,18 @@ t('issue-1556 AC2 so the head gets a review try', verdictTry(tk(), green433, ctx
 t('issue-1556 AC3 a verdict at the head that is not the cloud session\'s is local', read433(pl(HEAD, marked(HEAD)), { cloudHead: CLOUD }).location, 'local');
 t('issue-1556 AC3 and so is any verdict on a local ticket', read433(pl(HEAD, marked(HEAD))).location, 'local');
 t('issue-1556 AC3 a cloud verdict that is not clean still says cloud', read433(pl(CLOUD, marked(CLOUD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { cloudHead: CLOUD }).location, 'cloud');
-t('issue-1556 a cloud verdict carried from an older head names no location', read433(pl(HEAD, marked(CLOUD)), { cloudHead: CLOUD, carry: () => true }).location, null);
-t('issue-1556 someone else\'s verdict at the cloud head attests nothing', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'mallory')), { cloudHead: CLOUD }).location, null);
+t('issue-1556 AC3 a cloud verdict carried from an older head is read where it was reviewed, the cloud', read433(pl(HEAD, marked(CLOUD)), { cloudHead: CLOUD, carry: () => true }).location, 'cloud');
+t('issue-1556 AC3 a local verdict carried from an older head is local', read433(pl(HEAD, marked(OLD)), { cloudHead: CLOUD, carry: () => true }).location, 'local');
+t('issue-1556 AC3 an unclean verdict carried to the head names no location', read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => true }).location, null);
+// The login that opened a cloud ticket's PR counts on that PR alone (pass/shared.mjs verdictHandle).
+const j = (x) => JSON.stringify(x);
+const openerT = tk({ location: 'cloud', cloud: { head: CLOUD, pr: 701, opener: 'cloudbot' } });
+const byOpener = read433(pl(CLOUD, marked(CLOUD, CLEAN, 'cloudbot')), { handle: verdictHandle(openerT, 701, 'ben'), cloudHead: CLOUD });
+t('issue-1556 AC1 the cloud PR opener\'s verdict at its head counts on its own PR', `${byOpener.clean} ${byOpener.location}`, 'true cloud');
+t('issue-1556 AC1 and on no other PR', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'cloudbot')), { handle: verdictHandle(openerT, 702, 'ben'), cloudHead: CLOUD }).clean, false);
+t('issue-1556 AC1 nor on a local ticket\'s PR', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'cloudbot')), { handle: verdictHandle({ ...openerT, location: 'local' }, 701, 'ben') }).clean, false);
+t('issue-1556 AC1 anyone else\'s verdict at the cloud head still attests nothing', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'mallory')), { handle: verdictHandle(openerT, 701, 'ben'), cloudHead: CLOUD }).location, null);
+t('issue-1556 verdictHandle: the handle alone with no opener kept, and once with the opener already in it', j([verdictHandle(tk({ location: 'cloud', cloud: { pr: 701 } }), 701, 'ben'), verdictHandle(tk({ location: 'cloud', cloud: { pr: 701, opener: 'Ben' } }), 701, 'ben,bot'), verdictHandle(openerT, 701, 'ben,bot')]), j(['ben', 'ben,bot', ['ben', 'bot', 'cloudbot']]));
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
 }
 

@@ -229,6 +229,16 @@ export const cloudHead = (t) => {
   const tries = [...(t.fix_tries ?? []), ...(t.fix ? [t.fix] : [])];
   return tries.some((f) => f?.head === head) ? null : head;
 };
+// The logins whose desk-format verdict counts on PR `pr`: `handle` (verdictLogins), plus, on a cloud
+// ticket's own PR, the login that opened it (cloud.opener, kept with cloud.pr when the pass adopts the
+// PR), as its session posted its review under that login. Any other PR, and a ticket with no handle,
+// reads `handle` alone.
+export const verdictHandle = (t, pr, handle) => {
+  const c = t?.location === 'cloud' ? t.cloud : null;
+  const opener = typeof c?.opener === 'string' ? c.opener.trim() : '';
+  if (!handle || !opener || c.pr == null || pr == null || Number(c.pr) !== Number(pr) || loginIn(opener, handle)) return handle;
+  return [...(Array.isArray(handle) ? handle : String(handle).split(',').map((l) => l.trim()).filter(Boolean)), opener];
+};
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so it holds
 // no local slot and the maintenance window neither waits for one nor stops it, in any repo; a review try
 // on a cloud ticket's PR runs here.

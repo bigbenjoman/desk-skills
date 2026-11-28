@@ -84,6 +84,15 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   const local = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([at(HEAD)]) }).actions;
   t('issue-1556 AC3 a local ticket\'s verdict is recorded as local', j(local.filter((a) => a.type === 'verdict-read').map((a) => a.location)), '["local"]');
   t('issue-1556 a dry run records nothing', types(drive(decideUndraft, undraftSnap([{ t: cloudT(), s: status() }], { dry: true }), { 'pr-view': view([at(HEAD)]) }).actions).includes('verdict-read'), false);
+  // The login that opened the cloud ticket's PR counts there, and the carry it makes is recorded with it.
+  const byBot = (sha) => ({ ...at(sha), author: { login: 'cloudbot' } });
+  const opened = (pr) => cloudT(HEAD, { cloud: { started: AT, pr_at: AT, head: HEAD, pr, opener: 'cloudbot' } });
+  t('issue-1556 AC1 the cloud PR opener\'s verdict at the head undrafts it, with no review try', j(acts(drive(decideUndraft, undraftSnap([{ t: opened(701), s: status() }]), { 'pr-view': view([byBot(HEAD)]) }).actions)), '["ready","comment"]');
+  t('issue-1556 AC1 the same login\'s verdict on another PR gets a review try', drive(decideUndraft, undraftSnap([{ t: opened(702), s: status() }]), { 'pr-view': view([byBot(HEAD)]) }).actions.find((a) => a.type === 'apply-fix')?.fix?.fix?.kind, 'rereview');
+  const carrySnap = (tk) => undraftSnap([{ t: tk, s: status() }], { reads: { ...undraftSnap([]).reads, baseMoves: () => ({ carry: (sha) => sha === OLD, scope: () => null, baseMerge: () => true, behind: () => null }) } });
+  const carriedCloud = drive(decideUndraft, carrySnap(cloudT(OLD)), { 'pr-view': view([at(OLD)]) }).actions;
+  t('issue-1556 AC3 a cloud verdict carried to the head is recorded, where it was reviewed', j(carriedCloud.filter((a) => a.type === 'verdict-read').map((a) => [a.head === HEAD, a.location])), j([[true, 'cloud']]));
+  t('issue-1556 AC3 a local verdict carried to the head is recorded as local', j(drive(decideUndraft, carrySnap(ticket('A')), { 'pr-view': view([at(OLD)]) }).actions.filter((a) => a.type === 'verdict-read').map((a) => a.location)), '["local"]');
   t('issue-1556 cloudHead: the head a cloud ticket\'s session left', cloudHead(cloudT()), HEAD);
   t('issue-1556 cloudHead: none for a local ticket, or one with no head kept', j([cloudHead(ticket('A', { cloud: { head: HEAD } })), cloudHead(ticket('A', { location: 'cloud', cloud: { started: AT } }))]), '[null,null]');
   t('issue-1556 cloudHead: none once a local review try has reviewed that head', j([cloudHead(cloudT(HEAD, { fix_tries: [{ try: 1, head: HEAD, kind: 'rereview' }] })), cloudHead(cloudT(HEAD, { fix: { try: 1, head: HEAD, kind: 'rereview' } }))]), '[null,null]');

@@ -242,6 +242,11 @@ function askStep(t, ev) {
 // Whether ticket `t` (a folded ledger ticket) has a verdict read at PR pr's head head_sha already: an
 // appender skips one it has (append's `skip`), so a verdict read on every pass is recorded once.
 export const verdictRead = (t, { pr, head_sha }) => !!t?.verdicts?.some((v) => v.pr === pr && v.head_sha === head_sha);
+// append's `skip` for a verdict_read event `ev` against the folded `state`: one held already, and any of a
+// batch the log has never named. A batch's first event names it, and a queue write seeds only a batch
+// the log has not named (queue-ledger.mjs recordWrite), so a verdict written first would leave its batch
+// never seeded; it waits for a pass after the seed, as ask-ledger.mjs holds does.
+export const verdictHeld = (state, ev) => !Object.hasOwn(state.batches, ev.batch ?? '') || verdictRead(state.tickets[ev.key], ev.data);
 
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
 // mode the queue write it records has already happened. Every batch an event names gets an entry in

@@ -91,7 +91,7 @@ import { resortQueue, resortLine, plannedFiles, placedMoves, projectedFinish, pl
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
-import { fold as ledgerFold, append as ledgerAppend, verdictRead } from './ticket-ledger.mjs';
+import { fold as ledgerFold, append as ledgerAppend, verdictHeld } from './ticket-ledger.mjs';
 import { recordAsks, measure as measureAsks, ASK_BY_ENV } from './ask-ledger.mjs';
 import { defaultsAtCheckin, defaultAnswer, defaultCall, digestPresented, raisedOf } from './question-arms.mjs';
 import * as MS from './merge-stages.mjs';
@@ -110,7 +110,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, cloudPrHere, cloudHead, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, cloudPrHere, cloudHead, verdictHandle, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1109,6 +1109,9 @@ function advanceCloud(t) {
   // The head the session left, where its desk-review posted the verdict: a verdict there is read as the
   // cloud's (pass/shared.mjs cloudHead), and the pass spends no review try on it.
   if (view.headRefOid) cloud.head = view.headRefOid;
+  // Who opened it: their desk-format verdict counts on this PR alone (pass/shared.mjs verdictHandle).
+  cloud.pr = pr.number;
+  if (view.author?.login) cloud.opener = view.author.login;
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
   report.done.push(`${t.key}: ${prVerdict(pr.number)}; PR #${pr.number} from cloud session ${where} in ${wall} (${CLOUD_COST_UNKNOWN}: no tokens or cost are reported for a cloud session; its tracker steps are made by the pass)`);
@@ -1336,7 +1339,7 @@ function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
   const verdict = (pr) => {
     if (!localReviewSet(E.configValue('local-review')) || !conflictHandle) return null;
     const fb = readFeedback(pr.number);
-    return fb ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), cloudHead: cloudHead(t) }) : null;
+    return fb ? readVerdict(fb.payload, { handle: verdictHandle(t, pr.number, conflictHandle), clean: E.configValue('clean-verdict'), cloudHead: cloudHead(t) }) : null;
   };
   return mergePark(cond, readPr, { ...gateLists(), verdict, ready, merge });
 }
@@ -5633,7 +5636,8 @@ function recordVerdict(key, pr, head, location) {
   if (!LEDGER_ON || !key || pr == null || !head || !location) return;
   try {
     ledgerAppend(LEDGER_AT.repoDir, [{ id: `verdict_read:${key}:${pr}:${head}`, type: 'verdict_read', batch: LEDGER_AT.batch, key, data: { pr: Number(pr), head_sha: head, location } }],
-      { by: 'pass', skip: (st, ev) => verdictRead(st.tickets[ev.key], ev.data) });
+      // Never the first event to name a batch: it waits for a pass after the seed (verdictHeld).
+      { by: 'pass', skip: verdictHeld });
   } catch (e) { report.failed.push(`${MISSED_PREFIX} for ${key}'s verdict at ${String(head).slice(0, 12)} (${location}): ${String(e?.message ?? e).split('\n')[0]}`); }
 }
 const mergeLogNow = () => { try { return readLogLines(); } catch { return null; } };
@@ -5971,7 +5975,7 @@ const UNDRAFT_HANDLERS = {
   'update-branch': (a) => updateBranch(a.t, a.pr, a.branch),
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
   'verdict-read': (a) => recordVerdict(a.key, a.pr, a.head, a.location),
-  'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
+  'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: a.handle ?? conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
   note: (a) => {
     const notesFile = join(STATE, 'batch-notes.md');
@@ -6342,7 +6346,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
     },
     atHead: (payload, carry, scope) => {
       if (!localReviewSet(E.configValue('local-review')) || !E.mergeGrant(queue()).by) return null;
-      const r = readVerdict(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope, cloudHead: cloudHead(t) });
+      const r = readVerdict(payload, { handle: verdictHandle(t, n, conflictHandle), clean: E.configValue('clean-verdict'), carry, scope, cloudHead: cloudHead(t) });
       if (r?.location) recordVerdict(t.key, n, r.head, r.location);
       return r;
     },

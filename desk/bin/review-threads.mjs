@@ -109,7 +109,8 @@ export const localReviewSet = rowSet;
 // no verdict, a stale one, or one the gate cannot read, and `targeted` what that review need read only
 // (scope(sha, body), as reviewScope says), when a clean review for an older head narrows it.
 // `location` is where the desk-format verdict at the head was reviewed (undraft.mjs verdictReadAt:
-// `cloud` or `local`), null where none is at the head or the verdict is carried from an older one.
+// `cloud` or `local`; one carried from an older head, where it was reviewed there), null where none is
+// at the head.
 export function readVerdict(payload, { handle, clean, carry, scope, cloudHead = null }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
@@ -118,7 +119,7 @@ export function readVerdict(payload, { handle, clean, carry, scope, cloudHead = 
   if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true, location: null };
   const reviews = pr.reviews?.nodes ?? [];
   const { v, carried, range, targeted } = verdictAtHead(reviews, handle, head, row, carry, scope);
-  const location = carried ? null : verdictReadAt(reviews, handle, head, cloudHead)?.location ?? null;
+  const location = verdictReadAt(reviews, handle, head, cloudHead, v.clean ? carried : null)?.location ?? null;
   if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false, location };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
   return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, location, ...(targeted ? { targeted } : {}) };

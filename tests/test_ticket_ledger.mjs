@@ -403,7 +403,7 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
 // issue-1556 AC3: each verdict the pass reads is recorded once per PR and head, with where it was reviewed.
 {
   const dir = repo();
-  const once = { by: 'pass', skip: (st, e) => L.verdictRead(st.tickets[e.key], e.data) };
+  const once = { by: 'pass', skip: L.verdictHeld };
   const read = (head_sha, location) => ({ ...ev('verdict_read', { pr: 12, head_sha, location }), id: `verdict_read:DS-1:12:${head_sha}` });
   L.append(dir, [ev('admitted')], { by: 'pass' });
   L.append(dir, [read(SHA, 'cloud')], once);
@@ -414,6 +414,14 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('issue-1556 AC3 a verdict read again on a later pass writes no second line', lines(dir).split('\n').filter((l) => l.includes('verdict_read')).length, 2);
   t('issue-1556 AC3 a verdict is history: it leaves the ticket\'s state and batch', `${got.state} ${got.batch}`, 'queued B1');
   t('issue-1556 AC3 a location other than cloud or local is refused', L.invalid(ev('verdict_read', { pr: 12, head_sha: SHA, location: 'moon' })), 'verdict_read: field "location" is not a valid location');
+  // A verdict read before its batch's first seed would name the batch, which recordWrite then never seeds.
+  const unseeded = { ...ev('verdict_read', { pr: 12, head_sha: SHA, location: 'cloud' }, 'DS-2', 'B2'), id: `verdict_read:DS-2:12:${SHA}` };
+  L.append(dir, [unseeded], once);
+  const st = L.fold(dir);
+  t('issue-1556 a verdict is never the first event to name a batch', `${Object.hasOwn(st.batches, 'B2')} ${st.tickets['DS-2']?.verdicts?.length ?? 0}`, 'false 0');
+  L.append(dir, [ev('admitted', undefined, 'DS-2', 'B2')], { by: 'pass' });
+  L.append(dir, [unseeded], once);
+  t('issue-1556 once the batch is named, the verdict is recorded', L.fold(dir).tickets['DS-2']?.verdicts?.map((v) => v.location).join(), 'cloud');
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');
