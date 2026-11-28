@@ -133,9 +133,52 @@ const NO_CAUSE = /\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
 // is the PR's state, not a read that failed.
 const READ_ERROR = /\bunexpected end of JSON input\b|\bin JSON at position \d|\bis not valid JSON\b|\bUnfinished JSON term\b|\bJSONDecodeError\b|\bHTTP 5\d\d\b|\b5\d\d (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout)\b|\bgh: .*\(HTTP \d{3}\)|\bHttpError\b|\bECONNRESET\b|\bsocket hang up\b|\bfetch failed\b/i;
 export const readError = (line) => READ_ERROR.test(String(line ?? '').replace(/".*"|“.*”/g, '""'));
+// A line pointing into the repo (a path with a folder in it) comes first, so a runner's heading lines
+// cannot crowd out the line naming the file that failed. GitHub's echo of the step script is left out
+// (unechoed).
 export function errorLinesIn(log) {
-  const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
-  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l) || readError(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
+  const lines = failureLines(unechoed(logLines(log)).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
+  const named = [...new Set(lines.filter(namesError))];
+  const inRepo = (l) => (l.match(PATH_TOKEN) ?? []).some((m) => m.includes('/') && isPath(m));
+  return [...named.filter(inRepo), ...named.filter((l) => !inRepo(l))].slice(0, LOG_ERRORS_MAX);
+}
+const namesError = (l) => (NAMES_CAUSE.test(l) || ERROR.test(l) || readError(l)) && !NO_CAUSE.test(l);
+// A log's lines less each `##[group]Run` block: GitHub echoing the step's script, the same on every job
+// and every PR.
+const unechoed = (lines) => {
+  let echo = false;
+  return lines.filter((l) => {
+    if (/^##\[group\]Run\b/.test(l)) echo = true;
+    else if (echo && /^##\[endgroup\]/.test(l)) { echo = false; return false; }
+    return !echo;
+  });
+};
+
+// Every path a failed job's log names, each once, for the relatedness check (fix-tries.mjs namesChanged):
+// a token holding a `/`, or ending in a `.<ext>`, with a letter in it, less a leading `./` and trailing
+// dots or slashes, and less a GitHub Actions runner's workspace folder (WORKSPACE), so an absolute path
+// reads as the repo names it. Read across the whole log, not the LOG_ERRORS_MAX lines errorLinesIn keeps: a test
+// runner prints its own heading lines before the failing file. With `failing`, only from the lines that
+// name an error. The echoed step script is skipped (unechoed). At most LOG_PATHS_MAX, the ones on error
+// lines first.
+const LOG_PATHS_MAX = 1000;
+const PATH_TOKEN = /[A-Za-z0-9_.@~+\/-]+/g;
+const isPath = (s) => /[A-Za-z]/.test(s) && (s.includes('/') || /\.[A-Za-z][A-Za-z0-9]{0,9}$/.test(s));
+// $GITHUB_WORKSPACE, `<work folder>/<repo>/<repo>/`: a hosted runner's on Linux and macOS, a job
+// container's, and a self-hosted runner's `_work` folder.
+const WORKSPACE = /^\/(?:(?:home|Users)\/runner\/work|__w|\S*\/_work)\/[^/]+\/[^/]+\//;
+export function pathsIn(log, { failing = false } = {}) {
+  const first = [], rest = [];
+  for (const l of unechoed(logLines(log))) {
+    const line = l.replace(/^##\[error\]\s*/, '');
+    const err = namesError(line);
+    if (failing && !err) continue;
+    for (const m of line.match(PATH_TOKEN) ?? []) {
+      const p = m.replace(WORKSPACE, '').replace(/^(?:\.\/)+/, '').replace(/[./]+$/, '');
+      if (isPath(p)) (err ? first : rest).push(p);
+    }
+  }
+  return [...new Set([...first, ...rest])].slice(0, LOG_PATHS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and

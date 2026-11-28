@@ -78,6 +78,32 @@ const why = (r) => r.moved.map((m) => `${m.key}: ${m.why}`).join(' | ');
   const r = run(ts, { A: ['a'], B: ['b'] });
   t('#1623 a tie on gates and files keeps the queue\'s order', `${r.changed} ${r.order.join(' ')}`, 'false B A');
 }
+// #1626: cloud and local tickets are sorted as two lists, each in the places its own kind holds now.
+const cloudRun = (tickets, files) => resortQueue(tickets, { scope: (k) => files[k] ?? [], fileCount: (k) => (files[k] ?? []).length, cloud: (x) => x.location === 'cloud' });
+{
+  // Local A and B gate nothing; cloud H holds two local tickets by blocker link; cloud C gates nothing.
+  const ts = [tk('A'), tk('C', { location: 'cloud' }), tk('B'), tk('H', { location: 'cloud' }),
+    tk('L1', { state: 'parked', held_by: 'H' }), tk('L2', { state: 'parked', held_by: 'H' })];
+  const files = { A: ['a'], B: ['b'], C: ['c'], H: ['h'], L1: ['l1'], L2: ['l2'] };
+  const r = cloudRun(ts, files);
+  t('#1626 AC1 a cloud hub overtakes only cloud tickets: the local ones keep the places they hold', laid(ts, r), 'A H B C L1 L2');
+  t('#1626 AC1 and it is marked as moved ahead with its gates, counted over the local tickets it holds', why(r), 'H: gates 2');
+  const one = run(ts, files);
+  t('#1626 without the cloud split the same hub would overtake the local tickets too', laid(ts, one), 'H A C B L1 L2');
+}
+{
+  // Local H shares a file with cloud X and local Y: its gates count both lists.
+  const ts = [tk('Y'), tk('X', { location: 'cloud' }), tk('H')];
+  const files = { H: ['f', 'g', 'h'], X: ['f'], Y: ['g'] };
+  const r = cloudRun(ts, files);
+  t('#1626 AC2 a ticket sharing files with a cloud ticket and a local one gates both', `${r.gates.H} ${r.gates.X} ${r.gates.Y}`, '2 1 1');
+  t('#1626 AC2 and it starts before the local ticket it gates', laid(ts, r), 'H X Y');
+}
+{
+  const ts = [tk('A', { location: 'cloud' }), tk('B'), tk('D', { location: 'cloud', state: 'parked', held_by: 'B' })];
+  const r = cloudRun(ts, { A: ['a'], B: ['b'], D: ['d'] });
+  t('#1626 a blocker in the other list does not reorder this list', `${r.changed} ${r.order.join(' ')}`, 'false A B D');
+}
 t('#1623 a chain is named for the file, or its folder for a SKILL.md', `${chainName('desk/bin/pass.mjs')} ${chainName('skills/desk-ticket/SKILL.md')}`, 'pass.mjs desk-ticket');
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

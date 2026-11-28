@@ -163,6 +163,21 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   t('AC5 with no comment posted', acts(actions).includes('comment'), false);
 }
 
+// The rerun a draft's red checks get when their failed logs name no file it changes: while that rerun
+// runs, the pass's wait on its pending checks keeps saying whose rerun it is, so the ticket still reads as
+// waiting on checks; at another head, or after another call, the wait is as before.
+{
+  const outside = { call: 'rerun', why: 'its "tests" check\'s failed log names no file this PR changes, so its run is re-run once at this head, every job, before any fix worker', action: null, sha: HEAD, carried_from: null, pr: 701 };
+  const pending = { 'pr-view': view([review(marker(ALL_ZERO))], { statusCheckRollup: [{ name: 'tests', status: 'IN_PROGRESS', conclusion: null }] }) };
+  const recOf = (undraft) => JSON.parse(sets(drive(decideUndraft, undraftSnap([{ t: ticket('A', { undraft }), s: status() }]), pending).actions).find((f) => f.startsWith('undraft='))?.slice(8) ?? '{}');
+  const during = recOf(outside);
+  t('#1640 AC4 while that rerun runs, the wait on its checks still names the rerun', `${during.call} | ${during.why}`, 'wait | checks still running (tests) in the rerun of checks whose failed logs name no file this PR changes');
+  const next = drive(decideUndraft, undraftSnap([{ t: ticket('A', { undraft: { ...during, at: AT } }), s: status() }]), pending).actions;
+  t('#1640 AC4 and the next pass, its checks still running, keeps that wait and writes nothing new', `${sets(next).some((f) => f.startsWith('undraft='))} | ${lines(next).at(-1)}`, 'false | undraft: PR #701 (A) stays draft for now: checks still running (tests)');
+  t('#1640 AC4 one recorded at another head waits as before', recOf({ ...outside, sha: 'b'.repeat(40) }).why, 'checks still running (tests)');
+  t('#1640 AC4 so does one after another rerun', recOf({ ...outside, why: 'its "tests" check was cancelled, so its run is re-run' }).why, 'checks still running (tests)');
+}
+
 // A draft that cannot be read, and a record that already says the call, write nothing.
 {
   const { actions } = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]));

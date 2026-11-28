@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, checksRerun, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -716,7 +716,8 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
     ...(pin ? { levers: pin } : {}),
-    ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
+    // Whether it can run in a cloud session; where it does is decided when it starts (pass/shared.mjs placeAtStart).
+    ...(placed.where === 'cloud' ? { cloud_ok: true } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
@@ -1679,11 +1680,12 @@ function tableChanges(before, after) {
 }
 
 // A done ticket is DONE only once its PR has merged, or it finished with no PR: one whose PR is still
-// open is PR OPEN, and one whose PR was closed unmerged CLOSED.
+// open is PR OPEN, and one whose PR was closed unmerged CLOSED. One whose draft's checks are re-run
+// once, as their failed logs name no file it changes (checksRerun), is ON CHECKS until they finish.
 function doneLabel(t) {
   if (t.result?.pr == null || t.merged_at) return 'DONE';
   const ps = prStatusOf(t)?.state ?? null;
-  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : 'PR OPEN';
+  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : checksRerun(t) ? 'ON CHECKS' : 'PR OPEN';
 }
 
 // The table's parts: the batch heading, one row per ticket in shown order, and how many wait on you.
@@ -1718,6 +1720,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : t.state === 'parked' ? t.park?.question ?? ''
       : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
+      : t.state === 'done' && label === 'ON CHECKS' ? `PR #${t.result.pr} draft, waiting on checks: re-run once as their failed logs name no file it changes`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
       : handingOff(t) ? `starting Stage ${t.handoff_stage ?? '?'}`

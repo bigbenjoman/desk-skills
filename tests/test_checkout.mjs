@@ -59,6 +59,20 @@ ${body}
   chmodSync(f, 0o755);
 };
 fake('gh', `
+// A rate limit: a call whose arguments contain $FAKE_LIMIT_MATCH fails with GitHub's secondary
+// limit for its first $FAKE_LIMIT_TIMES calls (counted in limit.count), with a Retry-After header
+// under -i when $FAKE_RETRY_AFTER is set; -i prints a header block before the body, as gh api -i does.
+if (process.env.FAKE_LIMIT_MATCH && args.join(' ').includes(process.env.FAKE_LIMIT_MATCH)) {
+  const cf = process.env.FAKE_DIR + '/limit.count';
+  const n = existsSync(cf) ? Number(readFileSync(cf, 'utf8')) : 0;
+  if (n < Number(process.env.FAKE_LIMIT_TIMES)) {
+    require('node:fs').writeFileSync(cf, String(n + 1));
+    if (args.includes('-i')) process.stdout.write('HTTP/2.0 403 Forbidden\\r\\n' + (process.env.FAKE_RETRY_AFTER ? 'Retry-After: ' + process.env.FAKE_RETRY_AFTER + '\\r\\n' : '') + '\\r\\n{"message":"You have exceeded a secondary rate limit."}');
+    process.stderr.write('gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)\\n');
+    process.exit(1);
+  }
+}
+if (args.includes('-i')) process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n');
 if (args[0] === 'api' && args[1] === 'user') { console.log('me'); process.exit(0); }
 const q = args.find((a) => a.startsWith('q=')) || '';
 const page = (args.find((a) => a.startsWith('page=')) || 'page=1').slice(5);
@@ -421,6 +435,65 @@ const libOthers = ghRun('--include', 'acme__lib', '--include-others', 'acme__lib
 has('#1534 --include-others counts everyone\'s', libOthers.stdout, '- acme/lib: 1 mine / 2 all');
 t('#1534 --include-others searches every author there', libOthers.merged.some((l) => l.includes('repo:acme/lib') && !l.includes('author:')), true);
 
+// A rate-limited gh call waits and retries; one still limited fails naming the limit and when
+// to retry; a failed optional search is skipped, said in its section, and the run goes on.
+const limited = (match, times, extra = {}) => {
+  rmSync(join(FAKE, 'limit.count'), { force: true });
+  return spawnSync('python3', ['-B', join(SCRIPTS, 'github_activity.py'), '--day', DAY], { cwd: APP, encoding: 'utf8',
+    env: { ...env, FAKE_LIMIT_MATCH: match, FAKE_LIMIT_TIMES: String(times), DESK_GH_BACKOFF_BASE: '0.01', DESK_GH_BACKOFF_TOTAL: '0.05', ...extra } });
+};
+const once = limited('is:pr author:me', 1, { FAKE_RETRY_AFTER: '0.03' });
+t('#1666 a secondary limit, then success: exits 0', once.status, 0);
+has('#1666 it waited as Retry-After said', once.stderr, "gh: GitHub's secondary rate limit; waiting 0.03s, then retrying");
+has('#1666 and the retried search was read', once.stdout, '- acme/app#10 Fix the redirect — opened; merged');
+const zero = limited('is:pr author:me', 99, { FAKE_RETRY_AFTER: '0' });
+t('#1666 a Retry-After of 0 still ends at the budget', zero.status, 1);
+has('#1666 backing off as if none was given', zero.stderr, 'waiting 0.01s');
+has('#1666 and fails naming the limit', zero.stderr, "GitHub's secondary rate limit, still hit after 3 tries");
+const twice = limited('is:pr author:me', 2);
+t('#1666 with no Retry-After, exponential backoff: exits 0', twice.status, 0);
+has('#1666 the first wait is the base', twice.stderr, 'waiting 0.01s');
+has('#1666 the next doubles', twice.stderr, 'waiting 0.02s');
+has('#1666 and the search was read', twice.stdout, '- acme/app#10 Fix the redirect');
+const stuck = limited('is:pr author:me', 99);
+t('#1666 a persistent limit on a required search fails', stuck.status, 1);
+has('#1666 naming the limit and the tries', stuck.stderr, "gh search failed for 'is:pr author:me updated:>=2026-10-26': GitHub's secondary rate limit, still hit after 3 tries over 0s; retry after ");
+has('#1666 and when to retry', stuck.stderr, '(in 60s)');
+const noReviews = limited('reviewed-by', 99);
+t('#1666 a failed reviews search does not end the run', noReviews.status, 0);
+has('#1666 the reviews section says it was skipped and why', noReviews.stdout, "## Reviews you gave (0)\nskipped, not read (GitHub's secondary rate limit, still hit after 3 tries");
+has('#1666 the rest is still there', noReviews.stdout, '- acme/app: 1 mine / 3 all');
+const noMerged = limited('is:merged', 99);
+t('#1666 a failed merged-count search does not end the run', noMerged.status, 0);
+has('#1666 its line says it was skipped and why', noMerged.stdout, "- acme/app: skipped, not counted (GitHub's secondary rate limit, still hit after 3 tries");
+has('#1666 reviews still read', noMerged.stdout, "- acme/app#20 Alice's change (by alice) — you: changes requested");
+const noIssues = limited('commenter:', 99);
+has('#1666 a failed issue search is skipped and said', noIssues.stdout, "- issues you commented on: skipped, not read (GitHub's secondary rate limit");
+const notLimit = probe(`import github_activity as g; print(json.dumps([g.rate_limit("gh: Not Found (HTTP 404)"), g.rate_limit("gh: API rate limit exceeded for user ID 1. (HTTP 403)"), g.rate_limit("gh: too many requests rate limit (HTTP 429)"), g.rate_limit("gh: Resource not accessible by integration (HTTP 403)")]))`);
+t('#1666 only a 403 or 429 naming a rate limit is one, and which', JSON.stringify(notLimit), '[null,"primary","primary",null]');
+const reset = probe(`import github_activity as g, time; h, b = g.split_headers("HTTP/2.0 403 Forbidden\\nX-Ratelimit-Reset: %d\\n\\n{}" % (time.time() + 30)); print(json.dumps([27 < g.wait_for(h, "primary") <= 30, g.wait_for(h, "secondary"), b]))`);
+t('#1666 a primary limit waits for its reset header', JSON.stringify(reset), '[true,null,"{}"]');
+
+// Issues with neither a label nor a `prefix:` are themed by a shared #NNNN, then a shared title
+// word, before `other`.
+const themed = probe(`import github_activity as g
+iss = lambda n, title, body="", labels=(): {"number": n, "title": title, "body": body, "labels": [{"name": l} for l in labels]}
+print(json.dumps(g.themes([
+  iss(1, "Cloud worker loses its slot"), iss(2, "Cloud session never reports back"),
+  iss(3, "Checkout collector dies on a rate limit", "Follows #1646"), iss(4, "Grouping files most under other", "Part of #1646"),
+  iss(1646, "Collect more sources"), iss(5, "Queue stalls overnight"), iss(6, "Queue order ignores priority"),
+  iss(7, "Tidy the README"), iss(8, "ci: shard the suites"), iss(9, "Cloud thing", labels=["bug"]),
+])))`);
+t('#1666 a shared title word names a theme', themed['1'], 'theme: cloud');
+t('#1666 for each issue sharing it', themed['2'], 'theme: cloud');
+t('#1666 a #NNNN two issues reference names a theme', themed['3'], 'theme: #1646');
+t('#1666 the issue referenced joins it', themed['1646'], 'theme: #1646');
+t('#1666 and the other referencing it', themed['4'], 'theme: #1646');
+t('#1666 another shared word', `${themed['5']} ${themed['6']}`, 'theme: queue theme: queue');
+t('#1666 an issue sharing nothing is other', themed['7'], 'theme: other');
+t('#1666 a prefix still wins', themed['8'], 'theme: ci');
+t('#1666 and a label', themed['9'], 'label: bug');
+
 // jira_activity.py: what the user did in each in-scope repo's Jira project.
 put('api_3_myself', { accountId: 'me-id', displayName: 'Me Person' });
 const issue = (key, summary, extra = {}) => ({ key, fields: { summary, status: { name: 'In Progress' }, assignee: { displayName: 'Me Person' }, created: jiraAt(before), creator: { accountId: 'me-id' }, labels: [], customfield_10207: { value: 'P2' }, ...extra } });
@@ -428,7 +501,7 @@ put('api_3_search_jql', { issues: [issue('APP-1', 'A new bug', { created: jiraAt
 const history = (who, ts, field, from, to, extra = {}) => ({ author: { accountId: who, displayName: who === 'me-id' ? 'Me Person' : 'Sam Smith' }, created: jiraAt(ts), items: [{ field, fromString: from, toString: to, ...extra }] });
 put('api_3_issue_APP_1_changelog', { values: [], isLast: true });
 put('api_3_issue_APP_2_changelog', { values: [
-  history('me-id', at(9), 'status', 'To Do', 'In Progress'),
+  history('me-id', at(9), 'status', 'To Do', 'In Review'), history('me-id', at(9, 45), 'status', 'In Review', 'In Progress'),
   history('me-id', at(10), 'assignee', null, 'Me Person'), history('me-id', at(10, 5), 'assignee', 'Me Person', null),
   history('me-id', at(10, 10), 'Rank', 'a', 'b', { fieldtype: 'custom' }),
   history('sam-id', at(15), 'status', 'In Progress', 'Done'),
@@ -443,15 +516,19 @@ t('jira: exits 0', jiraOut.status, 0);
 const jo = jiraOut.stdout;
 has('jira: the header names the user, project and repo', jo, '# Jira activity for Me Person in APP (acme__app), Monday 26 October 2026');
 has('jira: a ticket raised on the day, with its grade', jo, '## Raised (1)\n### individually (1)\n- APP-1 [To Do · Me Person · P2] A new bug');
-has('jira: a status move', jo, '- APP-2 [In Progress · Me Person · P2] Started work\n    · status: To Do → In Progress');
+has('issue-1538 AC1 a status move names your account and the time', jo, '- APP-2 [In Progress · Me Person · P2] Started work\n    · status: To Do → In Progress, by Me Person (you) at 09:45');
 lacks('jira: an assign-then-unassign nets to nothing', jo, 'assignee:');
 lacks('jira: Rank moves are not reported', jo, 'Rank');
 has('jira: a comment on the day', jo, '    · commented: Looks good to me');
 lacks('jira: a comment from before the day is left out', jo, 'An old comment');
-has('jira: what someone else did after, on your ticket', jo, '    · then Sam: In Progress → Done');
+has('issue-1538 AC1 what someone else did after names their account and the time', jo, '    · then status: In Progress → Done, by Sam Smith at 15:00');
 lacks('jira: a ticket only others touched is left out', jo, 'Not mine');
 has('jira: a same-destination repo at ask is not read without --include', jo, '- acme__lib: §3 read-own-work is ask - pass --include acme__lib once the user agrees');
 has('jira: a repo with a different destination is named, not queried', jo, '- not queried (different check-out destination): acme__other');
+{
+  const since = script('jira_activity.py', '--day', DAY, '--since', new Date(2026, 9, 25, 19).toISOString(), '--since-for', '2026-10-25').stdout;
+  has('issue-1538 AC1 a window across midnight puts the day on the time', since, 'status: To Do → In Progress, by Me Person (you) at Mon 09:45');
+}
 const calls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((l) => l.startsWith('desk-jira '));
 t('jira: every request went through desk-jira as acme__app', calls.every((l) => l.startsWith('desk-jira acme__app api ')), true);
 t('jira: the search is limited to the project', calls.some((l) => decodeURIComponent(l.replace(/\+/g, ' ')).includes('project = APP AND (')), true);
@@ -459,6 +536,16 @@ t('jira: the search is limited to the project', calls.some((l) => decodeURICompo
 // At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
 // went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
+// issue-1533: the config step reads only the rows the skill uses, by id, and the read stays small
+// against the shipped template, whose rows carry the help text a section read printed.
+{
+  const read = /^desk-env show --rows ([a-z0-9 -]+)$/m.exec(skill);
+  t('issue-1533 AC1 the config step reads named rows, not sections', !!read && !/desk-env show rules/.test(skill), true);
+  const run = spawnSync('node', [join(REPO, 'desk', 'bin', 'desk-env.mjs'), 'show', '--rows', ...(read?.[1].split(' ') ?? [])],
+    { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(REPO, 'desk-config.md'), DESK_MACHINE: join(R, 'no-machine.md'), HOME } });
+  t('issue-1533 AC1 every id it names reads', run.status, 0);
+  t('issue-1533 AC1 the read prints under 5 KB', Buffer.byteLength(run.stdout) < 5000, true);  t('issue-1533 AC2 an unset row is named as unset', /^§4 Check-out destination \(checkout-destination\) = UNSET$/m.test(run.stdout), true);
+}
 has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
@@ -480,6 +567,10 @@ has('#1471 style: never a ticket as the user last left it', style, 'Don\'t descr
 has('#1471 style: never from the next deploy unread', style, 'Don\'t write "from the next deploy" without reading the latest production deploy.');
 lacks('style: the day is no longer added just for posting late', style, 'with the day when posting late or for another day');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
+has('#1535 the previous check-out is found before any collector runs', skill, 'ended: find that one before any collector runs.**');
+lacks('#1535 the collectors are never run blind, then again', skill, 'Run the collectors again');
+has('#1535 step 2 runs each collector once, with that window', skill, 'python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W');
+has('#1535 with no previous check-out, the fallback still runs each collector once', skill, 'leave both flags out to cover the whole day, and say so. Each collector runs once');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');
@@ -495,6 +586,11 @@ has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the au
 has('#829 a batch\'s own sessions are never items', skill, 'A triage, preflight or worker session is evidence\n  for the ticket it worked, never work in its own right');
 has('#829 a parked ticket with no PR needs a Jira or GitHub change that day', skill, '**A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it\n  that day');
 has('#829 described by that change, not by the session', skill, 'and the item says what that change was. A session\n  alone is not a change.');
+{
+  const items = readFileSync(join(REPO, 'skills/desk-checkout/references/items.md'), 'utf8');
+  has('issue-1538 AC2 a move by your own account is yours', items, '**A status move the Jira collector marks `(you)` is the person\'s own**');
+  has('issue-1538 AC2 and is not something to check', items, 'and never put it under **Check before posting**');
+}
 has('#829 DESK_CHECKOUT_NAME_BATCH names the batch in one line', skill, 'set `DESK_CHECKOUT_NAME_BATCH=1`');
 has('#829 that line names the items by key', skill, 'Then one line after\n  the substantive work names the items a batch built by key');
 has('#819 the read wins over the collector\'s', skill, 'That read wins over the collector\'s: `MERGED` is `(merged)`, an open PR no longer a draft is\n  `(in review)`');

@@ -8,13 +8,13 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, deskReviewEnabled, CLOUD_REVIEW_PLUGIN, CLOUD_REVIEW_ROUNDS, parseCloudStart, startCloud, firstRunPrompt, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, cloudStall, cloudEta, parseCloudSend, sendCloud, CLOUD_RETRY_MSG, CLOUD_NO_EFFORT, attributionFound, authorMismatches, stripAttribution, rewriteCommits, ATTRIBUTION_MARKS, unfinishedMark, cloudIdle, cloudFollowUpMsg, CLOUD_IDLE_FOLLOWUPS } from '../desk/bin/cloud-worker.mjs';
 import { cloudIdleText } from '../desk/bin/desk-q.mjs';
 import { execFileSync } from 'node:child_process';
 import { attributionForbidden } from '../desk/bin/desk-env.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
-import { cloudStartCommand, loginEnv } from '../desk/bin/logins.mjs';
+import { cloudStartCommand, cloudStartPark, loginEnv, firstRunGaps, firstRunPark, externalImports, tilde } from '../desk/bin/logins.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -55,6 +55,39 @@ t('AC2 and the branch to push and the PR to open', prompt.includes('branch named
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
 t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
   ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
+
+// ---- issue-1555: a session with desk-review reviews its own head and posts the verdict ----
+const base1555 = { key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] };
+const reviewed = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default', 'required-checks': ['Tests', 'Lint'] }, post: true } });
+const unposted = cloudPrompt({ ...base1555, review: { config: { 'review-bar': 'default' }, post: false } });
+t('issue-1555 fix try 1: with §3 pr-self-review-comment yes, the brief grants the post DESK_CONFIG_FILE cannot carry',
+  reviewed.includes('§3 `pr-self-review-comment` to `yes`, which that file cannot carry: so desk-review\'s post step is to post on your own PR'), true);
+t('issue-1555 fix try 1: without it, the brief posts nothing and puts the report in the PR body',
+  [unposted.includes('post no review on the PR'), unposted.includes('Put the final report in the PR body'), unposted.includes('Post the final verdict'), unposted.includes('put that round\'s report in the PR body')].join(), 'true,true,false,true');
+t('issue-1555 fix try 1: a review with no post given reads as no', cloudPrompt({ ...base1555, review: { config: {} } }).includes('post no review on the PR'), true);
+const pluginRef = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-review', 'references', 'plugin.md'), 'utf8');
+t('issue-1555 fix try 1: desk-review\'s plugin.md takes the brief\'s word for pr-self-review-comment',
+  ['carries no §3 permission', 'stands in for §3 `pr-self-review-comment`', 'reads as `no`: report only'].every((x) => pluginRef.includes(x)), true);
+t('issue-1555 AC1 with desk-review available, the brief runs it at the pushed head, from the plugin',
+  ['/desk:desk-review', CLOUD_REVIEW_PLUGIN, 'at your pushed head'].every((x) => reviewed.includes(x)), true);
+t('issue-1555 AC1 it fixes P0 and P1 findings within the session and reviews the new head',
+  reviewed.includes('Fix every P0 and P1 it confirms in this session, push, and review the new head again'), true);
+t('issue-1555 AC1 it posts the final verdict on the PR in desk\'s format, with the head SHA',
+  ['Post the final verdict on the PR in desk\'s format', 'full SHA of the head it reviewed'].every((x) => reviewed.includes(x)), true);
+t('issue-1555 AC1 it carries the review rows as DESK_CONFIG_FILE takes them',
+  reviewed.includes('set DESK_CONFIG_FILE') && reviewed.includes('`{"review-bar":"default","required-checks":["Tests","Lint"]}`'), true);
+t('issue-1555 AC1 the review comes after the draft PR, before the rules and the ticket',
+  reviewed.indexOf('4. Open a draft pull request') < reviewed.indexOf('7. Once your draft PR is open') && reviewed.indexOf('7. Once your draft PR is open') < reviewed.indexOf('## The ticket'), true);
+t('issue-1555 AC3 it limits its rounds to desk\'s three, then stops and posts',
+  CLOUD_REVIEW_ROUNDS === 3 && reviewed.includes('at most 3 review rounds') && reviewed.includes('when round 3 still finds a P0 or P1, stop fixing, post that round\'s verdict'), true);
+t('issue-1555 AC2 without desk-review, the brief is as today (main\'s brief, recorded before this change)', cloudPrompt({ ...base1555, review: null }), fixture('prompt-no-review.txt'));
+t('issue-1555 AC2 and as the brief with no review given', cloudPrompt(base1555).includes('desk-review'), false);
+t('issue-1555 AC2 the brief with the review is today\'s with one step added',
+  reviewed.split('\n').filter((l) => !l.startsWith('7. ')).join('\n'), prompt);
+const settings = (o) => JSON.stringify({ enabledPlugins: o });
+t('issue-1555 the repo\'s settings enabling the desk plugin make desk-review available', deskReviewEnabled(settings({ [CLOUD_REVIEW_PLUGIN]: true })), true);
+t('issue-1555 disabled, missing, another value, another plugin, no file or bad JSON: not available',
+  [settings({ [CLOUD_REVIEW_PLUGIN]: false }), settings({}), settings({ [CLOUD_REVIEW_PLUGIN]: 'true' }), settings({ 'other@x': true }), '{}', '', '{nope', null, '[]'].map(deskReviewEnabled).some(Boolean), false);
 
 // ---- issue-1569: the repo's commit and PR rules, and AI attribution ----------
 const rules = { author: { name: 'Ada Lovelace', email: 'ada@example.com' }, prTitle: 'type(scope): <TICKET> description', prBody: 'intro · ### Changes · ### Testing', mergeMethod: 'squash', noAttribution: true };
@@ -203,6 +236,67 @@ t('#1581 AC3 a start with no answer in its timeout says so, marked timed out', `
 t('#1581 AC3 a refused start is not marked timed out', startCloud(prompt, { claude: refuses, timeout: 30_000 }).timedOut, undefined);
 t('#1581 AC3 the one-time command for a login is its cloud start, run in its folder', cloudStartCommand(studia), 'CLAUDE_CONFIG_DIR=~/.claude-logins/studia claude --cloud "<any prompt>"');
 t('#1581 AC3 and for the default login, with no prefix', cloudStartCommand({ tool: 'claude', name: 'default', folder: '~/.claude', configDir: null }), 'claude --cloud "<any prompt>"');
+
+// ---- issue-1642: first-run prompts ------------------------------------------
+// A start that times out on a first-run prompt names it, and the fix is run from the checkout.
+t('issue-1642 AC1 captured output ending at the trust dialog is the trust dialog', firstRunPrompt(fixture('trust-dialog.txt')), 'trust');
+t('issue-1642 AC1 the external imports prompt after it is that prompt', firstRunPrompt(`${fixture('trust-dialog.txt')}\n${fixture('external-imports.txt')}`), 'imports');
+t('issue-1642 AC1 the environment-variables prompt is named', firstRunPrompt('Allow this session to use the environment variables set for this environment? (y/n)'), 'env');
+t('issue-1642 AC1 a recorded start shows no prompt', firstRunPrompt(fixture('created.txt')), null);
+const atTrust = fake('claude-trust', `cat "${join(FIX, 'trust-dialog.txt')}"\nsleep 5`);
+const waited = startCloud(prompt, { claude: atTrust, timeout: 1_500 });
+t('issue-1642 AC1 a start that times out at the trust dialog says it waits on it', `${waited.timedOut} ${waited.waits}`, 'true trust');
+t('issue-1642 AC1 one that times out with nothing to show names no prompt', hung.waits, undefined);
+const ck = join(S, 'code', 'desk-skills');
+mkdirSync(ck, { recursive: true });
+const lg = { tool: 'claude', name: 'studia', folder: join(S, 'login'), configDir: join(S, 'login') };
+mkdirSync(lg.configDir, { recursive: true });
+const parkLine = firstRunPark(['trust'], { who: 'login studia', login: lg, checkout: ck, gave: 'no answer in 120s' });
+t('issue-1642 AC1 its park names the trust dialog', parkLine.includes('it is waiting on the folder-trust dialog ("Is this a project you created or one you trust?")'), true);
+t('issue-1642 AC1 and the exact fix, from the checkout under the login', parkLine.endsWith(`from the checkout: cd ${tilde(ck)} && CLAUDE_CONFIG_DIR=${lg.folder} claude, then choose "Yes, I trust this folder", and exit`), true);
+// The pass's step between them (spawnCloud): the captured trust-dialog start becomes the park.
+const startPark = cloudStartPark(waited, { who: 'login studia', login: lg, checkout: ck });
+t('issue-1642 AC4 a captured trust-dialog start parks naming trust', startPark.includes('gave no answer in 1.5s: it is waiting on the folder-trust dialog'), true);
+t('issue-1642 AC4 and the checkout the fix runs from', startPark.includes(`from the checkout: cd ${tilde(ck)} && `), true);
+t('issue-1642 AC4 a timeout showing no prompt parks on the one-time cloud start', cloudStartPark(hung, { who: 'w', login: lg, checkout: ck }).endsWith(`answer it: ${cloudStartCommand(lg)}`), true);
+t('issue-1642 AC4 a refused start parks on what it said', cloudStartPark({ error: 'refused: x' }, { who: 'w', login: lg, checkout: ck }), 'refused: x');
+t('issue-1642 AC1 the environment-variables prompt is answered from a cloud start', firstRunPark(['env'], { who: 'w', login: lg, checkout: ck }).endsWith(`cd ${tilde(ck)} && CLAUDE_CONFIG_DIR=${lg.folder} claude --cloud "<any prompt>", then answer it, and exit`), true);
+{
+  const was = process.env.HOME;
+  process.env.HOME = S;
+  const spaced = firstRunPark(['trust'], { who: 'w', login: lg, checkout: join(S, 'my code', 'x') });
+  const plain = firstRunPark(['trust'], { who: 'w', login: lg, checkout: ck });
+  process.env.HOME = was;
+  t('issue-1642 a checkout under home with a space is cd-ed to by its quoted absolute path, never a quoted ~', spaced.includes(`cd '${join(S, 'my code', 'x')}' && `), true);
+  t('issue-1642 one with no space keeps its ~ form', plain.includes('cd ~/code/desk-skills && '), true);
+}
+const cj = join(lg.configDir, '.claude.json');
+const gapsWith = (projects) => { if (projects === undefined) rmSync(cj, { force: true }); else writeFileSync(cj, JSON.stringify({ projects })); return firstRunGaps(lg, ck).gaps.join(',') || 'none'; };
+t('issue-1642 AC2 a login with no .claude.json would wait on trust', gapsWith(undefined), 'trust');
+t('issue-1642 AC2 one that trusts another folder only would wait on trust', gapsWith({ '/home/avr/code/studia-web': { hasTrustDialogAccepted: true } }), 'trust');
+t('issue-1642 AC2 a trust recorded false is not trust', gapsWith({ [ck]: { hasTrustDialogAccepted: false } }), 'trust');
+t('issue-1642 AC2 a trusted checkout proceeds', gapsWith({ [ck]: { hasTrustDialogAccepted: true } }), 'none');
+t('issue-1642 AC2 so does one under a trusted folder', gapsWith({ [join(S, 'code')]: { hasTrustDialogAccepted: true } }), 'none');
+writeFileSync(cj, '{not json');
+t('issue-1642 AC2 a .claude.json that does not parse holds nothing up, and says so', `${firstRunGaps(lg, ck).gaps.length} ${!!firstRunGaps(lg, ck).unread}`, '0 true');
+// The external imports prompt is pre-checked only when the CLAUDE.md chain imports a file outside the checkout.
+writeFileSync(join(S, 'code', 'notes.md'), 'notes');
+writeFileSync(join(ck, 'inside.md'), 'inside');
+writeFileSync(join(ck, 'CLAUDE.md'), '# rules\nSee @inside.md and `@../notes.md` in code, and mail a@b.c.\n```\n@../notes.md\n```\n');
+t('issue-1642 imports inside the checkout, or in code, are not external', externalImports(lg, ck).length, 0);
+t('issue-1642 so a trusted checkout with them proceeds', gapsWith({ [ck]: { hasTrustDialogAccepted: true } }), 'none');
+writeFileSync(join(ck, 'inside.md'), 'more in @../notes.md');
+t('issue-1642 an import the chain follows outside the checkout is external', externalImports(lg, ck).join(','), join(S, 'code', 'notes.md'));
+t('issue-1642 and the start would wait on the imports prompt', gapsWith({ [ck]: { hasTrustDialogAccepted: true } }), 'imports');
+t('issue-1642 untrusted, it would wait on both, trust first', gapsWith({}), 'trust,imports');
+t('issue-1642 approved, it proceeds', gapsWith({ [ck]: { hasTrustDialogAccepted: true, hasClaudeMdExternalIncludesApproved: true } }), 'none');
+writeFileSync(join(ck, 'inside.md'), 'inside');
+writeFileSync(join(lg.configDir, 'CLAUDE.md'), '@~/never-there.md\n@' + join(S, 'code', 'notes.md') + '\n');
+t('issue-1642 the login\'s own CLAUDE.md importing a file outside the checkout counts', gapsWith({ [ck]: { hasTrustDialogAccepted: true } }), 'imports');
+const before = readFileSync(cj, 'utf8');
+firstRunGaps(lg, ck);
+t('issue-1642 AC2 the check writes nothing', readFileSync(cj, 'utf8'), before);
+t('issue-1642 both prompts are named in one park, answered in one start', firstRunPark(['trust', 'imports'], { who: 'w', login: lg, checkout: ck }).includes('would wait on the folder-trust dialog ("Is this a project you created or one you trust?"), then the external imports prompt ("Allow external CLAUDE.md file imports?")'), true);
 
 // ---- the PR it opened (AC2) -------------------------------------------------
 const since = '2026-10-28T10:00:00Z';

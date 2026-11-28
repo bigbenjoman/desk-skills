@@ -101,7 +101,7 @@ const WHOLE = [
   /\bdesk-env where`?,?\s+then\s+read it\b(?!\s+with\b)/i,
   /<CONFIG path>/,
   /\bcat\s+"?\$\{?CONFIG\b/,
-  /\bdesk-env show(?![ \t]+(?:§?\d[ab]?|rules)\b)/,
+  /\bdesk-env show(?![ \t]+(?:§?\d[ab]?|rules|--rows)\b)/,
 ];
 const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[ab]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
 const wholeReads = (text, res = WHOLE) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
@@ -119,6 +119,7 @@ t('DS-875 passes: a section read',wholeReads('Read `desk-env show rules 0 3 5` (
 t('DS-875 passes: a row of a section', wholeReads('**Read the config §4 People table** for who reviews.').length, 0);
 t('DS-875 passes: saying a worker cannot read it', wholeReads('Read rows with `desk-env` (a worker cannot read `CONFIG`).').length, 0);
 t('DS-875 passes: a §3b section first', wholeReads('Read `desk-env show 3b 4`.').length, 0);
+t('issue-1533 passes: named rows', wholeReads('desk-env show --rows name tracker').length, 0);
 const SKILLS = join(ROOT, 'skills');
 const skillDirs = readdirSync(SKILLS).filter((d) => statSync(join(SKILLS, d)).isDirectory());
 let whole = 0;

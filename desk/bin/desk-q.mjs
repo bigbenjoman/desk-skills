@@ -47,8 +47,9 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, cloudSessions } from './desk-env.mjs';
-import { runsInCloud, startsInCloud, toHandoff } from './pass/shared.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
+import { runsInCloud, startsInCloud, toHandoff, cloudAble } from './pass/shared.mjs';
+import { modeLine as personModeLine } from './person-use.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, checksRerun, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim, slotHeldBy, handoffWaitText } from './batch-state.mjs';
 import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -57,7 +58,7 @@ import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, flatShare, idlePass, lastBeat, liveBeat, loopFrom, machineCap, machineCeiling, memoryRoom, repoWeightRaw, repoWeights, stoppedAt, weighedGB } from './borrow.mjs';
-import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+import { logStage, saidDone, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
@@ -94,12 +95,13 @@ export { LIVE_MS };
 // by who moves the ticket next; the rest are reasons inside one of them: an untriaged ticket is
 // ready, and one held outside the batch or whose worker stopped needs the user.
 // `finishing`: a running ticket whose worker said it finished, holding no worker until a pass records it.
-const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 'waiting' };
+// `checks`: a draft whose red checks name no file it changes, waiting on their one rerun (checksRerun).
+const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 'waiting', checks: 'merging' };
 const groupOf = (k) => GROUP_OF[k] ?? k;
 // A reason key draws as its group: the same glyph, word and colour (STATE_SGR), unless it has a word of its own.
 const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] ??= m[groupOf(k)]; return m; };
 // Every label desk-q can draw, by state key; exported for the test that each one shown has key text.
-export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing' });
+export const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing', checks: '▸ on checks' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -156,6 +158,7 @@ function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
   if (t.state === 'running' && ctx.finished?.(t.key)) return 'finishing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
+  if (stalledHandoff(t, ctx)) return 'needs';
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   const ph = parkHold(q, t, ctx, seen);
@@ -174,8 +177,19 @@ function stateOf(q, t, ctx, seen) {
 // files, waits for it to free, and is not stalled.
 const slotWait = (t) => handoffWaitText(t) != null;
 const slotWaitText = handoffWaitText;
+// Why no pass respawns a pending handoff, as { text, requeue }, or null when one will. Its worker
+// printed AUTOPILOT_DONE (pass.mjs alreadyFinished), which a requeue clears; or it is linked in Jira as
+// blocked by a ticket held behind it (pass/eligibility.mjs inCycle), which needs-you asks about.
+function stalledHandoff(t, ctx) {
+  if (t?.state !== 'triaged' || !toHandoff(t)) return null;
+  const to = `handed off to Stage ${t.handoff_stage ?? '?'}`;
+  if (ctx?.printedDone?.(t.key) === true) return { text: `stalled: its worker printed AUTOPILOT_DONE, then ${to}, and no pass respawns a ticket whose worker printed DONE`, requeue: true };
+  const cycle = keysOf(t.cycle_link);
+  if (cycle.length) return { text: `stalled: ${to}, but linked in Jira as blocked by ${listed(cycle)}, which ${cycle.length === 1 ? 'is' : 'are'} held behind it, so no pass respawns it: which comes first is asked in needs-you`, requeue: false };
+  return null;
+}
 
-const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
+const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, printedDone: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -240,6 +254,9 @@ function holdContext(r) {
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
   // Whether running ticket `key`'s worker said it finished, so only the next pass's record is left.
   const finished = (key) => rowStage(r.stateDir, r.q.tickets[key], r.last).done === true;
+  // Whether ticket `key`'s log holds a worker's AUTOPILOT_DONE, read as pass.mjs alreadyFinished reads
+  // it before a respawn: the whole log, and no "9/9 done" stage standing in for the marker.
+  const printedDone = (key) => { try { return saidDone(readFileSync(join(r.stateDir, 'logs', `${key}.log`), 'utf8')); } catch { return false; } };
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
   const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
@@ -262,7 +279,7 @@ function holdContext(r) {
   // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
   // relaying its merge lines), not on the person. `mergeHolds`: §4 Merge holds names a path, and only the
   // driver records a PR's hold (merge_blocked), so with none running the words say a hold makes it theirs.
-  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, mergeHolds: list('merge-holds').length > 0, reruns, basePush, live: r.live, stage, finished, printedDone, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -592,6 +609,13 @@ function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   if (u?.call === 'rerun' && /so that job is re-run$/.test(u.why ?? '')) return merging(['draft', null], [' · stuck job re-run, out of draft once green', null]);
   if (u?.call === 'rerun' && /failed on a GitHub read error/.test(u.why ?? '')) return merging(['draft', null], [' · state check re-run once after a GitHub read error, out of draft once green', null]);
   if ((u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) && /ended by the runner/.test(u.why ?? '')) return merging(['draft', null], [' · checks the runner ended re-run once, out of draft once green', null]);
+  // Checks whose failed logs name no file the PR changes are re-run once before any fix worker
+  // (fix-tries.mjs classedRerun), after the rest of their run finishes: the ticket waits on them, not on a
+  // worker, so it reads as on checks rather than merging.
+  if (checksRerun(t)) {
+    const when = u.call === 'rerun' ? '' : / in the rerun of /.test(u.why ?? '') ? ' (running now)' : ' after their run finishes';
+    return { ...merging(['draft', null], [` · waiting on checks: re-run once${when} as their failed logs name no file this PR changes, out of draft once green`, null]), k: 'checks' };
+  }
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
@@ -893,8 +917,10 @@ function whoRuns(r) {
 // What the pass record (pass.mjs recordPass) and the supervisor's own files say about a batch whose
 // passes run but move nothing, or cannot run:
 //   noProgress  how long nothing started, merged or was released, once that is NO_PROGRESS_MS or more
-//               while the last pass held something it could have started (`held`, its reason), counted
-//               only while a ticket was ready, running or waiting; a requeue restarts that ticket's clock
+//               while the last pass held something it could have started (`held`, its reason, and
+//               `hold`, the same as the pass's structured hold, or null from a pass that wrote none),
+//               counted only while a ticket was ready, running or waiting; a requeue restarts that
+//               ticket's clock
 //   idle        { since }: the batch holds no unfinished ticket or PR, `since` its last progress or null
 //   errors      { n, error } once ERROR_STREAK passes in a row have errored
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
@@ -953,7 +979,8 @@ function stallOf(r, now) {
   const installed = readInstalled();
   const old = { supervisor: loaded && oldCode(agentVersion(r.slug), installed),
     driver: r.run?.by === 'supervisor' && typeof holder === 'number' && oldCode(lockVersion(r.stateDir), installed) };
-  return { noProgress: quiet, idle: unfinished(r) ? null : { since: progress }, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
+  return { noProgress: quiet, idle: unfinished(r) ? null : { since: progress }, held: rec.held ?? null, hold: rec.hold && typeof rec.hold === 'object' ? rec.hold : null,
+    errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
     oldCode: old.supervisor || old.driver ? old : null };
 }
 // The batch's hold on a usage limit, as the last pass recorded it (pass.mjs usage_hold), in one
@@ -1239,6 +1266,8 @@ function undatedWhy(r, F, x) {
   if (r.workers === 0) return 'workers set to 0: nothing starts';
   // Passes stopped: what each would be doing, without a date.
   if (F.paused && ['ready', 'waiting', 'queued'].includes(x.k)) return detail(r, x);
+  const sh = x.k === 'needs' && stalledHandoff(x.t, r.ctx);
+  if (sh) return sh.text;
   if (x.k === 'needs') return isHeld(x.t) && !heldAsks(x.t) ? holdOf(r.q, x.t, r.ctx).text : `needs your answer · ~${typical(F, x.t.key)} h once answered`;
   if (x.k === 'stuck') return outsideText(x.t);
   if (x.k === 'failed') return stoppedText(x.t);
@@ -2238,8 +2267,9 @@ const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGat
 // 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
 // when the batch was handed to a supervisor that is not loaded; stopped, how long since the last
 // pass, yellow under a day and red beyond. Live but not moving, in amber: a session running passes
-// beside the supervisor, or passes that held everything for NO_PROGRESS_MS. Live with nothing left in
-// the batch, in grey: "● idle since 06:08".
+// beside the supervisor, or passes that held everything for NO_PROGRESS_MS. A batch only the test lock
+// holds is throttled, not stuck, so a row whose stalled batches are all throttled reads as live, as
+// the grey note on it does (quietNotes). Live with nothing left in the batch, in grey: "● idle since 06:08".
 const LAST_W = 26;
 // ALL DONE BY fits "passes stopped".
 const QD_W = 14;
@@ -2247,7 +2277,8 @@ function lastPass(r, now) {
   const age = r.last == null ? null : now - r.last;
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, FAIL];
   if (r.live && r.stall?.sessionToo) return ['▲ supervisor + session', WARN];
-  if (r.live && r.stall?.noProgress != null) return [`▲ no progress ${since(r.stall.noProgress)}`, WARN];
+  const stuck = (r.batches ?? [r]).filter((b) => b.live && b.stall?.noProgress != null && !throttleOf(b));
+  if (r.live && stuck.length) return [`▲ no progress ${since(Math.max(...stuck.map((b) => b.stall.noProgress)))}`, WARN];
   if (r.live && r.stall?.idle) return [`● idle${r.stall.idle.since == null ? '' : ` since ${calendarDays(r.stall.idle.since, now) === 0 ? clock(r.stall.idle.since) : when(r.stall.idle.since, now)}`}`, GREY];
   if (r.live) return [`${handsOver(r) ? '▲' : '●'} ${r.run?.by ?? 'session'} · ${ago(age)}`, handsOver(r) ? WARN : STATE_SGR.running];
   if (r.last == null) return ['■ never', WARN];
@@ -2916,21 +2947,65 @@ const bandsOf = (r) => [
 const holdKey = (held) => String(held).replace(/ \(this pass\)/g, '').split(/[,;:—] /).sort().join('\n');
 const batchName = (r) => (r.batch ? `batch ${r.batch}` : 'the standing batch');
 
+// The test lock is the one hold every repo's passes share: a batch's pass held by it, as its record's
+// structured hold says, or null.
+const throttleOf = (r) => ((h) => (h?.cause === 'test-lock' && h.scope === 'machine' ? h : null))(r.stall?.hold);
+// The test-lock note's mark, which each WAIT cell it explains carries too.
+const THROTTLE_MARK = '⧗';
+// A hold note's hide key: its cause and scope, so holders and queue counts moving on keep it hidden.
+const holdHide = (h) => `hold ${h.cause} ${h.scope}`;
+const structured = (h) => !!(h?.cause && h.scope);
+
 // Each "nothing started or merged" note, keyed by the batch it shows under: one per repo and hold
 // reason, timed from the repo's latest progress, its text the first batch's. Where a repo's batches
-// are held for different reasons, each note names its batches.
+// are held for different reasons, each note names its batches. A batch the test lock holds is in none
+// of those: every such batch, whatever its repo, is one grey note, `shared`, and `marked` holds the
+// slugs of the repos it names.   -> { notes: Map(batch -> { text, hide }), shared, marked }
 function quietNotes(shown) {
-  const groups = new Map();
+  const groups = new Map(), throttled = [];
   for (const r of shown) {
     if (r.stall?.noProgress == null || usageHoldOf(r)) continue;
+    if (throttleOf(r)) { throttled.push(r); continue; }
     const k = `${r.slug}\n${holdKey(r.stall.held)}`;
     groups.set(k, [...(groups.get(k) ?? []), r]);
   }
   const reasons = (slug) => [...groups.values()].filter((g) => g[0].slug === slug).length;
-  return new Map([...groups.values()].map((g) => {
+  const notes = new Map([...groups.values()].map((g) => {
     const named = reasons(g[0].slug) > 1 ? `${andList(g.map(batchName))}: ` : '';
-    return [g[0], `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`];
+    const h = g[0].stall.hold;
+    // The hide key is the cause and scope, never whether the text names its batches: a sibling batch
+    // stalling for another reason adds those, and must not show a hidden note again. A hold on a batch
+    // (its base) is that batch's, so its key names the batches it holds whatever the text says.
+    const hide = !structured(h) ? null : h.scope === 'batch' ? `${andList(g.map(batchName))} ${holdHide(h)}` : holdHide(h);
+    return [g[0], { text: `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`, hide }];
   }));
+  return { notes, shared: throttled.length ? throttleNote(throttled) : null, marked: new Set(throttled.map((r) => r.slug)) };
+}
+
+// The one note for every batch the test lock holds: each lock queue the passes were held on (the test
+// lock or the light one, as each pass named them; a repo's suite weight picks which), at its latest
+// reading, then each repo with the tickets it keeps waiting.
+function throttleNote(rs) {
+  const latest = rs.reduce((a, r) => ((r.last ?? -Infinity) > (a.last ?? -Infinity) ? r : a));
+  const s = (x) => (x === 1 ? '' : 's');
+  const byLock = new Map();
+  for (const r of [...rs].sort((a, b) => (a.last ?? -Infinity) - (b.last ?? -Infinity))) {
+    const n = r.stall.hold.numbers ?? {};
+    if (!n.stall) continue;
+    for (const q of Array.isArray(n.queues) && n.queues.length ? n.queues : [{ lock: 'test', waiting: n.waiting, slots: n.slots }]) {
+      if (Number.isFinite(q?.waiting) && Number.isFinite(q.slots)) byLock.set(q.lock ?? 'test', q);
+    }
+  }
+  const qs = [...byLock.values()];
+  const queue = qs.length
+    ? `${andList(qs.map((q) => `${q.waiting} run${s(q.waiting)} waiting for ${q.slots} ${q.lock ?? 'test'} slot${s(q.slots)}`))}, shared by all repos.`
+    : 'Each pass starts only so many test runs, shared by all repos.';
+  const repos = new Map();
+  for (const r of rs) repos.set(r.repo, [...new Set([...(repos.get(r.repo) ?? []), ...(r.stall.hold.tickets ?? [])])]);
+  const each = [...repos].map(([repo, ts]) => (ts.length ? `${andList(ts)} in ${repo}` : repo));
+  const quiet = since(Math.min(...rs.map((r) => r.stall.noProgress)));
+  return { tag: `${THROTTLE_MARK} tests queued`, sgr: GREY, hide: holdHide(latest.stall.hold),
+    text: [[`${queue} Waiting for a slot: ${andList(each)}. Nothing started or merged for ${quiet}.`, null]] };
 }
 
 // Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
@@ -2956,7 +3031,7 @@ function oldCodeNotes(shown) {
 }
 
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note, and `old`
+// `quiet` is quietNotes's, whose `notes` say which batch carries its repo's no-progress note, and `old`
 // oldCodeNotes's, which batch carries the old desk code notes, and `drivers` which batch carries its
 // repo's stopped merge driver note: the driver is the repo's, so it is one note. With `allOut`, Home's note on the
 // Claude default's limit stands for the batch's hold on it.
@@ -2967,7 +3042,8 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
   const out = [];
   const u = allOut ? null : usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
-  if (quiet.has(r)) out.push(note(quiet.get(r)));
+  const q = quiet.notes.get(r);
+  if (q) out.push({ ...note(q.text), ...(q.hide ? { hide: q.hide } : {}) });
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver && drivers.get(r.slug) === r) {
     const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;
@@ -3030,12 +3106,16 @@ function wrapSegs(segs, w) {
 // A note is known by its tag and its wording with each clock time (and its weekday), duration and amount
 // in it masked, so those moving on keep it hidden while new wording shows it again. Any other number, a
 // batch, a port, a ticket or a PR, is wording: a note naming another one is another warning. Each shows
-// again HIDE_MS after it was hidden, so a fault that lasts cannot stay out of sight.
+// again HIDE_MS after it was hidden, so a fault that lasts cannot stay out of sight. A note made from a
+// pass's structured hold carries its own `hide`, its cause and scope, and is known by its tag and that
+// alone, so its holders and queue counts moving on keep it hidden too; such a note can be hidden
+// whatever its tag.
 export const HIDE_MS = DAY;
 export const hiddenWarningsFile = () => join(process.env.HOME || homedir(), '.desk-autopilot', 'machine', 'hidden-warnings.json');
-const isWarning = (n) => typeof n.tag === 'string' && n.tag.startsWith('▲');
+const isWarning = (n) => n.hide != null || (typeof n.tag === 'string' && n.tag.startsWith('▲'));
 const FIGURE = /\$\d[\d,]*(?:\.\d+)?|(?:\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:%|(?:ms|mins?|GiB|GB|MB|KB|[smhdwk])\b)/g;
 export function noteKey(n) {
+  if (n.hide != null) return `${n.tag} ${n.hide}`;
   const words = [n.text, ...(n.more ?? [])].flatMap((segs) => segs.map(([s]) => s)).join('') + (n.cmd ?? '');
   return `${n.tag} ${words.replace(FIGURE, '#').replace(/#(?:\s+#)+/g, '#').replace(/\s+/g, ' ').trim()}`;
 }
@@ -3163,16 +3243,22 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.id, line, open: { kind: 'repo', slug: r.id } });
+  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
+  // The test-lock note's mark shows only while the note does: hidden with h, nothing would explain it.
+  const marks = quiet.shared && !hidden?.has(noteKey(quiet.shared));
   for (const r of list) {
     if (r.error) { row(r, `  ${pad(r.name, w)}${runs(r)[0]}queue unreadable: ${r.error}`); continue; }
     const [last, lastSgr] = lastPass(r, now);
-    // Each state count in its state's colour, a zero dim; DONE in the text colour.
+    // Each state count in its state's colour, a zero dim; DONE in the text colour. While the test-lock
+    // note shows, WAIT's last column is its mark on each row it names, so every count still lines up.
     const n = ([, k, cw]) => {
-      if (k === 'needs') { const y = needs.get(r); return [rpad(needsCell(y), cw), y.shown ? STATE_SGR.needs : DIM]; }
-      const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[k]) : DIM];
+      if (k === 'needs') { const y = needs.get(r); return [[rpad(needsCell(y), cw), y.shown ? STATE_SGR.needs : DIM]]; }
+      const c = k === 'done' ? r.done : count(r, k), sgr = c ? (k === 'done' ? null : STATE_SGR[k]) : DIM;
+      if (k !== 'waiting' || !marks) return [[rpad(c, cw), sgr]];
+      return [[rpad(c, cw - 1), sgr], quiet.marked.has(r.slug) ? [THROTTLE_MARK, quiet.shared.sgr] : [' ', null]];
     };
     const qd = queueDone(r, now, checkin);
-    rows.push(segRow(r.id, cutCells([[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
+    rows.push(segRow(r.id, cutCells([[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.flatMap(n),
       ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], width), { kind: 'repo', slug: r.id }));
   }
   if (all) for (const r of none) row(r, cutLine([`  ${pad(r.name, w)}`, runs(r)[0], pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW), `  cap ${r.cap}`], width));
@@ -3181,13 +3267,12 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
-  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const drivers = new Map();
   for (const r of readable) if (r.stall?.driver && !drivers.has(r.slug)) drivers.set(r.slug, r);
   const out = claude?.limit ? claude : null;
   const leases = leaseNotes(repos, now);
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...leases.warn, ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
-    ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+    ...(quiet.shared ? [quiet.shared] : []), ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
   if (pause) notes.unshift(warnNote('▲ uploads', uploadPauseText(pause)));
@@ -3491,7 +3576,7 @@ function prSegs(r, t, now) {
   if (r.live) {
     // A Merging PR with no change for STALL_MS keeps its first reason and says so, which a 52-column
     // row has room for; the rest is moving nothing.
-    const m = prNeed(r.q, t, r.ctx, now), stall = m.k === 'merging' ? stalledFor(t, now) : null;
+    const m = prNeed(r.q, t, r.ctx, now), stall = groupOf(m.k) === 'merging' ? stalledFor(t, now) : null;
     return [...lead, ...(stall != null ? [m.segs[0], [` · no change for ${span(stall)}`, null]] : m.segs), ...tail];
   }
   return [...lead, [`as of ${clock(Date.parse(prStatusOf(t).at))}: ${segText(prNeed(r.q, t, r.ctx, null).segs)}${held ? ` · ${held}` : ''}`, GREY]];
@@ -3562,6 +3647,8 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
   if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
+  const sh = k === 'needs' && stalledHandoff(t, r.ctx);
+  if (sh) return [[sh.requeue ? `${sh.text}: requeue it` : sh.text, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
   if (k === 'failed') return [[stoppedText(t), null]];
   if (k === 'queued') return [['triaging', null]];
@@ -3770,6 +3857,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []),
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r, now),
+    ...personHead(r),
     ...passHead(r, now),
     ...stagesHead(r),
     ...stuckHead(r, now),
@@ -3837,12 +3925,19 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
 // What each shown state means, for the key line under a Queue.
 const MEANS = { running: 'holds a worker', ready: 'next free worker takes it', merging: 'merges by itself once green', waiting: 'moves by itself',
   needs: 'nothing moves until you act', [PUT_OFF]: 'you put it off with not-now; back in Needs you once it changes',
-  finishing: 'worker done, the next pass records it' };
+  finishing: 'worker done, the next pass records it', checks: 'red checks re-run once, then it merges or gets a fix try' };
 // The key line: each label on screen (keyLabels) in its colour, its meaning grey. Narrower than the
 // line, it breaks between labels, each further line indented under the first.
 export function stateKey(ks, width) {
   return keyLine(keyLabels(ks).map((k) => [[LABEL[k], STATE_SGR[k]], [`: ${MEANS[k]}`, GREY]]), width);
 }
+
+// The person is using this computer (person-use.mjs), as the last pass of any of the repo's batches
+// recorded it: the local cap it dropped to, and cloud first.
+const personHead = (r) => {
+  const p = (r.batches ?? [r]).map((b) => b.q?.person_use).find((x) => x?.on);
+  return p ? [`${personModeLine(p.floor ?? 1)}${p.since ? ` · since ${p.since.slice(11, 16)}` : ''}`] : [];
+};
 
 export const repoScreen = (r, opts) => joined(repoParts(r, { ...opts, title: true }));
 
@@ -3885,6 +3980,9 @@ function moveOf(r, row, k, t, h, now) {
   }
   const wb = worktreeBusy(t);
   if (wb) return { text: `Needs you. ${busyPark(t) ? `Its last worker parked: ${busyPark(t).question}. ` : ''}No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
+  const sh = k === 'needs' && stalledHandoff(t, r.ctx);
+  if (sh && !sh.requeue) return { text: `Needs you. ${capital(sh.text)}.` };
+  if (sh) return { text: `Needs you. ${capital(sh.text)}.`, lead: `Requeue it, in ${r.name}, and it starts again at Stage ${t.handoff_stage ?? '?'}:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
   if (f && groupOf(k) !== 'needs') {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
@@ -4154,6 +4252,10 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     try { merge = recordedMerge(t) ?? mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
     if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
   }
+  // Where it started and why (the pass's placeAtStart), or, for a cloud-able ticket not yet started,
+  // that it is placed when it starts.
+  if (t.start_place?.where) field('Place', [[t.start_place.where === 'cloud' ? 'cloud' : 'this computer', null], [` · ${t.start_place.why}`, DIM]]);
+  else if (cloudAble(t) && t.state !== 'running') field('Place', [['cloud-able', null], [' · placed when it starts: the cloud while it has room', DIM]]);
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]

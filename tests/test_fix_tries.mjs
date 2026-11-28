@@ -7,7 +7,7 @@ import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
-import { errorLinesIn, readError } from '../desk/bin/evidence.mjs';
+import { errorLinesIn, readError, pathsIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -1228,6 +1228,23 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 negative: an exit line, a clean summary and plain output name none', errorLinesIn('##[error]Process completed with exit code 1.\nTests: 0 failed, 3 passed\nbuilding…').length, 0);
   t('DS-494 a build tool\'s capitalised error lines name a cause', errorLinesIn('ERROR: Could not find a version\n[ERROR] Failed to execute goal\nFailed to compile.\nBUILD FAILURE').length, 4);
   t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
+}
+
+// Every path a failed log names, past the five error lines, less GitHub's echo of the step script; and the
+// error lines keep the one naming the failing file ahead of the runner's headings.
+{
+  const J = (s) => `shard 6/6\tRun tests\t2026-11-20T16:29:00.000Z ${s}`;
+  const LOG = [J('##[group]Run bash tests/ci_shard.sh 6 6'), J('failed=$(grep -c FAIL tests/out.txt)'), J('##[endgroup]'),
+    ...['a', 'b', 'c', 'd', 'e', 'f'].map((x) => J(`== suite ${x} errors ==`)), J('ok   ./desk/bin/queue.mjs loads.'), J('FAIL tests/test_new_holds.mjs: holds a PR')].join('\n');
+  t('#1640 AC1 the fix try\'s error lines lead with the one naming the failing file, past six headings', errorLinesIn(LOG)[0] === 'FAIL tests/test_new_holds.mjs: holds a PR', true);
+  t('#1640 and leave out the echoed step script', errorLinesIn(LOG).some((l) => l.includes('grep -c FAIL')), false);
+  t('#1640 the headings fill the rest, five lines at most', errorLinesIn(LOG).slice(1).join('|'), '== suite a errors ==|== suite b errors ==|== suite c errors ==|== suite d errors ==');
+  t('#1640 pathsIn reads it, the error lines\' paths first, less ./ and a trailing dot', pathsIn(LOG).join(' '), 'tests/test_new_holds.mjs desk/bin/queue.mjs');
+  const ABS = ['Error: at /home/runner/work/r/r/desk/bin/queue.mjs:3', 'at /__w/r/r/src/a.ts', 'at /opt/actions/_work/r/r/lib/b.py', 'at /Users/runner/work/r/r/c/d.js', 'at /usr/lib/node/e.js'].map(J).join('\n');
+  t('#1640 pathsIn reads a path under a runner\'s workspace folder as the repo names it, and leaves any other absolute path', pathsIn(ABS).join(' '), 'desk/bin/queue.mjs src/a.ts lib/b.py c/d.js /usr/lib/node/e.js');
+  t('#1640 pathsIn skips the echoed step script', pathsIn(LOG).includes('tests/ci_shard.sh') || pathsIn(LOG).includes('tests/out.txt'), false);
+  t('#1640 with failing, only the error lines\' paths', pathsIn(LOG, { failing: true }).join(' '), 'tests/test_new_holds.mjs');
+  t('#1640 a word with no letter or no slash or extension is no path', pathsIn('error at 12/34 in foo and v1').length, 0);
 }
 
 {

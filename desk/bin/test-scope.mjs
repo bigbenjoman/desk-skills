@@ -178,11 +178,15 @@ export function uncoveredWorkspaces(decision, pkgs, { relatedItems = [], fullIte
 // The package manager that runs a workspace's test script: §4 Package manager's first word where it
 // is set, else the one the root lockfile belongs to, else npm.
 const PM_LOCKS = [['pnpm-lock.yaml', 'pnpm'], ['yarn.lock', 'yarn'], ['bun.lock', 'bun'], ['bun.lockb', 'bun'], ['package-lock.json', 'npm']];
+// The root lockfile and the package manager it belongs to, first match in PM_LOCKS: { name, lock } | null.
+export function lockfileManager(root) {
+  for (const [lock, name] of PM_LOCKS) { try { statSync(join(root, lock)); return { name, lock }; } catch { /* not this one */ } }
+  return null;
+}
 export function packageManager(root, configured) {
   const word = /^[A-Za-z0-9][A-Za-z0-9._+-]*/.exec(String(configured ?? '').trim())?.[0];
   if (word && !/^(none|todo)$/i.test(word)) return word;
-  for (const [file, pm] of PM_LOCKS) { try { statSync(join(root, file)); return pm; } catch { /* not this one */ } }
-  return 'npm';
+  return lockfileManager(root)?.name ?? 'npm';
 }
 // What runs a workspace package's own test script, in its directory. A Vitest or Jest script gets the
 // worker cap (`cap`, config §3b) here, since the command alone does not show the runner.

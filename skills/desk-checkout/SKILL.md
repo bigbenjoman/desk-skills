@@ -23,18 +23,23 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read `desk-env show rules 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
-which slug was looked up and offer `/desk-setup`.
-§1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
-§4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
-**§4 Check-out destination** says where the draft goes:
+`EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`. Otherwise read
+only these rows, never the `CONFIG` file:
+
+```bash
+desk-env show --rows name short-name read-own-work read-transcripts read-calendar read-slack-public read-slack-own read-others slack-draft slack-send tracker ticket-pattern checkout-destination code-reviewer product-owner infra-owner designer qa-filers former-members required-checks branch-protection slack-channels colleague-messages ai-attribution repo-instructions
+```
+
+Name any row printed `UNSET` (a `TODO`, or missing) and offer `/desk-setup`; an unset §3 row is a
+`no`. §3 says which sources you may read, §4 People who's who (never ask a former member), §5 binds
+the draft as any message, and **§4 Check-out destination** says where it goes:
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
-| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as §5 says. **Never sent** |
+| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as step 5 says. **Never sent** |
 | a file path | Written to that file (a directory gets `<YYYY-MM-DD>.md` inside it). If the file already exists, show what is there and ask before replacing or appending |
 | `none` | Printed and copied. Nothing is written anywhere |
-| `TODO` or missing | Ask where it goes, print it meanwhile, and offer `/desk-setup` |
+| `UNSET` | Ask where it goes and print it meanwhile |
 
 Then read `references/style.md` before drafting.
 
@@ -51,33 +56,33 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
-**A check-out starts where the previous one ended.** Step 2 reads the destination back (the
-channel's, or the file's, previous check-out). Run the collectors again with `--since <the time it
+**A check-out starts where the last one ended: find that one before any collector runs.**
+Read the destination's last check-out, then give each collector `--since <the time it
 was posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or
 date names it>`: their window then starts where that check-out stopped, the evening before
-included, so nothing posted between it and midnight drops out, and their headers say from when. One
-written the next morning for its own day covered only that day, so the window starts at midnight.
-A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
-read again for its state now (step 3).
-Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
-day and say so. Say the window in your one line to the user, never in the post (step 4).
+included, so nothing posted between it and midnight drops out. One written the next morning for
+its own day covered only that day, so the window starts at midnight. A draft never sent moves
+nothing. Every item it called in review or WIP is read again for its state now (step 3).
+Where none can be found (no connector or permission, none posted, `none`),
+leave both flags out to cover the whole day, and say so. Each collector runs once
+either way. Say the window in your one line to the user, never in the post (step 4).
 
 ## 2. Gather
 
-Run the three collectors in one Bash call, from inside the repo (they use its config to decide
-scope):
+Run the three collectors once, with step 1's window, in one Bash call from inside the repo (its
+config scopes them):
 
 ```bash
 S=~/.claude/skills/desk-checkout/scripts; D=auto   # or today / yesterday / friday / 2026-09-23
-python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; python3 $S/claude_activity.py --day $D
+W="--since <its ISO time> --since-for <its day>"  # W= if none
+python3 $S/jira_activity.py --day $D $W; python3 $S/github_activity.py --day $D $W; python3 $S/claude_activity.py --day $D $W
 ```
 
 `references/sources.md` covers the newer collectors: `worklog_activity.py`,
 `claude_activity.py --window-turns`, issues in `github_activity.py`.
 
-`claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself, and nor does the one that drafted an earlier check-out that
-day.
+`claude_activity.py` cuts each session off where it loads this skill, so neither the drafting
+session nor one that drafted an earlier check-out that day reports itself.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
@@ -101,13 +106,9 @@ is usually there: the root cause, the status or the drafted announcement. Skip i
 small sessions.
 
 **Connectors.** They're deferred tools, so search with a required term: `+gmail`, `+calendar`,
-`+slack` (e.g. `ToolSearch "+slack search"`). A role is missing when no returned tool name
-contains that term. Unrelated hits (WebSearch, Atlassian) never stand in.
-When a role is missing, run `perl -e 'alarm 90; exec @ARGV' claude mcp list`.
-If it shows the connector as `✔ Connected`, it was connected after this session started, and
-the fix is a **new session**: reconnecting won't help. Otherwise the fix is to enable it at
-claude.ai → Settings → Connectors. Either way, carry on and **name it under the draft** with
-its fix. With no calendar, leave out meeting lines: never guess them.
+`+slack`. A role with no tool name containing its term is missing: `references/connectors.md` says
+how to find the fix, and the draft names it. With no calendar, leave out meeting lines: never
+guess them.
 
 If a script fails, report its error line and carry on. A missing Jira
 credential means `desk-jira` isn't set up for that repo yet (`desk-jira where` shows the paths;
@@ -210,7 +211,7 @@ Then sort:
 
 ## 4. Draft
 
-Write it in the user's voice. Their previous check-out (gathered in step 2 when the destination is a
+Write it in the user's voice. Their previous check-out (read in step 1 when the destination is a
 channel, or the previous entry in the destination file) is the model for register, header and
 layout; `references/style.md` has the conventions and a worked example for when there is none. The
 short version:
