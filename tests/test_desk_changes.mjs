@@ -140,6 +140,8 @@ t('AC5: before: blind audit findings per audited PR, with the count', `${before.
 const after = sideOf({ tickets, audits, from: AT, to: AT + 7 * DAY });
 t('AC5: after: an even count takes the middle two', `${after.median_usd} ${after.costed}`, '3 2');
 t('AC5: after: an audit with no findings line is not counted', `${after.audited} ${after.p0}`, '0 null');
+const nothing = sideOf({ tickets: [row('Z1', -1, 0), row('Z2', -2, 0)], audits: [], from: AT - 7 * DAY, to: AT });
+t('AC5: a merged ticket costing $0 recorded no runs: its cost is unknown, not $0', `${nothing.median_usd} ${nothing.costed} ${nothing.accepted}`, 'null 0 2');
 
 // ---- the whole log ----------------------------------------------------------------------------------
 const log = changeLog({

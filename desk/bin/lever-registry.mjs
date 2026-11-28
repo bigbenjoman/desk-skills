@@ -16,6 +16,9 @@ import { ALIAS, ROWS } from './config-schema.mjs';
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 // The evaluation states in which a lever has been kept.
 export const KEPT_STATES = Object.freeze(['adopted', 'settled']);
+// The states in which a lever is being tested, and those in which desk has turned it off.
+export const TESTING_STATES = Object.freeze(['trial']);
+export const OFF_STATES = Object.freeze(['reverted', 'frozen']);
 
 // The epic's decision rule, shared by every lever: an adopt needs the mechanism metric better by at
 // least the lever's minimum with this probability, the cost ratio's upper bound below `cost_ratio_max`,
@@ -40,6 +43,9 @@ export const GUARDRAILS = Object.freeze({
   'post-merge': Object.freeze({ metric: 'post-merge reverts or red main within 24 hours per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
   'parked-hours': Object.freeze({ metric: 'parked hours per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
 });
+// The fix tries per ticket a kept lever must stay under: the guardrail's rate ratio over the baseline
+// `base`, to 2 places, or null with no baseline.
+export const fixTriesLimit = (base) => (base == null ? null : Math.round(base * GUARDRAILS['fix-tries-parks'].margin.max_rate_ratio * 100) / 100);
 
 // How much of a repo's tickets a lever reaches. The low-risk layer is a factorial, each lever drawn on
 // for half the tickets; the quality-risk layer is exclusive (one such lever per ticket), steps through

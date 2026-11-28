@@ -43,7 +43,7 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import * as E from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints, isValued } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, GUARDRAILS, OFF_STATES, leverFingerprints, isValued } from './lever-registry.mjs';
 import { appendWith, isStateChange, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId, holdbackEnd, pairTrial, ACTOR } from './levers-auto.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
@@ -444,7 +444,7 @@ const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
 // The guardrail a logged revert `e` names, where it reverted on one with no estimate: an earlier
 // evaluation read a check with no figure as breached. Such a revert is void; null for any other event.
-const voidedBy = (e) => (e?.kind === 'transition' && ['reverted', 'frozen'].includes(e.to)
+const voidedBy = (e) => (e?.kind === 'transition' && OFF_STATES.includes(e.to)
   ? (e.guardrails ?? []).find((g) => guardCode(g.name) === e.reason_code && g.est == null) ?? null : null);
 // A guardrail with no figure: none to divide by, or no rows to measure. It never stands in the way of
 // an adopt as a failure does.
@@ -454,7 +454,7 @@ const noFigure = (g) => g.est == null && ['too_early', 'no_data'].includes(g.sta
 // state its next revert goes to: a lever already reverted once is frozen instead. A void revert does
 // not count.
 export const priorRevertsOf = (events, lever) => (events ?? [])
-  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && ['reverted', 'frozen'].includes(e.to) && !voidedBy(e)).length;
+  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && OFF_STATES.includes(e.to) && !voidedBy(e)).length;
 export const revertTarget = (priorReverts) => (priorReverts >= 1 ? 'frozen' : 'reverted');
 // The needs-you item a freeze raises, for `lever` in repo `name`, `why` being what reverted it.
 export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} after its second revert (${why}): it stays off there until you set it by hand`;
@@ -742,7 +742,7 @@ export function evaluate({
           const nowState = leverStatesIn(events, registry)[lever];
           if (nowState.state !== s.state || nowState.id !== s.id) return null;
           return {
-            kind: 'transition', lever, from: s.state, to: d.to, ...(d.value && d.to !== 'reverted' && d.to !== 'frozen' ? { value: d.value } : {}),
+            kind: 'transition', lever, from: s.state, to: d.to, ...(d.value && !OFF_STATES.includes(d.to) ? { value: d.value } : {}),
             actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at),
             n, mechanism, cost, guardrails, desk_commit_range: range, lever_fp: fingerprints[lever] ?? null, ...(holdback ? { holdback } : {}),
           };

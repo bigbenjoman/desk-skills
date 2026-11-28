@@ -213,6 +213,11 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('AC9 its repo\'s cost is unknown, not 0', zd.usd_per_admitted, null);
   t('AC9 it is still counted as admitted', zd.admitted, 1);
   t('AC9 the week\'s cost leaves it out', v.panels.cost.this_week.usd_per_admitted, 16.8);
+  const cost = (await import('../desk/bin/levers-slices.mjs')).overviewSlice(v).cost;
+  const why = (w) => `${w.usd_per_admitted}:${w.reasons?.usd_per_admitted ?? ''}`;
+  t('DS-1068 AC7 the overview\'s cost per admitted ticket is null with a reason, never 0', j([
+    why(cost.per_repo.find((r) => r.repo === 'studia-zendesk')), why(cost.per_repo.find((r) => r.repo === 'ai-agents')), why(cost.weeks_before[0]), why(cost.this_week),
+  ]), '["null:tickets admitted, none with their cost recorded","null:no tickets admitted","null:no tickets admitted","16.8:"]');
 }
 
 // Each repo's rework share this week, cost-weighted, with its data age.
@@ -511,6 +516,154 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
   unlock(V.buildLock(out));
   V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out });
   t('AC14 a build that ran has let go of the lock before it returns', j([existsSync(join(out, 'view.json')), existsSync(V.buildLock(out))]), j([true, false]));
+}
+
+// One small slice per Levers page.
+{
+  const { readdirSync, statSync, existsSync } = await import('node:fs');
+  const S = await import('../desk/bin/levers-slices.mjs');
+  const { REGISTRY } = await import('../desk/bin/lever-registry.mjs');
+  const tr = (at, lever, o = {}) => ({ v: 1, id: `t-${lever}-${at}`, at, repo: DS, lever, kind: o.kind ?? 'transition', from: o.from ?? 'off', to: o.to ?? 'trial', actor: 'controller', reason_code: 'adopt_all_conditions' });
+  const claude = (at, to) => ({ kind: 'claude', at, from: '2.4.0', to, ticket: 'DS-1', session: 's' });
+  const pick = (o, keys) => (o == null ? null : Object.fromEntries(keys.map((k) => [k, o[k]])));
+  const logs = (entries) => (r) => (r.slug === DS ? { log: { entries, window_days: 7 }, error: null } : { log: null, error: null });
+
+  // AC1: one file per page under view/, each with v, generated_at and the input ages; view.json still written.
+  {
+    const m = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers')]) } });
+    mkdirSync(join(m.out, 'view'), { recursive: true });
+    writeFileSync(join(m.out, 'view', 'lever-gone.json'), '{}\n');
+    writeFileSync(join(m.out, 'view', 'changes-1.json'), '{}\n');
+    const { files } = V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out: m.out, generatedAt: NOW });
+    const names = readdirSync(join(m.out, 'view')).sort();
+    const want = ['overview.json', 'levers.json', 'trends.json', ...Object.keys(REGISTRY).map((l) => `lever-${l}.json`)];
+    t('DS-1068 AC1 a file per page and per lever', want.every((n) => names.includes(n)), true);
+    t('DS-1068 AC1 a lever the view no longer has loses its file; the changes slices are left alone', j([names.includes('lever-gone.json'), names.includes('changes-1.json')]), '[false,true]');
+    const heads = want.map((n) => JSON.parse(readFileSync(join(m.out, 'view', n), 'utf8')));
+    t('DS-1068 AC1 each carries v, generated_at and the input ages', heads.every((s) => s.v === V.VERSION && s.generated_at === new Date(NOW).toISOString() && s.inputs?.supervisor?.length === 4 && 'evaluation' in s.inputs), true);
+    t('DS-1068 AC1 view.json is still written', existsSync(files.view), true);
+    t('DS-1068 AC1 build returns the slice files', files.slices.length, want.length);
+  }
+
+  // AC2 and AC6: markers inside each chart's window, at most 5, one per point with a count; the weeks and
+  // months mark lever changes only.
+  {
+    const day = (d, h = 0) => iso(d * DAY - h * HOUR);
+    const log = [
+      tr(day(2), 'wrappers'), tr(day(2, 2), 'memory'), tr(day(4), 'codex'), tr(day(6), 'effort'), tr(day(9), 'preflight'),
+      tr(day(12), 'ledger'), tr(day(20), 'wrappers', { kind: 'trip', from: 'trial', to: 'reverted' }), tr(day(45), 'memory', { from: 'trial', to: 'reverted' }),
+      { v: 1, id: 'ei', at: day(3), repo: DS, lever: 'memory', kind: 'evidence_incomplete', actor: 'levers-auto', reason_code: 'evidence_incomplete' },
+    ];
+    const v = view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl(log), ...evidence(DS, [row('DS-1', 3)]) } }), { changeLogs: logs([claude(day(5), '2.4.1'), claude(day(13), '2.4.2')]) });
+    const m = S.trendsSlice(v).metrics.cost;
+    const d = m.markers.daily;
+    t('DS-1068 AC2 at most 5 markers on the 30 days', d.length, 5);
+    t('DS-1068 AC2 the newest kept, oldest first', d.map((x) => x.date).join(), '2026-11-06,2026-11-09,2026-11-10,2026-11-11,2026-11-13');
+    t('DS-1068 AC2 two changes on one day are one marker with a count', j([d.at(-1).count, d.at(-1).items.map((i) => i.lever)]), '[2,["wrappers","memory"]]');
+    t('DS-1068 AC2 the 30 days mark Claude Code updates', d.find((x) => x.date === '2026-11-10')?.kinds.join(), 'claude');
+    t('DS-1068 AC2 and say how many were left out: 8 days in the window, the change 45 days ago not among them', m.markers_left_out.daily, 3);
+    t('DS-1068 AC2 nor anything that is not a lever changing', d.some((x) => x.kinds.includes('evidence_incomplete')), false);
+    const w = m.markers.weekly;
+    t('DS-1068 AC6 the weeks hold lever changes only, one per week with a count', w.map((x) => `${x.week}:${x.count}:${x.kinds.join('+')}`).join(), '2026-09-28:1:transition,2026-10-26:1:trip,2026-11-02:2:transition');
+    t('DS-1068 AC6 this week, which has no point, is not marked', w.some((x) => x.week === '2026-11-09'), false);
+    t('DS-1068 AC6 the months too', S.trendsSlice(v).metrics.cost.markers.monthly.map((x) => `${x.month}:${x.count}:${x.kinds.join('+')}`).join(), '2026-10:2:transition+trip,2026-11:6:transition');
+    t('DS-1068 AC2 the overview chart carries the same markers', j(S.overviewSlice(v).chart.markers), j(m.markers));
+  }
+  {
+    // In the week of 2 Nov, which has a weekly point, so the weeks would mark them if they took them.
+    const pr = { kind: 'pr', at: iso(9 * DAY), pr: 9, ticket: 'DS-9', title: 'x', sha: 'a', paths: [] };
+    const cfg = { kind: 'config', at: iso(10 * DAY), row: 'Worker models', from: [], to: ['opus'] };
+    const mk = S.trendsSlice(view(machine({ files: evidence(DS, [row('DS-1', 3)]) }), { changeLogs: logs([pr, cfg]) })).metrics.cost.markers;
+    t('DS-1068 AC2 the 30 days mark worker-facing PRs and settings changes too', mk.daily.map((x) => `${x.date}:${x.kinds.join()}`).join(), '2026-11-05:config,2026-11-06:pr');
+    t('DS-1068 AC6 but the weeks and months do not', `${mk.weekly.length} ${mk.monthly.length}`, '0 0');
+  }
+
+  // AC3: the verdict names the lever nearest a decision, counts the reverted ones and never hides a
+  // metric over its limit.
+  {
+    const evals = [evalRow('wrappers', { on: 25, off: 22 }), evalRow('memory', { on: 18, off: 21 }), evalRow('codex', { state: 'reverted', on: 31, off: 30 }), evalRow('preflight', { state: 'adopted', on: 40, off: 41 })];
+    const rows = Array.from({ length: 10 }, (_, i) => row(`DS-${i + 1}`, i + 2, { fix: i < 3 ? 1 : 0 }));
+    const v = view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), ...evidence(DS, rows) } }));
+    const verdict = S.overviewSlice(v).verdict;
+    t('DS-1068 AC3 the most advanced lever is named, not the least', j([verdict.lead.lever, verdict.lead.n, verdict.lead.min]), '["wrappers",22,30]');
+    t('DS-1068 AC3 the reverted levers are counted', j([verdict.reverted, verdict.reverted_levers]), '[1,["codex"]]');
+    t('DS-1068 AC3 testing and kept', `${verdict.testing} ${verdict.kept}`, '2 1');
+    t('DS-1068 AC3 fix tries over their limit is the problem', j(pick(verdict.problem, ['metric', 'value', 'limit', 'over'])), '{"metric":"fixes","value":0.3,"limit":0.16,"over":"to_date"}');
+    t('DS-1068 AC3 the trend carries the limit', j(v.panels.trends.metrics.fixes.limit), '{"value":0.16,"ratio":1.25,"basis":"1.25 × before levers"}');
+    const g = [{ name: 'fix_tries_ratio', scope: 'repo', est: 1.9, lo90: 1.3, hi90: 2.6, margin: 1.25, p_worse: 0.95 }];
+    const b = S.verdictOf(view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers', { guardrails: g })]) } })));
+    t('DS-1068 AC3 a breached guardrail is a problem too', j([b.problem?.kind, b.problem?.lever]), '["guardrail","wrappers"]');
+    t('DS-1068 AC3 nothing over its limit, no problem', S.verdictOf(view(machine({ files: evidence(DS, rows.map((r) => ({ ...r, fix_tries: 0 }))) }))).problem, null);
+    const AI = 'acme__ai-agents';
+    const old = view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${AI}/lever-evals.jsonl`]: jsonl([{ ...evalRow('memory', { on: 29, off: 29 }), repo: AI }]) } }));
+    const ov = S.verdictOf(old);
+    t('DS-1068 AC3 a repo not enrolled never leads the verdict', j([old.panels.board.levers.find((l) => l.lever === 'memory').cells.some((c) => c.repo === 'ai-agents' && c.state === 'trial'), ov.lead.lever, ov.testing]), '[true,"wrappers",2]');
+  }
+
+  // AC4: each lever's on and off counts per repo and its minimum; a repo not enrolled is listed once.
+  {
+    const v = view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers', { on: 25, off: 22 })]) } }));
+    const s = S.leversSlice(v);
+    t('DS-1068 AC4 the repos not enrolled are listed once', j(s.not_enrolled.map((r) => `${r.repo}:${r.row}`)), '["ai-agents:none","studia-web:missing","studia-zendesk:missing"]');
+    t('DS-1068 AC4 and are not on any lever', s.levers.every((l) => l.cells.every((c) => c.repo === 'desk-skills')), true);
+    const wr = s.levers.find((l) => l.lever === 'wrappers');
+    t('DS-1068 AC4 a lever carries its minimum and each repo its on and off counts', j([wr.min, wr.cells[0].on, wr.cells[0].off, wr.cells[0].min]), '[30,25,22,30]');
+    const one = S.leverSlice(v, 'wrappers');
+    t('DS-1068 AC4 the lever page has the same counts and the repos not enrolled', j([one.cells[0].sample.on, one.cells[0].sample.off, one.not_enrolled.length, one.min]), '[25,22,3,30]');
+    v.panels.board.levers.find((l) => l.lever === 'wrappers').cells.find((c) => c.repo === 'desk-skills').sample.on = null;
+    const blank = S.leversSlice(v).levers.find((l) => l.lever === 'wrappers').cells[0];
+    t('DS-1068 AC7 a count the evaluation did not record is null with a reason', j([blank.on, blank.reasons?.on, blank.reasons?.off]), '[null,"not recorded by the latest evaluation",null]');
+    t('DS-1068 AC7 and on the lever page too', S.leverSlice(v, 'wrappers').cells[0].sample.reasons?.on, 'not recorded by the latest evaluation');
+  }
+
+  // A pair trial's change is in both its levers' histories.
+  {
+    const pair = { v: 1, id: 'p1', at: iso(DAY), repo: DS, kind: 'pair', pair: 'memory+wrappers', levers: ['wrappers', 'memory'], trial_id: 'x', from: 'trial', to: 'reverted', actor: 'controller', reason_code: 'audit_p0' };
+    const v = view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl([pair]) } }));
+    t('DS-1068 a pair change is on each of its levers', ['memory', 'wrappers', 'codex'].map((l) => S.leverSlice(v, l).changes.filter((e) => e.kind === 'pair').length).join(), '1,1,0');
+  }
+
+  // AC5 and AC7: daily, weekly and monthly points; before data starts, null with a reason, never 0.
+  {
+    const v = view(machine({ files: evidence(DS, [row('DS-1', 7), row('DS-2', 3)]) }));
+    const m = S.trendsSlice(v).metrics.cost;
+    t('DS-1068 AC5 30 days, 6 weeks, 12 months', `${m.daily.length} ${m.weekly.length} ${m.monthly.length}`, '30 6 12');
+    t('DS-1068 AC5 a week before data starts is null with the reason', j(m.weekly[0]), '{"week":"2026-09-28","value":null,"reason":"no data before 8 Nov"}');
+    t('DS-1068 AC5 a month before data starts too', j(m.monthly[0]), '{"month":"2025-12","value":null,"reason":"no data before 8 Nov"}');
+    t('DS-1068 AC5 no point before data starts is 0', [...m.daily, ...m.weekly, ...m.monthly].filter((p) => p.value === 0).length, 0);
+    t('DS-1068 AC7 a recorded day with no ticket says so', j(m.daily.at(-1)), '{"date":"2026-11-14","value":null,"reason":"no tickets merged"}');
+    t('DS-1068 AC7 a null callout carries its reason', j([m.callouts.yesterday, m.reasons.yesterday, m.reasons.wow_pct]), '[null,"no tickets merged","no data before 8 Nov"]');
+    t('DS-1068 AC7 no data at all', S.trendsSlice(view(machine())).metrics.cost.weekly[0].reason, 'no data yet');
+    const side = (median_usd) => ({ accepted: 3, costed: median_usd == null ? 0 : 3, median_usd, audited: 0, p0: null, p1: null, p2: null });
+    const e = { kind: 'pr', at: iso(DAY), pr: 7, ticket: 'DS-7', title: 'x', sha: 'abc', paths: ['skills/a.md'], before: side(null), after: side(12.5) };
+    const o = S.overviewSlice(view(machine(), { changeLogs: logs([e]) })).change_log.entries[0];
+    t('DS-1068 AC7 a change with no cost recorded before it is null with a reason', j([o.before.median_usd, o.before.reasons?.median_usd, o.after.reasons?.median_usd ?? null]), '[null,"no merged ticket with its cost recorded",null]');
+    t('DS-1068 AC7 and with no PR audited, its findings too', j([o.before.p0, o.before.reasons?.p0]), '[null,"no PR of these tickets audited"]');
+    const zero = S.trendsSlice(view(machine({ files: evidence(DS, [row('DS-1', 3, { cost: 0 }), row('DS-2', 3, { cost: 10 }), row('DS-3', 5, { cost: 0 })]) }))).metrics.cost;
+    const at = (d) => zero.daily.find((p) => p.date === d);
+    t('DS-1068 AC7 a merged ticket costing $0 is not averaged in as $0', at('2026-11-12').value, 10);
+    t('DS-1068 AC7 a day whose tickets recorded no cost says so', j(at('2026-11-10')), '{"date":"2026-11-10","value":null,"reason":"tickets merged, none with this figure recorded"}');
+    t('DS-1068 AC7 a change carries its file count, not its paths', j([o.files, 'paths' in o]), '[1,false]');
+  }
+
+  // Size: a machine as busy as the live one (four repos, 344 changes, a month of tickets, every lever
+  // evaluated and changing) writes slices under 300 KB together.
+  {
+    const evals = Object.keys(REGISTRY).map((l) => evalRow(l, { guardrails: [{ name: 'fix_tries_ratio', scope: 'repo', est: 1.1, lo90: 0.9, hi90: 1.3, margin: 1.25, p_worse: 0.3 }] }));
+    const levers = Object.keys(REGISTRY);
+    const log = Array.from({ length: 120 }, (_, i) => tr(iso((i % 40) * DAY + i * MIN), levers[i % levers.length], { kind: i % 3 ? 'transition' : 'evidence_incomplete' }));
+    const rows = Array.from({ length: 300 }, (_, i) => row(`DS-${i + 1}`, (i % 30) + 1, { fix: i % 4 ? 0 : 1 }));
+    const changes = Array.from({ length: 344 }, (_, i) => ({
+      kind: i % 10 ? 'pr' : 'claude', at: iso((i % 30) * DAY + i * MIN), pr: i, ticket: `DS-${i}`, title: `A change to how workers run, number ${i}`, sha: `${i}`.padStart(40, 'a'),
+      paths: ['skills/desk-ticket/SKILL.md', 'desk/bin/briefing.mjs'], from: '2.4.0', to: `2.4.${i}`,
+      before: { accepted: 9, costed: 9, median_usd: 15.2, audited: 3, p0: 0, p1: 0.3, p2: 1 }, after: { accepted: 9, costed: 9, median_usd: 14.2, audited: 3, p0: 0, p1: 0.3, p2: 1 },
+    }));
+    const m = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${DS}/levers.jsonl`]: jsonl(log), ...evidence(DS, rows) } });
+    const { files } = V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out: m.out, changeLogs: logs(changes) });
+    const slices = files.slices.reduce((n, f) => n + statSync(f).size, 0);
+    t('DS-1068 the slices are under 300 KB together', slices < 300 * 1024, true);
+    t('DS-1068 and far smaller than view.json', slices < statSync(files.view).size, true);
+  }
 }
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');

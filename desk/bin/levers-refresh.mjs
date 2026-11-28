@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { deskConfigRoot } from './desk-env.mjs';
 import { autopilotRoot, buildLock, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
 import { renderPage } from './levers-page.mjs';
+import { writeSlices } from './levers-slices.mjs';
 import { lock, unlock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 
 // A page older than this is rebuilt whatever its inputs, so the ages it shows stay current.
@@ -88,6 +89,7 @@ export function refresh({ root = autopilotRoot(), configRoot = deskConfigRoot(),
       // The page last, so a write that fails before it leaves the last good page in place.
       const html = renderPage(view);
       writeJsonAtomic(f.view, view);
+      writeSlices(dir, view);
       writeTextAtomic(f.page, html);
       writeJsonAtomic(f.build, { ...buildRecord(view, Date.now() - t0), attempted_at: attempted, fingerprint: fp });
       return { ran: true, ok: true, line: view.line.state };

@@ -7,7 +7,8 @@
 import * as MS from './merge-stages.mjs';
 import { fmtHours } from './stuck-time.mjs';
 import { andList } from './desk-q.mjs';
-import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
+import { DECISION_RULE, KEPT_STATES as KEPT, REGISTRY, TESTING_STATES, fixTriesLimit, isValued } from './lever-registry.mjs';
+import { DAY_MS, addDays } from './day-keys.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
 // minutes as "min", as the page's header does. Runs in the browser too, so it uses nothing from outside
@@ -86,7 +87,7 @@ const dayMonth = (iso, tz) => fmt(tz, { day: 'numeric', month: 'short' }).format
 const when = (iso, tz) => `${dayMonth(iso, tz)}, ${clock(iso, tz)}`;
 const since = (iso, tz) => `${fmt(tz, { weekday: 'short' }).format(new Date(iso))} ${when(iso, tz)}`;
 // A calendar day key (YYYY-MM-DD) as "6 Nov".
-const dayLabel = (k) => dayMonth(`${k}T12:00:00Z`, 'UTC');
+export const dayLabel = (k) => dayMonth(`${k}T12:00:00Z`, 'UTC');
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const isoWeek = (k) => {
   const d = new Date(`${k}T00:00:00Z`);
@@ -96,8 +97,10 @@ const isoWeek = (k) => {
 };
 
 // ---- the four trend metrics, as the page titles and formats them ------------------------------------------
-const fixLimit = (base) => (base == null ? null : Math.round(base * GUARDRAILS['fix-tries-parks'].margin.max_rate_ratio * 100) / 100);
-// `sub` words a card's one-line description from its baseline and whether the view keyed its days by
+// The fix tries limit, as the view sets it; a view saved before it carried one gets the same figure
+// from its baseline.
+const limitOf = (metric) => (metric.limit === undefined ? fixTriesLimit(metric.baseline?.value) : metric.limit?.value ?? null);
+// `sub` words a card's one-line description from its metric and whether the view keyed its days by
 // the day each ticket merged.
 const perTicket = (merged) => (merged ? 'per merged ticket, by the day it merged' : 'per accepted ticket');
 const METRICS = Object.freeze({
@@ -106,8 +109,8 @@ const METRICS = Object.freeze({
   prompts: { title: 'Permission Prompts per Start', tile: 'Prompts per start', sub: (_, merged) => `Times a worker was blocked asking to run a command${merged ? ', per start, by the day its ticket merged' : ''}`, scale: 1, v: (x) => x.toFixed(1), pre: '', post: '' },
   fixes: {
     title: 'Fix Tries per Ticket', tile: 'Fix tries per ticket', scale: 1, v: (x) => x.toFixed(2), pre: '', post: '', minStep: 0.01,
-    sub: (base, merged) => {
-      const limit = fixLimit(base) == null ? null : `Must stay under ${fixLimit(base).toFixed(2)} for a lever to be kept`;
+    sub: (metric, merged) => {
+      const limit = limitOf(metric) == null ? null : `Must stay under ${limitOf(metric).toFixed(2)} for a lever to be kept`;
       if (!merged) return limit ?? 'Fix tries per accepted ticket';
       return limit ? `${cap(perTicket(true))}. ${limit}` : `Fix tries ${perTicket(true)}`;
     },
@@ -122,7 +125,7 @@ function rag(key, metric, over = 'last_week') {
   const vs = metric.callouts[`${over}_vs_before_pct`];
   const better = vs != null && vs <= -1;
   if (key === 'fixes') {
-    const limit = fixLimit(metric.baseline.value);
+    const limit = limitOf(metric);
     const last = metric.callouts[over];
     if (limit == null || last == null) return { c: C.grey, label: 'Grey: no comparison yet', words: 'No comparison yet' };
     if (last > limit) return { c: C.amber, label: `Amber: over the ${limit.toFixed(2)} limit`, words: `Over the ${limit.toFixed(2)} limit`, ink: C.amberInk };
@@ -207,13 +210,12 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
 }
 
 // The last day of a week starting on `k`, and of the month `m` (YYYY-MM), as day keys.
-const weekEnd = (k) => new Date(Date.parse(`${k}T00:00:00Z`) + 6 * 86_400_000).toISOString().slice(0, 10);
+const weekEnd = (k) => addDays(k, 6);
 const monthEnd = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10);
 
 // Where each change log entry lands on a panel: `keys` are the panel's day keys (a day's, or a week's
 // first day with `span` 7), x0..x1 its plot. A change before the first is left off; one after the last
 // sits on the right edge. -> [{ e, x }]
-const DAY_MS = 86_400_000;
 function markXs(entries, keys, span, x0, x1) {
   if (!keys.length) return [];
   const dx = (x1 - x0) / keys.length;
@@ -292,7 +294,7 @@ function wbrCard(key, metric, shown, marks) {
   });
   return `<article class="card wbr" data-metric="${key}">
 <div class="wbr-head"><div></div><h3>${esc(m.title)}</h3><div class="wbr-rag"><span class="rag" role="img" aria-label="${esc(r.label)}" title="${esc(r.label)}" style="background:${r.c}"></span></div></div>
-<p class="muted wbr-sub">${esc(m.sub(metric.baseline.value, metric.keyed_by === 'merged_at'))}</p>
+<p class="muted wbr-sub">${esc(m.sub(metric, metric.keyed_by === 'merged_at'))}</p>
 ${chart(key, metric, 'wbr', shown, marks)}
 ${chart(key, metric, 'days', shown, marks)}
 <div class="callouts">${cells.map((k) => `<div class="callout"><span class="callout-l">${esc(k.l)}</span><span class="callout-v mono" style="color:${k.c}">${esc(k.v)}</span></div>`).join('')}</div>
@@ -597,7 +599,7 @@ function leverRows(v, repo = null) {
     const evalCells = l.cells.filter((c) => c.sample);
     const status = needs.some((n) => n.lever === l.lever) ? 'needs'
       : evalCells.some((c) => KEPT.includes(c.state)) ? 'kept'
-        : evalCells.some((c) => c.state === 'trial') ? 'testing'
+        : evalCells.some((c) => TESTING_STATES.includes(c.state)) ? 'testing'
           : l.cells.some((c) => c.state === 'pinned') ? 'pinned'
             : l.cells.length && l.cells.every((c) => c.state === 'error') ? 'error' : 'off';
     const main = [...evalCells].sort((a, b) => (KEPT.includes(b.state) - KEPT.includes(a.state)) || ((b.sample.n ?? -1) - (a.sample.n ?? -1)))[0] ?? null;
@@ -618,7 +620,7 @@ const repoWord = (c, tz) => {
   if (c.state === 'error') return { t: `${c.repo}: ${DASH}, couldn’t read`, c: C.grey };
   if (c.turned_off_at) return { t: `${c.repo}: turned off by desk, ${dayMonth(c.turned_off_at, tz)}`, c: C.grey };
   if (KEPT.includes(c.state)) return { t: `${c.repo}: kept`, c: C.green };
-  if (c.state === 'trial') return { t: `${c.repo}: testing`, c: C.blue };
+  if (TESTING_STATES.includes(c.state)) return { t: `${c.repo}: testing`, c: C.blue };
   if (c.state === 'pinned') return { t: `${c.repo}: on by hand`, c: C.green };
   if (c.state === 'not_enrolled') return { t: `${c.repo}: not enrolled`, c: C.grey };
   // The short status in the cell, the precondition's rationale on hover.
