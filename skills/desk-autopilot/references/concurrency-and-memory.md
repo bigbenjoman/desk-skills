@@ -179,7 +179,12 @@ harm-tmpfs`, `desk-env get harm-vmmem`); unset, they are the figures below:
   one needs-you ask names what is left. Workers keep these caches out of `/tmp` to begin with: their
   Node compile cache, Jest cache and test runs' temporary folders sit in `DESK_CACHE_DIR`, on disk.
 - `VMMEM-HIGH` (WSL): the VM holds 90% or more of its `.wslconfig` grant, past which it can only
-  swap. Hold new spawns until it falls.
+  swap. Hold new spawns until it falls. Much of that is often Linux page cache: with the machine
+  profile's `vmmem-reclaim` row `on`, the watch drops the caches whenever vmmem is 3 GiB or more
+  over RSS (`vmmem-reclaim-gap-gb`), at most every 5 minutes (`vmmem-reclaim-interval-min`), saying
+  `VMMEM-RECLAIM` with vmmem before and after; and before this signal holds spawns the pass runs one
+  reclaim and reads vmmem again, holding only while the VM is still over the line. `desk-env mem
+  status` shows the reclaim's state and its last run.
 - `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
   unwatched. Say so in the batch notes; the watch keeps reading the rest.
 

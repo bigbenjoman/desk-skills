@@ -81,7 +81,8 @@
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
 //   node desk-env.mjs git-author              print §1 Git author name / email as NAME<TAB>EMAIL (gitAuthor);
 //                                             exit 3 if unset or `none`, 4 if it is neither form
-//   node desk-env.mjs mem <avail|used|rss|status>
+//   node desk-env.mjs mem <avail|used|rss|status>   status: on WSL a second line, the page-cache reclaim's
+//                                             state and its last run (vmmem-reclaim.mjs)
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
 //                                             reason=, changed=, workspace= per uncovered workspace, then
 //                                             DIR<TAB>CMD<TAB>FILES per suite to run (a workspace-test line per
@@ -99,7 +100,10 @@
 //                                             cannot be read; each harm line goes to $DESK_STATE/mem-harm.json,
 //                                             which the pass reads to hold spawns. A worker's exit 137 within 5m
 //                                             of a queue.mjs stop of it ($DESK_STATE/worker-stops.json) is not
-//                                             harm unless memory was under pressure then
+//                                             harm unless memory was under pressure then. On WSL with the
+//                                             machine profile's vmmem-reclaim on, it drops the page cache when
+//                                             vmmem is its gap over RSS, at most once per its interval, and
+//                                             prints VMMEM-RECLAIM with vmmem before and after
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -144,6 +148,10 @@
 //                                             the proposal. A bad value exits 1 naming it, and nothing
 //                                             is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
+//   node desk-env.mjs machine wslconfig [set]  on WSL, the Windows .wslconfig's path (WSLCONFIG=) and its
+//                                             autoMemoryReclaim (AUTO_MEMORY_RECLAIM=, unset where none);
+//                                             set writes autoMemoryReclaim=dropCache under [experimental],
+//                                             which applies after the next WSL restart. Exit 3 off WSL
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
 //                                             profiles this computer can see
 //   node desk-env.mjs costs propose [edits]   print which name each source would be saved under, merged
@@ -201,6 +209,7 @@ import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
+import * as RC from './vmmem-reclaim.mjs';
 import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import { parsePs, psRows as readPs, runPs } from './ps-rows.mjs';
 import * as TS from './test-scope.mjs';
@@ -1710,6 +1719,25 @@ export function memStatusLine() {
 
 export const memCeilingGiB = () => memoryCeiling().gb;
 
+// The WSL page-cache reclaim (vmmem-reclaim.mjs): its machine profile rows, the machine-wide log of its
+// runs, and what it reads, vmmem against the grant (MemTotal) and Linux RSS, NaN where unread.
+export const reclaimSettings = () => RC.reclaimSettings(machineValue);
+export const reclaimLogFile = () => RC.reclaimLogPath(HOME);
+export function vmmemNow() {
+  const m = linuxMeminfo();
+  return { usedGiB: m ? (m.MemTotal - m.MemFree) / GiB : NaN, grantGiB: m ? m.MemTotal / GiB : NaN, rssGiB: rssGiB() };
+}
+// The Windows user's .wslconfig as a path inside WSL: DESK_WSLCONFIG where set (tests), else
+// %USERPROFILE% read through cmd.exe and turned into a WSL path; null where either cannot be read.
+export function wslconfigPath() {
+  if (process.env.DESK_WSLCONFIG) return expandHome(process.env.DESK_WSLCONFIG);
+  const win = outOrNull(spawnSync('cmd.exe', ['/c', 'echo %USERPROFILE%'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, cwd: '/' }))?.replace(/\r/g, '');
+  if (!win || win.includes('%')) return null;
+  const dir = outOrNull(spawnSync('wslpath', ['-u', win], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }));
+  return dir ? join(dir, '.wslconfig') : null;
+}
+export function wslOrNot() { try { return isWSL(); } catch { return false; /* no config here: not known to be WSL */ } }
+
 // Heavy processes (suites, typecheck, dev servers) counted by argv[0]/argv[1], never `pgrep -f`:
 // a claude worker carries its briefing in argv (which mentions jest, vitest and tsc), and the
 // harness's own `bash -c` wrapper carries the pattern literally, so a -f match counts both.
@@ -2503,7 +2531,7 @@ export const PATH_VARS = Object.keys(PATHS);
 // or the lever freeze: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
-export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove', 'subscription set', 'levers freeze', 'levers thaw'];
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'machine wslconfig', 'costs write', 'logins set', 'logins default', 'logins remove', 'subscription set', 'levers freeze', 'levers thaw'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -3009,6 +3037,9 @@ if (isMain) {
           let stateFolder = null;
           try { stateFolder = stateDir(); } catch { /* not in a desk repo */ }
           const thresholds = harmThresholds();
+          // The WSL reclaim runs from here when its machine profile row is on, before the harm sample
+          // reads vmmem, so a run it makes is in that reading.
+          const reclaim = wslOrNot() ? reclaimSettings() : { on: false };
           let logsSeen = null;
           // A restarted watch keeps what the last one recorded, so its recent signals still hold.
           let record = stateFolder ? readHarmRecord(stateFolder) : null;
@@ -3030,6 +3061,10 @@ if (isMain) {
             const now = Date.now();
             // A worker queue.mjs stop ended leaves exit 137 that is no OOM; the avail band is the pressure line.
             const stops = stateFolder ? readStops(stateFolder) : null;
+            if (reclaim.on) {
+              const rc = RC.reclaimStep({ now, settings: reclaim, read: vmmemNow, file: reclaimLogFile() });
+              if (rc.line) console.log(rc.line);
+            }
             const h = harmStep(harm, { now, ...harmSample(), workers: tail.chunks, availGiB: avail, stops }, { ...thresholds, lowAvailGiB: cfg.band });
             harm = h.state;
             for (const l of h.lines) console.log(l);
@@ -3043,7 +3078,10 @@ if (isMain) {
             await new Promise((res) => setTimeout(res, intervalMs));
           }
         }
-        else console.log(memStatusLine());
+        else {
+          console.log(memStatusLine());
+          if (wslOrNot()) console.log(RC.reclaimStatusLine(reclaimSettings(), RC.lastReclaim(reclaimLogFile())));
+        }
         break;
       }
       case 'heavy':
@@ -3236,8 +3274,25 @@ if (isMain) {
           console.log(v);
           break;
         }
+        if (sub === 'wslconfig') {
+          // WSL's own page-cache reclaim in the Windows-side .wslconfig: read, or with `set`, set to dropCache.
+          if (!wslOrNot()) { console.error('not WSL: .wslconfig is read only on WSL'); process.exit(3); }
+          const file = wslconfigPath();
+          if (!file) { console.error('the Windows user folder could not be found (cmd.exe /c echo %USERPROFILE%, then wslpath), so .wslconfig is not known'); process.exit(3); }
+          const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+          if (key === 'set') {
+            if (/^dropcache$/i.test(RC.wslconfigReclaim(text) ?? '')) { console.log(`${file} already sets autoMemoryReclaim=dropCache`); break; }
+            console.log(writeWithBackup(file, RC.withDropCache(text)));
+            console.log('autoMemoryReclaim=dropCache applies after the next WSL restart (wsl.exe --shutdown from Windows, which ends every WSL process)');
+            break;
+          }
+          if (key != null) { console.error('usage: desk-env.mjs machine wslconfig [set]'); process.exit(2); }
+          console.log(`WSLCONFIG=${shellQuote(file)}`);
+          console.log(`AUTO_MEMORY_RECLAIM=${RC.wslconfigReclaim(text) ?? 'unset'}`);
+          break;
+        }
         if (!['detect', 'propose', 'write', 'set'].includes(sub)) {
-          console.error('usage: desk-env.mjs machine detect|propose|write|set <key>=<value>...|get <key>|why <key>');
+          console.error('usage: desk-env.mjs machine detect|propose|write|set <key>=<value>...|get <key>|why <key>|wslconfig [set]');
           process.exit(2);
         }
         const profile = machineProfile();

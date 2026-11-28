@@ -129,6 +129,7 @@ import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLog
 import { newHolds, writeHoldAsks } from './new-holds.mjs';
 import * as GR from './gate-reviewer.mjs';
 import { tmpfsStep, settledLines as tmpfsSettled } from './tmp-sweep.mjs';
+import { reclaimBeforeHold } from './vmmem-reclaim.mjs';
 import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
 import { personUseRows, readProcs, othersHold, nextMode, modeLine as personModeLine } from './person-use.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
@@ -2931,7 +2932,17 @@ const TMPFS = (() => {
   } catch (e) { return { lines: [`/tmp (tmpfs): its sweep failed (${String(e?.message ?? e).split('\n')[0]})`], over: true }; }
 })();
 report.recovered.push(...TMPFS.lines);
-const HARM = TMPFS.over ? HARM_HELD : HARM_HELD.filter((h) => h.signal !== 'TMPFS-HIGH');
+// VMMEM-HIGH with the machine profile's WSL reclaim on (vmmem-reclaim.mjs): one reclaim first (none on
+// a dry run), then vmmem read again, and the signal holds only while the VM is still over its line.
+// With the reclaim off, or off WSL, it holds as before.
+const VMMEM = (() => {
+  if (!HARM_HELD.some((h) => h.signal === 'VMMEM-HIGH') || !E.wslOrNot()) return { lines: [], over: true };
+  try {
+    return reclaimBeforeHold({ settings: E.reclaimSettings(), vmmemShare: E.harmThresholds().vmmemShare, read: E.vmmemNow, file: E.reclaimLogFile(), dry: DRY });
+  } catch (e) { return { lines: [`VMMEM-RECLAIM: failed before VMMEM-HIGH holds spawns (${String(e?.message ?? e).split('\n')[0]}), so its hold stands`], over: true }; }
+})();
+report.recovered.push(...VMMEM.lines);
+const HARM = HARM_HELD.filter((h) => (h.signal !== 'TMPFS-HIGH' || TMPFS.over) && (h.signal !== 'VMMEM-HIGH' || VMMEM.over));
 const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
 const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user

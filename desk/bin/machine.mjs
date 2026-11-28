@@ -135,6 +135,12 @@ const BENCH_RULES = Object.freeze({
     'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset'),
   [JOB_TOKENS_KEY]: onOffRule(JOB_TOKENS_KEY,
     'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset'),
+  // The WSL page-cache reclaim (vmmem-reclaim.mjs): off unless `on`, its gap and interval 3 GB and 5
+  // minutes when unset.
+  'vmmem-reclaim': onOffRule('vmmem-reclaim',
+    'on drops the Linux page cache and compacts memory on WSL when vmmem is vmmem-reclaim-gap-gb over RSS, and before VMMEM-HIGH holds spawns; off when unset'),
+  'vmmem-reclaim-gap-gb': { ok: (n) => n > 0, want: 'a number of GB over 0', why: 'GB vmmem must be over Linux RSS before the WSL reclaim runs; 3 when unset' },
+  'vmmem-reclaim-interval-min': { ok: (n) => n > 0, want: 'a number of minutes over 0', why: 'minutes the WSL reclaim waits after a run before it runs again; 5 when unset' },
   // The person-in-use rows (person-use.mjs): each unset reads as its default, worked out from the
   // profile's memory-gb and cpu-cores.
   'person-use': onOffRule('person-use',
@@ -147,7 +153,7 @@ const BENCH_RULES = Object.freeze({
   'person-use-calm-min': { ok: (n) => n >= 0, want: 'a number of minutes', why: 'minutes the person\'s use must stay under the threshold before the local cap comes back' },
 });
 // The lever rows profileProblems checks, each with what reads as off when its row is wrong.
-const LEVER_ROWS = Object.freeze([[EXPRESS_LANE_KEY, 'the express lane stays off'], [JOB_TOKENS_KEY, 'job tokens stay off']]);
+const LEVER_ROWS = Object.freeze([[EXPRESS_LANE_KEY, 'the express lane stays off'], [JOB_TOKENS_KEY, 'job tokens stay off'], ['vmmem-reclaim', 'the WSL reclaim stays off']]);
 
 // ---- lease kinds ------------------------------------------------------------------------------
 // The lease broker's kinds (leases.mjs takes its list from here, as this file cannot import it) and

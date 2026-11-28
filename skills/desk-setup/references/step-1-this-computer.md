@@ -43,6 +43,21 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
     the declined proposal is not written; say so in one line. `machine detect` then reports no sizes
     proposed: treat that profile as **No profile yet** above on the next run, and a `machine write`
     keeps the two rows.
+- **Then, on WSL only, the page cache.** The VM keeps Linux's page cache as its own memory, so
+  Windows counts it as used and `VMMEM-HIGH` can hold spawns while Linux has plenty free. Two things
+  give it back; offer both, in one carousel, and write neither without a yes:
+  - **WSL's own reclaim.** Run `desk-env machine wslconfig`: `AUTO_MEMORY_RECLAIM=` is what the
+    Windows `.wslconfig` (`WSLCONFIG=`) sets. Anything but `dropCache`: offer `dropCache`
+    (Recommended), saying it applies only after the next WSL restart (`wsl.exe --shutdown` from
+    Windows, which ends every WSL process, this session's included). On a yes, `desk-env machine
+    wslconfig set`, which keeps the old file as `.wslconfig.bak`. Already `dropCache`: say so and ask
+    nothing. Exit 3 means the Windows user folder could not be found: say so and move on.
+  - **desk's reclaim watcher**, the profile's `vmmem-reclaim` row, off unless `on`. With it on,
+    `desk-env mem watch` drops the caches and compacts memory (as root, through `wsl.exe -u root`)
+    whenever vmmem is `vmmem-reclaim-gap-gb` (3 when unset) or more over Linux RSS, at most once per
+    `vmmem-reclaim-interval-min` (5 when unset), and the pass runs one before `VMMEM-HIGH` holds
+    spawns. It works now, with no restart, and running workers are not affected. On a yes,
+    `desk-env machine set vmmem-reclaim=on`. `desk-env mem status` shows its state and its last run.
 - **Then §3b.** The repo rows for worker concurrency, memory ceiling and test worker cap fall back to
   the profile when they are `TODO` or absent, and a set repo row wins. With a profile, the
   Recommended answer for each is the profile's value; say that writing `TODO` instead makes the row
