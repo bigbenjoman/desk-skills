@@ -358,6 +358,13 @@ const stage = probe(`import claude_activity as c
 s = lambda p: c.batch_stage({'prompts': [p] if p else []})
 print(json.dumps([s('A first triage pass put ticket APP-1 in lane B'), s('Follow the autopilot worker contract in your system prompt exactly. Your ticket is APP-1. This session starts at Stage 7'), s('Run the orchestrator'), s(None)]))`);
 t('#1536 a challenge triage pass is triage, a handed-off session a worker, anything else batch', JSON.stringify(stage), JSON.stringify(['triage', 'worker', 'batch', 'batch']));
+// A repo with no ticket key pattern names its batch tickets issue-<n>: those fold too, not drop out.
+headless('nnnn0007-issue', 'issue-12', 'fix/issue-12-totals', 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is issue-12.', 21);
+headless('nnnn0008-issue', 'scratch3', null, 'Triage ticket issue-13 against the repo, see issue-13 and issue-14', 21);
+const issues = script('claude_activity.py', '--day', DAY).stdout;
+has('#1536 a batch on an issue-<n> branch folds under that key', issues, '- issue-12: worker (1 session)');
+has('#1536 with no branch, under its most-mentioned issue-<n>', issues, '- issue-13: triage (1 session)');
+has('#1536 and neither is counted as naming no ticket', issues, '(1 headless session naming no ticket omitted)');
 
 // github_activity.py: the user's PRs that moved on the day, grouped by scope.
 const pr = (repo, number, title, extra = {}) => ({ repository_url: `https://api.github.com/repos/${repo}`, number, title, state: 'open', created_at: before, user: { login: 'me' }, pull_request: {}, ...extra });

@@ -78,6 +78,9 @@ HEADLESS = ("sdk-cli", "sdk-ts", "sdk-py")
 # carries its task after the opening).
 TRIAGE_OPENINGS = ("Triage ticket ", "A first triage pass put ticket ")
 WORKER_OPENING = "Follow the autopilot worker contract"
+# A batch ticket in a repo with no tracker: issue-<n>, in the branch (fix/issue-12-x) or the prompt.
+ISSUE_IN_BRANCH = re.compile(r"(?:^|/)issue-(\d+)(?=-|$)")
+ISSUE_KEY = re.compile(r"\bissue-(\d+)\b")
 
 # Filled in main(): every configured repo, the current one, and the side-project roots.
 REPOS, CURRENT, SIDE_ROOTS = [], None, ()
@@ -266,14 +269,22 @@ def batch_stage(s):
 
 
 def batch_ticket(s):
-    """The ticket a headless session folds under: the one in its branch name, else its most-mentioned."""
-    if in_scope(s["cwd"]):
-        for branch, _ in s["branches"].most_common():
-            for rx in TICKET_RES:
-                m = rx.search(branch)
-                if m:
-                    return m.group(0)
-    return s["tickets"].most_common(1)[0][0] if s["tickets"] else None
+    """The ticket a headless session folds under: the one in its branch name, else its most-mentioned.
+    A repo with no ticket key pattern names its batch tickets issue-<n>, so that form counts too."""
+    if not in_scope(s["cwd"]):
+        return None
+    for branch, _ in s["branches"].most_common():
+        for rx in TICKET_RES:
+            m = rx.search(branch)
+            if m:
+                return m.group(0)
+        m = ISSUE_IN_BRANCH.search(branch)
+        if m:
+            return f"issue-{m.group(1)}"
+    if s["tickets"]:
+        return s["tickets"].most_common(1)[0][0]
+    issues = Counter(f"issue-{n}" for p in s["prompts"] for n in ISSUE_KEY.findall(p))
+    return issues.most_common(1)[0][0] if issues else None
 
 
 def claude_folders():
