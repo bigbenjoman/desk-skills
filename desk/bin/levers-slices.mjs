@@ -3,25 +3,30 @@
 // written under view/ beside view.json. Each carries the view's `v`, `generated_at`, `tz` and the age
 // of every input, and words nothing the view does not: it only selects, trims and groups.
 //
-//   import { slicesOf, writeSlices, inputsOf } from './levers-slices.mjs'
+//   import { writeSlices, inputsOf } from './levers-slices.mjs'
 //
-// Chart markers: the 30-day charts mark lever changes and Claude Code updates, the 6-week and
-// 12-month charts lever changes only; changes on one point (a day, a week, a month) are one marker
-// with a count, and a chart keeps the newest MAX_MARKERS. A figure desk does not have is null with a
-// reason, never 0.
+// Chart markers: the 30-day charts mark lever changes and every change-log entry (Claude Code
+// updates, worker-facing PRs, settings), the 6-week and 12-month charts lever changes only; changes on
+// one point (a day, a week, a month) are one marker with a count, and a chart keeps the newest
+// MAX_MARKERS. A figure desk does not have is null with a reason (`reasons`), never 0.
 import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { localDay } from './desk-env.mjs';
-import { DECISION_RULE, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
+import { monthOf, weekStart } from './day-keys.mjs';
+import { DECISION_RULE, KEPT_STATES as KEPT, OFF_STATES, REGISTRY, TESTING_STATES, isValued } from './lever-registry.mjs';
 import { writeTextAtomic } from './dir-lock.mjs';
 
-export const SLICES_DIR = 'view';
-export const MAX_MARKERS = 5;
+const SLICES_DIR = 'view';
+const MAX_MARKERS = 5;
 // The change kinds a chart marks as "a lever changed": a lever's state or share moving.
 const LEVER_KINDS = Object.freeze(['transition', 'trip', 'override', 'freeze', 'thaw', 'pair', 'ramp']);
-const OFF = Object.freeze(['reverted', 'frozen']);
-const TESTING = 'trial';
 const LAST_CHANGES = 5;
+
+// `o` with a `reasons` entry, `why`, for each of `keys` that is null: a figure desk does not have.
+function withReasons(o, keys, why) {
+  const missing = keys.filter((k) => o[k] == null);
+  return missing.length ? { ...o, reasons: { ...o.reasons, ...Object.fromEntries(missing.map((k) => [k, why])) } } : o;
+}
 
 // The age of every input, as build.json records it.
 export function inputsOf(view) {
@@ -36,18 +41,18 @@ const panelHead = (p) => ({ state: p.state, ...(p.errors ? { errors: p.errors } 
 
 // ---- markers ---------------------------------------------------------------------------------------
 const dayKey = (iso, tz) => localDay(Date.parse(iso), tz);
-const keyMs = (k) => Date.parse(`${k}T00:00:00Z`);
-const weekOf = (k) => new Date(keyMs(k) - ((new Date(keyMs(k)).getUTCDay() + 6) % 7) * 86_400_000).toISOString().slice(0, 10);
+// Each range's point key, from the same helpers levers-view.mjs keys the points by.
 const RANGES = Object.freeze({
   daily: { key: 'date', of: (k) => k },
-  weekly: { key: 'week', of: weekOf },
-  monthly: { key: 'month', of: (k) => k.slice(0, 7) },
+  weekly: { key: 'week', of: weekStart },
+  monthly: { key: 'month', of: monthOf },
 });
 
-// What a marker says of one change: a lever's, from the view's change list, or a Claude Code update
-// from its change log.
-const leverItem = (e) => ({ at: e.at, kind: e.kind, lever: e.lever, repo: e.repo, from: e.from, to: e.to, wording: e.wording ?? null });
-const claudeItem = (e) => ({ at: e.at, kind: 'claude', repo: e.repo, from: e.from ?? null, to: e.to ?? null });
+const pick = (o, keys) => (o == null ? null : Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]])));
+// What a marker says of one change: a lever's, from the view's change list, or a change-log entry (a
+// Claude Code update, a worker-facing PR, a settings change).
+const leverItem = (e) => ({ at: e.at, kind: e.kind, lever: e.lever, ...(e.levers ? { levers: e.levers } : {}), repo: e.repo, from: e.from, to: e.to, wording: e.wording ?? null });
+const logItem = (e) => pick(e, ['at', 'kind', 'repo', 'from', 'to', 'pr', 'ticket', 'title', 'row']);
 
 // The changes a chart's points cover, one marker per point holding any, newest MAX_MARKERS kept, oldest
 // first: [{ <date|week|month>, count, at, kinds, items }] with `items` newest first, at most
@@ -71,12 +76,12 @@ function markersOf(changes, keys, range, tz) {
 }
 
 // Each range's markers for charts drawn from `metric`'s points: the 30 days mark lever changes and
-// Claude Code updates, the weeks and months lever changes only.
+// every change-log entry, the weeks and months lever changes only.
 function chartMarkers(view, metric) {
   const lever = (view.panels.changes.all ?? []).filter((e) => LEVER_KINDS.includes(e.kind)).map(leverItem);
-  const claude = (view.panels.change_log.entries ?? []).filter((e) => e.kind === 'claude').map(claudeItem);
+  const log = (view.panels.change_log.entries ?? []).map(logItem);
   const out = { markers: {}, markers_left_out: {} };
-  for (const [range, changes] of [['daily', [...lever, ...claude]], ['weekly', lever], ['monthly', lever]]) {
+  for (const [range, changes] of [['daily', [...lever, ...log]], ['weekly', lever], ['monthly', lever]]) {
     const { markers, left_out } = markersOf(changes, metric[range].map((p) => p[RANGES[range].key]), range, view.tz);
     out.markers[range] = markers;
     out.markers_left_out[range] = left_out;
@@ -110,14 +115,15 @@ function problemsOf(view) {
 
 // What the overview leads with: the lever nearest a decision (the largest share of its minimum in the
 // smaller arm), how many levers are being tested, kept, turned off by desk and on by hand, and every
-// problem, the first as `problem`.
+// problem, the first as `problem`. A repo not enrolled is left out, as the levers slice leaves it out.
 export function verdictOf(view) {
-  const cells = (view.panels.board.levers ?? []).flatMap((l) => l.cells.map((c) => ({ ...c, lever: l.lever })));
-  const lead = cells.filter((c) => c.state === TESTING && c.sample?.n != null && c.sample.min)
+  const cells = enrolledCells(view, (view.panels.board.levers ?? []).flatMap((l) => l.cells.map((c) => ({ ...c, lever: l.lever }))));
+  const testingCell = (c) => TESTING_STATES.includes(c.state);
+  const lead = cells.filter((c) => testingCell(c) && c.sample?.n != null && c.sample.min)
     .sort((a, b) => b.sample.n / b.sample.min - a.sample.n / a.sample.min || b.sample.n - a.sample.n || (a.lever < b.lever ? -1 : 1))[0] ?? null;
   const problems = problemsOf(view);
-  const testing = leversIn(cells, (c) => c.state === TESTING);
-  const reverted = leversIn(cells, (c) => OFF.includes(c.state));
+  const testing = leversIn(cells, testingCell);
+  const reverted = leversIn(cells, (c) => OFF_STATES.includes(c.state));
   return {
     state: view.line.state,
     lead: lead ? { lever: lead.lever, repo: lead.repo, n: lead.sample.n, min: lead.sample.min, on: lead.sample.on, off: lead.sample.off, ready: lead.sample.n >= lead.sample.min, next: lead.next ?? null } : null,
@@ -130,7 +136,8 @@ export function verdictOf(view) {
 
 // ---- the change log, for the overview's last five -------------------------------------------------------
 const NO_COST = 'no merged ticket with its cost recorded';
-const side = (s) => (s == null ? null : { ...s, ...(s.median_usd == null ? { median_usd_reason: NO_COST } : {}) });
+const NO_AUDIT = 'no PR of these tickets audited';
+const side = (s) => (s == null ? null : withReasons(withReasons(s, ['median_usd'], NO_COST), ['p0', 'p1', 'p2'], NO_AUDIT));
 const changeEntry = ({ before, after, paths, ...e }) => ({ ...e, files: paths?.length ?? null, before: side(before), after: side(after) });
 
 // ---- repos not enrolled ------------------------------------------------------------------------------
@@ -142,16 +149,18 @@ const enrolledCells = (view, cells) => {
 };
 
 // A lever cell as the levers table shows it: its state, on and off counts and minimum, and the result
-// so far in words.
-const pick = (o, keys) => (o == null ? null : Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]])));
+// so far in words. A count the evaluation did not record is null with a reason.
+const NOT_COUNTED = 'not recorded by the latest evaluation';
+const COUNTS = ['on', 'off', 'n', 'min'];
 function tableCell(c) {
-  return {
+  const cell = {
     ...pick(c, ['repo', 'state', 'status', 'why', 'note', 'stale', 'turned_off_at', 'as_of', 'decision', 'reason', 'next', 'guardrail_chip']),
-    ...(c.sample ? { on: c.sample.on, off: c.sample.off, n: c.sample.n, min: c.sample.min } : {}),
+    ...(c.sample ? pick(c.sample, COUNTS) : {}),
     ...(c.effect ? { effect: pick(c.effect, ['metric', 'unit', 'est', 'lo90', 'hi90', 'verdict', 'label']) } : {}),
     ...(c.cost ? { cost: pick(c.cost, ['ratio', 'lo90', 'hi90', 'margin', 'verdict', 'label', 'saving_usd']) } : {}),
     ...(c.error ? { error: c.error } : {}),
   };
+  return c.sample ? withReasons(cell, COUNTS, NOT_COUNTED) : cell;
 }
 
 // ---- the slices --------------------------------------------------------------------------------------
@@ -190,7 +199,7 @@ export function leverSlice(view, lever) {
     lever, layer: reg?.layer ?? l?.layer ?? null, min: DECISION_RULE.min_per_arm[reg?.layer] ?? null, baseline: reg && isValued(reg) ? reg.baseline : null,
     board: { ...panelHead(board), age: board.age, pooled_age: board.pooled_age },
     not_enrolled: notEnrolled(view), cells,
-    evidence: cells.filter((c) => c.sample).map((c) => ({ repo: c.repo, on: c.sample.on, off: c.sample.off, pooled_on: c.sample.pooled_on, pooled_off: c.sample.pooled_off, min: c.sample.min })),
+    evidence: cells.filter((c) => c.sample).map((c) => withReasons({ repo: c.repo, on: c.sample.on, off: c.sample.off, pooled_on: c.sample.pooled_on, pooled_off: c.sample.pooled_off, min: c.sample.min }, ['on', 'off', 'pooled_on', 'pooled_off', 'min'], NOT_COUNTED)),
     guardrails: (view.panels.guardrails.rows ?? []).filter((g) => g.lever === lever),
     changes: (view.panels.changes.all ?? []).filter(mine),
     waiting: (view.panels.waiting.items ?? []).filter((i) => i.kind === 'lever' && i.lever === lever),
@@ -206,7 +215,7 @@ export function trendsSlice(view) {
 }
 
 // Every slice of `view`, by file name.
-export function slicesOf(view) {
+function slicesOf(view) {
   const levers = (view.panels.board.levers ?? []).map((l) => l.lever);
   return {
     'overview.json': overviewSlice(view), 'levers.json': leversSlice(view), 'trends.json': trendsSlice(view),

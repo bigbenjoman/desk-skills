@@ -16,6 +16,9 @@ import { ALIAS, ROWS } from './config-schema.mjs';
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 // The evaluation states in which a lever has been kept.
 export const KEPT_STATES = Object.freeze(['adopted', 'settled']);
+// The states in which a lever is being tested, and those in which desk has turned it off.
+export const TESTING_STATES = Object.freeze(['trial']);
+export const OFF_STATES = Object.freeze(['reverted', 'frozen']);
 
 // The epic's decision rule, shared by every lever: an adopt needs the mechanism metric better by at
 // least the lever's minimum with this probability, the cost ratio's upper bound below `cost_ratio_max`,

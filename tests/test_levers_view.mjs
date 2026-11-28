@@ -513,7 +513,7 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
   t('AC14 a build that ran has let go of the lock before it returns', j([existsSync(join(out, 'view.json')), existsSync(V.buildLock(out))]), j([true, false]));
 }
 
-// DS-1068: one small slice per Levers page.
+// One small slice per Levers page.
 {
   const { readdirSync, statSync, existsSync } = await import('node:fs');
   const S = await import('../desk/bin/levers-slices.mjs');
@@ -564,6 +564,13 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     t('DS-1068 AC6 the months too', S.trendsSlice(v).metrics.cost.markers.monthly.map((x) => `${x.month}:${x.count}:${x.kinds.join('+')}`).join(), '2026-10:2:transition+trip,2026-11:6:transition');
     t('DS-1068 AC2 the overview chart carries the same markers', j(S.overviewSlice(v).chart.markers), j(m.markers));
   }
+  {
+    const pr = { kind: 'pr', at: iso(2 * DAY), pr: 9, ticket: 'DS-9', title: 'x', sha: 'a', paths: [] };
+    const cfg = { kind: 'config', at: iso(3 * DAY), row: 'Worker models', from: [], to: ['opus'] };
+    const mk = S.trendsSlice(view(machine({ files: evidence(DS, [row('DS-1', 3)]) }), { changeLogs: logs([pr, cfg]) })).metrics.cost.markers;
+    t('DS-1068 AC2 the 30 days mark worker-facing PRs and settings changes too', mk.daily.map((x) => `${x.date}:${x.kinds.join()}`).join(), '2026-11-12:config,2026-11-13:pr');
+    t('DS-1068 AC6 but the weeks do not', mk.weekly.length, 0);
+  }
 
   // AC3: the verdict names the lever nearest a decision, counts the reverted ones and never hides a
   // metric over its limit.
@@ -581,6 +588,10 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     const b = S.verdictOf(view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers', { guardrails: g })]) } })));
     t('DS-1068 AC3 a breached guardrail is a problem too', j([b.problem?.kind, b.problem?.lever]), '["guardrail","wrappers"]');
     t('DS-1068 AC3 nothing over its limit, no problem', S.verdictOf(view(machine({ files: evidence(DS, rows.map((r) => ({ ...r, fix_tries: 0 }))) }))).problem, null);
+    const AI = 'acme__ai-agents';
+    const old = view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${AI}/lever-evals.jsonl`]: jsonl([{ ...evalRow('memory', { on: 29, off: 29 }), repo: AI }]) } }));
+    const ov = S.verdictOf(old);
+    t('DS-1068 AC3 a repo not enrolled never leads the verdict', j([old.panels.board.levers.find((l) => l.lever === 'memory').cells.some((c) => c.repo === 'ai-agents' && c.state === 'trial'), ov.lead.lever, ov.testing]), '[true,"wrappers",2]');
   }
 
   // AC4: each lever's on and off counts per repo and its minimum; a repo not enrolled is listed once.
@@ -593,6 +604,17 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     t('DS-1068 AC4 a lever carries its minimum and each repo its on and off counts', j([wr.min, wr.cells[0].on, wr.cells[0].off, wr.cells[0].min]), '[30,25,22,30]');
     const one = S.leverSlice(v, 'wrappers');
     t('DS-1068 AC4 the lever page has the same counts and the repos not enrolled', j([one.evidence[0].on, one.evidence[0].off, one.not_enrolled.length, one.min]), '[25,22,3,30]');
+    v.panels.board.levers.find((l) => l.lever === 'wrappers').cells.find((c) => c.repo === 'desk-skills').sample.on = null;
+    const blank = S.leversSlice(v).levers.find((l) => l.lever === 'wrappers').cells[0];
+    t('DS-1068 AC7 a count the evaluation did not record is null with a reason', j([blank.on, blank.reasons?.on, blank.reasons?.off]), '[null,"not recorded by the latest evaluation",null]');
+    t('DS-1068 AC7 and on the lever page too', S.leverSlice(v, 'wrappers').evidence[0].reasons?.on, 'not recorded by the latest evaluation');
+  }
+
+  // A pair trial's change is in both its levers' histories.
+  {
+    const pair = { v: 1, id: 'p1', at: iso(DAY), repo: DS, kind: 'pair', pair: 'memory+wrappers', levers: ['wrappers', 'memory'], trial_id: 'x', from: 'trial', to: 'reverted', actor: 'controller', reason_code: 'audit_p0' };
+    const v = view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl([pair]) } }));
+    t('DS-1068 a pair change is on each of its levers', ['memory', 'wrappers', 'codex'].map((l) => S.leverSlice(v, l).changes.filter((e) => e.kind === 'pair').length).join(), '1,1,0');
   }
 
   // AC5 and AC7: daily, weekly and monthly points; before data starts, null with a reason, never 0.
@@ -609,7 +631,12 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
     const side = (median_usd) => ({ accepted: 3, costed: median_usd == null ? 0 : 3, median_usd, audited: 0, p0: null, p1: null, p2: null });
     const e = { kind: 'pr', at: iso(DAY), pr: 7, ticket: 'DS-7', title: 'x', sha: 'abc', paths: ['skills/a.md'], before: side(null), after: side(12.5) };
     const o = S.overviewSlice(view(machine(), { changeLogs: logs([e]) })).change_log.entries[0];
-    t('DS-1068 AC7 a change with no cost recorded before it is null with a reason', j([o.before.median_usd, o.before.median_usd_reason, o.after.median_usd_reason]), '[null,"no merged ticket with its cost recorded",null]');
+    t('DS-1068 AC7 a change with no cost recorded before it is null with a reason', j([o.before.median_usd, o.before.reasons?.median_usd, o.after.reasons?.median_usd ?? null]), '[null,"no merged ticket with its cost recorded",null]');
+    t('DS-1068 AC7 and with no PR audited, its findings too', j([o.before.p0, o.before.reasons?.p0]), '[null,"no PR of these tickets audited"]');
+    const zero = S.trendsSlice(view(machine({ files: evidence(DS, [row('DS-1', 3, { cost: 0 }), row('DS-2', 3, { cost: 10 }), row('DS-3', 5, { cost: 0 })]) }))).metrics.cost;
+    const at = (d) => zero.daily.find((p) => p.date === d);
+    t('DS-1068 AC7 a merged ticket costing $0 is not averaged in as $0', at('2026-11-12').value, 10);
+    t('DS-1068 AC7 a day whose tickets recorded no cost says so', j(at('2026-11-10')), '{"date":"2026-11-10","value":null,"reason":"tickets merged, none with this figure recorded"}');
     t('DS-1068 AC7 a change carries its file count, not its paths', j([o.files, 'paths' in o]), '[1,false]');
   }
 

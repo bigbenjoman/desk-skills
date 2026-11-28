@@ -25,8 +25,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, isNone, leverRow, localDay, repoConfigValue, repoConfigValues, repoDirs, shownNames } from './desk-env.mjs';
-import { changeLog } from './desk-changes.mjs';
-import { REGISTRY, DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
+import { changeLog, costRecorded } from './desk-changes.mjs';
+import { DAY_MS, addDays, addMonths, monthOf, weekStart } from './day-keys.mjs';
+import { REGISTRY, DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, OFF_STATES, TESTING_STATES, decideChoices, isValued, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
@@ -46,10 +47,8 @@ export const MAX_AGE_S = Object.freeze({ supervisor: 10 * 60, health: 20 * 60, e
 // Below this many tickets per arm a point estimate is not shown, only its interval.
 export const POINT_MIN_N = 10;
 const WEEK_DAYS = 7;
-const DAY_MS = 86_400_000;
 // Events the change list shows: every automatic or manual change, not the per-ticket assignments.
 const CHANGE_KINDS = Object.freeze(['transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'pair']);
-const TESTING = Object.freeze(['trial']);
 
 export const autopilotRoot = () => join(HOME, '.desk-autopilot');
 export const leversDir = (root = autopilotRoot()) => join(root, 'levers');
@@ -222,11 +221,6 @@ export function inputFiles({ root = autopilotRoot(), configRoot = deskConfigRoot
 
 // ---- dates, in the person's own time zone ---------------------------------------------------------------
 const dayKey = localDay;
-const keyMs = (k) => Date.UTC(Number(k.slice(0, 4)), Number(k.slice(5, 7)) - 1, Number(k.slice(8, 10)));
-const addDays = (k, n) => new Date(keyMs(k) + n * DAY_MS).toISOString().slice(0, 10);
-const weekStart = (k) => addDays(k, -((new Date(keyMs(k)).getUTCDay() + 6) % 7));
-const monthOf = (k) => k.slice(0, 7);
-const addMonths = (m, n) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
 
 // ---- the per-ticket rows -----------------------------------------------------------------------------------
 // Each evidence file is one lever's evaluation: its copy of a ticket carries that lever's own fields, the
@@ -256,7 +250,7 @@ function ticketRows(repos, tz) {
 // A ticket counts unless a ticket-wide reason leaves it out; that reason includes an incomplete cost, so
 // every metric reads the same tickets.
 const counted = (r) => !r.excluded;
-const costed = (r) => counted(r) && Number.isFinite(r.cost);
+const costed = (r) => counted(r) && costRecorded(r.cost);
 // The per accepted ticket metrics read merged tickets only, the population their baseline counts;
 // an admitted ticket still in flight or never run would pull the mean down and read as a saving. Each
 // is keyed by the day its ticket merged: keyed by admission, a day's point would hold only the tickets
@@ -280,14 +274,17 @@ export const METRICS = Object.freeze({
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : round(((a - b) / b) * 100, 1));
 const val = (v) => round(v, 4);
 
-// Why a figure is null, in words: before desk's first recorded day, or a period with no tickets.
+// Why a figure is null, in words: before desk's first recorded day, a period with no tickets, or one
+// whose merged tickets none recorded what the metric reads.
 const dayLabel = (k) => new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' }).format(new Date(`${k}T12:00:00Z`));
 const noData = (first) => (first == null ? 'no data yet' : `no data before ${dayLabel(first)}`);
 const NO_TICKETS = 'no tickets merged';
+const NOT_RECORDED = 'tickets merged, none with this figure recorded';
 const NO_BASELINE = 'no baseline recorded';
 // Why a percentage change of `a` (a point) against `b` (a point, or the baseline) is null.
 const pctWhy = (a, b) => (a.value == null ? a.reason : b.value == null ? b.reason : b.value === 0 ? 'nothing to compare with: the earlier figure is 0' : null);
-// A metric's limit: the fix tries guardrail's rate ratio over the baseline, as the page judges it.
+// A metric's limit: the fix tries guardrail's rate ratio over the baseline. The page and the overview
+// verdict both judge against this one figure.
 const FIX_LIMIT = GUARDRAILS['fix-tries-parks'];
 function limitOf(metric, base) {
   if (!metric.limited) return null;
@@ -301,11 +298,13 @@ function limitOf(metric, base) {
 // each null callout.
 function trend(metric, rows, base, today, first) {
   const mine = metric.over(rows);
+  const merged = rows.filter(accepted).filter(counted);
   const at = (pred) => mine.filter((r) => pred(r.merged_day));
   const point = (pred, before) => {
     if (first == null || before < first) return { value: null, reason: noData(first) };
     const v = val(metric.of(at(pred)));
-    return v == null ? { value: null, reason: NO_TICKETS } : { value: v };
+    if (v != null) return { value: v };
+    return { value: null, reason: merged.some((r) => pred(r.merged_day)) ? NOT_RECORDED : NO_TICKETS };
   };
   const yesterday = addDays(today, -1);
   const daily = Array.from({ length: 30 }, (_, i) => addDays(yesterday, i - 29)).map((d) => ({ date: d, ...point((x) => x === d, d) }));
@@ -410,7 +409,6 @@ function mergePerLever(events, tz) {
 
 // A trip's own-step error as levers-trips.mjs writes it: "<step> exited <n>", then anything after a colon.
 const STEP_ERROR = /^(.+?) exited (\d+)(?::|$)/;
-const LEVER_OFF = Object.freeze(['reverted', 'frozen']);
 
 // What the person decides on lever needs-you item `e`, given the repo's log events `before` it and `all`
 // of them: the lever's state change that raised it where that turned the lever off (with the step and
@@ -421,7 +419,7 @@ function decisionView({ e, before, all, repo, base }) {
   const reg = REGISTRY[e.lever];
   if (!reg) return {};
   const last = before.filter((x) => isStateChange(x, e.lever)).at(-1);
-  const off = LEVER_OFF.includes(last?.to) ? last : null;
+  const off = OFF_STATES.includes(last?.to) ? last : null;
   const step = off?.kind === 'trip' ? STEP_ERROR.exec(String(off.error ?? '')) : null;
   const file = e.evidence_file ?? off?.evidence_file ?? null;
   const reverts = priorRevertsOf(all, e.lever);
@@ -611,6 +609,8 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
       eval_id: e.eval_id ?? null, evidence_file: e.evidence_file ?? null, decision_id: e.decision_id ?? null, desk_commit_range: e.desk_commit_range ?? null,
       evidence: ev ? evalEvidence(ev, DECISION_RULE.min_per_arm[REGISTRY[ev.lever]?.layer] ?? null) : null,
       ...(Array.isArray(e.missing) ? { missing: missingView(e.missing) } : {}),
+      // A pair trial's change names both its levers, so each lever's own history shows it.
+      ...(e.pair && Array.isArray(e.levers) ? { levers: [...e.levers].sort() } : {}),
     };
   }));
   const changesAll = mergePerLever(changesRaw, tz).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
@@ -663,9 +663,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 
   // The desk-q line.
   const evalCells = cells.flatMap((l) => l.cells.filter((c) => c.sample).map((c) => ({ lever: l.lever, ...c })));
-  const testing = new Set(evalCells.filter((c) => TESTING.includes(c.state)).map((c) => c.lever));
+  const testing = new Set(evalCells.filter((c) => TESTING_STATES.includes(c.state)).map((c) => c.lever));
   const kept = new Set(evalCells.filter((c) => KEPT.includes(c.state)).map((c) => c.lever));
-  const early = evalCells.filter((c) => TESTING.includes(c.state) && c.sample.n != null).sort((a, b) => a.sample.n / a.sample.min - b.sample.n / b.sample.min)[0] ?? null;
+  const early = evalCells.filter((c) => TESTING_STATES.includes(c.state) && c.sample.n != null).sort((a, b) => a.sample.n / a.sample.min - b.sample.n / b.sample.min)[0] ?? null;
   const lineErrors = errs(repos.map((r) => r.evals), repos.map((r) => r.log), repos.map((r) => r.configRead), baseRead, rowErrors.map((error) => ({ error })));
   const common = { on_auto: status.on_auto, repos: repos.length, pinned: pinnedList };
   const vsBefore = metrics.cost.callouts.last_week_vs_before_pct;
@@ -674,7 +674,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   if (lineErrors.length) line = { state: 'broken', error: lineErrors[0], ...common };
   else if (!testing.size && !kept.size) line = { state: 'today', ...common, needs_you: leverItems.length };
   else if (leverItems.length) line = { state: 'needs_you', ...common, ...figures };
-  else if (!kept.size && evalCells.every((c) => !TESTING.includes(c.state) || c.sample.n == null || c.sample.n < c.sample.min)) {
+  else if (!kept.size && evalCells.every((c) => !TESTING_STATES.includes(c.state) || c.sample.n == null || c.sample.n < c.sample.min)) {
     line = { state: 'early', ...common, testing: testing.size, smaller_arm: early ? { n: early.sample.n, min: early.sample.min } : null };
   } else line = { state: 'working', ...common, ...figures };
 

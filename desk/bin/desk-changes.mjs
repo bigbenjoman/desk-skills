@@ -168,13 +168,17 @@ export function claudeEntries({ records, since = -Infinity }) {
 // ---- before and after -----------------------------------------------------------------------------
 const round = (v, dp) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 10 ** dp) / 10 ** dp);
 
+// Whether a ticket's cost is a figure desk has: a merged ticket costing $0 recorded no runs at all, so
+// its cost is unknown, not nothing. Every per-ticket dollar figure (here and levers-view.mjs's trends)
+// counts the tickets this passes.
+export const costRecorded = (cost) => Number.isFinite(cost) && cost > 0;
+
 // The tickets merged in [from, to) (epoch ms): the median $ per accepted ticket over those whose cost is
 // fully recorded and above 0, and the blind audit's P0, P1 and P2 per audited PR over the audits of those tickets.
 // `tickets` are phase0-report.mjs per-ticket rows, `audits` audit.jsonl rows.
 export function sideOf({ tickets, audits, from, to }) {
   const merged = tickets.filter((t) => { const m = Date.parse(t.merged_at); return m >= from && m < to; });
-  // A merged ticket costing $0 recorded no runs at all: its cost is unknown, not nothing.
-  const costed = merged.filter((t) => t.cost_complete && Number.isFinite(t.cost) && t.cost > 0);
+  const costed = merged.filter((t) => t.cost_complete && costRecorded(t.cost));
   const keys = new Set(merged.map((t) => t.key));
   const audited = audits.filter((a) => keys.has(a.ticket) && !a.findings_missing && ['p0', 'p1', 'p2'].every((k) => Number.isFinite(a[k])));
   const per = (k) => (audited.length ? round(audited.reduce((n, a) => n + a[k], 0) / audited.length, 2) : null);
