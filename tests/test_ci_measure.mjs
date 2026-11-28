@@ -1,7 +1,7 @@
 // suite: desk-ci measure (minutes, red rate, round trips, call budget)
 // layer: L1
-// desk-ci.mjs measure on fixture runs, jobs and pull requests: each job rounds up to the minute and a
-// hosted one stops at 6 h, red rate, round trips and time to green read a PR's pushes and re-runs,
+// desk-ci.mjs measure on fixture runs, jobs and pull requests: each hosted job rounds up to the minute
+// and stops at 6 h while a self-hosted one counts to the second, red rate, round trips and time to green read a PR's pushes and re-runs,
 // sampled jobs scale back up within their month, and the API collector stays inside its call budget
 // and the rate limit's reserve.
 import { writeFileSync, rmSync } from 'node:fs';
@@ -61,7 +61,7 @@ const ci = m.workflows.find((w) => w.workflow === 'CI');
 
 t('a run still in progress is left out', m.runs.completed, 5);
 t('billed minutes round up per job, macOS at ×10', m.totals.billed, 21);
-t('self-hosted minutes are counted apart', m.totals.self, 4);
+t('self-hosted minutes are counted apart, to the second', Math.round(m.totals.self * 100) / 100, 3.33);
 t('a re-run counts both attempts', ci.attempts, 5);
 t('failure rate is over attempts', Math.round(ci.failureRate * 1000) / 10, 40);
 t('first failing job is the earliest red job', JSON.stringify(ci.firstFailing), '{"test":1,"build":1}');
@@ -78,7 +78,7 @@ t('hosted queue time median', m.queue.hosted.median, 20);
 t('self-hosted queue time', m.queue.self.median, 300);
 const sep = m.months.find((x) => x.month === '2026-09');
 t('merged PRs by month', `${sep.merged} ${m.months.find((x) => x.month === '2026-10').merged}`, '2 1');
-t('minutes per merged PR', sep.perMerged, 12.5);
+t('minutes per merged PR', Math.round(sep.perMerged * 100) / 100, 12.17);
 
 // A PR whose last push stays red is unresolved.
 const red = measure({ runs: [runs[1]], jobs: new Map([[2, jobs.get(2)]]), prs, since: '2026-07-20', until: '2026-10-17' });
@@ -152,6 +152,23 @@ t('the capped job is listed', JSON.stringify(stuck.capped.map((x) => [x.workflow
 const cappedReport = report(stuck, { repo: 'o/r', calls: 1, allowance: 1, budget: 1, reserve: 1, rate: { remaining: 1, limit: 1 }, notes: [] }, 'now');
 t('the report lists it under Capped jobs', /## Capped jobs[\s\S]*\| Deploy Storybook \| deploy \| 40 \| 1 \| 4,138 \| 360 \|/.test(cappedReport), true);
 t('a macOS job over 6 h is capped before the multiplier', jobMinutes(job(T5, { name: 'm', start: 0, end: 30000, labels: ['macos-14'] })), 360);
+
+// ---- a self-hosted (EC2) job counts by the second; a hosted one still bills whole minutes
+// Each job below runs 2 min 10 s.
+const TSEC = '2026-09-29T10:00:00Z';
+const SELF = { labels: ['self-hosted', 'arm64'], runner_group_name: 'Default' };
+const secs130 = measure({ runs: [run({ id: 50, name: 'AWS', head_sha: 'w', head_branch: 'main', event: 'push', conclusion: 'success', created_at: TSEC, updated_at: iso(TSEC, 130) }),
+  run({ id: 51, name: 'Mac', head_sha: 'w', head_branch: 'main', event: 'push', conclusion: 'success', created_at: TSEC, updated_at: iso(TSEC, 130) })],
+prs: [], since: '2026-07-20', until: '2026-10-17', jobs: new Map([
+  [50, [job(TSEC, { name: 'test', conclusion: 'success', start: 0, end: 130, ...SELF })]],
+  [51, [job(TSEC, { name: 'test', conclusion: 'success', start: 0, end: 130, labels: ['macos-14'] })]]]) });
+t('a self-hosted job of 2 min 10 s counts 2.17 minutes, not 3', Math.round(jobMinutes(job(TSEC, { start: 0, end: 130, ...SELF })) * 100) / 100, 2.17);
+t('and the measure totals it to the second', Math.round(secs130.totals.self * 100) / 100, 2.17);
+t('a hosted job of 2 min 10 s still bills 3 minutes', jobMinutes(job(TSEC, { start: 0, end: 130 })), 3);
+t('times the OS multiplier', secs130.totals.billed, 30);
+const secsReport = report(secs130, { repo: 'o/r', calls: 1, allowance: 1, budget: 1, reserve: 1, rate: { remaining: 1, limit: 1 }, notes: [] }, 'now');
+t('the report gives self-hosted minutes to two decimals', /^- self-hosted minutes: 2\.17, each job to the second$/m.test(secsReport), true);
+t('the billed line ends with the included-minutes note', /^- billed minutes: 30,.* \(counts against the account's included minutes, shared by every private repo on it\)$/m.test(secsReport), true);
 
 // ---- months: each month's minutes come from that month's own runs
 // One workflow over three months whose runs take 10, 2 and 6 minutes. A sample of one run per
