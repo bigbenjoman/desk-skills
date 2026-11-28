@@ -80,7 +80,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel, readUseFile, useIsThisMonth } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY, ranInCloud } from './cloud-worker.mjs';
+import { CLOUD_COST_UNKNOWN, CLOUD_COST_WHY, ranInCloud, readEnded, CLOUD_END_WATCH_MS } from './cloud-worker.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount, followCheckText } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
@@ -1934,7 +1934,7 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, use: useRead = readUseFile(), subs = readSubscriptions(subscriptionsPath()) } = {}) {
   const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const use = useThisMonth(useRead, now);
-  const subsBlock = [...subscriptionLines(repos, { use, subs, width }), ...cloudCostLines(repos, width)];
+  const subsBlock = [...subscriptionLines(repos, { use, subs, width }), ...cloudCostLines(repos, width), ...cloudEndedLines(repos, width, now)];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot: [...useOnlyLines(repos, use, width), ...subsBlock, ...foot] };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
@@ -2017,6 +2017,26 @@ function cloudCostLines(repos, width) {
   return ['', bold(`  ${pad('CLOUD WORKER', nw)}${pad('COST', cw)}SESSION`),
     ...rows.map((x) => segLine(fitRuns([[`  ${pad(x.name, nw)}`, null], [pad(CLOUD_COST_UNKNOWN, cw), GREY], [x.url, null]], width))),
     '', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)];
+}
+// The cloud sessions the pass ended (cloud-worker.mjs readEnded) within CLOUD_END_WATCH_MS, once per
+// repo, newest first: `ended`, `end failed`, or `pushed after` where its branch moved since, which two
+// needs-you asks the person to archive.
+const CLOUD_END_STATES = ['ended', 'end failed', 'pushed after'];
+const cloudEnded = (repos, now = Date.now()) => {
+  const seen = new Set();
+  return (repos ?? []).filter((r) => !r.error && r.stateDir && !seen.has(r.slug) && seen.add(r.slug))
+    .flatMap((r) => [...readEnded(r.stateDir).values()].filter((e) => now - (Date.parse(e.at) || 0) <= CLOUD_END_WATCH_MS)
+      .map((e) => ({ repo: r.repo ?? r.name, key: e.key, url: e.url ?? null, at: e.at, via: e.via ?? null, state: e.error ? 'end failed' : e.pushed_at ? 'pushed after' : 'ended' })))
+    .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
+};
+function cloudEndedLines(repos, width, now = Date.now()) {
+  const rows = cloudEnded(repos, now).map((x) => ({ ...x, name: `${x.repo} ${x.key}`, when: String(x.at ?? '').slice(0, 16).replace('T', ' ') }));
+  if (!rows.length) return [];
+  const nw = Math.max(14, ...rows.map((x) => x.name.length + 1));
+  const sw = Math.max(...CLOUD_END_STATES.map((s) => s.length)) + 2;
+  const ww = 'YYYY-MM-DD HH:MM'.length + 2;
+  return ['', bold(`  ${pad('CLOUD SESSION', nw)}${pad('STATE', sw)}${pad('ENDED (UTC)', ww)}SESSION`),
+    ...rows.map((x) => segLine(fitRuns([[`  ${pad(x.name, nw)}`, null], [pad(x.state, sw), x.state === 'ended' ? GREY : WARN], [pad(x.when, ww), GREY], [x.url ?? 'its session URL was not recorded', null]], width)))];
 }
 // One monthly line per Claude and Codex login: its fee and plan as subscriptions.md records them, or
 // that none is, then the repos it ran this month, which share the fee. Shown once any login has a fee
@@ -4711,7 +4731,7 @@ export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsP
     : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
   const use = v.name !== undefined ? null : useThisMonth(readUseFile(), now);
   const fees = v.name !== undefined ? null : readSubscriptions(subscriptionsPath()).logins.map((l) => ({ tool: l.tool, name: l.name, plan: l.fee?.plan ?? null, usd: l.fee?.usd ?? null }));
-  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees, cloud: cloudCosts(repos) }) }, parts);
+  return envelope('costs', now, inputs, { name: v.name ?? null, charges, ...(v.name !== undefined ? {} : { listPrice: use && { period: use.period, repos: use.repos, other: use.other, unpriced: use.unpriced }, fees, cloud: cloudCosts(repos), cloudEnded: cloudEnded(repos, now) }) }, parts);
 }
 
 const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';

@@ -389,6 +389,36 @@ node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.str
 printf '%s\n' '{"baseRefName":"main","headRefName":"pat/cw-11","author":{"login":"pat"},"body":"Done.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)","commits":[],"comments":[]}' > "$T/cloud-view.json"
 out=$(DESK_CONFIG="$T/config-ai.md" node "$B/pass.mjs" 2>&1)
 check "issue-1569 a teammate's PR keeps the ticket on its own branch where config §3 grants neither row too" '[ "$(field CW-11 state)" = "\"parked\"" ] && [ "$(field CW-11 branch)" = "\"feat/CW-11\"" ] && field CW-11 park.question | grep -q "The pass will not rewrite or edit it: it is on pat/cw-11" && ! field CW-11 park.question | grep -q "may not remove it"'
+# issue-1621: once a cloud ticket's PR merges, the pass ends its session with the closing follow-up and
+# records it ended with its branch's head on origin; a push past that head is recorded, and a failed
+# end is recorded with why and not retried.
+# The sessions recorded archived above are set aside, as this session id is among them, and put back after.
+CW_ARCH=$(cat "$T/state-cl/cloud-archived.json" 2>/dev/null || echo '{}')
+rm -f "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-send-fail" "$T/state-cl/cloud-archived.json"
+git clone -q "$T/origin.git" "$T/cw30"; git -C "$T/cw30" checkout -q -b feat/CW-30
+git -C "$T/cw30" commit -q --allow-empty -m one; git -C "$T/cw30" push -q origin feat/CW-30; CW30_HEAD=$(git -C "$T/cw30" rev-parse HEAD)
+CW_MERGED=$(node -e 'console.log(new Date(Date.now() - 3600e3).toISOString())')
+q add CW-30; q set CW-30 state=done location=cloud branch=feat/CW-30 result.pr=70 "merged_at=$CW_MERGED" \
+  'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","url":"https://claude.ai/code/session_cw30","name":"widgets-ticket-CW-30","started":"2026-11-20T09:00:00Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1621 AC1 a done cloud ticket's session is sent the closing follow-up" '[ "$(cut -d"|" -f1 "$T/cloud-sent")" = "session_01Vy49H7Z4T3CSgAhSxsuhqj" ] && grep -qxF "The ticket is finished: stop, make no more commits or pushes" "$T/cloud-sent-msg" && echo "$out" | grep -qF "CW-30: cloud session https://claude.ai/code/session_cw30 ended, sent the closing follow-up; a push to feat/CW-30 after it goes on needs-you"'
+check "issue-1621 AC1 and recorded ended, with its branch's head on origin then" 'jq -e --arg h "$CW30_HEAD" ".ended | map(select(.key == \"CW-30\")) | length == 1 and .[0].head == \$h and .[0].via == \"follow-up\" and .[0].branch == \"feat/CW-30\" and (.[0] | has(\"error\") | not)" "$T/state-cl/cloud-archived.json" >/dev/null'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1621 a later pass with nothing pushed sends nothing more and records no push" '[ "$(wc -l < "$T/cloud-sent")" -eq 1 ] && jq -e ".ended[0] | has(\"pushed_at\") | not" "$T/state-cl/cloud-archived.json" >/dev/null && ! echo "$out" | grep -q "CW-30: .*after desk ended it"'
+git -C "$T/cw30" commit -q --allow-empty -m two; git -C "$T/cw30" push -q origin feat/CW-30; CW30_NEW=$(git -C "$T/cw30" rev-parse HEAD)
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1621 AC4 a session that pushes after it is ended is recorded, and said" 'jq -e --arg h "$CW30_NEW" ".ended | map(select(.key == \"CW-30\")) | .[0].pushed_head == \$h and .[0].pushed_at != null" "$T/state-cl/cloud-archived.json" >/dev/null && echo "$out" | grep -qF "CW-30: cloud session https://claude.ai/code/session_cw30 pushed feat/CW-30 to ${CW30_NEW:0:7} after desk ended it" && [ "$(wc -l < "$T/cloud-sent")" -eq 1 ]'
+: > "$T/cloud-send-fail"
+q add CW-31; q set CW-31 state=done location=cloud branch=feat/CW-31 result.pr=71 "merged_at=$CW_MERGED" \
+  'cloud={"session":"session_cw31","url":"https://claude.ai/code/session_cw31","started":"2026-11-20T09:00:00Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1621 AC2 a closing follow-up that fails is recorded with why, and said" 'jq -e ".ended | map(select(.key == \"CW-31\")) | .[0].error | test(\"does not support\")" "$T/state-cl/cloud-archived.json" >/dev/null && echo "$out" | grep -qF "CW-31: cloud session https://claude.ai/code/session_cw31 could not be ended (the closing follow-up: Error: --cloud <session_id> does not support"'
+rm -f "$T/cloud-send-fail"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1621 a failed end is not tried again" '[ "$(grep -c "^session_cw31|" "$T/cloud-sent")" -eq 1 ]'
+# Both are taken off the finished list for what follows: recorded archived, as the person's done would.
+q set CW-30 merged_at=null; q set CW-31 merged_at=null; rm -f "$T/cloud-sent" "$T/cloud-sent-msg"; rm -rf "$T/cw30"
+echo "$CW_ARCH" | jq -c '.sessions = ((.sessions // []) + ["session_01Vy49H7Z4T3CSgAhSxsuhqj", "session_cw31"] | unique)' > "$T/state-cl/cloud-archived.json"
 git -C "$T/repo" remote remove origin; rm -rf "$T/cw8" "$T/origin.git"
 # AC5: whatever §5 says, a commit authored as anyone but the repo's author parks the ticket, naming it.
 rm -f "$T/cloud-prompt"; cloud_ticket CW-7
