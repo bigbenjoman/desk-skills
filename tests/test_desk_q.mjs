@@ -1292,6 +1292,23 @@ const nyFirst = NYs.frame().slice(3).find((l) => !l.startsWith(' ✕ ')) ?? '';
 t('DS-187 AC1 on the screen it is the first line under the tabs and bands', `${NYs.frame()[1].startsWith('1 Queue')} ${nyFirst.startsWith('◆ ')} ${nyFirst === unbanded(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
 NYs.ui.finish(0);
 
+// issue-1687 AC1: follow steps (checks after merge) are counted apart from what needs the person: the
+// headline adds "· N checks after merge", and NEEDS YOU counts only the parked ticket.
+{
+  const merged1687 = (pr, step) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, follow_on: [{ step, row: null }] });
+  const F = world({ voicepa: null, 'pr-ninja': null, pranicuk: null, 'desk-skills': null, followq: { port: 3700, conc: '2 / 3', beat: 1, perms: { 'autopilot-merge': 'yes' }, queue: { batch: 'fq', concurrency: 2, tickets: {
+    'FQ-1': { state: 'parked', park: { question: 'which copy?' } },
+    'FQ-2': merged1687(71, 'check the invoice totals'), 'FQ-3': merged1687(72, 'check the export opens'),
+  } } } });
+  const ov1687 = unbanded(F.run('--plain').out);
+  t('issue-1687 AC1 the overview headline counts the checks after merge apart from what needs you', ov1687[0], '◆ 1 ticket needs you · 2 checks after merge │ followq 1');
+  t('issue-1687 AC1 NEEDS YOU counts only the parked ticket', (rowOf(ov1687.join('\n'), 'followq') ?? '').trim().split(/\s+/).slice(6, 12).join(' ').includes(' 1 '), true);
+  const q1687 = lines(F.run('--plain', 'followq').out);
+  t('issue-1687 AC1 the repo\'s counts line too', q1687[1], '◆ 1 ticket needs you · 2 checks after merge │ ✓ 2 done, not shown');
+  t('issue-1687 AC1 the follow steps are listed under Checks after merge, after Needs you',
+    `${q1687.findIndex((l) => /^ {2}Needs you · 1$/.test(l)) < q1687.findIndex((l) => /^ {2}Checks after merge · 2$/.test(l))} ${q1687.filter((l) => /▹ check/.test(l)).length}`, 'true 3');
+}
+
 // mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
 dated('mixed', 4830, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: {
   'M-1': { state: 'parked', park: { question: 'which copy?' } }, 'M-2': { ...ready, branch: 'feat/M-2-x', collides_with: 'M-5' },
