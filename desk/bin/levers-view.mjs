@@ -46,7 +46,7 @@ export const MAX_AGE_S = Object.freeze({ supervisor: 10 * 60, health: 20 * 60, e
 // Below this many tickets per arm a point estimate is not shown, only its interval.
 export const POINT_MIN_N = 10;
 // How far, in percent, time per ticket must move from before levers for the verdict to name it.
-export const TIME_NAMED_PCT = 1;
+const TIME_NAMED_PCT = 1;
 const WEEK_DAYS = 7;
 const DAY_MS = 86_400_000;
 // Events the change list shows: every automatic or manual change, not the per-ticket assignments.

@@ -336,7 +336,7 @@ function summary(v) {
     const time = named ? `finished <b>${Math.abs(l.faster_pct).toFixed(1)}% ${l.time}</b>` : '';
     const cost = pct == null
       ? (named ? `Last week a ticket ${time} than before levers. ` : '')
-      : `Last week a ticket cost <b>${Math.abs(pct).toFixed(1)}% ${pct >= 0 ? 'less' : 'more'}</b>${named ? ` and ${time}` : ''} than before levers${breached ? ', and a guardrail has been breached' : ', and nothing has got worse'}. `;
+      : `Last week a ticket cost <b>${Math.abs(pct).toFixed(1)}% ${pct >= 0 ? 'less' : 'more'}</b>${named ? ` and ${time}` : ''} than before levers${breached ? ', and a guardrail has been breached' : l.time === 'slower' ? '' : ', and nothing has got worse'}. `;
     body = `${cost}${l.kept} kept, ${l.testing} still being tested${needsText ? `, and ${needsText}` : ''}.`;
   }
   return `<p class="lede"><b>${lead}</b> ${body}</p>`;

@@ -548,7 +548,9 @@ export function decide({ state, n, minN, maxN, mechanism, cost, time = null, gua
   else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability${probability !== DECISION_RULE.probability ? `, under the ${Math.round(probability * 1000) / 10}% each of its values needs` : ''}`);
   if (!(Number.isFinite(cost.hi90) && cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
   // Kept only if no slower: a cheaper lever that cannot rule out slower tickets holds.
+  const timedSmaller = time ? Math.min(time.n?.on ?? 0, time.n?.off ?? 0) : 0;
   if (!time) unmet.push('time per ticket is not recorded, so desk cannot rule out slower tickets');
+  else if (timedSmaller < minN) unmet.push(`time per ticket has ${timedSmaller} of ${minN} timed tickets in the smaller arm, so desk cannot rule out slower tickets`);
   else if (!(Number.isFinite(time.hi90) && time.hi90 < R.time_ratio_max)) unmet.push(`time per ticket ratio ${x2(time.ratio)} (90%: ${x2(time.lo90)} to ${x2(time.hi90)}; median ${hrs(time.hours?.on)} on, ${hrs(time.hours?.off)} off) does not rule out ${x2(R.time_ratio_max)} slower`);
   const notOk = guardrails.filter((g) => g.status !== 'ok');
   if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${noFigure(g) ? `has ${NO_FIGURE}` : g.status}`).join(', ')}`);

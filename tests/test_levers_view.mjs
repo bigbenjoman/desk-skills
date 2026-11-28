@@ -547,7 +547,9 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
   t('DS-1070 AC6 and the Overview says it', page.includes('cost <b>4.1% less</b> and finished <b>37.5% faster</b> than before levers'), true);
   t('DS-1070 AC8 How desk decides says kept only if cheaper and no slower', page.includes('desk keeps the lever only if those tickets cost less and are no slower, and nothing else got worse'), true);
   const slower = view(machine({ repos: autoRepos, files: { ...evidence(DS, rows), ...evals, [`${DS}/phase0-baseline-2026-11-13.txt`]: timed.replace('median 8.00', 'median 4.00') } }));
-  t('DS-1070 AC6 slower than before levers is named too', `${slower.line.time} ${renderPage(slower).includes('finished <b>25.0% slower</b>')}`, 'slower true');
+  const slowerPage = renderPage(slower);
+  t('DS-1070 AC6 slower than before levers is named too', `${slower.line.time} ${slowerPage.includes('finished <b>25.0% slower</b>')}`, 'slower true');
+  t('DS-1070 AC6 and slower is never followed by nothing has got worse', `${/finished <b>25\.0% slower<\/b> than before levers\. /.test(slowerPage)} ${slowerPage.includes('nothing has got worse')}`, 'true false');
   const same = view(machine({ repos: autoRepos, files: { ...evidence(DS, rows), ...evals, [`${DS}/phase0-baseline-2026-11-13.txt`]: timed.replace('median 8.00', 'median 5.02') } }));
   t('DS-1070 AC6 about the same is not named', `${same.line.time} ${renderPage(same).includes('finished <b>')}`, 'same false');
   const old = view(machine({ files: evidence(DS, rows) })).panels.trends.metrics.time.baseline;

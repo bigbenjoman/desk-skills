@@ -150,7 +150,7 @@ export function logFacts(text) {
 // ---- time per ticket ------------------------------------------------------------------------------
 // Hours from a ticket's first recorded worker start (each start's `at`) to its merge: null with no
 // merge, no start with a time, or a first start after the merge, never 0.
-export function hoursToMerge(starts, mergedAt) {
+function hoursToMerge(starts, mergedAt) {
   const merged = Date.parse(mergedAt ?? '');
   const ats = (starts ?? []).map((s) => Date.parse(s?.at ?? '')).filter(Number.isFinite);
   if (!Number.isFinite(merged) || !ats.length) return null;
@@ -167,7 +167,7 @@ export function timeMissing(r) {
 export const ticketHours = (r) => (timeMissing(r) ? null : hoursToMerge(r.start_records, r.merged_at));
 
 // ---- one batch -----------------------------------------------------------------------------------
-const add =(into, from) => { for (const [k, v] of Object.entries(from)) into[k] = (into[k] ?? 0) + v; };
+const add = (into, from) => { for (const [k, v] of Object.entries(from)) into[k] = (into[k] ?? 0) + v; };
 const addQuota = (into, readings) => {
   for (const e of readings) {
     const w = e.seven_day;
@@ -220,6 +220,14 @@ function ticketFacts(state, t, from, records) {
   }
   return x;
 }
+// A ticket's starts as its per-ticket row records them, from ticketFacts' session-matched starts.
+const startRecords = (x) => x.starts.map(({ sid, record: s }) => ({
+  at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
+  levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
+  lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
+}));
+// Only a live ticket goes round again: reworked is never for an archived one (batch-state.mjs).
+const liveReworked = (q, t) => Object.hasOwn(q.tickets ?? {}, t.key) && reworked(t);
 
 // One batch's figures for the window from `since` (epoch ms). `answered` is the digest's answered
 // record ({ "<slug>/<ticket>/<hash>": ISO time }). A queue that cannot be read is { unreadable }.
@@ -246,11 +254,11 @@ export function batchFigures({ queue, state, slug, since, answered = {} }) {
     for (const y of tries) add(f.repairs, { [y.kind ?? 'unknown']: 1 });
     // Per accepted ticket counts only accepted tickets' tries, as fix-tries.mjs counts a try.
     if (merged) f.fixTries += triesMade(tries);
-    // Time as the per-ticket rows read it: the ticket's starts since its admission, to its merge.
-    if (merged) {
-      const from = Date.parse(t.added_at ?? '');
-      const starts = records.filter((s) => s.ticket === t.key && !(Date.parse(s.at) < from));
-      const hours = ticketHours({ reworked: Object.hasOwn(q.tickets ?? {}, t.key) && reworked(t), merged_at: t.merged_at, start_records: starts });
+    // Time as the per-ticket rows read it (ticketRows): the session-matched starts since the ticket's
+    // admission, to its merge. A ticket with no readable admission has no row, so no time.
+    if (merged && Number.isFinite(Date.parse(t.added_at ?? ''))) {
+      const own = from === t.added_at ? x : ticketFacts(state, t, t.added_at, records);
+      const hours = ticketHours({ reworked: liveReworked(q, t), merged_at: t.merged_at, start_records: startRecords(own) });
       if (hours != null) f.accHours.push(hours);
     }
     const spent = { input: x.input, output: x.output, cost: x.cost };
@@ -367,16 +375,11 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     const size = sizeOf(state, t.key);
     const rework = ticketRework(x.logs, t, x.cost);
     const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];
-    const starts = x.starts.map(({ sid, record: s }) => ({
-      at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
-      levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
-      lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
-    }));
+    const starts = startRecords(x);
     rows.push({
       slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,
       admitted_at: t.added_at, merged_at: t.merged_at ?? null, state: t.state ?? null,
-      // Only a live ticket goes round again: reworked is never for an archived one (batch-state.mjs).
-      reworked: Object.hasOwn(q.tickets ?? {}, t.key) && reworked(t),
+      reworked: liveReworked(q, t),
       cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
       preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
       starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
