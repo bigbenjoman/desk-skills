@@ -59,6 +59,17 @@ export const openUnknowns = (unknowns, t) => {
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 
+// An undraft record of the one rerun the pass gives a draft's red checks whose failed logs name no file its
+// PR changes (fix-tries.mjs classedRerun): the `rerun`, its `wait` for the run's other jobs to finish first,
+// or the `wait` while the rerun runs (fix-tries.mjs outsideRerunWait).
+export const outsideRerunRecord = (u) => (u?.call === 'rerun' || (u?.call === 'wait' && /^checks/.test(u.why ?? ''))) && /names? no file this PR changes/.test(u.why ?? '');
+// A done ticket whose open draft holds such a record: its PR is open but nothing is done with it until
+// that rerun finishes, so the ticket waits on checks, which the queue table and desk-q both show as its state.
+export const checksRerun = (t) => {
+  const ps = prStatusOf(t);
+  return ps?.state === 'OPEN' && ps.isDraft === true && outsideRerunRecord(t.undraft);
+};
+
 // The words for a pending handoff that full slots hold, `heldBy` naming what holds them: the pass report
 // (pass/deadlines.mjs) and desk-q both say it in these words.
 export const slotWaitWords = (heldBy) => `waiting for a slot (held by ${heldBy.join(', ')})`;
@@ -318,6 +329,11 @@ export function dateHoldOf(labels) {
 // release left behind stays, so its start is not held again on that label, but never starts it.
 /** @type {(t: any) => { label: string, until?: string, bad?: boolean } | null} */
 export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label && !blockersOf(t).length ? dateHoldOf([t.held_label]) : null);
+// Held behind blockers, with none left in its held_by and no other reason to hold it (not stopped, no
+// date): nothing will ever release it but a release, so `set held_by=null` and the pass both release it.
+export const bareHold = (t) => isHeld(t) && parkKind(t) === 'hold' && !blockersOf(t).length && !dateHeld(t);
+// The words for a bare hold (bareHold) wherever one is shown.
+export const bareHoldText = (key) => `held, no blocker: release with queue.mjs set ${key} state=triaged`;
 // What the person is told about a blocked-until label whose date cannot be read.
 export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 

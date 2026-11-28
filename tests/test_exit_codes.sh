@@ -129,6 +129,10 @@ q drop T-30
 q add T-31; q set T-31 state=triaged lane=A branch=fix/T-31 open_questions=2; q hold T-31 T-1
 ans T-31 "use the helper"
 check "DS-846 AC4: a held ticket answered once keeps one open and its hold" '[ "$(oq T-31 open_questions)" = 1 ] && [ "$(oq T-31 held_by)" = T-1 ] && echo "$out" | grep -q "^T-31: answered; 1 question(s) still open.*It is held"'
+# #1681 AC2: a hold left with no blocker is answered with the release command, never "releases when ? merges".
+q set T-31 state=parked held_by=null
+ans T-31 "keep the copy"
+check "#1681 AC2: a bare hold answered says how to release it" 'echo "$out" | grep -q "^T-31: answered.*It is held, no blocker: release with queue.mjs set T-31 state=triaged\.$" && ! echo "$out" | grep -q "?"'
 q drop T-31
 q add T-32; q set T-32 state=triaged lane=A branch=fix/T-32 open_questions=0
 ans T-32 "a late note"
@@ -187,6 +191,12 @@ q drop T-5
 pj
 check "DS-332 AC3: once that blocker is dropped, its dependant is STUCK" '[ "$(js ".stuck | join(\",\")")" = T-2,T-4 ] && [ "$(js ".on_park | length")" = 0 ] && js ".waiting[]" | grep -q "^T-4: STUCK — held behind T-5"'
 q drop T-4
+# #1681 AC2: a hold whose held_by was emptied (state named, so the set released nothing) names no
+# blocker for anything to wait on: the pass releases it itself, and never reports it STUCK.
+q add T-7; q set T-7 state=triaged lane=A branch=fix/T-7; q hold T-7 T-2; q set T-7 state=parked held_by=null
+pj
+check "#1681 AC2: the pass releases a hold with no blocker left, not STUCK" '[ "$(js ".stuck | join(\",\")")" = T-2 ] && js .message | grep -q "^released: T-7, held behind no blocker" && ! js ".waiting[]" | grep -q "^T-7" && [ "$(oq T-7 state)" != parked ] && [ "$(oq T-7 park)" = null ]'
+q drop T-7
 
 # Every blocker merged and no merge driver running: the pass releases it, so it needs nobody.
 q set T-1 state=done result.pr=7
@@ -220,6 +230,8 @@ q set T-5 state=bogus;      check "queue: a bad argument exits 11"             '
 q admit T-99;               check "queue: a missing triage record exits 11, naming triage.sh" '[ $rc -eq 11 ] && echo "$out" | grep -q "run triage.sh T-99"'
 q set T-5 state=triaged lane=A; q add T-6; q set T-6 state=triaged lane=A; q hold T-6 T-5
 q requeue T-6;              check "queue: requeueing a held ticket exits 11 and says to release it" '[ $rc -eq 11 ] && echo "$out" | grep -q "release it rather than requeue it"'
+q set T-6 state=parked held_by=null
+q requeue T-6;              check "#1681 AC2: requeueing a bare hold exits 11 with the release command, never \"held behind ?\"" '[ $rc -eq 11 ] && echo "$out" | grep -q "T-6 is held, no blocker: release with queue.mjs set T-6 state=triaged, rather than requeue it" && ! echo "$out" | grep -q "held behind ?"'
 echo '{"ticket": "T-50",' > "$T/state/triage/T-50.json"
 q admit T-50;               check "queue: a corrupt triage record exits 11, naming triage.sh" '[ $rc -eq 11 ] && echo "$out" | grep -q "T-50.json is not valid JSON.*re-run triage.sh T-50" && ! echo "$out" | grep -q "^    at "'
 

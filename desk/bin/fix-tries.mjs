@@ -34,8 +34,8 @@
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, loginIn, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
-import { IDLE_RECHECK_MS } from './batch-state.mjs';
-import { normaliseLine, readError } from './evidence.mjs';
+import { IDLE_RECHECK_MS, outsideRerunRecord } from './batch-state.mjs';
+import { normaliseLine, readError, pathsIn } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
 import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, nameable, personsCall, recommendedOf, spokenFor } from './accept-gaps.mjs';
@@ -360,6 +360,37 @@ const lastLine = (s) => String(s ?? '').split('\n').filter(Boolean).at(-1) ?? ''
 // The merge driver's record that this head, merged into the base, fails §4 Merged-tree check: what git
 // and GitHub call clean, two migrations taking one revision above all. Held at a later head, it is spent.
 export const treeHeld = (t, s) => (t?.tree_check?.head && t.tree_check.head === s?.head ? t.tree_check : null);
+// A requeued ticket about to resume at Stage 7 (a handoff to it, or a parked round it resumes) whose PR
+// is in conflict with its base, or whose requeue note names a conflict, goes to a conflict fix try
+// instead (issue-1669): a Stage 7 session reads its PR as done and finishes with nothing to push, never
+// bringing the base in. An unfinished fix try keeps its own task, so it is never one of these.
+export const resumesAtSeven = (t) => !(t?.fix && !t.fix.finished) && t?.state === 'triaged'
+  && /^\s*7(?:\/9)?\b/.test(String((t?.handoff === 'pending' ? t.handoff_stage : t?.last_round?.stage) ?? ''));
+// A note that asks for the base to be brought in: names a conflict, a rebase, or merging the base in.
+// "No conflicts" names none.
+const CONFLICT_NOTE = /\bconflict(?:s|ing|ed)?\b|\brebas(?:e|ing)\b|\bmerge\s+(?:in\s+)?(?:origin\/)?(?:main|master|the base|base)\b/i;
+export const notesConflict = (notes) => (notes ?? []).some((n) => CONFLICT_NOTE.test(String(n).replace(/\bno (?:merge )?conflicts?\b/gi, '')));
+export const prInConflict = (s) => s?.mergeable === 'CONFLICTING' || s?.mergeState === 'DIRTY';
+// The park a Stage 7 session's DONE becomes when its PR is in conflict (pass/advance.mjs): the pass
+// sends a ticket parked so to the conflict fix try as it would a resume (pass.mjs).
+export const STAGE7_CONFLICT = 'CONFLICT at Stage 7 —';
+export const stageSevenConflictPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(STAGE7_CONFLICT);
+// t: the queue ticket (resumesAtSeven); s: its PR's status as readPrStatus reads it; base: the default
+// branch; files: the files the PR conflicts on, or null (pass/fix-tries.mjs decideResumeConflicts reads
+// them only for a try that goes ahead); notes: the answers
+// recorded since its last park. -> null where Stage 7 goes ahead (the PR not open, or neither in
+// conflict nor named so), else fixCall's conflict answer: a requeue with the try, or stuck once the
+// PR's conflict tries are spent; `why` says which of the two sent it, and `noted` that the note did.
+export function resumeConflict(t, s, { base, files, notes }) {
+  if (s?.state !== 'OPEN' || !s.head) return null;
+  const dirty = prInConflict(s);
+  const noted = !dirty && notesConflict(notes);
+  if (!dirty && !noted) return null;
+  const why = dirty ? `PR #${s.pr} conflicts with ${base}` : `its requeue note names a conflict with ${base}`;
+  const done = t.fix_tries ?? [];
+  if (conflictSpent(done, s.head)) return { call: 'stuck', why: `${why}, and it is ${stillInConflict(t, done, base, null)}`, noted };
+  return { ...nextConflictTry(done, s.pr, s.head, conflictTry(base, files, s.isDraft !== false, null)), why, noted };
+}
 // A merged-tree failure goes the conflict's way, as a base's does (base-fix.mjs), with the check's output.
 const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), what: `fails §4 Merged-tree check merged into ${base}`, check: { command: held.command, output: held.output } });
 
@@ -376,7 +407,7 @@ const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), wh
 export function fixCall(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const done = t.fix_tries ?? [];
-  const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
+  const dirty = prInConflict(s);
   const tree = dirty ? null : treeHeld(t, s);
   const conflict = dirty || !!tree;
   let fix, split, base, now, built = null, waiting = false;
@@ -1294,7 +1325,7 @@ export function gateTry(t, s, ctx) {
 }
 // A PR's gate, read only where it is red with nothing pending and no conflict holds it; else null.
 function readGate(s, ctx) {
-  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') return null;
+  if (prInConflict(s)) return null;
   const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   return gate.state === 'fail' && !gate.pending.length ? gate : null;
 }
@@ -1334,7 +1365,7 @@ export function draftGateTry(t, s, ctx) {
 // rerun once at its head first (classedRerun). ctx: { repo, operator, premerge (parsed), steps }, as
 // fixCall's, and classRerun { perm (§3 ci-rerun), reruns(name), rerunsOk(name), classes (the lever, on
 // unless false), changed ([path] the PR changes, or null unread) }. checks: its pr_status checks, which
-// hold each one's error lines and annotation paths.
+// hold each one's error lines, annotation paths and the paths its failed log names.
 const CLASSED = 'classed runner or resource';
 const OUTSIDE = 'its failed log names no file this PR changes';
 // Whether a check's error lines or annotation paths name a changed file: its full path, that path less
@@ -1348,11 +1379,29 @@ const GENERIC = new Set(['index', 'main', 'init', '__init__', 'setup', 'config',
   'function', 'group', 'operation']);
 const stem = (p) => String(p).split('/').pop().replace(/\.[^.]*$/, '');
 const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
+// Beyond those lines, every path the failed log names (log_paths, pass.mjs withErrors, read past the first
+// few error lines) is matched against each changed file, added, renamed or edited alike, by its file name, a
+// generic one too: the same repo path, or one ending in the other, has the same file name. A path the
+// failure itself names (on an error line, or an annotation's) also counts when it sits directly in a changed
+// file's own folder, as a suite's file sits beside the module it tests, or a repo-wide check names the
+// folder's files. Only that folder, as the repo names it or a package runner prints it: not its ancestors
+// or subfolders, and not a folder of the same name elsewhere (`packages/x/src/` for a change in `src/`); a
+// file directly in `tests/` has `tests/` as its own folder, so any failing suite there is related.
+const base = (p) => p.split('/').pop();
+const sameName = (p, ch) => base(p) === base(ch);
+const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+// A path as the repo names it, and less leading folders while two segments are left.
+const pathTails = (p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; };
+const inDir = (p, ch) => !!dirOf(ch) && pathTails(dirOf(ch)).includes(dirOf(p));
 function namesChanged(c, changed) {
-  const text = [...errorLines(c), ...(c?.error_paths ?? [])];
-  const tails = changed.flatMap((p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; });
+  const lines = errorLines(c);
+  const text = [...lines, ...(c?.error_paths ?? [])];
+  const tails = changed.flatMap(pathTails);
   const names = [...new Set(changed.map(stem))].filter((n) => n.length >= 4 && !GENERIC.has(n.toLowerCase())).map(wordIn);
-  return text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)));
+  if (text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)))) return true;
+  const failing = [...pathsIn(lines.join('\n')), ...(c?.error_paths ?? []), ...(c?.log_fail_paths ?? [])];
+  const all = [...failing, ...(c?.log_paths ?? [])];
+  return all.some((p) => changed.some((ch) => sameName(p, ch))) || failing.some((p) => changed.some((ch) => inDir(p, ch)));
 }
 // A `rerun` call while a rerun is left at this head, a `wait` while another job of a run to re-run is still
 // going (GitHub refuses a run in progress, and a refusal counts as a rerun tried) and the run is inside
@@ -1378,10 +1427,21 @@ function classedRerun(mine, checks, ctx) {
   const starts = inRuns.map((c) => Date.parse(c.started ?? '')).filter((x) => x > 0);
   const names = mine.map((f) => `"${f.name}"`).join(', '), one = mine.length === 1;
   if (going.length && starts.length && (ctx.now ?? Date.now()) - Math.min(...starts) < PENDING_LIMIT_MS) {
-    return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ${runner ? `ones ${CLASSED}` : names}, re-run once they finish` };
+    // The outside case says why it waits as the rerun does, so the ticket reads as waiting on checks
+    // (batch-state.mjs checksRerun) before the rerun as well as after it.
+    return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ${runner ? `ones ${CLASSED}` : `${names}, whose failed ${one ? 'log names' : 'logs name'} no file this PR changes`}, re-run once they finish` };
   }
   if (runner) return { call: 'rerun', why: `its ${names} ${one ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${one ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
   return { call: 'rerun', why: `its ${names} ${one ? 'check\'s failed log names' : 'checks\' failed logs name'} no file this PR changes, so ${one ? 'its run is' : 'their runs are'} re-run once at this head, every job, before any fix worker`, gate: { ...rerun.gate, full: true } };
+}
+// While that rerun runs, undraftCall reads only pending checks and waits on them: the wait's reason, as
+// the draft's record (pass/undraft.mjs), keeps saying whose rerun it is, so the ticket still reads as
+// waiting on checks (batch-state.mjs checksRerun). Only while the record before it is that rerun, or
+// this wait, on the same PR at the same head; null otherwise.
+export function outsideRerunWait(t, c, pr, head) {
+  const u = t?.undraft;
+  if (c?.call !== 'wait' || !/^checks still running/.test(c.why ?? '') || !outsideRerunRecord(u) || u.pr !== pr || u.sha !== head) return null;
+  return /no file this PR changes/.test(c.why) ? c.why : `${c.why} in the rerun of checks whose failed logs name no file this PR changes`;
 }
 // A fix try or stuck reason for checks classedRerun left to go ahead, saying so.
 function withRerunNote(c, note) {
@@ -1507,6 +1567,22 @@ function reviewStep(review, what, how = '') {
 }
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
+// What fix try record `f` lists, read from its fields once for every brief that words it (fixBrief, and
+// cloud-worker.mjs cloudFixMsg for a cloud session): a review's findings as `<sev>: <text>`; the checks
+// left red as not its to fix; and a feedback try's threads, split into those with a thread (or with no
+// body flag), the review body's findings with a file:line (`listed`) and the body itself (`whole`), with
+// `cut` where that body was cut short.
+export function fixItems(f) {
+  const all = f?.threads ?? [];
+  const inBody = all.filter((x) => !x.id && x.body), whole = inBody.filter((x) => x.whole);
+  return {
+    findings: (f?.findings ?? []).map((x) => `${x.sev}: ${x.text}`),
+    leaveRed: [...(f?.not_mine ?? []).map((c) => c.name), ...(f?.builds ?? []), ...(f?.base_red ?? [])],
+    threads: all.filter((x) => x.id || !x.body), listed: inBody.filter((x) => !x.whole), whole,
+    cut: whole.some((x) => x.text.endsWith(' …')),
+  };
+}
+
 // The fix worker's briefing section, while its try is open. `review` as reviewStep reads it.
 export function fixBrief(t, review = null) {
   const f = t.fix;
@@ -1595,15 +1671,14 @@ export function fixBrief(t, review = null) {
       ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads. ` +
         `That check stays red while that review still lists a finding it blocks on, so carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK) naming the one you cannot fix and why. Ending with nothing pushed leaves the check red and spends this try.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
-    const threads = (f.threads ?? []).filter((x) => x.id || !x.body), inBody = (f.threads ?? []).filter((x) => !x.id && x.body);
+    const { threads, listed, whole, cut } = fixItems(f);
     if (threads.length) {
       lines.push('Its unresolved review threads:', '');
       for (const x of threads) lines.push(`- ${x.text}`);
       lines.push('');
     }
-    if (inBody.length) {
+    if (listed.length || whole.length) {
       const who = f.external ? `${f.external.login}'s` : 'the';
-      const listed = inBody.filter((x) => !x.whole), whole = inBody.filter((x) => x.whole);
       if (listed.length) {
         lines.push(`The findings ${who} review body lists with a file:line, none with a thread of its own (one on a line outside the diff has none):`, '');
         for (const x of listed) lines.push(`- ${x.text}`);
@@ -1611,7 +1686,7 @@ export function fixBrief(t, review = null) {
       }
       if (whole.length) {
         lines.push(`${f.external ? `${f.external.login}'s review body` : 'The review body'} itself, for any finding it states with no file:line and what it says of each:`, '', ...whole.map((x) => `> ${x.text}`), '');
-        if (whole.some((x) => x.text.endsWith(' …'))) lines.push(`That body is cut here: read it in full with gh pr view ${f.pr} --json reviews.`, '');
+        if (cut) lines.push(`That body is cut here: read it in full with gh pr view ${f.pr} --json reviews.`, '');
       }
       lines.push('Fix each finding the review body still holds open, as you would a thread. One the body itself marks refuted, or not a finding, needs no fix: say so in your comment. Having no thread, a body finding is answered in your gh pr comment, naming its file:line (or quoting it, where it names none), not on a thread.', '');
     }
@@ -1622,7 +1697,7 @@ export function fixBrief(t, review = null) {
     lines.push(`Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
     if (f.findings?.length) {
       lines.push(`Fix each ${findingKinds(f.findings)} finding it lists${f.findings.some((x) => x.sev === 'P2') ? ', or carry one in your next review where fixing it would mean another round (worker contract Stage 4)' : ''}:`, '');
-      for (const x of f.findings) lines.push(`- ${x.sev}: ${x.text}`);
+      for (const x of fixItems(f).findings) lines.push(`- ${x}`);
       lines.push('');
     }
     if (f.gaps?.length) {

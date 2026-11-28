@@ -21,8 +21,8 @@ import { MODEL_PRICES, modelFamily } from './worker-cost.mjs';
 
 export const CALLERS = ['worker', 'triage', 'decider', 'usage probe', 'subagent', 'interactive', 'other'];
 const PROBE_PROMPT = PROBE_ARGS[PROBE_ARGS.indexOf('-p') + 1];
-// How triage.sh's first pass and its challenge pass start their prompts.
-const TRIAGE_OPENINGS = ['Triage ticket ', 'A first triage pass put ticket '];
+// How triage.sh's first pass and its challenge pass start their prompts, shared with desk-checkout.
+const TRIAGE_OPENINGS = JSON.parse(readFileSync(new URL('./triage-openings.json', import.meta.url), 'utf8')).openings;
 
 // The worktrees folder of every configured repo, where spawn-worker.sh runs its sessions: §2
 // Worktrees directory, else `<repo root>-worktrees` beside the repo root, as desk-env's worktreesDir.

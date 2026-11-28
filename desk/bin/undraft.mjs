@@ -58,7 +58,7 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since, ghTime } from './gate.mjs';
-import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry, VERDICT_CHECK, reviewGates } from './fix-tries.mjs';
+import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry, VERDICT_CHECK, reviewGates, prInConflict } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
@@ -794,7 +794,7 @@ export function undraftCall(t, pr, cfg) {
   if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || p2s || gaps)) {
     return { ...person(v.why, `settle the ${gaps ? 'findings or gaps' : 'findings'} on #${n}`), call: 'findings', verdict: found, review: review.body, reviewId: review.id };
   }
-  if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {
+  if (prInConflict(pr)) {
     const c = person('it has a merge conflict with its base', `resolve the conflict on #${n}; it then needs a fresh review`);
     return (humanReviewed(pr, cfg.handle) ? cfg.conflictReviewed : cfg.conflictUnreviewed) === 'yes' ? { ...c, call: 'conflict' } : c;
   }

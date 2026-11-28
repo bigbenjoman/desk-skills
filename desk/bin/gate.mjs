@@ -82,6 +82,8 @@
 //     exit 1 naming the row when it does not parse
 //   node gate.mjs state                            print each §4 State check as `<check>\t<kind>`;
 //     exit 1 naming the row when it does not parse
+//   node gate.mjs why <job id> [--repo owner/name] print the first failure the job annotated, as `pr`
+//     gives a state check's why (nothing when it has none); exit 1 when its annotations cannot be read
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -884,8 +886,15 @@ if (isMain) {
       for (const f of loadFlaky(await import('./desk-env.mjs'))) console.log(`${f.name}\t${f.paths.join(' ')}${f.test ? `\t${f.test.title}` : ''}`);
     } else if (cmd === 'state') {
       for (const s of loadStateChecks(await import('./desk-env.mjs'))) console.log(`${s.name}\t${s.kind ?? ''}`);
+    } else if (cmd === 'why') {
+      const job = rest[0];
+      if (!/^\d+$/.test(job ?? '')) throw new Error('usage: gate.mjs why <job id> [--repo owner/name]');
+      const repo = optOf(rest, '--repo') ?? (await import('./desk-env.mjs')).ghRepo();
+      const why = failureMessage(repo, job);
+      if (why === undefined) throw new Error(`job ${job}'s annotations could not be read`);
+      if (why) console.log(why.slice(0, 300));
     } else {
-      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs held <number> | gate.mjs holds <file> | gate.mjs hold-kind [<item>…] | gate.mjs flaky | gate.mjs state');
+      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs held <number> | gate.mjs holds <file> | gate.mjs hold-kind [<item>…] | gate.mjs flaky | gate.mjs state | gate.mjs why <job id>');
       process.exit(2);
     }
   } catch (e) {

@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, bareHold, bareHoldText, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, checksRerun, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -384,6 +384,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   // A cloud ticket stopped by queue.mjs stop has no worker or worktree here: a requeue is the person
   // letting it start again with a new session, as needs-you's start does (stopCloud).
   const cloudStopped = t.location === 'cloud' && t.cloud?.abandoned_at && stoppedHold(t);
+  if (bareHold(t)) throw new Error(`${key} is ${bareHoldText(key)}, rather than requeue it`);
   if (isHeld(t) && !cloudStopped) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
@@ -1223,9 +1224,9 @@ switch (cmd) {
       if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
     }
     const held = unmergedBlockers(q, t, blockersOf(t));
-    applySet(t, pairs);
+    const freed = applySet(t, pairs);
     save(q);
-    console.log(`${key}: ${pairs.join(' ')}`);
+    console.log(`${key}: ${pairs.join(' ')}${freed}`);
     // A release still goes ahead past blockers that have not merged; it names them.
     const open = confirmed ? [] : held.filter((p) => !blockersOf(t).includes(p));
     if (open.length) console.error(`warning: ${key} is no longer held behind ${open.join(', ')}, which ${open.length === 1 ? 'has' : 'have'} not merged yet`);
@@ -1413,7 +1414,8 @@ switch (cmd) {
     const key = args.find((a) => a !== '--placed');
     const t = ticket(q, key);
     const msg = toFront(q, key);
-    if (args.includes('--placed') && t.state !== 'running' && !FINISHED.includes(t.state)) t.placed = true;
+    // Placed by the user, it no longer carries the pass's note of moving it (pass.mjs placed_move).
+    if (args.includes('--placed') && t.state !== 'running' && !FINISHED.includes(t.state)) { t.placed = true; delete t.placed_move; }
     save(q);
     const open = questionsOpen(t);
     console.log(`${key} ${msg}${open > 0 ? `; it still has ${open} question(s) open and will not spawn until they are answered: ${answerWith(t)}` : ''}`);
@@ -1434,6 +1436,7 @@ switch (cmd) {
     const rest = order.filter((k) => k !== key);
     reorder(q, [...rest.slice(0, n - 1), key, ...rest.slice(n - 1)]);
     t.placed = true;
+    delete t.placed_move;
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} moved to position ${n} of ${order.length} in the spawn order and marked placed: front and requeue leave it there`);
@@ -1447,7 +1450,7 @@ switch (cmd) {
   // on, so the pass's re-sort keeps the order named.
   case 'order': {
     const keys = layOrder(q, args.filter((a) => a !== '--placed'));
-    if (args.includes('--placed')) for (const k of keys) q.tickets[k].placed = true;
+    if (args.includes('--placed')) for (const k of keys) { q.tickets[k].placed = true; delete q.tickets[k].placed_move; }
     save(q);
     console.log(`spawn order: ${keys.join(' ') || 'nothing to reorder'}`);
     break;
@@ -1680,11 +1683,12 @@ function tableChanges(before, after) {
 }
 
 // A done ticket is DONE only once its PR has merged, or it finished with no PR: one whose PR is still
-// open is PR OPEN, and one whose PR was closed unmerged CLOSED.
+// open is PR OPEN, and one whose PR was closed unmerged CLOSED. One whose draft's checks are re-run
+// once, as their failed logs name no file it changes (checksRerun), is ON CHECKS until they finish.
 function doneLabel(t) {
   if (t.result?.pr == null || t.merged_at) return 'DONE';
   const ps = prStatusOf(t)?.state ?? null;
-  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : 'PR OPEN';
+  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : checksRerun(t) ? 'ON CHECKS' : 'PR OPEN';
 }
 
 // The table's parts: the batch heading, one row per ticket in shown order, and how many wait on you.
@@ -1704,13 +1708,16 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const day = dateHeld(t);
-    const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
+    // A bare hold (bareHold) is released by the next pass, so it is held, not stuck.
+    const bare = bareHold(t);
+    const stuck = !day && !bare && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
     const by = blockersOf(t);
     const byText = by.join(', ') || '?';
     const spines = by.filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
+      : bare ? bareHoldText(t.key)
       : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
       : stuck ? `held behind ${byText}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${byText} merge`
@@ -1719,6 +1726,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : t.state === 'parked' ? t.park?.question ?? ''
       : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
+      : t.state === 'done' && label === 'ON CHECKS' ? `PR #${t.result.pr} draft, waiting on checks: re-run once as their failed logs name no file it changes`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
       : handingOff(t) ? `starting Stage ${t.handoff_stage ?? '?'}`

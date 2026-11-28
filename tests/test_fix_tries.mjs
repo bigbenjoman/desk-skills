@@ -1,13 +1,13 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING, resumeConflict, resumesAtSeven, notesConflict, stageSevenConflictPark, STAGE7_CONFLICT, fixItems } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
-import { errorLinesIn, readError } from '../desk/bin/evidence.mjs';
+import { errorLinesIn, readError, pathsIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -1230,6 +1230,23 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
 }
 
+// Every path a failed log names, past the five error lines, less GitHub's echo of the step script; and the
+// error lines keep the one naming the failing file ahead of the runner's headings.
+{
+  const J = (s) => `shard 6/6\tRun tests\t2026-11-20T16:29:00.000Z ${s}`;
+  const LOG = [J('##[group]Run bash tests/ci_shard.sh 6 6'), J('failed=$(grep -c FAIL tests/out.txt)'), J('##[endgroup]'),
+    ...['a', 'b', 'c', 'd', 'e', 'f'].map((x) => J(`== suite ${x} errors ==`)), J('ok   ./desk/bin/queue.mjs loads.'), J('FAIL tests/test_new_holds.mjs: holds a PR')].join('\n');
+  t('#1640 AC1 the fix try\'s error lines lead with the one naming the failing file, past six headings', errorLinesIn(LOG)[0] === 'FAIL tests/test_new_holds.mjs: holds a PR', true);
+  t('#1640 and leave out the echoed step script', errorLinesIn(LOG).some((l) => l.includes('grep -c FAIL')), false);
+  t('#1640 the headings fill the rest, five lines at most', errorLinesIn(LOG).slice(1).join('|'), '== suite a errors ==|== suite b errors ==|== suite c errors ==|== suite d errors ==');
+  t('#1640 pathsIn reads it, the error lines\' paths first, less ./ and a trailing dot', pathsIn(LOG).join(' '), 'tests/test_new_holds.mjs desk/bin/queue.mjs');
+  const ABS = ['Error: at /home/runner/work/r/r/desk/bin/queue.mjs:3', 'at /__w/r/r/src/a.ts', 'at /opt/actions/_work/r/r/lib/b.py', 'at /Users/runner/work/r/r/c/d.js', 'at /usr/lib/node/e.js'].map(J).join('\n');
+  t('#1640 pathsIn reads a path under a runner\'s workspace folder as the repo names it, and leaves any other absolute path', pathsIn(ABS).join(' '), 'desk/bin/queue.mjs src/a.ts lib/b.py c/d.js /usr/lib/node/e.js');
+  t('#1640 pathsIn skips the echoed step script', pathsIn(LOG).includes('tests/ci_shard.sh') || pathsIn(LOG).includes('tests/out.txt'), false);
+  t('#1640 with failing, only the error lines\' paths', pathsIn(LOG, { failing: true }).join(' '), 'tests/test_new_holds.mjs');
+  t('#1640 a word with no letter or no slash or extension is no path', pathsIn('error at 12/34 in foo and v1').length, 0);
+}
+
 {
   // Each try that asks for a review names §4 Local review command's, and desk-review only in its place.
   const H = 'a'.repeat(40);
@@ -1415,6 +1432,47 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const both = { ...rec, pr: 701, checks: [{ name: 'Vercel Preview', command: 'red on main too' }, { name: 'Deploy preview', command: 'red on main too' }] };
   t('stuckLessHeld: whole, an entry for a check still red on the base stays', JSON.stringify(stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: partBase?.base_red_checks ?? [] })?.checks), JSON.stringify([{ name: 'Deploy preview', command: 'red on main too' }]));
   t('stuckLessHeld: whole, with every one still red on the base, the record is unchanged', stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: ['Vercel Preview', 'Deploy preview'] }), undefined);
+}
+
+// issue-1669: a requeued ticket about to resume at Stage 7 whose PR is CONFLICTING, or whose requeue note
+// names a conflict, goes to a conflict fix try (merge the base in, resolve, push), not a Stage 7 session.
+{
+  const seven = tk({ state: 'triaged', handoff: 'pending', handoff_stage: 7 });
+  t('issue-1669 a handoff to Stage 7 resumes at Stage 7', resumesAtSeven(seven), true);
+  t('issue-1669 so does a parked round at 7/9 requeued with no handoff', resumesAtSeven(tk({ state: 'triaged', last_round: { stage: '7/9' } })), true);
+  t('issue-1669 a handoff to 4b does not', resumesAtSeven(tk({ state: 'triaged', handoff: 'pending', handoff_stage: '4b' })), false);
+  t('issue-1669 nor one with an unfinished fix try, which keeps its own task', resumesAtSeven({ ...seven, fix: { kind: 'checks' } }), false);
+  t('issue-1669 nor one still running', resumesAtSeven({ ...seven, state: 'running' }), false);
+  const conflicting = pr([], { pr: 1655, mergeable: 'CONFLICTING', mergeState: 'DIRTY', isDraft: true });
+  const files = ['src/a.ts'];
+  const c = resumeConflict(seven, conflicting, { base: 'main', files, notes: [] });
+  t('issue-1669 AC1 a CONFLICTING PR resumed at Stage 7 goes to a conflict fix try', JSON.stringify([c?.call, c?.fix?.kind, c?.fix?.try, c?.fix?.of, c?.fix?.pr, c?.fix?.head, c?.fix?.draft, c?.fix?.files, c?.noted]), JSON.stringify(['requeue', 'conflict', 1, FIX_TRIES_MAX, 1655, HEAD, true, ['src/a.ts'], false]));
+  t('issue-1669 AC1 and says why', c?.why, 'PR #1655 conflicts with main');
+  t('issue-1669 a ready PR\'s try is not marked draft', resumeConflict(seven, { ...conflicting, isDraft: false }, { base: 'main', files, notes: [] })?.fix?.draft, undefined);
+  t('issue-1669 DIRTY alone is a conflict too', resumeConflict(seven, { ...conflicting, mergeable: 'UNKNOWN' }, { base: 'main', files, notes: [] })?.call, 'requeue');
+  // Every other value GitHub sets: MERGEABLE or UNKNOWN with any merge state but DIRTY is no conflict.
+  // (decideResumeConflicts reads the files only for a try: tests/test_pass_fix_tries.mjs.)
+  const clean = ['BEHIND', 'BLOCKED', 'CLEAN', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE'].flatMap((m) => ['MERGEABLE', 'UNKNOWN'].map((g) => resumeConflict(seven, { ...conflicting, mergeable: g, mergeState: m }, { base: 'main', files, notes: [] })));
+  t('issue-1669 a PR not in conflict resumes at Stage 7 as before', clean.every((x) => x === null), true);
+  t('issue-1669 a merged or closed PR is no try', JSON.stringify(['MERGED', 'CLOSED'].map((st) => resumeConflict(seven, { ...conflicting, state: st }, { base: 'main', files, notes: [] }))), '[null,null]');
+  const mergeable = { ...conflicting, mergeable: 'MERGEABLE', mergeState: 'BLOCKED' };
+  const noted = resumeConflict(seven, mergeable, { base: 'main', files, notes: ['Merge main in and resolve the conflict with #1656.'] });
+  t('issue-1669 AC1 a requeue note naming a conflict does the same', JSON.stringify([noted?.call, noted?.fix?.kind, noted?.noted, noted?.why]), JSON.stringify(['requeue', 'conflict', true, 'its requeue note names a conflict with main']));
+  t('issue-1669 notes: a rebase and merging the base in name one too', JSON.stringify([notesConflict(['rebase onto main']), notesConflict(['please merge origin/main in']), notesConflict(['merge in main first'])]), '[true,true,true]');
+  t('issue-1669 notes: "no conflicts", or none, name none', JSON.stringify([notesConflict(['There are no conflicts; fix the title.']), notesConflict([]), notesConflict(undefined)]), '[false,false,false]');
+  const spent = resumeConflict({ ...seven, fix_tries: [{ kind: 'conflict', head: HEAD, try: 1 }] }, conflicting, { base: 'main', files, notes: [] });
+  t('issue-1669 with a conflict try already at this head it is stuck, naming the conflict', JSON.stringify([spent?.call, /^PR #1655 conflicts with main, and it is still in conflict with main after/.test(spent?.why)]), '["stuck",true]');
+  t('issue-1669 the advance step\'s park is told apart from any other', JSON.stringify([stageSevenConflictPark({ state: 'parked', park: { question: `${STAGE7_CONFLICT} PR #1 conflicts with main` } }), stageSevenConflictPark({ state: 'parked', park: { question: 'which colour?' } }), stageSevenConflictPark({ state: 'triaged', park: { question: `${STAGE7_CONFLICT} x` } })]), '[true,false,false]');
+}
+
+// issue-1552: what every fix brief lists, read once (fixBrief, and a cloud session's cloudFixMsg).
+{
+  const it = fixItems({ findings: [{ sev: 'P1', text: 'leaks' }], not_mine: [{ name: 'E2E' }], builds: ['Vercel'], base_red: ['Lint'],
+    threads: [{ id: 'T1', text: 'rename' }, { text: 'no body flag' }, { body: true, text: 'a.mjs:3 off by one' }, { body: true, whole: true, text: 'Overall …' }] });
+  t('issue-1552 fixItems: findings as sev: text', JSON.stringify(it.findings), JSON.stringify(['P1: leaks']));
+  t('issue-1552 fixItems: the checks left red, not its to fix', it.leaveRed.join(), 'E2E,Vercel,Lint');
+  t('issue-1552 fixItems: threads, body findings with a file:line, and the body itself apart', [it.threads.map((x) => x.text).join('|'), it.listed.map((x) => x.text).join(), it.whole.map((x) => x.text).join(), it.cut].join(' / '), 'rename|no body flag / a.mjs:3 off by one / Overall … / true');
+  t('issue-1552 fixItems: an empty record lists nothing', JSON.stringify(fixItems({})), JSON.stringify({ findings: [], leaveRed: [], threads: [], listed: [], whole: [], cut: false }));
 }
 
 process.exit(fails ? 1 : 0);

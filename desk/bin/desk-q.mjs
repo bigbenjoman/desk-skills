@@ -58,7 +58,7 @@ import { readCosts } from './costs.mjs';
 import { pageState } from './levers-refresh.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
 import { serverModel } from './desk-q-server.mjs';
-import { LABEL, cut, wrap, stateStamp, attention, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
+import { LABEL, cut, wrap, stateStamp, attention, countOf, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
   timelineParts, daysParts, epicsParts, SUPPLIER_LABEL, SUPPLIER_BILL, costsParts, costNameOf, supplierParts, supplierPageParts, parkedBadge,
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, usageLines, usageOf, forgetLogins, overviewParts, hhmm, repoParts, logPath, ticketParts, prToOpen, shownState, shownRepos, repoPlace,
@@ -305,8 +305,9 @@ export function interactive({
   // A view the new place lacks gives way to its nearest: Costs and Usage to the Queue, Epics to the Timeline.
   const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' || tab === 'usage' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
-  // The parked note is shown while any ticket in view waits on the user, or c is on.
-  const badge = (rs) => (checkin || rs.some((r) => attention(r) > 0) ? parkedBadge(checkin) : '');
+  // The parked note is shown while any ticket in view waits on the user, or c is on: a check after merge
+  // has no date for c to set, so it never shows the note.
+  const badge = (rs) => (checkin || rs.some((r) => (countOf(r)?.shown ?? 0) > 0) ? parkedBadge(checkin) : '');
 
   // The breadcrumb's parts, each with the place a click on it goes to; the last is where you are.
   function crumbParts() {

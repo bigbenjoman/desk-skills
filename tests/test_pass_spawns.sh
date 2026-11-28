@@ -160,6 +160,10 @@ echo "\$*" >> "$T/gh-calls"
 [ "\$1" = api ] && [ -e "$T/cloud-push" ] && case "\$2" in */branches/*) cat "$T/cloud-push" ;; esac
 # A cloud PR's commits, body and comments: none of them, unless a test writes its own.
 case "\$*" in "pr view "*body,commits,comments*) if [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; else echo '{"body":"","commits":[],"comments":[]}'; fi ;; esac
+# issue-1552: the PR a fix try was sent for, read for its state and head.
+case "\$*" in "pr view "*"--json number,state,headRefOid"*) [ -e "$T/cloud-fixpr.json" ] && cat "$T/cloud-fixpr.json" ;; esac
+# Its head read just before a fix try goes out to a cloud session: "x", unless a test writes its own.
+case "\$*" in "pr view "*"--json headRefOid") if [ -e "$T/cloud-head.json" ]; then cat "$T/cloud-head.json"; else echo '{"headRefOid":"x"}'; fi ;; esac
 # Its body and comments read again just before they are edited: as first read, unless a test changes them.
 case "\$*" in "pr view "*"--json body,comments") if [ -e "$T/cloud-live.json" ]; then cat "$T/cloud-live.json"; elif [ -e "$T/cloud-view.json" ]; then cat "$T/cloud-view.json"; fi ;; esac
 exit 0
@@ -220,16 +224,53 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
 check "DS-752 a cloud start that fails keeps no start time for a session that never began" '[ "$(field CW-2 cloud)" = null ]'
-# Requeued for a fix try on the PR its session opened: the session is over, so a local worker takes the
-# try on its branch at origin's tip, never a new cloud session.
-rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
-q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red: Lint","checks":[{"name":"Lint","runId":"7"}]}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","pr_at":"2026-11-20T10:00:00Z"}'
+# issue-1552: requeued for a fix try on the PR its session opened. The try is sent to that session as a
+# follow-up, and the ticket runs in the cloud until the PR's head moves past the one the try was made for.
+rm -f "$T/cloud-fail" "$T/cloud-prompt" "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-fixpr.json"; cloud_ticket CW-3
+# Its head is "x", the head pass_setup.sh's stub gives a fix try's last read before it starts.
+cw3_fix='fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red: Lint","head":"x","checks":[{"name":"Lint","runId":"7"}]}'
+cw3_cloud='cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","url":"https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj","pr_at":"2026-11-20T10:00:00Z"}'
+q set CW-3 result.pr=40 "$cw3_fix" "$cw3_cloud"
+# Its head unreadable: nothing is sent, since a push is told from it, and the ticket stays queued.
+echo '{}' > "$T/cloud-head.json"
 out=$(node "$B/pass.mjs" 2>&1)
-check "a cloud ticket back for a fix try on its PR runs as a local worker, not parked" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)"'
-check "and no new cloud session starts for it" '[ ! -e "$T/cloud-prompt" ]'
+check "issue-1552 AC3 with the PR's head unreadable the try is not sent, and the ticket stays queued" '[ ! -e "$T/cloud-sent" ] && [ "$(field CW-3 state)" = "\"triaged\"" ] && [ "$(field CW-3 cloud.fix)" = null ] && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 was not sent to cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj, since PR #40'"'"'s head could not be read (no head in its reply)"'
+# A push lands after the try's last read and before the send: the send is told from the head read just
+# before it, "y", so that push is not taken for the session's.
+echo '{"headRefOid":"y"}' > "$T/cloud-head.json"
 out=$(node "$B/pass.mjs" 2>&1)
-check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: .*PR #40 from cloud session"'
-q set CW-3 state=done
+rm -f "$T/cloud-head.json"
+check "issue-1552 AC1 a cloud ticket back for a fix try on its PR has the try sent to its session" '[ "$(cut -d"|" -f1 "$T/cloud-sent")" = "session_01Vy49H7Z4T3CSgAhSxsuhqj" ] && grep -qF "desk has a fix try for PR #40" "$T/cloud-sent-msg" && grep -qF "Lint" "$T/cloud-sent-msg"'
+check "issue-1552 AC1 the send is recorded: running at stage cloud, the try out to the session at the head read as it was sent, not the drafted one" '[ "$(field CW-3 state)" = "\"running\"" ] && [ "$(field CW-3 stage)" = "\"cloud\"" ] && [ "$(field CW-3 cloud.fix.try)" = 1 ] && [ "$(field CW-3 cloud.fix.head)" = "\"y\"" ] && echo "$out" | grep -qF "CW-3: fix try 1 of 2 on PR #40 sent to its cloud session"'
+check "issue-1552 AC1 no local worker and no new cloud session start for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+echo '{"number":40,"state":"OPEN","headRefOid":"y","headRefName":"feat/CW-3","title":"feat: CW-3","url":"u","createdAt":"2026-11-20T10:00:00Z"}' > "$T/cloud-fixpr.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC3 with the head unmoved the next pass waits on the session" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 is out to cloud session" && echo "$out" | grep -qF "no push to PR #40 yet" && [ "$(wc -l < "$T/cloud-sent")" -eq 1 ]'
+echo '{"number":40,"state":"OPEN","headRefOid":"bbbb2222","headRefName":"feat/CW-3","title":"feat: CW-3","url":"u","createdAt":"2026-11-20T10:00:00Z"}' > "$T/cloud-fixpr.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC3 once its push lands the pass reads the new head and the ticket is done on its PR again" '[ "$(field CW-3 state)" = "\"done\"" ] && [ "$(field CW-3 result.pr)" = 40 ] && field CW-3 result.summary | grep -qF "pushed its fix try 1 of 2" && [ "$(field CW-3 cloud.fix)" = null ] && [ "$(field CW-3 cloud.pr_at)" = "\"2026-11-20T10:00:00Z\"" ]'
+check "issue-1552 AC4 the try is the one it was, of the same count" '[ "$(field CW-3 fix.try)" = 1 ] && [ "$(field CW-3 fix.of)" = 2 ]'
+# A send that fails: the session is recorded abandoned and the ticket stays queued, and the next pass
+# starts the try in a new cloud session on the PR's branch.
+rm -f "$T/cloud-sent" "$T/cloud-sent-msg" "$T/cloud-fixpr.json"; : > "$T/cloud-send-fail"
+q set CW-3 state=triaged stage=null result.pr=40 "$cw3_fix" "$cw3_cloud"
+# The archive list cannot be read as the send fails, so the session is not put on it yet.
+echo 'not json' > "$T/state-cl/cloud-archived.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC2 a send that fails records the session abandoned and keeps the ticket queued" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ "$(field CW-3 cloud.abandoned_at)" != null ] && [ "$(field CW-3 cloud.fix)" = null ] && field CW-3 cloud.send_error | grep -q "does not support" && echo "$out" | grep -qF "CW-3: its fix try 1 of 2 on PR #40 could not be sent to its cloud session"'
+check "issue-1552 comment AC an archive list that cannot be read is named, not taken for the session being on it" 'echo "$out" | grep -F "CW-3: its fix try 1 of 2 on PR #40 could not be sent" | grep -qF "could not be put on needs-you'"'"'s archive list"'
+rm -f "$T/cloud-send-fail" "$T/cloud-sent" "$T/state-cl/cloud-archived.json"
+# Comment AC: the old session may still push, so the new one waits, taking no slot, for it to be archived;
+# the wait puts the session on needs-you's archive list, which the failed hand-over left it off.
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 comment AC a new session for the try waits until the abandoned one is archived" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ ! -e "$T/cloud-prompt" ] && echo "$out" | grep -F "CW-3: its fix try on PR #40 writes to the PR" | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj may still push to: its cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj is recorded abandoned, and needs-you asks you to archive it. It starts once that session is archived"'
+check "issue-1552 comment AC the waiting pass puts the abandoned session on needs-you's archive list once it can" 'jq -e ".pending | map(.session) == [\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"]" "$T/state-cl/cloud-archived.json" >/dev/null'
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 comment AC a later waiting pass lists it once, not again" 'jq -e ".pending | length == 1" "$T/state-cl/cloud-archived.json" >/dev/null && [ "$(field CW-3 state)" = "\"triaged\"" ]'
+echo '{"sessions":["session_01Vy49H7Z4T3CSgAhSxsuhqj"]}' > "$T/state-cl/cloud-archived.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC2 once archived, the next pass starts the try in a new cloud session on the PR's branch" '[ "$(field CW-3 state)" = "\"running\"" ] && grep -qF "Work a fix try on PR #40 of ticket CW-3" "$T/cloud-prompt" && grep -qF "feat/CW-3" "$T/cloud-prompt" && [ "$(field CW-3 cloud.fix.pr)" = 40 ] && [ "$(field CW-3 cloud.pr_at)" = "\"2026-11-20T10:00:00Z\"" ] && [ "$(field CW-3 cloud.abandoned_at)" = null ] && [ ! -e "$T/cloud-sent" ]'
+q set CW-3 state=done; rm -f "$T/cloud-prompt"
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
 # Placed before pins too, so the pass reads the row for it.
@@ -241,6 +282,18 @@ check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$
 effort_cfg 0=turbo; cloud_ticket CW-5; q set CW-5 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
+# issue-1552 AC2 and its comment: with the effort lever on, no cloud session can take a fix try, so a
+# local worker does, and the ticket's session is recorded abandoned first, and archived by the person
+# before the local worker starts, so the two never both push.
+effort_cfg 0=low; rm -f "$T/cloud-sent" "$T/cloud-prompt" "$T/state-cl/cloud-archived.json"
+q set CW-3 state=triaged stage=null levers=null result.pr=40 "$cw3_fix" "$cw3_cloud"
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "issue-1552 comment AC with the effort lever on, its live session is recorded abandoned and the local try waits for it to be archived" '[ "$(field CW-3 state)" = "\"triaged\"" ] && [ "$(field CW-3 cloud.abandoned_at)" != null ] && [ ! -e "$T/wt/CW-3" ] && echo "$out" | grep -F "CW-3: its fix try on PR #40 writes to the PR" | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj may still push to: its cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj is recorded abandoned, and needs-you asks you to archive it"'
+check "issue-1552 comment AC and it is on needs-you's archive list" 'jq -e ".pending | map(.session) | index(\"session_01Vy49H7Z4T3CSgAhSxsuhqj\") != null" "$T/state-cl/cloud-archived.json" >/dev/null'
+echo '{"sessions":["session_01Vy49H7Z4T3CSgAhSxsuhqj"]}' > "$T/state-cl/cloud-archived.json"
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "issue-1552 AC2 once archived, with the effort lever on a fix try on a cloud PR runs as a local worker" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)" && [ ! -e "$T/cloud-sent" ] && [ ! -e "$T/cloud-prompt" ]'
+q set CW-3 state=done
 # issue-1569: where §5 forbids AI attribution, the session is told so, and its PR is read for it before
 # the ticket is done: found, the pass removes it where config §3 lets it, and otherwise parks naming it
 # and the row, on the PR's branch.
@@ -1911,6 +1964,62 @@ check "#1515 AC4 its handoff wait records the collision and no deadline, for des
   '[ "$(field HO-6 waits.handoff | jq -c "[.collision, .deadline, .escalated]")" = "[[{\"file\":\"src/edge.ts\",\"with\":[\"HO-5\"]}],null,null]" ]'
 check "#1515 two handoffs naming one file do not hold each other: the first in queue order starts and the other waits behind it" \
   'spawned HO-7 && ! spawned HO-8 && echo "$out" | grep -qF "HO-8: held by collision on src/hot.ts with HO-7"'
+
+# ---- #1667: a ticket a person placed at the front (--front, or a move) above a pending handoff takes a
+# serial file they both need ahead of it; the handoff waits with its briefing kept. Unplaced, a ticket
+# moved to the front by the pass (a released chain head) does not beat the handoff.
+fbq hof '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-11 src/hot.ts; fbt HO-12 triaged src/hot.ts; q front HO-12 --placed >/dev/null
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC1 a front ticket above a handoff resume takes the serial file: it starts and the handoff waits, still pending" \
+  'spawned HO-12 && ! spawned HO-11 && [ "$(field HO-11 state)" = "\"triaged\"" ] && [ "$(field HO-11 handoff)" = "\"pending\"" ] && [ "$(field HO-11 handoff_stage)" = "\"4b\"" ]'
+check "#1667 AC1 the handed-off ticket keeps its briefing" '[ -s "$DESK_AUTOPILOT_STATE/handoffs/HO-11.json" ]'
+check "#1667 AC3 the pass says which ticket won the file and why" \
+  'echo "$out" | grep -qF "src/hot.ts: HO-12 goes first for it, ahead of HO-11'"'"'s handoff to Stage 4b: placed at the front of the spawn order (--front, or a person'"'"'s move) above it, so HO-11 waits for the file with its handoff briefing kept, and its handoff deadline keeps running until that ticket starts"'
+q set HO-12 state=done; : > "$T/fb-spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC1 once the front ticket stops running, the handoff starts from its briefing" 'spawned HO-11'
+
+fbq hog '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-13 src/hot.ts; fbt HO-14 triaged src/hot.ts; q front HO-14 >/dev/null
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC2 AC4 an unplaced ticket ahead of a handoff resume does not beat it: the handoff takes the serial file" \
+  'spawned HO-13 && ! spawned HO-14 && ! echo "$out" | grep -qF "takes it ahead of" && echo "$out" | grep "^held back by a collision:" | grep -qF "HO-14 (src/hot.ts has 1 running of its 1: HO-13)"'
+
+fbq hoh '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-16 src/hot.ts; fbt HO-15 triaged src/hot.ts; q move HO-15 last >/dev/null
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 AC1 a placed ticket below the handoff does not beat it" 'spawned HO-16 && ! spawned HO-15'
+
+# A placed ticket above the handoff that cannot start (its worker already printed AUTOPILOT_DONE, so
+# eligibility drops it) holds nothing: the handoff starts.
+fbq hoi '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-17 src/hot.ts; fbt HO-18 triaged src/hot.ts; q front HO-18 --placed >/dev/null
+say "AUTOPILOT_DONE: pr=18 jira=none" > "$DESK_AUTOPILOT_STATE/logs/HO-18.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 a front ticket that has already finished does not hold the handoff: it starts, and no line says the finished one goes first" \
+  'spawned HO-17 && ! spawned HO-18 && ! echo "$out" | grep -qF "HO-18 goes first"'
+
+# A front ticket the spawn loop skips (its worktree is another process's working directory) fills no
+# place: the handoff waits behind it, but as no collision hold, so its deadline keeps running.
+fbq hoj '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-19 src/hot.ts; fbt HO-20 triaged src/hot.ts; q front HO-20 --placed >/dev/null
+mkdir -p "$T/wt/HO-20"; printf 'p4243\ncclaude\nfcwd\nn%s/wt/HO-20\n' "$T" > "$T/lsof.out"
+out=$(node "$B/pass.mjs" 2>&1)
+: > "$T/lsof.out"
+check "#1667 a front ticket that does not start holds the handoff with no collision hold: its handoff wait keeps a deadline" \
+  '! spawned HO-20 && ! spawned HO-19 && echo "$out" | grep -qF "HO-20: WORKTREE IN USE" && [ "$(field HO-19 waits.handoff | jq -c "[.collision, (.deadline != null)]")" = "[null,true]" ] && ! echo "$out" | grep -qF "HO-19: held by collision"'
+
+# #1624 with #1667: a front ticket goes first for a serial file ahead of a handoff, and a higher-priority
+# ticket on that file waits behind the handoff. The higher one does not hold the front ticket by
+# priority, or the three hold each other for good: the front ticket starts.
+fbq hok '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+printf '\n## 4. Ranking\n| Field | Value |\n|---|---|\n| Priority | `P1` `P2` |\n' >> "$T/config-fb.md"
+hot HO-21 src/hot.ts; fbt HO-22 triaged src/hot.ts; fbt HO-23 triaged src/hot.ts; q front HO-22 --placed >/dev/null
+for p in HO-22:P2 HO-23:P1; do f="$DESK_AUTOPILOT_STATE/triage/${p%%:*}.json"; jq -c --arg v "${p#*:}" '.priority = $v' "$f" > "$f.new" && mv "$f.new" "$f"; done
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1624 a lower-priority front ticket ahead of a handoff starts, though a higher one waits behind that handoff on its file" \
+  'spawned HO-22 && ! spawned HO-21 && ! spawned HO-23 && ! echo "$out" | grep -qF "HO-22: waits for HO-23"'
 
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
