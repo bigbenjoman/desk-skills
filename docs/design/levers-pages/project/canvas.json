@@ -1,0 +1,129 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-11-28T09:30:00Z"
+  },
+  "title": "Levers pages (Electron)",
+  "launch": {
+    "view": "canvas"
+  },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 1560,
+      "title": "1 · /levers landing (1280)",
+      "expand": "fill"
+    },
+    "Compact.dc.html": {
+      "x": 1360,
+      "y": 0,
+      "w": 1024,
+      "h": 1420,
+      "title": "1b · /levers landing, compact rail (1024)",
+      "expand": "fill"
+    },
+    "States.dc.html": {
+      "x": 2464,
+      "y": 0,
+      "w": 1280,
+      "h": 2600,
+      "title": "2 · Landing states: late, out of date, build failed, no number, loading, empty (1280)",
+      "expand": "fill"
+    },
+    "Levers.dc.html": {
+      "x": 0,
+      "y": 2960,
+      "w": 1280,
+      "h": 1470,
+      "title": "3 · /levers/levers: every lever (1280)",
+      "expand": "fill"
+    },
+    "Lever.dc.html": {
+      "x": 1360,
+      "y": 2960,
+      "w": 1280,
+      "h": 1490,
+      "title": "4 · /levers/:lever: one lever, wrappers (1280)",
+      "expand": "fill"
+    },
+    "Trends.dc.html": {
+      "x": 2720,
+      "y": 2960,
+      "w": 1280,
+      "h": 1330,
+      "title": "5 · /levers/trends (1280)",
+      "expand": "fill"
+    },
+    "Changes.dc.html": {
+      "x": 4080,
+      "y": 2960,
+      "w": 1280,
+      "h": 1460,
+      "title": "6 · /levers/changes (1280)",
+      "expand": "fill"
+    },
+    "Inbox.dc.html": {
+      "x": 0,
+      "y": 4850,
+      "w": 1280,
+      "h": 960,
+      "title": "7 · Inbox ⌘1: a lever waiting on you (1280)",
+      "expand": "fill"
+    },
+    "Repos.dc.html": {
+      "x": 1360,
+      "y": 4850,
+      "w": 1280,
+      "h": 1000,
+      "title": "8 · Repos ⌘2: merge time and parking moved here (1280)",
+      "expand": "fill"
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Compact.dc.html",
+    "States.dc.html",
+    "Levers.dc.html",
+    "Lever.dc.html",
+    "Trends.dc.html",
+    "Changes.dc.html",
+    "Inbox.dc.html",
+    "Repos.dc.html"
+  ],
+  "notes": {
+    "row1": {
+      "x": 0,
+      "y": -300,
+      "text": "Levers ⌘6: the landing page and its states",
+      "kind": "title1",
+      "maxW": 3744
+    },
+    "row2": {
+      "x": 0,
+      "y": 2660,
+      "text": "Levers ⌘6: the pages under it",
+      "kind": "title1",
+      "maxW": 5360
+    },
+    "row3": {
+      "x": 0,
+      "y": 4550,
+      "text": "Moved out of Levers: Inbox ⌘1 and Repos ⌘2",
+      "kind": "title1",
+      "maxW": 2640
+    },
+    "spec": {
+      "x": 3824,
+      "y": 0,
+      "w": 520,
+      "size": "m",
+      "fill": "orange",
+      "text": "How to build from this canvas\n\n• Shell, tokens and components are the Electron app's (docs/design/DS-691). Geist / Geist Mono, shadcn zinc, light theme drawn; the dark tokens sit in each board's style block.\n• Every value is in the board CSS: copy px, colours and radii from there, not from the screenshot.\n• Each board's strip names its route, the view.json slice it reads and its ticket area.\n• Numbers: real from view.json of 28 Nov where the page has them; lever counts are Jim's raw counts, i.e. what the page shows once the evidence fix lands. Guardrail estimates on board 4 and before/after figures marked 'sample' are sample numbers.\n• One term per idea: being tested · ready to decide · kept · off · on by hand · before levers · change.\n• Never print 0 for a number desk doesn't have: print — and say why.\n• Never print shell commands, file paths, test emails or Jira field IDs in body copy. The Inbox 'Runs:' footnote is the one exception (DS-691 §11b.3)."
+    }
+  },
+  "designSystems": []
+}

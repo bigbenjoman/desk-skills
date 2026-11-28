@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Levers: landing states</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e6e6e9;color:#09090b;font-family:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#09090b}a:hover{color:#3f3f46}
+*{box-sizing:border-box}
+:root{--font-sans:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;--radius:6px;--background:#ffffff;--foreground:#09090b;--card:#ffffff;--popover:#ffffff;--muted:#f4f4f5;--muted-fg:#6b6b73;--subtle:#fafafa;--faint:#f4f4f5;--border:#e4e4e7;--input:#e4e4e7;--ring:#a1a1aa;--focus:#52525b;--primary:#18181b;--primary-fg:#fafafa;--secondary:#f4f4f5;--secondary-fg:#18181b;--sidebar:#fafafa;--sidebar-accent:#ececef;--sh-sm:0 1px 2px rgba(9,9,11,.06);--sh-md:0 4px 12px -2px rgba(9,9,11,.10),0 2px 4px -2px rgba(9,9,11,.06);--sh-lg:0 20px 48px -12px rgba(9,9,11,.28),0 6px 14px -6px rgba(9,9,11,.12);--win-edge:rgba(9,9,11,.14);--run:#2563eb;--run-bg:#eff6ff;--run-bd:#bfdbfe;--ready:#475569;--ready-bg:#f1f5f9;--ready-bd:#cbd5e1;--wait:#71717a;--needs:#b45309;--needs-solid:#f59e0b;--needs-bg:#fffbeb;--needs-bd:#fcd34d;--done:#15803d;--done-bg:#f0fdf4;--done-bd:#bbf7d0;--fail:#b91c1c;--fail-bg:#fef2f2;--fail-bd:#fecaca;--chart-now:#18181b;--chart-before:#a1a1aa;--chart-grid:#ececef;--chart-axis:#a1a1aa;--tl-red:#ff5f57;--tl-yel:#febc2e;--tl-grn:#28c840}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--background:#09090b;--foreground:#fafafa;--card:#0e0e10;--popover:#131316;--muted:#1d1d21;--muted-fg:#a1a1aa;--subtle:#0e0e10;--faint:#151518;--border:#27272a;--input:#34343a;--ring:#71717a;--focus:#a1a1aa;--primary:#fafafa;--primary-fg:#18181b;--secondary:#27272a;--secondary-fg:#fafafa;--sidebar:#0e0e10;--sidebar-accent:#1f1f23;--win-edge:rgba(255,255,255,.12);--run:#60a5fa;--run-bg:rgba(59,130,246,.12);--run-bd:rgba(96,165,250,.35);--ready:#94a3b8;--ready-bg:rgba(148,163,184,.10);--ready-bd:rgba(148,163,184,.3);--wait:#a1a1aa;--needs:#fbbf24;--needs-bg:rgba(245,158,11,.09);--needs-bd:rgba(251,191,36,.38);--done:#4ade80;--done-bg:rgba(34,197,94,.10);--done-bd:rgba(74,222,128,.32);--fail:#f87171;--fail-bg:rgba(239,68,68,.10);--fail-bd:rgba(248,113,113,.38);--chart-now:#fafafa;--chart-before:#71717a;--chart-grid:#1f1f23;--chart-axis:#71717a}}
+.board{width:100%;display:flex;flex-direction:column;gap:12px;padding:0 0 24px}
+.ann{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;padding:14px 4px 0;font:400 12px/18px var(--font-mono);color:#52525b}
+.ann b{font:600 15px/20px var(--font-sans);color:#18181b;letter-spacing:-.01em}
+.ann i{font-style:normal;color:#18181b}
+.win{width:100%;background:var(--background);color:var(--foreground);border-radius:10px;overflow:hidden;box-shadow:0 0 0 1px var(--win-edge),var(--sh-lg);display:flex;flex-direction:column;font:400 14px/20px var(--font-sans)}
+.tb{height:40px;flex:none;display:grid;grid-template-columns:1fr 360px 1fr;align-items:center;gap:12px;padding:0 12px 0 16px;background:var(--sidebar);border-bottom:1px solid var(--border)}
+.compact .tb{grid-template-columns:1fr auto 1fr}
+.tbxl,.tbxr{display:flex;align-items:center;gap:10px;min-width:0}
+.tbxr{justify-content:flex-end}
+.lights{display:flex;gap:8px;margin-right:10px}
+.lights i{width:12px;height:12px;border-radius:50%;display:block;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18)}
+.l1{background:var(--tl-red)}.l2{background:var(--tl-yel)}.l3{background:var(--tl-grn)}
+.wm{display:flex;align-items:center;gap:7px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+.mark{width:16px;height:16px;border-radius:4px;background:var(--primary);position:relative;flex:none;display:inline-block}
+.mark i{position:absolute;width:6px;height:6px;background:var(--needs-solid);transform:rotate(45deg);left:5px;top:5px}
+.pgname{color:var(--muted-fg);font-size:13px;white-space:nowrap;border-left:1px solid var(--border);padding-left:10px}
+.srch{height:28px;border:1px solid var(--border);border-radius:6px;background:var(--background);display:flex;align-items:center;gap:8px;padding:0 4px 0 10px;color:var(--muted-fg);font-size:13px;box-shadow:var(--sh-sm)}
+.srch span{flex:1;white-space:nowrap}
+.srch.icon{width:28px;padding:0;justify-content:center}
+.pill{height:24px;display:inline-flex;align-items:center;gap:5px;padding:0 8px;border-radius:999px;font:600 12px/1 var(--font-sans);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill.needs{background:var(--needs-bg);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs-bd)}
+.pill.ok{color:var(--muted-fg);font-weight:500}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--done);display:inline-block;flex:none}
+.dot.run{background:var(--run)}.dot.fail{background:var(--fail)}.dot.needs{background:var(--needs-solid)}.dot.off{background:var(--ring)}
+.ib{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--muted-fg);flex:none;border:0;background:transparent}
+.wmain{display:flex;min-height:0}
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.sbar{height:28px;flex:none;border-top:1px solid var(--border);background:var(--sidebar);display:flex;align-items:center;gap:6px;padding:0 12px;font-size:12px;color:var(--muted-fg);white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden}
+.sbar .seg{display:inline-flex;align-items:center;gap:6px;padding:0 6px;height:20px;border-radius:4px}
+.sbar .sep{width:1px;height:12px;background:var(--border);flex:none}
+.warn{color:var(--needs)}
+.side{width:232px;flex:none;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:10px 8px 8px;gap:1px;font-size:14px}
+.side.rail{width:56px;align-items:center;padding:10px 6px}
+.sbi{height:32px;display:flex;align-items:center;gap:9px;padding:0 8px;border-radius:6px;color:var(--foreground);position:relative;white-space:nowrap;text-decoration:none}
+.sbi:hover{background:var(--sidebar-accent);color:var(--foreground)}
+.sbi.on{background:var(--sidebar-accent);font-weight:500}
+.sbi.on::before{content:"";position:absolute;left:-8px;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--foreground)}
+.sbi .ic{color:var(--muted-fg)}
+.sbi.on .ic{color:var(--foreground)}
+.sbi .tr{margin-left:auto;font:500 12px/1 var(--font-sans);color:var(--muted-fg);display:flex;gap:6px;font-variant-numeric:tabular-nums}
+.sbi.sub{padding-left:16px;height:28px;font-size:13px}
+.slab{font-size:12px;font-weight:500;color:var(--muted-fg);padding:12px 8px 4px;display:flex;align-items:center;gap:4px}
+.foot{margin-top:auto;display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);padding-top:8px}
+.meter{display:grid;grid-template-columns:62px 1fr 34px;align-items:center;gap:8px;font-size:12px;color:var(--muted-fg);padding:3px 8px;font-variant-numeric:tabular-nums}
+.meter b{font-weight:500;text-align:right;color:var(--foreground)}
+.meter b.warn{color:var(--needs)}
+.bar{height:6px;border-radius:999px;background:var(--muted);overflow:hidden;position:relative;display:block}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:inherit;background:var(--foreground);display:block}
+.bar i.warn{background:var(--needs-solid)}.bar i.run{background:var(--run)}.bar i.ok{background:var(--done)}.bar i.bad{background:var(--fail)}.bar i.grey{background:var(--ring)}
+.rail .sbi{width:40px;height:36px;justify-content:center;padding:0}
+.rail .sbi.on::before{left:-6px}
+.rb{position:absolute;top:3px;right:1px;min-width:16px;height:16px;border-radius:8px;font:600 10px/16px var(--font-sans);text-align:center;padding:0 4px;background:var(--needs-solid);color:#1c1917}
+.rb.n{background:var(--muted);color:var(--foreground);box-shadow:inset 0 0 0 1px var(--border)}
+.rsep{width:24px;height:1px;background:var(--border);margin:6px 0}
+.ic{width:16px;height:16px;flex:none}
+.ic.sm{width:14px;height:14px}.ic.xs{width:12px;height:12px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--muted-fg)}
+.num{font-variant-numeric:tabular-nums}
+.ph{min-height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 24px;flex-wrap:wrap}
+.ph h1{font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.015em;margin:0;white-space:nowrap}
+.ph .sub{font-size:13px;color:var(--muted-fg)}
+.ph .end{margin-left:auto;display:flex;align-items:center;gap:8px}
+.crumb{font-size:13px;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
+.crumb a{color:var(--muted-fg);text-decoration:none}
+.crumb a:hover{color:var(--foreground);text-decoration:underline;text-underline-offset:3px}
+.stamp{font-size:12px;color:var(--muted-fg);display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sel{height:32px;display:inline-flex;align-items:center;gap:8px;padding:0 10px 0 12px;border:1px solid var(--border);border-radius:6px;background:var(--background);font:400 13px/1 var(--font-sans);color:var(--foreground);white-space:nowrap;box-shadow:var(--sh-sm)}
+.sel .ic{color:var(--muted-fg)}
+.utabs{display:flex;gap:20px;border-bottom:1px solid var(--border);padding:0 24px;flex:none}
+.utabs a{height:40px;display:inline-flex;align-items:center;gap:6px;font-size:13.5px;font-weight:500;color:var(--muted-fg);position:relative;white-space:nowrap;text-decoration:none}
+.utabs a:hover{color:var(--foreground)}
+.utabs a.on{color:var(--foreground)}
+.utabs a.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--foreground);border-radius:2px}
+.utabs .c{font-size:11.5px;color:var(--muted-fg);font-variant-numeric:tabular-nums;font-weight:500}
+.utabs .cn{height:18px;min-width:18px;padding:0 5px;border-radius:9px;background:var(--needs-bg);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs-bd);font:600 11px/18px var(--font-sans);text-align:center}
+.pb{padding:24px;display:flex;flex-direction:column;gap:24px;max-width:1048px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin:0 0 12px}
+.sec-h h2{font-size:15px;line-height:22px;font-weight:600;margin:0;letter-spacing:-.005em}
+.sec-h .sub{font-size:13px;color:var(--muted-fg)}
+.sec-h .end{margin-left:auto}
+.btn{height:36px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 14px;border-radius:var(--radius);font:500 14px/1 var(--font-sans);white-space:nowrap;flex:none;border:1px solid transparent;cursor:pointer;text-decoration:none}
+.btn.sm{height:32px;padding:0 12px;font-size:13px;gap:6px}
+.btn.xs{height:28px;padding:0 10px;font-size:12.5px;gap:6px}
+.btn.pri{background:var(--primary);color:var(--primary-fg);box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:#27272a;color:var(--primary-fg)}
+.btn.out{background:var(--background);border-color:var(--border);color:var(--foreground);box-shadow:var(--sh-sm)}
+.btn.out:hover{background:var(--muted)}
+.btn.ghost{background:transparent;color:var(--foreground)}
+.btn.ghost:hover{background:var(--muted)}
+.btn:focus-visible,.sbi:focus-visible,.utabs a:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.lnk{color:var(--foreground);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--ring);font-weight:500}
+.lnk:hover{text-decoration-color:var(--foreground)}
+kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font:500 11px/1 var(--font-mono);color:var(--muted-fg)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:var(--radius);font:500 12px/1 var(--font-sans);white-space:nowrap;border:1px solid transparent;font-variant-numeric:tabular-nums;flex:none}
+.b-out{border-color:var(--border);color:var(--foreground)}
+.b-grey{background:var(--muted);color:var(--muted-fg);border-color:var(--border)}
+.b-needs{background:var(--needs-bg);color:var(--needs);border-color:var(--needs-bd)}
+.b-run{background:var(--run-bg);color:var(--run);border-color:var(--run-bd)}
+.b-done{background:var(--done-bg);color:var(--done);border-color:var(--done-bd)}
+.b-fail{background:var(--fail-bg);color:var(--fail);border-color:var(--fail-bd)}
+.b-ready{background:var(--ready-bg);color:var(--ready);border-color:var(--ready-bd)}
+.g{font-family:var(--font-mono);font-weight:600}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px}
+.verdict{display:flex;flex-direction:column;gap:10px;padding:20px 20px 18px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.verdict .top{display:flex;align-items:center;gap:8px}
+.verdict h2{margin:0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.015em;max-width:62ch;text-wrap:pretty}
+.verdict p{margin:0;font-size:14px;line-height:21px;color:var(--muted-fg);max-width:72ch}
+.verdict .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.tile{padding:16px;display:flex;flex-direction:column;gap:6px;min-height:136px}
+.tile .lb{font-size:13px;font-weight:500;color:var(--muted-fg);display:flex;align-items:center;gap:6px}
+.tile .v{font-size:30px;line-height:36px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.tile .v small{font-size:14px;font-weight:500;color:var(--muted-fg);letter-spacing:0;margin-left:4px}
+.tile .st{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500}
+.tile .cmp{font-size:12.5px;line-height:18px;color:var(--muted-fg);font-variant-numeric:tabular-nums}
+.tile.bad{border-color:var(--fail-bd);box-shadow:inset 3px 0 0 var(--fail)}
+.s-done{color:var(--done)}.s-fail{color:var(--fail)}.s-needs{color:var(--needs)}.s-grey{color:var(--muted-fg)}.s-run{color:var(--run)}
+.chart{padding:16px 16px 12px;display:flex;flex-direction:column;gap:8px}
+.chart .ch{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.chart .ch h3{margin:0;font-size:14px;line-height:20px;font-weight:600}
+.chart .ch .sub{font-size:12.5px;color:var(--muted-fg)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted-fg);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:18px;height:0;border-top:2px solid var(--chart-now);display:inline-block}
+.sw.before{border-top:1.5px solid var(--chart-before)}
+.sw.lim{border-top:1.5px dashed var(--fail)}
+.mk{min-width:20px;height:20px;padding:0 6px;border-radius:10px;border:1px solid #71717a;background:var(--background);display:inline-flex;align-items:center;justify-content:center;font:600 11px/1 var(--font-sans);color:#3f3f46;font-variant-numeric:tabular-nums;flex:none}
+.mk.lev{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+.mkl{display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);margin:4px -16px 0;padding:10px 16px 0}
+.mkl a{display:flex;align-items:center;gap:10px;font-size:13px;line-height:18px;padding:5px 6px;border-radius:6px;color:var(--foreground);text-decoration:none}
+.mkl a:hover{background:var(--muted)}
+.mkl .when{margin-left:auto;font-size:12px;color:var(--muted-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.list{display:flex;flex-direction:column}
+.li{display:grid;grid-template-columns:88px 96px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:44px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:13px;color:var(--foreground);text-decoration:none}
+.li:last-child{border-bottom:0}
+.li:hover{background:color-mix(in srgb,var(--muted) 60%,transparent);color:var(--foreground)}
+.li .t{font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li .w{font-size:12px;color:var(--muted-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.li .ef{font-size:12.5px;color:var(--muted-fg);white-space:nowrap;font-variant-numeric:tabular-nums}
+.kind{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font:500 11.5px/1 var(--font-sans);color:var(--muted-fg);background:var(--muted);justify-self:start}
+.fold{border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.fold summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:48px;padding:12px 16px;cursor:pointer;font-size:14px}
+.fold summary::-webkit-details-marker{display:none}
+.fold summary:hover{background:var(--subtle)}
+.fold summary .t{font-weight:600}
+.fold summary .hd{color:var(--muted-fg);font-size:13px}
+.fold summary .cue{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--muted-fg)}
+.fold .fb{padding:4px 16px 16px;font-size:13.5px;line-height:21px;color:var(--foreground);border-top:1px solid var(--border)}
+.banner{min-height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:8px 12px 8px 24px;font-size:13px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.banner.warn{background:var(--needs-bg);border-bottom-color:var(--needs-bd);color:var(--foreground)}
+.banner.warn .ic{color:var(--needs)}
+.banner.crit{background:var(--fail-bg);border-bottom-color:var(--fail-bd)}
+.banner.crit .ic{color:var(--fail)}
+.banner.info{background:var(--subtle)}
+.banner.info .ic{color:var(--muted-fg)}
+.banner .ba{margin-left:auto;display:flex;gap:6px;align-items:center}
+.skel{background:var(--muted);border-radius:4px;height:12px;display:block}
+.tt{background:var(--primary);color:var(--primary-fg);font-size:12px;line-height:17px;padding:8px 10px;border-radius:6px;box-shadow:var(--sh-md);display:flex;flex-direction:column;gap:3px;width:260px}
+.tt .k{color:#a1a1aa;font-size:11.5px}
+.tt b{font-weight:600;font-size:13px}
+.note{font-size:12.5px;line-height:18px;color:var(--muted-fg)}
+.fr{box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--focus)!important}
+</style>
+</helmet>
+<div class="board" style="gap: 20px">
+  <div class="ann"><b>2 · Landing states</b><span>each strip is the content column of board 1 (1048px); the shell is unchanged</span><span>banner slot sits between the sub-nav and the page body, 40px min, one banner at a time, worst first: C &gt; B &gt; A</span><span>reads <i>build.json</i> (as_of, last_error) and each repo's supervisor heartbeat</span></div>
+
+  <div class="ann" style="padding-top: 0"><i>A · Built over 1 hour ago, and the supervisor's heartbeat is also over 1 hour old</i></div>
+  <div class="win" style="width: 1048px">
+    <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp warn">Built 08:02 · 2 hours ago</span><button class="btn out sm fr">Rebuild</button></div></header>
+    <div class="banner warn" role="status"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4M12 17h.01"></path></svg><span>Built 2 hours ago. The supervisor in desk-skills hasn't checked in since 08:04, so these numbers may be behind.</span><span class="ba"><a class="btn ghost xs" href="#">See Health</a><button class="btn out xs">Rebuild</button></span></div>
+    <div class="pb" style="padding-bottom: 20px"><section class="verdict"><h2>Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section></div>
+  </div>
+  <div class="note" style="padding: 0 4px">Focus ring shown on the header's Rebuild: 2px var(--focus) ring, 2px offset (class .fr). While a rebuild runs, the button reads "Rebuilding…" with a 12px spinner and is disabled; the banner stays until the new build lands.</div>
+
+  <div class="ann" style="padding-top: 0"><i>B · Built over 26 hours ago: everything under the banner is greyed so an old number can't pass for a current one</i></div>
+  <div class="win" style="width: 1048px">
+    <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp s-fail">Built Fri 27 Nov, 04:12 · 30 hours ago</span></div></header>
+    <div class="banner crit" role="alert"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v4M12 16h.01"></path></svg><span>These numbers are out of date. Nothing has rebuilt Levers since Fri 27 Nov, 04:12.</span><span class="ba"><button class="btn pri xs">Rebuild now</button></span></div>
+    <div class="pb" style="padding-bottom: 20px; opacity: .45" aria-hidden="true">
+      <section class="verdict"><h2>Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section>
+      <div class="tiles"><div class="card tile" style="min-height: 96px"><span class="lb">Cost per ticket</span><span class="v">$16.47</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Tokens per ticket</span><span class="v">29.8M</span></div><div class="card tile" style="min-height: 96px"><span class="lb">Fix tries per ticket</span><span class="v">0.30</span></div></div>
+    </div>
+  </div>
+
+  <div class="ann" style="padding-top: 0"><i>C · The last build failed or ran out of time: the last good build stays on screen</i></div>
+  <div class="win" style="width: 1048px">
+    <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp">Built 06:55 · 3 hours ago</span><button class="btn out sm">Rebuild</button></div></header>
+    <div class="banner warn" role="status"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4M12 17h.01"></path></svg><span>Levers couldn't update at 09:34: the build ran out of time after 2 minutes. You're seeing the build from 06:55.</span><span class="ba"><a class="btn ghost xs" href="#">See what failed</a><button class="btn out xs">Try again</button></span></div>
+    <div class="pb" style="padding-bottom: 20px"><section class="verdict"><h2>Tickets cost 6% less than before levers, but fix tries have doubled to 0.30 a ticket, over the 0.16 limit.</h2></section></div>
+  </div>
+  <div class="note" style="padding: 0 4px">"See what failed" opens Health › Levers build with the error kept verbatim. Never word this as "the supervisor may have stopped": that is state A, and only when the heartbeat says so.</div>
+
+  <div class="ann" style="padding-top: 0"><i>D · A number desk doesn't have: — never 0, and the reason under it</i></div>
+  <div class="win" style="width: 1048px">
+    <div class="pb" style="padding-top: 20px; padding-bottom: 20px">
+      <div class="tiles">
+        <div class="card tile"><span class="lb">Cost per ticket</span><span class="v">$16.47</span><span class="st s-done"><span class="dot"></span>6% less than before levers</span><span class="cmp">Before levers $17.52 · 89 tickets since 21 Nov</span></div>
+        <div class="card tile"><span class="lb">Tokens per ticket</span><span class="v muted">—</span><span class="st s-grey">No number yet</span><span class="cmp">No ticket merged in studia-zendesk in the last 7 days.</span></div>
+        <div class="card tile"><span class="lb">Fix tries per ticket</span><span class="v muted">—</span><span class="st s-grey">Not recorded</span><span class="cmp">3 tickets have no fix-try count, so desk shows none rather than a wrong one.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann" style="padding-top: 0"><i>E · First load, no build cached yet: skeleton in the page's real shape, never a bare spinner</i></div>
+  <div class="win" style="width: 1048px">
+    <header class="ph"><h1>Levers</h1><div class="end"><span class="stamp">Building for the first time…</span></div></header>
+    <div class="pb" style="padding-bottom: 20px" aria-busy="true">
+      <div class="verdict" style="gap: 12px"><span class="skel" style="width: 140px; height: 22px; border-radius: 6px"></span><span class="skel" style="width: 82%; height: 20px"></span><span class="skel" style="width: 64%; height: 14px"></span></div>
+      <div class="tiles"><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div><div class="card tile" style="gap: 12px"><span class="skel" style="width: 110px"></span><span class="skel" style="width: 96px; height: 30px"></span><span class="skel" style="width: 70%"></span></div></div>
+      <div class="card" style="height: 268px; padding: 16px; display: flex; flex-direction: column; gap: 12px"><span class="skel" style="width: 180px; height: 14px"></span><span class="skel" style="flex: 1; border-radius: 6px"></span></div>
+    </div>
+  </div>
+
+  <div class="ann" style="padding-top: 0"><i>F · Empty: the picked repo isn't enrolled (its levers setting is none). This is the only place the page says why nothing is tested.</i></div>
+  <div class="win" style="width: 1048px">
+    <header class="ph"><h1>Levers</h1><div class="end"><span class="sel">studia-web<svg class="ic sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span></div></header>
+    <div class="pb" style="padding-bottom: 24px">
+      <section class="verdict" style="align-items: flex-start">
+        <h2>desk isn't testing anything in studia-web.</h2>
+        <p>Levers are set to none for studia-web, so every ticket there runs the way it did before levers. Turn levers on and desk starts testing them on half of new tickets.</p>
+        <div class="acts"><a class="btn pri sm" href="#">Turn on levers for studia-web</a><a class="btn ghost sm" href="Main.dc.html">Back to desk-skills</a></div>
+      </section>
+    </div>
+  </div>
+  <div class="note" style="padding: 0 4px">"Turn on levers" opens Settings › studia-web › Levers with the choice staged; it doesn't change anything until confirmed there.</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":2600}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
