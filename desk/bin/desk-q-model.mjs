@@ -4982,7 +4982,7 @@ export const OPT_ON = SELECT_BG, OPT_BOLD = `1;${SELECT_BG}`, OPT_GREY = `${GREY
 export const forgetLogins = () => { lastLogins = null; };
 
 // What the screen draws with, beside what is exported where it is defined.
-export { LABEL, cut, wrap, stateStamp, attention, countOf, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
+export { LABEL, cut, wrap, stateStamp, countOf, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
   timelineParts, daysParts, epicsParts, SUPPLIER_LABEL, SUPPLIER_BILL, costsParts, costNameOf, supplierParts, parkedBadge,
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, overviewParts, hhmm, repoParts, logPath, ticketParts, isWrite, isCommand, target, apply, supervisorState,

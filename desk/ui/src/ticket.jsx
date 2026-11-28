@@ -15,7 +15,7 @@ const REASON_LINES = 5;
 // Each state's glyph, word and colour (§1.3).
 const STATE = {
   running: ['●', 'running', 'run'], finishing: ['●', 'running', 'run'], ready: ['○', 'ready', 'ready'], queued: ['○', 'ready', 'ready'],
-  merging: ['▸', 'merging', 'merge'], waiting: ['·', 'waiting', 'wait'], needs: ['◆', 'needs you', 'needs'], stuck: ['◆', 'needs you', 'needs'],
+  merging: ['▸', 'merging', 'merge'], checks: ['▸', 'on checks', 'merge'], waiting: ['·', 'waiting', 'wait'], needs: ['◆', 'needs you', 'needs'], stuck: ['◆', 'needs you', 'needs'],
   failed: ['✕', 'failed', 'fail'], done: ['✓', 'done', 'done'],
 };
 const stateOf = (t) => STATE[t.state] ?? STATE[t.group] ?? ['·', t.state ?? 'unknown', 'wait'];
@@ -56,6 +56,8 @@ export function stateLine(t) {
       if (t.pr?.draft) return { tone, lead: 'Merges by itself once green:', rest: `${pr} is draft and comes out of draft at the next pass.` };
       return { tone, lead: 'Merges by itself once green:', rest: sentence(`${pr}${t.pr?.need ? `: ${t.pr.need.replaceAll(' · ', ', ')}` : ''}`) };
     }
+    // A draft whose red checks name no file it changes, waiting on their one rerun (desk-q-model.mjs draftNeed).
+    case 'checks': return { tone, lead: 'Merges by itself once green:', rest: sentence(`${pr}${t.pr?.need ? `: ${t.pr.need.replaceAll(' · ', ', ')}` : ' waits on its red checks’ one rerun'}`) };
     case 'failed': return { tone, lead: 'Stopped:', rest: `${sentence(t.failed_why ?? 'its worker stopped')} Requeue or drop it in Inbox.` };
     case 'done': return t.merged_at && pr ? { tone, lead: `Merged at ${clock(t.merged_at)} as ${pr}.`, rest: '' } : { tone, lead: 'Done.', rest: '' };
     default:

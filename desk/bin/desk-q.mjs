@@ -58,7 +58,7 @@ import { readCosts } from './costs.mjs';
 import { pageState } from './levers-refresh.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
 import { serverModel } from './desk-q-server.mjs';
-import { LABEL, cut, wrap, stateStamp, attention, countOf, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
+import { LABEL, cut, wrap, stateStamp, countOf, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
   timelineParts, daysParts, epicsParts, SUPPLIER_LABEL, SUPPLIER_BILL, costsParts, costNameOf, supplierParts, supplierPageParts, parkedBadge,
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, usageLines, usageOf, forgetLogins, overviewParts, hhmm, repoParts, logPath, ticketParts, prToOpen, shownState, shownRepos, repoPlace,

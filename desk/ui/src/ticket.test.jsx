@@ -49,6 +49,8 @@ describe('the state line', () => {
       'Needs your answer: SV-3844 PR #2699 is an external-shape change with no live check possible.'],
     ['waiting', { state: 'waiting', behind: [{ key: 'DS-672', state: 'running', stage: '0/9' }] }, 'Moves by itself: behind DS-672 (running, stage 0/9).'],
     ['merging', { state: 'merging', pr: { number: 658, draft: true } }, 'Merges by itself once green: #658 is draft and comes out of draft at the next pass.'],
+    ['on checks', { state: 'checks', group: 'merging', pr: { number: 658, draft: true, need: 'draft · waiting on checks: re-run once after their run finishes as their failed logs name no file this PR changes, out of draft once green' } },
+      'Merges by itself once green: #658: draft, waiting on checks: re-run once after their run finishes as their failed logs name no file this PR changes, out of draft once green.'],
     ['ready', { state: 'ready', wait: 'waits for DS-606 (collides)' }, 'Starts when a worker is free. Waits for DS-606 (collides).'],
     ['failed', { state: 'failed', failed_why: 'unit (node 24) still red after 2 fix tries' }, 'Stopped: unit (node 24) still red after 2 fix tries. Requeue or drop it in Inbox.'],
     ['done', { state: 'done', merged_at: at(9, 41), pr: { number: 651 } }, 'Merged at 09:41 as #651.'],
