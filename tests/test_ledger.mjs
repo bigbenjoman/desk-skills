@@ -29,6 +29,9 @@ t('AC1 a PR closed unmerged', rows[5], '| E-7 | closed without merging | #17 | o
 t('AC1 the comment opens and closes with the markers', ledger.startsWith(LEDGER_BEGIN) && ledger.endsWith(LEDGER_END), true);
 t('AC1 an unreadable PR state reads as done, not a guess', ledgerState(q.tickets['E-2'], () => null), 'done');
 t('AC1 a parked child (not held)', ledgerState({ state: 'parked', park: { question: 'which helper?' } }), 'parked');
+t('#1681 AC2 a hold with no blocker left reads as such, with the release command, never "held until ? merge"',
+  ledgerState({ key: 'E-8', state: 'parked', park: { question: `${HELD_PREFIX}: blocked by E-2 (Jira link)` }, held_by: null }),
+  'held, no blocker: release with queue.mjs set E-8 state=triaged');
 t('AC1 a pipe in a cell cannot break the table', renderLedger({ tickets: { a: { key: 'A-1', state: 'done', result: { pr: 1 }, model: 'x|y' } } }).includes('| x\\|y |'), true);
 
 // AC1: a merge changes the ledger, and so its hash; the same queue gives the same hash.

@@ -1512,13 +1512,15 @@ t('DS-716 AC1 a lane C park held behind a running sibling: waiting, behind it', 
 t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: tests running | after #177');
 t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
 t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');
-t('DS-217 (DS-279 AC16) a hold that names no blocker: needs you, since nothing lets it start', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: let it start');
+t('#1681 AC2 (DS-279 AC16) a hold that names no blocker, passes running: waiting on the next pass, with the release command', cells217('holdsup', 'W-0'), '· waiting | held, no blocker: release with queue.mjs set W-0 …');
+t('#1681 AC2 with no pass running it needs you, and gives the release command', JSON.stringify(Q.holdOf({ tickets: {} }, { key: 'W-0', ...heldBy('') })),
+  JSON.stringify({ k: 'needs', text: 'held, no blocker: release with queue.mjs set W-0 state=triaged', act: 'node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null, then node ~/.claude/desk/bin/queue.mjs front W-0' }));
 t('DS-742 AC2 a ticket queue.mjs stop held: needs you, to let it start', cells217('holdsup', 'W-0S'), '◆ needs you | its worker was stopped: let it start');
 // The page's rail, its wrapped lines joined.
 const railText = (page) => lines(page).filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ');
 const w0 = Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED });
-t('DS-217 (DS-218 AC1) its page says so on the rail and gives the release command, each on a line of its own',
-  `${railText(w0)} | ${lines(w0).includes('node ~/.claude/desk/bin/queue.mjs set W-0 state=triaged park=null held_by=null')}`, 'Needs you. Held behind no recorded blocker: let it start. Run, in holdsup: | true');
+t('#1681 AC2 (DS-218 AC1) its page says so on the rail, the next pass releasing it',
+  railText(w0), 'Moves without you: held, no blocker: release with queue.mjs set W-0 state=triaged, or the next pass releases it.');
 t('DS-217 AC3 (DS-280 AC9) behind a draft: waiting on the draft, which needs you', cells217('hold', 'W-3'), '· waiting | behind #175, which needs you');
 // hold's: W-7 by its hold, B-PARK's question, B-RED's stopped worker, W-8 and W-9 held outside the
 // batch, and the PRs of B-DRAFT and B-READY; W-3 and W-4 wait on those PRs, so count once.
