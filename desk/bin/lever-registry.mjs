@@ -19,12 +19,14 @@ export const KEPT_STATES = Object.freeze(['adopted', 'settled']);
 
 // The epic's decision rule, shared by every lever: an adopt needs the mechanism metric better by at
 // least the lever's minimum with this probability, the cost ratio's upper bound below `cost_ratio_max`,
-// and every guardrail within its margin, on at least the layer's `min_per_arm` tickets per arm and at
+// the time per ticket ratio's (median hours, first start to merge) below `time_ratio_max`, and every
+// guardrail within its margin, on at least the layer's `min_per_arm` tickets per arm and at
 // most `max_per_arm`. A lever changes state at most once per repo every `cooldown_days`, and a revert
 // on a guardrail may come before the minimum sample but not below `revert_min_per_arm`.
 export const DECISION_RULE = Object.freeze({
   probability: 0.9,
   cost_ratio_max: 1.05,
+  time_ratio_max: 1.05,
   min_per_arm: Object.freeze({ 'low-risk': 30, 'quality-risk': 40 }),
   max_per_arm: 150,
   cooldown_days: 7,

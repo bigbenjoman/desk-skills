@@ -199,7 +199,8 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
 const row = (key, daysAgo, o = {}) => ({
   slug: o.slug ?? DS, batch: null, key, admitted_at: iso(daysAgo * DAY), merged_at: 'merged' in o ? o.merged : iso(daysAgo * DAY - HOUR),
   cost: o.cost ?? 16.8, cost_complete: o.complete ?? true, input: o.input ?? 34_000_000, output: 150_000,
-  starts: o.starts ?? 4, denials: o.denials ?? 8, fix_tries: o.fix ?? 0, start_records: [{ claude_version: '2.4.1', desk_commit: 'abc123' }],
+  starts: o.starts ?? 4, denials: o.denials ?? 8, fix_tries: o.fix ?? 0, start_records: o.start_records ?? [{ at: iso(daysAgo * DAY - 10 * MIN), claude_version: '2.4.1', desk_commit: 'abc123' }],
+  ...(o.reworked ? { reworked: true } : {}),
   ...(o.excluded ? { excluded: o.excluded } : {}),
 });
 const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/levers-evidence/${name}`]: jsonl(rows) });
@@ -253,7 +254,7 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   const rows = Array.from({ length: 30 }, (_, i) => row(`DS-${i + 1}`, i + 1, { cost: 16 + (i % 3) * 0.5, denials: 6, starts: 3, fix: i % 5 === 0 ? 1 : 0 }));
   const v = view(machine({ files: evidence(DS, rows) }));
   const m = v.panels.trends.metrics;
-  t('AC11 four metrics', Object.keys(m).join(','), 'cost,tokens,prompts,fixes');
+  t('AC11 five metrics, time beside cost and tokens', Object.keys(m).join(','), 'cost,tokens,time,prompts,fixes');
   for (const [k, x] of Object.entries(m)) {
     t(`AC11 ${k}: 30 daily points ending yesterday`, `${x.daily.length} ${x.daily.at(-1).date}`, '30 2026-11-14');
     t(`AC11 ${k}: 6 weekly points ending last week`, `${x.weekly.length} ${x.weekly.at(-1).week}`, '6 2026-11-02');
@@ -511,6 +512,46 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
   unlock(V.buildLock(out));
   V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out });
   t('AC14 a build that ran has let go of the lock before it returns', j([existsSync(join(out, 'view.json')), existsSync(V.buildLock(out))]), j([true, false]));
+}
+
+// DS-1070: time per ticket, the median hours from first start to merge, beside cost and tokens.
+{
+  const { renderPage } = await import('../desk/bin/levers-page.mjs');
+  const at = (h) => iso(9 * DAY - h * HOUR);
+  const rows = [
+    // 4 hours from the first of two starts, and 6 hours.
+    row('DS-1', 9, { merged: at(5), start_records: [{ at: at(1) }, { at: at(3) }] }),
+    row('DS-2', 9, { merged: at(6), start_records: [{ at: at(0) }] }),
+    row('DS-3', 9, { start_records: [{ claude_version: '2.4.1' }] }),
+    row('DS-4', 9, { merged: null }),
+    row('DS-5', 9, { reworked: true }),
+    // A first start after its merge is no time, never a negative one.
+    row('DS-6', 9, { merged: at(6), start_records: [{ at: at(7) }] }),
+  ];
+  const timed = BASELINE.replace('  repair cycles', '  time per accepted ticket: median 8.00 hours from first start to merge, over 20 of 24; 4 left out, with no recorded start or requeued after merging\n  repair cycles');
+  const evals = { [`${DS}/lever-evals.jsonl`]: jsonl([{ ...evalRow('wrappers', { on: 31, off: 31 }), time: { ratio: 0.9, lo90: 0.82, hi90: 1.01, margin: 1.05, hours: { on: 5.4, off: 6 }, n: { on: 31, off: 33, excluded: { no_start: 2 } }, scope: 'pooled' } }]) };
+  const v = view(machine({ repos: autoRepos, files: { ...evidence(DS, rows), ...evals, [`${DS}/phase0-baseline-2026-11-13.txt`]: timed } }));
+  const m = v.panels.trends.metrics.time;
+  t('DS-1070 AC1 time is the median hours from first start to merge, per accepted ticket', `${m.callouts.to_date} ${m.unit} ${m.baseline.basis}`, '5 hours, first start to merge (median) per accepted ticket');
+  t('DS-1070 AC1 keyed by the day each ticket merged', `${m.keyed_by} ${m.counts.to_date}`, 'merged_at 2');
+  t('DS-1070 AC2 no start, no merge or reworked is left out and counted, never 0 hours', j(m.excluded), '{"total":4,"by_reason":{"no_start":2,"not_merged":1,"reworked":1}}');
+  t('DS-1070 AC3 the baseline carries the before-levers median time', `${v.baseline.time_hours} ${m.baseline.value} ${m.baseline.why}`, '8 8 null');
+  t('DS-1070 AC4 time has 30 daily, 6 weekly and 12 monthly points', `${m.daily.length} ${m.weekly.length} ${m.monthly.length}`, '30 6 12');
+  t('DS-1070 AC4 last week\'s point and the comparison with before levers', `${m.callouts.last_week} ${m.callouts.last_week_vs_before_pct}`, '5 -37.5');
+  const c = cell(v, 'wrappers').time;
+  t('DS-1070 AC5 a lever\'s evidence carries median time on each side', `${c.hours.on} ${c.hours.off} ${c.label} ${c.n}`, '5.4 6 no slower than off 31');
+  t('DS-1070 AC5 below the minimum sample, as cost', `${V.timeView({ ratio: 1.2, lo90: 1.1, hi90: 1.3, n: { on: 12, off: 40 } }, 30).label}`, 'too early: 12 of 30');
+  t('DS-1070 AC5 a time interval over the margin can\'t rule out slower', V.timeView({ lo90: 0.98, hi90: 1.12, n: { on: 31, off: 31 } }, 30).verdict, 'cant_rule_out_slower');
+  t('DS-1070 AC6 the verdict line names time', `${v.line.state} ${v.line.time} ${v.line.faster_pct}`, 'working faster 37.5');
+  const page = renderPage(v);
+  t('DS-1070 AC6 and the Overview says it', page.includes('cost <b>4.1% less</b> and finished <b>37.5% faster</b> than before levers'), true);
+  t('DS-1070 AC8 How desk decides says kept only if cheaper and no slower', page.includes('desk keeps the lever only if those tickets cost less and are no slower, and nothing else got worse'), true);
+  const slower = view(machine({ repos: autoRepos, files: { ...evidence(DS, rows), ...evals, [`${DS}/phase0-baseline-2026-11-13.txt`]: timed.replace('median 8.00', 'median 4.00') } }));
+  t('DS-1070 AC6 slower than before levers is named too', `${slower.line.time} ${renderPage(slower).includes('finished <b>25.0% slower</b>')}`, 'slower true');
+  const same = view(machine({ repos: autoRepos, files: { ...evidence(DS, rows), ...evals, [`${DS}/phase0-baseline-2026-11-13.txt`]: timed.replace('median 8.00', 'median 5.02') } }));
+  t('DS-1070 AC6 about the same is not named', `${same.line.time} ${renderPage(same).includes('finished <b>')}`, 'same false');
+  const old = view(machine({ files: evidence(DS, rows) })).panels.trends.metrics.time.baseline;
+  t('DS-1070 AC3 a baseline with no start times is null with its reason', `${old.value} ${old.why}`, 'null this baseline report has no time per accepted ticket line: it predates start times being reported');
 }
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
