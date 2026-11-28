@@ -17,7 +17,7 @@
 //   alive     a Set of the keys whose follow_run process is still running
 //   now       the time, in ms
 import { followOnPending, postMergeOwed } from '../harvest.mjs';
-import { owedSteps, checkOf, followKind, followDue, followRetrying, FOLLOW_TIMEOUT_MS } from '../follow-steps.mjs';
+import { owedSteps, checkOf, followKind, followDue, followRetrying, unchecked, FOLLOW_TIMEOUT_MS } from '../follow-steps.mjs';
 
 const ready = (s, t) => followOnPending(t) && !postMergeOwed(t) && s.out.has(t.key);
 
@@ -41,9 +41,9 @@ export function decideFollowSteps(s) {
   return out;
 }
 
-// Whether a ticket still waits on a checker: one is running, or a step one found pending is due again
-// within FOLLOW_WAIT_MS of falling due. Either keeps the batch from idling, so a pass comes back to it. A
+// Whether a ticket still waits on a checker: one is running, a step one found pending is due again
+// within FOLLOW_WAIT_MS of falling due, or a step one could not check once is owed its one retry. Each keeps the batch from idling, so a pass comes back to it. A
 // step not due yet does not: the supervisor wakes an idle batch once it is (followDueSince).
 export const followAwaits = (s) => Object.values(s.tickets).some((t) => t.follow_run
-  || (ready(s, t) && t.follow_on.some((x) => followKind(x, s.labels) === 'runnable' && checkOf(t, x)?.result === 'pending'
-    && followDue(x, s.out.get(t.key), s.now) && followRetrying(x, s.out.get(t.key), s.now))));
+  || (ready(s, t) && t.follow_on.some((x) => followKind(x, s.labels) === 'runnable' && ((unchecked(checkOf(t, x)) && !checkOf(t, x).retried)
+    || (checkOf(t, x)?.result === 'pending' && followDue(x, s.out.get(t.key), s.now) && followRetrying(x, s.out.get(t.key), s.now))))));

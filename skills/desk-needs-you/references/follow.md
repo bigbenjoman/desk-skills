@@ -17,7 +17,9 @@ read beyond the script:
 A step that only reads CI, desk's logs or desk's state is run after the merge by desk's follow-step
 checker, and reaches this list only when it failed: its `Check:` then says what the checker found and
 its evidence (a run URL or a file). Read that evidence before running it again; a failure the evidence
-confirms is the user's. One no checker passed or failed within two hours of its code going out (the run
+confirms is the user's. A checker that could not read a step's evidence says "could not check", with
+what it tried, never failed; the next pass runs it once more, and only a second "could not check" lists
+it here, naming what was tried. One no checker passed or failed within two hours of its code going out (the run
 it reads was still going, or no pass started a checker) is listed too, its note saying so: run it as any
 other step. Each checker step is an item of its own (`follow:<KEY>:checked:<id>`, after any gate), as
 is a step that waits a set time after the merge (`follow:<KEY>:later:<id>`), so `done` on one item never

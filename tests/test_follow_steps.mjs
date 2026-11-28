@@ -4,7 +4,7 @@
 // Pure functions, plus scratch output files under a throwaway directory.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { followKind, followDelayMs, followDueAt, followDueSince, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS, FOLLOW_BROKEN_RETRY_MS } from '../desk/bin/follow-steps.mjs';
+import { followKind, followDelayMs, followDueAt, followDueSince, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, followFilesUnknown, settled, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS, FOLLOW_BROKEN_RETRY_MS } from '../desk/bin/follow-steps.mjs';
 import { decideFollowSteps, followAwaits } from '../desk/bin/pass/follow-steps.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 import { scratch } from './scratch.mjs';
@@ -204,6 +204,31 @@ const STEPS = [CI, { step: 'read audit.jsonl for the cost', row: null }];
 }
 t('#1628 the prompt asks for the absent line, the run\'s conclusion and the suite total',
   /does not print \(a per-check line[\s\S]*give `absent`/.test(followPrompt({ slug: 's', repo: 'a/b', t: { key: 'DS-1', result: { pr: 7 } }, steps: [CI], bin: '/b', dirs: ['/s'] })), true);
+{
+  // #1599 AC4: a checker without read tools (Bash denied, no Glob or Grep) reports it could not check,
+  // with what it tried, and that is read as unchecked, not failed.
+  const p = output('no-tools', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'pass', found: 'ok', evidence: 'u' }, { n: 1, result: 'unchecked', found: 'could not read audit.jsonl', evidence: '/s/audit.jsonl', tried: 'tail /s/audit.jsonl: Bash denied; no Grep or Glob' }] })}`);
+  const r = readFollow(p, STEPS).results;
+  t('#1599 AC3 AC4 a checker without read tools gives unchecked, with what it tried, not failed',
+    j(r.map((x) => [x.result, x.tried ?? null])), j([['pass', null], ['unchecked', 'tail /s/audit.jsonl: Bash denied; no Grep or Glob']]));
+  t('#1599 an unchecked step giving no tried says so', readFollow(output('no-tried', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'unchecked' }] })}`), [CI]).results[0].tried, 'it did not say');
+  t('#1599 unchecked once does not settle a step; unchecked a second time does', j([settled({ result: 'unchecked' }), settled({ result: 'unchecked', retried: true })]), '[false,true]');
+  const c = followComment('DS-1', [{ ...CI, result: 'unchecked', found: 'no file', evidence: 'e', tried: 'tail x', retried: true }]);
+  t('#1599 AC3 the PR comment says couldn\'t check, with what was tried', /- \*\*couldn't check\*\*: the CI run on main is green\. no file\. Tried: tail x\n\nEach step not passed is listed in needs-you\./.test(c), true);
+}
+{
+  const once = (more = {}) => merged('A', { follow_on: [CI], follow_checks: [{ ...CI, pr: 7, result: 'unchecked', found: 'x', evidence: 'y', tried: 'z', at: '2026-11-20T11:59:00.000Z', ...more }] });
+  t('#1599 AC3 a step unchecked once is run again on the next pass', j(decideFollowSteps(snap([once()]))), j([{ type: 'start', key: 'A', steps: [CI] }]));
+  t('#1599 AC3 and keeps the batch waiting for that pass', followAwaits(snap([once()])), true);
+  none('#1599 AC3 unchecked a second time it is not run again', once({ retried: true }));
+  t('#1599 AC3 nor waited on', followAwaits(snap([once({ retried: true })])), false);
+}
+{
+  // #1599 AC2 AC4: a step naming a desk file desk never writes is refused at the worker's DONE check.
+  t('#1599 AC2 a step naming a log desk never writes is unknown', j(followFilesUnknown({ step: 'read base-red.jsonl for main read red twice' })), '["base-red.jsonl"]');
+  t('#1599 AC2 a log desk writes is known, by name or path', j(followFilesUnknown({ step: 'tail ~/.desk-autopilot/maintenance/maintenance.log and $DESK_STATE/passes.jsonl' })), '[]');
+  t('#1599 AC2 a path that exists is known', j(followFilesUnknown({ step: 'read /x/mine.jsonl' }, { exists: (f) => f === '/x/mine.jsonl' })), '[]');
+}
 t('a checker that left no result line is an error', readFollow(output('none', 'I could not finish.'), STEPS).error, `gave no ${FOLLOW_RESULT_MARK} line`);
 t('a checker with no output is an error', readFollow(join(T, 'missing.json'), STEPS).error, 'gave no output');
 t('an error fails every step of the run, naming why and where', j(failedRun({ out: '/o', steps: [CI] }, 'left no output')),
@@ -224,11 +249,17 @@ t('an error fails every step of the run, naming why and where', j(failedRun({ ou
   t('the checker reads only: gh run, pr view and checks, issue list and view, desk-gh reads, and the files under its directories',
     j(s.permissions.allow), j(['Bash(gh run list:*)', 'Bash(gh run view:*)', 'Bash(gh pr view:*)', 'Bash(gh pr checks:*)', 'Bash(gh issue list:*)', 'Bash(gh issue view:*)', 'Bash(node /b/desk-gh.mjs read:*)',
       'Bash(node /b/phase0-report.mjs)', 'Bash(node /b/phase0-report.mjs --*)', 'Bash(node /b/cache-report.mjs:*)',
-      'Read(//state/**)', 'Grep(//state/**)', 'Glob(//state/**)', 'Read(//home/**)', 'Grep(//home/**)', 'Glob(//home/**)']));
+      'Bash(node /b/desk-q.mjs --json:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(grep:*)', 'Bash(jq:*)',
+      'Glob', 'Grep', 'Read(//state/**)', 'Read(//home/**)']));
+  t('#1599 AC1 the checker has Read, Glob and Grep, and read-only Bash for desk\'s state and logs, never a write',
+    ['Glob', 'Grep', 'Read(//state/**)', 'Bash(tail:*)', 'Bash(node /b/desk-q.mjs --json:*)'].every((r) => s.permissions.allow.includes(r))
+      && !s.permissions.allow.some((r) => /^Bash\((?:rm|mv|cp|tee|sed|node \/b\/desk-q\.mjs\)|node \/b\/desk-q\.mjs:)/.test(r)), true);
   t('and may not write', j(s.permissions.deny), j(['Edit', 'Write', 'WebFetch', 'WebSearch', 'Agent']));
   const p = followPrompt({ slug: 'acme__x', repo: 'acme/x', t: { key: 'DS-1', result: { pr: 7 }, merged_at: 'm' }, steps: [CI], bin: '/b', dirs: ['/state'] });
   t('#1318 the prompt says a passing job is not evidence its step ran, and asks for the broken step and its issue',
-    /A job that passes is not evidence that the step inside it ran/.test(p) && /"result": "pass", "fail", "pending" or "broken"/.test(p) && /gh issue list --state open --search/.test(p), true);
+    /A job that passes is not evidence that the step inside it ran/.test(p) && /"result": "pass", "fail", "pending", "broken" or "unchecked"/.test(p) && /gh issue list --state open --search/.test(p), true);
+  t('#1599 AC3 the prompt says a step whose evidence could not be read is unchecked, with what was tried, never failed',
+    /it is `unchecked`, never failed: say in `tried`/.test(p) && /"pending", "broken" or "unchecked"/.test(p) && /`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `jq` in Bash/.test(p), true);
   t('the prompt numbers each step and asks for the result line', /\n0\. the CI run on main is green\n[\s\S]*FOLLOW_RESULT: \{"steps"/.test(p), true);
 }
 

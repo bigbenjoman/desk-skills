@@ -337,17 +337,28 @@ const isMain = (() => {
 
 if (isMain && process.argv[2] === '--check-done') {
   // A worker's check on its DONE line before printing it: its follow_on= must be the exact JSON array,
-  // since a field the pass has to repair or cannot read loses each step's row and gate. Exit 0 or 1.
+  // since a field the pass has to repair or cannot read loses each step's row and gate, and a step a
+  // follow-step checker runs must name only desk files that exist or that desk writes
+  // (follow-steps.mjs followFilesUnknown), or the checker finds nothing to read. Exit 0 or 1.
   const line = process.argv.slice(3).join(' ');
   const f = followOnIn(line);
   const why = f.error ?? (!f.repaired ? null : f.steps.length ? `follow_on= is ${f.repaired}; write it as the JSON array`
     : `follow_on= ${f.repaired}; with no steps leave follow_on= out, else write it as the JSON array`);
   if (why) { console.error(`${why}: follow_on=[{"step": "<one line>", "row": "<§3 key or null>"}]`); process.exit(1); }
-  console.log(f.steps.length ? `reads as ${f.steps.length} follow-on step(s)` : 'no follow_on=');
-  process.exit(0);
+  // follow-steps.mjs imports this file, so it is loaded once this one has finished evaluating: awaited
+  // here, at the top level, the two would wait on each other.
+  import('./follow-steps.mjs').then(({ followKind, followFilesUnknown }) => {
+    const missing = f.steps.map((x) => [x, followKind(x) === 'runnable' ? followFilesUnknown(x) : []]).filter(([, m]) => m.length);
+    if (missing.length) {
+      for (const [x, m] of missing) console.error(`follow_on= step ${JSON.stringify(x.step)} names ${m.join(', ')}, which no desk file is and desk does not write: a follow-step checker would find nothing to read. Reword it by the file, command or log desk writes that holds what it checks, or give it a row for the person`);
+      process.exit(1);
+    }
+    console.log(f.steps.length ? `reads as ${f.steps.length} follow-on step(s)` : 'no follow_on=');
+    process.exit(0);
+  });
 }
 
-if (isMain) {
+if (isMain && process.argv[2] !== '--check-done') {
   const log = process.argv[2];
   const wantBody = process.argv.includes('--pr-body');
   if (!log) { console.error('usage: harvest.mjs <worker.log> [--pr-body]'); process.exit(1); }

@@ -2376,8 +2376,8 @@ cat > "$T/stub/claude" <<EOF
 case "\$1 \$2" in
   "-p You are the autopilot follow-step checker for "*)
     echo started >> "$T/follow-prompts"
-    case "\$2" in *"FS-2's PR"*) r=fail ;; *"FS-4's PR"*) r=broken; [ -e "$T/fs4-pending" ] && r=pending ;; *) r=pass ;; esac
-    $NODE -e 'const r = process.argv[1]; console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: r, found: r === "pass" ? "run 9 is green" : r === "broken" ? "the a11y scan crashed loading, 0 pages scanned" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9", ...(r === "broken" ? { source: "E2E (advisory) › a11y scan", issue: 812 } : {}) }] }) }))' "\$r"
+    case "\$2" in *"FS-2's PR"*) r=fail ;; *"FS-4's PR"*) r=broken; [ -e "$T/fs4-pending" ] && r=pending ;; *"FS-5's PR"*) r=unchecked ;; *) r=pass ;; esac
+    $NODE -e 'const r = process.argv[1]; console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: r, found: r === "pass" ? "run 9 is green" : r === "broken" ? "the a11y scan crashed loading, 0 pages scanned" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9", ...(r === "broken" ? { source: "E2E (advisory) › a11y scan", issue: 812 } : {}), ...(r === "unchecked" ? { tried: "gh run view 9: denied" } : {}) }] }) }))' "\$r"
     exit 0 ;;
 esac
 exec "$T/claude-before-fs" "\$@"
@@ -2434,6 +2434,23 @@ check "#1318 a step still broken as it was is checked again and not said on the 
 : > "$T/fs4-pending"; fs4_recheck; rm -f "$T/fs4-pending"
 check "#1318 a re-check that finds the run still going keeps the step broken, with its source and issue" \
   '[ "$(field FS-4 follow_checks | jq -c "[.[] | [.result, .source, .issue]]")" = "[[\"broken\",\"E2E (advisory) › a11y scan\",812]]" ] && [ "$(field FS-4 follow_checks | jq -r ".[0].at")" != 2026-11-20T00:00:00.000Z ]'
+# #1599: a checker that could not read a step's evidence records it unchecked, with what it tried; the
+# next pass runs it once more, and only a second unchecked is retried (needs-you lists it then).
+fs5_run(){
+  n=0; for f in "$DESK_AUTOPILOT_STATE"/follow/FS-5-*.json; do case "$f" in *settings*|*'*'*) ;; *) n=$((n+1)) ;; esac; done
+  DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-5-*.json 2>/dev/null | grep -vc settings)" -gt "$n" ] && break; sleep 0.2; done
+  : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+}
+fs_merged FS-5 805 "follow_on=[$CI_STEP]"
+fs5_run
+check "#1599 AC3 a step whose evidence the checker could not read is recorded unchecked with what it tried, not failed, and not said on the PR yet" \
+  '[ "$(field FS-5 follow_checks | jq -c "[.[] | [.result, .tried, .retried]]")" = "[[\"unchecked\",\"gh run view 9: denied\",null]]" ] && ! grep -q "^pr comment 805" "$T/gh-calls" && echo "$out" | grep -qF "FS-5 follow steps: its follow-step checker passed 0 and failed 0, 1 it could not check, run again on the next pass"'
+fs5_run
+check "#1599 AC3 the next pass runs it once more; unchecked again, it is retried, said on the PR as could not check, and listed" \
+  '[ "$(field FS-5 follow_checks | jq -c "[.[] | [.result, .retried]]")" = "[[\"unchecked\",true]]" ] && grep -q "^pr comment 805 " "$T/gh-calls" && grep -qF "**couldn'"'"'t check**: the CI run on main" "$T/gh-calls" && echo "$out" | grep -qF "1 it could not check a second time, listed in needs-you"'
+check "#1599 AC3 and is not run a third time" \
+  ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
 
 # ---- DS-843 AC4: a config row the pass cannot read stops it before it starts any worker.

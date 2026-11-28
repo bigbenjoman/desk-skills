@@ -245,10 +245,10 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   share their text: desk knows a step by both, and refuses the list. Put the same steps in your Stage 8
   ticket comment, one line each, under "Once this merges:". Once the PR merges and each step's gate
   holds, needs-you lists the step for the person with its row's value. A step that only reads GitHub CI
-  results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like), desk's state
-  files or desk's read-only reports (`phase0-report`, `cache-report`, with any flags), with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
+  results (a run, a check, a shard's time), desk's logs (`passes.jsonl`,
+  `maintenance.log`; not `audit.jsonl`, the levers audit), desk's state files or desk's read-only reports (`phase0-report`, `cache-report`, with any flags), with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
   found on your PR; the person sees it only if it fails or no checker could finish it. So word such a
-  step by the run or file it reads, and nothing else. Name a line that run's log prints: where CI logs
+  step by the run or file it reads, one that exists or desk writes (`--check-done` refuses others). Name a line that run's log prints: where CI logs
   only each suite's total, name that suite's total line and its 0 failed (`52 checks passed, 0 failed`
   in shard 1/6 of main's tests run), never a per-check line inside it (`ok DS-763 AC4`), which that log
   never carries. A step you can run before the merge is not a

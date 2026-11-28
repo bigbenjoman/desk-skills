@@ -2545,6 +2545,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     // #1318: the run passed, but the step that makes the evidence crashed and scanned nothing.
     'K-15': merged(105, 5, { follow_on: [CI], follow_checks: [failed(105, { result: 'broken', found: 'ERR_REQUIRE_ESM while loading, 0 pages scanned', source: 'E2E (advisory) › a11y scan', issue: 812 })] }),
     'K-16': merged(106, 5, { follow_on: [CI], follow_checks: [failed(106, { result: 'broken', found: 'collected 0 tests', source: 'E2E (advisory) › a11y scan', issue: null })] }),
+    // #1599: a checker that could not read the evidence; once, it waits on the next pass's retry.
+    'K-17': merged(107, 5, { follow_on: [CI], follow_checks: [failed(107, { result: 'unchecked', found: 'could not read the run', tried: 'gh run view 9: denied' })] }),
+    'K-18': merged(108, 5, { follow_on: [CI], follow_checks: [failed(108, { result: 'unchecked', found: 'could not read the run', tried: 'gh run view 9: denied', retried: true })] }),
   } });
   const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
   // A checker's step is an item of its own, keyed by the ticket and the step.
@@ -2565,6 +2568,10 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     "A follow-step checker found its evidence source broken, so it could not be checked: E2E (advisory) › a11y scan ran and produced nothing to judge (ERR_REQUIRE_ESM while loading, 0 pages scanned; evidence: https://github.com/acme/x/actions/runs/9). It waits on #812, which tracks that; a follow-step checker runs it again every 6 hours, and it leaves this list once the source works. Then say done.");
   t('#1318 with no issue tracking it, the item drafts one to file and wait on',
     /No open issue tracks that: file one, "E2E \(advisory\) › a11y scan produces nothing to judge on main", quoting "collected 0 tests" and the run \(https:\/\/github\.com\/acme\/x\/actions\/runs\/9\), and it waits on that;/.test(checked(g, 'K-16')[0]?.need ?? ''), true);
+  t('#1599 AC3 a step a checker could not check once is not listed: the next pass runs it again', checked(g, 'K-17').length, 0);
+  t('#1599 AC3 could not check a second time, it is listed as that, with what was tried, not as failed',
+    (checked(g, 'K-18')[0]?.need ?? '').replace(/^.*? or less\. /, ''),
+    'A follow-step checker could not check it, twice: could not read the run (tried: gh run view 9: denied; evidence: https://github.com/acme/x/actions/runs/9). Then say done.');
   t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
   t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
   t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',

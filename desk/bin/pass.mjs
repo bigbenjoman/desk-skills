@@ -55,7 +55,7 @@ import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, U
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, claimLive, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
-import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
+import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW, maintDir } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp, loginIn, isBot } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, parseVerdict, doneVerdictLine } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
@@ -6063,16 +6063,18 @@ runSteps({
 // desk's logs or desk's state go to a follow-step checker (follow-steps.mjs), and what it found is
 // recorded on the ticket (follow_checks), for its PR. A step it passed is settled as needs-you's done
 // settles one, in the same write, and the PR is told under §3 pr-self-review-comment; one it failed
-// stays, and needs-you lists it with what it found; one still pending is checked again later. A run is
-// still the same run only while its process carries the run's id. The checker reads this repo's state
-// and queue directories, never another repo's. Its lines go in this section's `out`, as the report's
+// stays, and needs-you lists it with what it found; one still pending is checked again later; one it
+// could not read the evidence of (unchecked) is run again on the next pass, once, and only a second
+// unchecked (retried) reaches needs-you. A run is still the same run only while its process carries
+// the run's id. The checker reads this repo's state and queue directories, never another repo's, and
+// the machine's maintenance log, where the release watch records main's tests check. Its lines go in this section's `out`, as the report's
 // lists were printed before it.
 const followAlive = (run) => {
   if (!run?.pid || !run.id) return false;
   const r = shOut('ps', ['-o', 'args=', '-p', String(run.pid)]);
   return r.ok && r.out.includes(run.id);
 };
-const followDirs = [...new Set([STATE, E.repoStateOf(STATE), dirname(QUEUE_FILE)])];
+const followDirs = [...new Set([STATE, E.repoStateOf(STATE), dirname(QUEUE_FILE), maintDir()])];
 const FOLLOW_HANDLERS = {
   ...PHASE_HANDLERS,
   start: (a) => {
@@ -6105,7 +6107,8 @@ const FOLLOW_HANDLERS = {
     // would put it back on the short retries, long over, and it would read as never checked.
     const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => {
       const was = before(c);
-      return c.result === 'pending' && was?.result === 'broken' ? { ...was, at } : { ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}) };
+      if (c.result === 'pending' && was?.result === 'broken') return { ...was, at };
+      return { ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}), ...(c.result === 'unchecked' && was?.result === 'unchecked' ? { retried: true } : {}) };
     });
     const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c) && String(c.pr ?? '') === String(n ?? '')));
     // The record and the settling of what passed are one write (queue-writer.mjs, as harvest.mjs
@@ -6129,7 +6132,7 @@ const FOLLOW_HANDLERS = {
     // when it first broke. `source` is the checker's own words, which vary run to run, so only the
     // issue tells a new break from the same one.
     const sameBreak = (c) => { const was = before(c); return c.result === 'broken' && was?.result === 'broken' && was.issue === c.issue; };
-    const done = found.filter((c) => c.result !== 'pending' && !sameBreak(c));
+    const done = found.filter((c) => c.result !== 'pending' && !sameBreak(c) && !(c.result === 'unchecked' && !c.retried));
     let told = '';
     if (!done.length) { /* nothing settled to say */ } else if (n == null) told = '; it has no PR to comment on';
     else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;
@@ -6138,7 +6141,10 @@ const FOLLOW_HANDLERS = {
       told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
     }
     const brokenAt = found.filter((c) => c.result === 'broken').map((c) => `${c.source}${c.issue ? ` (#${c.issue})` : ', no issue tracks it'}`);
-    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${brokenAt.length ? `, and found the evidence source of ${brokenAt.length} broken, ran but produced nothing to judge: ${brokenAt.join('; ')}; listed in needs-you and checked again later` : ''}${told}`);
+    const once = found.filter((c) => c.result === 'unchecked' && !c.retried).length;
+    const twice = count('unchecked') - once;
+    const couldNot = [once && `${once} it could not check, run again on the next pass`, twice && `${twice} it could not check a second time, listed in needs-you`].filter(Boolean).join(', ');
+    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${couldNot ? `, ${couldNot}` : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${brokenAt.length ? `, and found the evidence source of ${brokenAt.length} broken, ran but produced nothing to judge: ${brokenAt.join('; ')}; listed in needs-you and checked again later` : ''}${told}`);
   },
 };
 const FOLLOW_MINUTES = FOLLOW_TIMEOUT_MS / 60000;
