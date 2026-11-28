@@ -39,6 +39,7 @@
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import * as MS from './merge-stages.mjs';
 import * as ST from './stuck-time.mjs';
+import { ADMIT_FILE, admitText } from './candidates.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -3893,6 +3894,13 @@ function stuckHead(r, now) {
   const line = ST.stuckLine(ST.weekSummary(repoStateOf(r.stateDir), { now, live }));
   return line ? [line] : [];
 }
+// The pass's last admission for a free slot (candidates.mjs admitRun), one line once it has run.
+export function admitHead(r, now) {
+  if (!r.stateDir) return [];
+  const run = readJson(join(repoStateOf(r.stateDir), ADMIT_FILE));
+  const at = Date.parse(run?.at);
+  return Number.isFinite(at) ? [`free-slot admit ${ago(now - at)}: ${admitText(run).join(' · ')}`] : [];
+}
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
@@ -3921,6 +3929,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...passHead(r, now),
     ...stagesHead(r),
     ...stuckHead(r, now),
+    ...admitHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),

@@ -43,7 +43,8 @@ which to admit, then run step 0 and step 1 for the ones chosen, or that adopt co
 flagged so. It admits nothing itself. Exit 3 means
 the repo has no Jira tracker or project to list from: say so. While a slot stays free, the pass prints
 the person's own under `free slot:`, and with config §3b "Propose candidates for a free slot" on, the
-whole list.
+whole list. With §3b "Admit candidates for a free slot" on as well, the pass admits the first clean
+candidate itself, one a run, and names what it admitted and refused under `free slot:`.
 
 ## 0. Snapshot each design
 

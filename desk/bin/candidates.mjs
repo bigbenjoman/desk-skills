@@ -2,8 +2,9 @@
 // What to admit into a free batch slot: first the unstarted Bugs and self-contained Tasks in §4 Jira
 // project already assigned to the person §1 names (§1 Jira account id, else the signed-in Jira user),
 // then its unassigned ones, each ranked by §4 Priority, then Bugs
-// before Tasks, then newest, and checked against the default branch before it is offered. It only
-// lists and writes nothing in Jira or GitHub: /desk-admit admits.
+// before Tasks, then newest, and checked against the default branch before it is offered. The command
+// only lists and writes nothing in Jira or GitHub: /desk-admit admits, and so does the pass under the
+// row named below.
 //
 //   node candidates.mjs [--json]   the list (exit 0); 1 when the Jira search failed, 3 with no Jira
 //                                  tracker or project in the config, 2 on bad usage
@@ -28,7 +29,8 @@
 // While the standing batch has a slot free and nothing ready to take it, the pass names the person's
 // own as ready to admit (slotLines), and with config §3b "Propose candidates for a free slot" on, the
 // unassigned ones too, read at most every CANDIDATES_EVERY_MS and kept in <state>/candidates.json
-// between reads.
+// between reads. With §3b "Admit candidates for a free slot" on as well, the pass admits the first
+// candidate that passes admitRefusal's checks, one a run (admitRun).
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -190,8 +192,9 @@ const authorOf = (p) => String(p?.author?.login ?? '').trim() || null;
 // `person` is §1 Jira account id (null: the signed-in Jira user), and `handle` §1 GitHub handle (null:
 // every open PR is someone else's). `ownOnly` lists only the person's own.
 // -> {ok, offered, onMain, left, unchecked, more, ownOnly} | {ok: false, why, ownOnly}. Each offered or on-main
-// entry is {key, type, priority, summary, rank, own, flags, overlap[, pr | commit][, openPr]}, `openPr`
-// being the person's own open PR naming it, for the batch to adopt.
+// entry is {key, type, priority, summary, rank, own, flags, overlap, blockers[, pr | commit][, openPr]},
+// `blockers` its "is blocked by" links as [{key, category}] and `openPr` the person's own open PR naming
+// it, for the batch to adopt.
 export function listCandidates({ project, priority, person = null, handle = null, ownOnly = false, reads, now = Date.now(), checkMax = CHECK_MAX }) {
   const pr = priorityOf(priority);
   const fields = ['issuelinks', 'parent', 'created', ...(pr.field === 'priority' ? [] : [pr.field])];
@@ -232,7 +235,8 @@ export function listCandidates({ project, priority, person = null, handle = null
   const main = [];
   for (const i of pool.slice(0, checkMax)) {
     const c = { key: i.key, type: i.fields?.issuetype?.name ?? null, priority: valueOf(i.fields?.[pr.field]) || null,
-      summary: i.fields?.summary ?? '', rank: rankOf(i, pr), own: own.has(i.key), flags: [], overlap: [] };
+      summary: i.fields?.summary ?? '', rank: rankOf(i, pr), own: own.has(i.key), flags: [], overlap: [],
+      blockers: blockersFact(i).map((b) => ({ key: b.key, category: b.category })) };
     const prs = reads.mergedPrs(i.key);
     const commits = reads.commits(i.key);
     const landed = onMain(i.key, { prs: prs ?? [], commits: commits ?? [] });
@@ -357,6 +361,95 @@ export function slotLines({ state, now = Date.now(), dry = false, ownOnly = fals
     if (!dry) { try { writeFileSync(file, `${JSON.stringify(kept, null, 2)}\n`); } catch { /* read again next pass */ } }
   }
   return kept.lines.map((l) => `free slot: ${l}`);
+}
+
+// Config §3b "Admit candidates for a free slot": on, or off for anything else. The pass admits only with
+// "Propose candidates for a free slot" on as well.
+export const admitCandidatesOn = (raw = E.configValue('admit-candidates')) => String(raw ?? '').trim().toLowerCase() === 'on';
+export const ADMIT_FILE = 'candidate-admit.json';
+// How long a candidate the admit itself refused (its triage found a question, a lane needing a person, a
+// failed lint) is passed over, so the same triage is not paid for every run.
+export const ADMIT_RETRY_MS = 24 * 60 * 60 * 1000;
+
+// Why offered candidate `c` is not admitted unattended, or null: any flag on it (no Acceptance criteria
+// or Design section, an open PR to adopt, a read that failed), a blocker not Done or whose code is not
+// on `base`, or a PR naming it not landed on `base` (merged into another branch, say), and either read
+// failing refuses too. `checks`:
+//   landed(key, base)    -> true | false | null (unread), as intake.mjs landedOn
+//   elsewhere(key, base) -> {branch, state} | null, as intake.mjs unpromotedBase, only to name the branch
+export function admitRefusal(c, base, { landed, elsewhere }) {
+  if (c.flags?.length) return c.flags.join('; ');
+  // Why `key`'s PRs keep it off `base`, `who` naming it in the reason, or null once landedOn reads true.
+  const off = (key, who) => {
+    const on = landed(key, base);
+    if (on === true) return null;
+    if (on == null) return `whether ${who} is on ${base} could not be read`;
+    const e = elsewhere(key, base);
+    return e && e.state !== 'merged' ? `${who} is merged into ${e.branch}, not ${base}` : `${who} is not on ${base}`;
+  };
+  for (const b of c.blockers ?? []) {
+    if (b.category !== 'done') return `blocker ${b.key} is not Done`;
+    const why = off(b.key, `blocker ${b.key}`);
+    if (why) return why;
+  }
+  return off(c.key, 'a PR naming it');
+}
+
+// A kept run as lines: what it admitted, what it refused and why, or why it admitted nothing.
+export function admitText(run) {
+  const out = [];
+  const a = run?.admitted;
+  if (a) out.push(`${a.dry ? 'would admit' : 'admitted'} ${a.key}${a.note ? ` (${a.note})` : ''}`);
+  if (run?.refused?.length) out.push(`refused ${run.refused.map((x) => `${x.key} (${x.why})`).join(', ')}`);
+  if (!a) out.push(`admitted nothing: ${run?.why ?? 'no candidate passed the checks'}`);
+  return out;
+}
+
+// One unattended admission for a free slot, at most every CANDIDATES_EVERY_MS: the listing read afresh,
+// and each offered candidate, in its order, checked (admitRefusal) until one passes; that one alone is
+// admitted, at normal position, with `admit(key)` -> {admitted, why, retry}. One the admit refused is
+// passed over for ADMIT_RETRY_MS unless `retry` (a usage limit). An unassigned one admitted is assigned
+// with `assign(key)` -> {ok, why} where `assignSelf` (config §3 jira-assign-self) is `yes`. The run is kept
+// in <state>/candidate-admit.json, which desk-q reads, unless `dry`. `on` is both §3b rows on: off, it
+// does nothing. -> the pass's lines.
+export function admitRun({ state, base, now = Date.now(), dry = false, list = runList, checks, admit, assign, assignSelf = 'no',
+  on = slotCandidatesOn() && admitCandidatesOn() }) {
+  if (!on) return [];
+  const file = join(state, ADMIT_FILE);
+  let kept = null;
+  try { kept = JSON.parse(readFileSync(file, 'utf8')); } catch { /* no run yet */ }
+  if (now - Date.parse(kept?.at) < CANDIDATES_EVERY_MS) return [];
+  const at = new Date(now).toISOString();
+  const passed = Object.fromEntries(Object.entries(kept?.passed_over ?? {}).filter(([, v]) => now - Date.parse(v?.at) < ADMIT_RETRY_MS));
+  const run = { at, admitted: null, refused: [], why: null };
+  const r = list({ ownOnly: false }).result;
+  if (!r?.ok) run.why = r?.why ?? 'the candidates could not be listed';
+  else {
+    const offered = r.offered.filter((c) => !passed[c.key]);
+    if (!offered.length) run.why = r.offered.length ? 'every candidate was refused by its admit in the last day' : 'no candidates';
+    for (const c of offered) {
+      const why = admitRefusal(c, base, checks);
+      if (why) { run.refused.push({ key: c.key, why }); continue; }
+      if (dry) { run.admitted = { key: c.key, dry: true }; break; }
+      const a = admit(c.key);
+      if (!a?.admitted) {
+        run.refused.push({ key: c.key, why: a?.why ?? 'the admit failed' });
+        if (!a?.retry) passed[c.key] = { at, why: a?.why ?? null };
+        run.why = 'the one candidate tried this run was refused';
+        break;
+      }
+      run.admitted = { key: c.key };
+      if (!c.own) {
+        const yes = String(assignSelf ?? '').trim().toLowerCase() === 'yes';
+        const s = yes ? assign(c.key) : null;
+        run.admitted.note = !yes ? `not assigned: config §3 jira-assign-self is ${String(assignSelf ?? '').trim() || 'unset'}`
+          : s?.ok ? 'assigned to you' : `not assigned: ${s?.why ?? 'the assignment failed'}`;
+      }
+      break;
+    }
+  }
+  if (!dry) { try { writeFileSync(file, `${JSON.stringify({ ...run, passed_over: passed }, null, 2)}\n`); } catch { /* run again next pass */ } }
+  return admitText(run).map((l) => `free slot: ${l}`);
 }
 
 const isMain = () => { try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } };

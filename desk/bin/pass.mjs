@@ -79,7 +79,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf, FINISHED } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { slotCandidatesOn, slotLines, priorityOf } from './candidates.mjs';
+import { slotCandidatesOn, slotLines, priorityOf, admitRun } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
@@ -5682,6 +5682,19 @@ runSteps({
   report,
 });
 
+// One ticket through intake.mjs admit (/desk-admit's checks) with its --json result read: whether it
+// was admitted to any batch, whether a usage limit cut its triage off (`limited`), and `why`, intake's
+// last line naming it (else its last line, else the exit code).
+const intakeAdmit = (key, extra = []) => {
+  flushQueue();
+  const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'pass', '--json', ...extra]);
+  let res = null;
+  try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
+  const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
+  return { admitted: !!res?.admitted?.includes(key), limited: !!res?.limited?.includes(key),
+    why: said.filter((line) => line.includes(key)).pop() ?? said.pop() ?? `exit ${r.code}` };
+};
+
 // ---- outside blockers admitted --------------------------------------------
 // A held ticket's open blocker in no batch is worked by nobody, so in a batch the supervisor runs the
 // pass admits it (intake.mjs admit, /desk-admit's checks) into this batch: a named one by --into, the
@@ -5716,15 +5729,10 @@ runSteps({
     // tries again.
     const spent = [];
     for (const k of now) {
-      flushQueue();
-      const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', k, '--by', 'pass', '--json', ...(into ? ['--into', into] : [])]);
-      let res = null;
-      try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
-      const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
-      if (!res?.limited?.includes(k)) spent.push(k);
-      const why = said.filter((line) => line.includes(k)).pop() ?? said.pop() ?? `exit ${r.code}`;
+      const { admitted, limited, why } = intakeAdmit(k, into ? ['--into', into] : []);
+      if (!limited) spent.push(k);
       epicLines.push(queue().tickets[k] ? `outside blockers: ${k}, holding ${t.key}, admitted to this batch`
-        : res?.admitted?.includes(k) ? `outside blockers: ${k}, holding ${t.key}, admitted to another batch (${why})`
+        : admitted ? `outside blockers: ${k}, holding ${t.key}, admitted to another batch (${why})`
           : `outside blockers: ${k}, holding ${t.key}, not admitted to this batch (${why}): admit it with /desk-admit ${k}`);
     }
     const inQueue = queue().tickets;
@@ -5736,11 +5744,27 @@ runSteps({
 // ---- candidates for a free slot ---------------------------------------------
 // A standing batch the supervisor runs, with a slot free and nothing ready to take it, names the
 // person's own unstarted assigned tickets as ready to admit, and with config §3b "Propose candidates
-// for a free slot" on, the unassigned ones too (candidates.mjs slotLines). It lists only: /desk-admit
-// admits.
+// for a free slot" on, the unassigned ones too (candidates.mjs slotLines). With §3b "Admit candidates for
+// a free slot" on as well, it admits the first that passes the checks, one a run, through intake.mjs
+// admit, and assigns an unassigned one under §3 jira-assign-self (candidates.mjs admitRun).
+// The intake admit's own refusal, as its line naming the ticket.
+const admitCandidate = (key) => {
+  const { admitted, limited, why } = intakeAdmit(key);
+  return admitted ? { admitted: true } : { admitted: false, retry: limited, why };
+};
+// desk-jira edit reads each field back, and one that reads back blank says the write did not stick.
+const assignCandidate = (key) => {
+  const r = shOut('desk-jira', ['edit', key, 'assignee=me']);
+  const said = r.out.split('\n').filter(Boolean);
+  return r.ok && !said.some((line) => /did not stick/.test(line)) ? { ok: true }
+    : { ok: false, why: said.find((line) => /did not stick/.test(line))?.trim() ?? said.pop() ?? `desk-jira exited ${r.code}` };
+};
 if (onJira && !E.batchName() && queue().supervised === true && running.length < concurrency && !spawnable.length
   && !lowMemory && !MAINT.hold) {
   epicLines.push(...slotLines({ state: STATE, dry: DRY, ownOnly: !slotCandidatesOn() }));
+  epicLines.push(...admitRun({ state: STATE, base: DEFAULT_BRANCH, dry: DRY, admit: admitCandidate, assign: assignCandidate,
+    assignSelf: E.permission('jira-assign-self'),
+    checks: { landed: (k, b) => landedOn(k, b, REPO_DEFAULT), elsewhere: (k, b) => unpromotedBase(k, b) } }));
 }
 
 // ---- outside holds -------------------------------------------------------
