@@ -76,6 +76,8 @@ export const evalsFile = (state) => join(state, 'lever-evals.jsonl');
 export const evidenceDir = (state) => join(state, 'levers-evidence');
 export const pooledFile = (root = autopilotRoot()) => join(leversDir(root), 'pooled-evals.jsonl');
 const snake = (k) => k.replace(/-/g, '_');
+// The reason code a revert on guardrail `name` is logged under.
+const guardCode = (name) => `guardrail_${snake(String(name))}`;
 const dayOf = E.localDay;
 const fin = (v) => (Number.isFinite(v) ? v : 0);
 const r4 = (v) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 1e4) / 1e4);
@@ -442,8 +444,11 @@ const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
 // The guardrail a logged revert `e` names, where it reverted on one with no estimate: an earlier
 // evaluation read a check with no figure as breached. Such a revert is void; null for any other event.
-export const voidedBy = (e) => (e?.kind === 'transition' && ['reverted', 'frozen'].includes(e.to) && String(e.reason_code ?? '').startsWith('guardrail_')
-  ? (e.guardrails ?? []).find((g) => `guardrail_${snake(String(g.name))}` === e.reason_code && g.est == null) ?? null : null);
+const voidedBy = (e) => (e?.kind === 'transition' && ['reverted', 'frozen'].includes(e.to)
+  ? (e.guardrails ?? []).find((g) => guardCode(g.name) === e.reason_code && g.est == null) ?? null : null);
+// A guardrail with no figure: none to divide by, or no rows to measure. It never stands in the way of
+// an adopt as a failure does.
+const noFigure = (g) => g.est == null && ['too_early', 'no_data'].includes(g.status);
 
 // How many times repo log `events` have reverted `lever` (an evaluation's transition or a trip), and the
 // state its next revert goes to: a lever already reverted once is frozen instead. A void revert does
@@ -454,7 +459,7 @@ export const revertTarget = (priorReverts) => (priorReverts >= 1 ? 'frozen' : 'r
 // The needs-you item a freeze raises, for `lever` in repo `name`, `why` being what reverted it.
 export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} after its second revert (${why}): it stays off there until you set it by hand`;
 // The needs-you item a void revert `e` raises, for `lever` in repo `name`, `g` the guardrail it named.
-export const voidedText = (lever, name, e, g) => `${lever} was turned off in ${name} on ${String(e.at).slice(0, 10)} because ${guardMetric(g.name)} read as worse, `
+const voidedText = (lever, name, e, g) => `${lever} was turned off in ${name} on ${String(e.at).slice(0, 10)} because ${guardMetric(g.name)} read as worse, `
   + `but that check had ${NO_FIGURE}: the tickets with ${lever} off had none to compare against, so the revert no longer counts. Keep ${lever} off, or test it again?`;
 
 // Raises one needs-you item for each void revert in repo `r`'s log while it is still its lever's latest
@@ -498,7 +503,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
     const g = breached[0];
     const why = `${guardMetric(g.name)} worse than its margin with ${Math.round(g.p_worse * 100)}% probability (${fig(g.est)} against ${g.margin}, 90%: ${fig(g.lo90)} to ${fig(g.hi90)}) at ${sample}`;
     if (cooling) return hold('change_cooldown', `would revert (${why}), but it changed state less than ${R.cooldown_days} days ago`, `the ${R.cooldown_days}-day wait to pass`);
-    return { decision: 'revert', to: revertTo, reason_code: `guardrail_${snake(g.name)}`, reason: why, next: next(null) };
+    return { decision: 'revert', to: revertTo, reason_code: guardCode(g.name), reason: why, next: next(null) };
   }
   if (state === 'adopted') {
     if (incomplete.length) return hold('evidence_incomplete', `outcome files missing: ${incomplete.join(', ')}`, 'the missing outcome files');
@@ -517,7 +522,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability${probability !== DECISION_RULE.probability ? `, under the ${Math.round(probability * 1000) / 10}% each of its values needs` : ''}`);
   if (!(Number.isFinite(cost.hi90) && cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
   const notOk = guardrails.filter((g) => g.status !== 'ok');
-  if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${g.est == null && g.status === 'too_early' ? `has ${NO_FIGURE}` : g.status}`).join(', ')}`);
+  if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${noFigure(g) ? `has ${NO_FIGURE}` : g.status}`).join(', ')}`);
   const noAudit = !!audits && !(audits.recorded > 0);
   if (noAudit) unmet.push('no blind audit of its merged PRs is recorded in this repo yet');
   if (auditP0) unmet.push('a blind audit found a P0 in a merged PR drawn on for it, which reverted it');
@@ -532,9 +537,9 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
     return { decision: 'adopt', to: 'adopted', reason_code: 'adopt_all_conditions', reason: why, next: next(null) };
   }
   if (state === 'trial' && smaller >= maxN) {
-    // A guardrail too early to read is not a failure: when it is all that stands between the lever and
-    // an adopt, the lever holds rather than reverts.
-    if (unmet.length === 1 && notOk.length && notOk.every((g) => g.status === 'too_early')) {
+    // A guardrail with no figure is not a failure: when it is all that stands between the lever and an
+    // adopt, the lever holds rather than reverts.
+    if (unmet.length === 1 && notOk.length && notOk.every(noFigure)) {
       return hold('no_figure_yet', `every other adopt condition holds, but ${unmet[0]} (${sample})`, `a figure for ${notOk.map((g) => g.name).join(', ')}`);
     }
     const noBenefit = !pair && (mechanism.min_benefit == null || !(mechanism.p_benefit >= R.probability));

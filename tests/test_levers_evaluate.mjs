@@ -817,7 +817,7 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('in a holdback, the report is keyed by the adopted value and the baseline, not on and off', JSON.stringify(held), JSON.stringify({ 30: { tickets: 1, usd_per_ticket: 6, handoffs_per_ticket: 2 }, config: { tickets: 1, usd_per_ticket: 8, handoffs_per_ticket: 1 } }));
 }
 
-// ---- DS-1066: a guardrail with no estimate reads too early and never reverts a lever ----------------------------------
+// ---- a guardrail with no estimate reads too early and never reverts a lever ----------------------------------
 {
   const { guardrailEstimates, priorRevertsOf } = await import('../desk/bin/levers-evaluate.mjs');
   const { guardrailStatus } = await import('../desk/bin/levers-view.mjs');
@@ -828,10 +828,11 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('AC1 an off side with no P0 or P1 findings reads too early, with no p_worse', [early.status, early.est, early.p_worse], ['too_early', null, null]);
   const someOff = noneOff.map((r, i) => (!r.on && i % 4 === 0 ? { ...r, review_p0_p1: 1 } : r));
   const [figured] = guardrailEstimates(someOff, { seed: 's', minN: 30, names: ['review-p0-p1'] });
-  t('AC3 a guardrail with an estimate keeps its figures and its status', [Number.isFinite(figured.est), Number.isFinite(figured.p_worse), figured.status === guardrailStatus(figured, 20, 30)], [true, true, true]);
+  t('AC3 a guardrail with an estimate keeps its figures and its status', [figured.est, Number.isFinite(figured.p_worse), figured.status === (figured.p_worse >= DECISION_RULE.probability ? 'breached' : 'too_early')], [1.4, true, true]);
+  t('AC3 a logged guardrail with an estimate and a sure probability still reads breached', guardrailStatus({ est: 1.6, p_worse: 0.95 }, 21, 40), 'breached');
   t('AC1 a logged guardrail with no estimate but a probability reads too early, never breached', guardrailStatus({ est: null, p_worse: 0.9725 }, 21, 40), 'too_early');
 
-  // End to end: at the revert floor, findings only on the lever's arm used to read as a sure breach.
+  // End to end: at the revert floor, with findings only on the lever's arm.
   const G1 = 'acme__nofigure';
   const g1rows = arms(G1, initial(G1), DECISION_RULE.revert_min_per_arm, better.on, better.off);
   const g1 = repo(G1, g1rows);
@@ -845,13 +846,16 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const atMax = decide({ ...base, ...good, n: { on: 150, off: 150 }, guardrails: [ok, early2] });
   t('AC2 at the maximum sample a lever whose only failing guardrail has no figure holds', [atMax.decision, atMax.reason_code], ['hold', 'no_figure_yet']);
   t('AC5 and its reason says no figure yet', /review-p0-p1 has no figure yet/.test(atMax.reason) && !/null/.test(atMax.reason), true);
+  const empty = { name: 'review-p0-p1', est: null, lo90: null, hi90: null, p_worse: null, status: 'no_data' };
+  const atMaxEmpty = decide({ ...base, ...good, n: { on: 150, off: 150 }, guardrails: [ok, empty] });
+  t('AC2 at the maximum sample a guardrail with no rows to measure holds too', [atMaxEmpty.decision, atMaxEmpty.reason_code, /review-p0-p1 has no figure yet/.test(atMaxEmpty.reason)], ['hold', 'no_figure_yet', true]);
   const noBenefit = decide({ ...base, ...good, mechanism: { ...good.mechanism, p_benefit: 0.2 }, n: { on: 150, off: 150 }, guardrails: [ok, early2] });
   t('AC2 one with no benefit at the maximum still reverts, for that', [noBenefit.decision, noBenefit.reason_code], ['revert', 'no_benefit_max_sample']);
   t('AC5 a revert reason never says null', /null/.test(noBenefit.reason), false);
   const breach = decide({ ...base, ...good, guardrails: [{ name: 'acceptance', status: 'breached', p_worse: 0.95, est: -0.2, margin: -0.05, lo90: -0.3, hi90: null }] });
   t('AC5 a breach with a missing bound reads no figure yet', [breach.decision, /null/.test(breach.reason), /to no figure yet\)/.test(breach.reason)], ['revert', false, true]);
 
-  // AC4: a revert logged on a guardrail with no estimate is put to Ben once, and no longer counts.
+  // AC4: a revert logged on a guardrail with no estimate raises one needs-you item, and no longer counts.
   const voidRevert = (slug) => append(slug, { kind: 'transition', lever: 'failure-class', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_review_p0_p1',
     reason: 'review P0 and P1 findings per ticket worse than its margin with 97% probability', eval_id: 'evl_v', evidence_file: 'levers-evidence/evl_v.jsonl', at: at(-1),
     guardrails: [{ name: 'acceptance', est: 0.17, p_worse: 0.07, status: 'too_early' }, { name: 'review-p0-p1', scope: 'repo', est: null, lo90: null, hi90: null, margin: 1.25, p_worse: 0.9725, status: 'breached' }] });
