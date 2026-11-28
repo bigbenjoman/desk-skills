@@ -218,6 +218,13 @@ export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.k
 // start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
 export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// Pinned to this computer (queue.mjs set <KEY> location=local, or `local <KEY>`; the pass pins a cloud
+// ticket whose session went idle on a WIP PR, pass.mjs cloudUnfinished): placement at start never
+// sends it to the cloud. Its work goes on from its cloud PR's branch where it has one (fromCloudPr).
+export const pinnedLocal = (t) => t?.location === 'local';
+// A local worker's branch is checked out from origin, never cut afresh from the base: a cloud ticket's
+// PR is read (cloudPrHere), or the ticket was moved local after its cloud session opened one.
+export const fromCloudPr = (t) => cloudPrHere(t) || (pinnedLocal(t) && t.cloud?.pr_at != null);
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so it holds
 // no local slot and the maintenance window neither waits for one nor stops it, in any repo; a review try
 // on a cloud ticket's PR runs here.
@@ -228,9 +235,10 @@ export const toHandoff = (r) => r.handoff === 'pending';
 // A ticket that can run in a cloud session: its triage record needs nothing this computer has (admission
 // writes cloud_ok; a ticket admitted before that carries location=cloud), no PR of its is read yet, and
 // it has not started on this computer (its work is then in a local worktree, and stays there). Where it
-// runs is decided when it starts (placeAtStart), not at admission.
+// runs is decided when it starts (placeAtStart), not at admission. One pinned to this computer
+// (pinnedLocal) is not, whatever triage's `runs:` said, until `location=auto` clears the pin.
 export const cloudAble = (t) => (t?.cloud_ok === true || t?.location === 'cloud') && !cloudPrHere(t)
-  && t.result?.pr == null && t.start_place?.where !== 'local';
+  && !pinnedLocal(t) && t.result?.pr == null && t.start_place?.where !== 'local';
 // A ticket the spawn loop may start in a cloud session, taking one of §3b "Cloud sessions at once" and
 // no local slot: a resume or handoff of one runs here.
 export const startsInCloud = (t) => cloudAble(t) && !toResume(t) && !toHandoff(t);

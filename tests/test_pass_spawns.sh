@@ -373,6 +373,13 @@ out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
 check "issue-1587 AC2 and the next pass starts it on that local slot" \
   '[ "$(field CS-2 state)" = "\"running\"" ] && [ "$(field CS-2 start_place.where)" = "\"local\"" ] && [ ! -e "$T/cloud-prompt" ]'
 q set CS-1 state=done; q set LS-1 state=done session_id=null; q set LS-2 state=done; q set CS-2 state=done
+# issue-1689 AC1: with a cloud session free, a cloud-able ticket pinned to this computer still starts
+# here, and the pin stays.
+cloud_ticket CS-3; q set CS-3 cloud_ok=true location=local; rm -f "$T/cloud-prompt"
+out=$(DESK_CONFIG="$T/config-cs.md" node "$B/pass.mjs" 2>&1)
+check "issue-1689 AC1 a pin to local overrides runs: cloud: it starts on this computer, and stays pinned" \
+  '[ "$(field CS-3 state)" = "\"running\"" ] && [ "$(field CS-3 start_place.where)" = "\"local\"" ] && [ "$(field CS-3 location)" = "\"local\"" ] && [ ! -e "$T/cloud-prompt" ]'
+q set CS-3 state=done
 # issue-1570: a cloud PR its session marked unfinished keeps the ticket running on its session. Once CI
 # on its head finishes the session is sent the results; after 2 follow-ups with no push it parks.
 cl_view(){ node -e 'const [title, body, status, conclusion] = process.argv.slice(1); console.log(JSON.stringify({ title, body, headRefOid: "aaaaaaa111", comments: [],
@@ -395,8 +402,13 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1570 AC2 the next pass, within the wait, sends no second follow-up" '[ "$(wc -l < "$T/cloud-sent")" -eq 1 ]'
 cl_quiet CW-13; out=$(node "$B/pass.mjs" 2>&1)
 check "issue-1570 AC2 an hour on with no push, it is sent a second" '[ "$(wc -l < "$T/cloud-sent")" -eq 2 ] && [ "$(field CW-13 cloud.unfinished.sent)" = 2 ]'
-cl_quiet CW-13; out=$(node "$B/pass.mjs" 2>&1)
-check "issue-1570 AC2 after 2 idle follow-ups it parks, naming the session URL, on the PR's branch" '[ "$(field CW-13 state)" = "\"parked\"" ] && field CW-13 park.question | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" && field CW-13 park.question | grep -qF "left PR #67 unfinished (WIP)" && field CW-13 park.question | grep -qF "after 2 follow-ups" && [ "$(field CW-13 branch)" = "\"claude/cw-13-abc\"" ] && [ "$(field CW-13 cloud.unfinished)" = null ] && [ "$(wc -l < "$T/cloud-sent")" -eq 2 ]'
+cl_quiet CW-13; rm -f "$T/cloud-prompt"; out=$(node "$B/pass.mjs" 2>&1)
+# issue-1689 AC3: after its follow-ups run out it is moved to this computer, pinned local, rather than
+# parked or started in another cloud session, and a local worker goes on from the PR's branch.
+check "issue-1689 AC3 after 2 idle follow-ups it is moved local, pinned, on the PR's branch, naming the session" '[ "$(field CW-13 state)" != "\"parked\"" ] && [ "$(field CW-13 location)" = "\"local\"" ] && [ "$(field CW-13 park)" = null ] && echo "$out" | grep -qF "cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj" && echo "$out" | grep -qF "left PR #67 unfinished (WIP)" && echo "$out" | grep -qF "after 2 follow-ups, so it was moved to this computer: pinned local" && [ "$(field CW-13 branch)" = "\"claude/cw-13-abc\"" ] && [ "$(field CW-13 cloud.unfinished)" = null ] && [ "$(field CW-13 cloud.pr_at)" != null ] && [ "$(wc -l < "$T/cloud-sent")" -eq 2 ] && [ "$(field CW-13 start_place.where)" = "\"local\"" ] && [ ! -e "$T/cloud-prompt" ]'
+rm -f "$T/cloud-prompt"; out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1689 AC3 no pass starts another cloud session for it: a local worker runs it, still pinned" '[ ! -e "$T/cloud-prompt" ] && [ "$(field CW-13 location)" = "\"local\"" ] && [ "$(field CW-13 start_place.where)" = "\"local\"" ]'
+q set CW-13 state=done
 # Once its session finishes the PR (WIP and what is left taken out), the ticket is recorded done.
 cloud_ticket CW-14
 out=$(node "$B/pass.mjs" 2>&1)

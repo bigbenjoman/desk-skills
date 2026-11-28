@@ -111,7 +111,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, runningHere, startsInCloud, priorityPool, cloudPrHere, pinnedLocal, fromCloudPr, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1119,7 +1119,9 @@ const cloudEnv = (c) => (c.login && 'config_dir' in c.login ? loginEnv({ tool: '
 // Cloud PR `pr` (its `view`) its session marked unfinished (`mark`): the ticket stays running at stage
 // cloud, recorded in `cloud.unfinished`, with no pr_at, so the next pass reads the PR again. Once CI on
 // its head settles, its session is sent the results (cloud-worker.mjs cloudIdle); after
-// CLOUD_IDLE_FOLLOWUPS with no push it parks on the PR's branch, naming the session.
+// CLOUD_IDLE_FOLLOWUPS with no push it is moved to this computer (issue-1689): pinned local
+// (location=local, so no pass starts another cloud session for it) and triaged, so a local worker
+// carries on from the PR's branch at origin's tip (fromCloudPr), naming the session it leaves.
 function cloudUnfinished(t, c, pr, view, mark, where) {
   const checks = latestPerCheck(normaliseRollup(view.statusCheckRollup));
   const last = (view.commits ?? []).at(-1);
@@ -1130,11 +1132,11 @@ function cloudUnfinished(t, c, pr, view, mark, where) {
   const idle = `idle since ${d.record.pushed_at ?? 'its PR opened'}`;
   if (d.act === 'park') {
     const { unfinished: _u, ...rest } = c;
-    const line = `cloud session ${where} left PR #${pr.number} unfinished (${mark}) and has not pushed since ${d.record.pushed_at ?? 'it opened'}, after ${d.record.sent} follow-ups. ` +
-      `Open the session to finish it there, or requeue ${t.key} to finish it in a local worker on ${pr.headRefName}`;
-    q('set', t.key, `branch=${pr.headRefName}`, `cloud=${JSON.stringify({ ...rest, pr_at: pr.createdAt })}`);
-    q('park', t.key, line);
-    report.parked.push(`${t.key}: ${line}`);
+    const line = `cloud session ${where} left PR #${pr.number} unfinished (${mark}) and has not pushed since ${d.record.pushed_at ?? 'it opened'}, after ${d.record.sent} follow-ups, ` +
+      `so it was moved to this computer: pinned local (queue.mjs set ${t.key} location=auto clears that), a local worker carries on from ${pr.headRefName}`;
+    q('set', t.key, 'state=triaged', 'stage=null', 'session_id=null', 'location=local', `branch=${pr.headRefName}`,
+      `cloud=${JSON.stringify({ ...rest, pr_at: pr.createdAt, moved_local_at: new Date().toISOString() })}`, `requeued_at=${new Date().toISOString()}`);
+    report.advanced.push(`${t.key}: ${line}`);
     return;
   }
   if (d.act === 'send' && DRY) { report.waiting.push(`${t.key}: cloud PR #${pr.number} unfinished (${mark}), session ${idle}: ${d.why} (dry run: no follow-up sent)`); return; }
@@ -4309,7 +4311,7 @@ function cloudReview() {
 function spawnCloud(t, pick) {
   const park = (why) => {
     const line = `cloud worker did not start — ${why}. It is not run here instead: requeue it to try the cloud again (queue.mjs requeue ${t.key}), ` +
-      `or run it on this computer with queue.mjs set ${t.key} location=null cloud_ok=null, then queue.mjs requeue ${t.key}`;
+      `or run it on this computer with queue.mjs local ${t.key}, then queue.mjs requeue ${t.key}`;
     q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
   };
@@ -4877,7 +4879,7 @@ function setUpWorktree(t) {
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // A cloud ticket's review try reviews the session's branch, which is on origin only: it is checked
   // out from there, never cut afresh from the base.
-  const fromOrigin = cloudPrHere(t) ? { DESK_BRANCH_FROM_ORIGIN: '1' } : {};
+  const fromOrigin = fromCloudPr(t) ? { DESK_BRANCH_FROM_ORIGIN: '1' } : {};
   const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S, ...fromOrigin } });
   if (remoteHung()) return { wt, kept, renamed, hung: remoteHung() };
   const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
@@ -4924,11 +4926,12 @@ const SPAWN_HANDLERS = {
   // the cloud, for a requeue), and start_place what desk-q shows, with why.
   place: (a, s) => {
     const cloudOk = startsInCloud(s.t);
-    s.t.location = a.where === 'cloud' ? 'cloud' : (cloudPrHere(s.t) ? s.t.location : null);
+    // A pin to this computer (pinnedLocal) stays until the person clears it with location=auto.
+    s.t.location = a.where === 'cloud' ? 'cloud' : (cloudPrHere(s.t) || pinnedLocal(s.t) ? s.t.location : null);
     if (cloudOk) s.t.cloud_ok = true;
     const place = { where: a.where, why: a.why, at: PASS_AT };
     s.t.start_place = place;
-    if (!DRY) q('set', a.key, `location=${s.t.location ?? 'null'}`, ...(cloudOk ? ['cloud_ok=true'] : []), `start_place=${JSON.stringify(place)}`);
+    if (!DRY) q('set', a.key, `location=${s.t.location ?? 'auto'}`, ...(cloudOk ? ['cloud_ok=true'] : []), `start_place=${JSON.stringify(place)}`);
   },
   setup: (a, s) => setUpWorktree(s.t),
   'remote-hung': (a) => { markRemoteHung(a.why); },

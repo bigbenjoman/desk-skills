@@ -21,6 +21,16 @@ export { STATES, FINISHED };
 // A refusal list rather than a list of allowed keys, because pass.mjs writes many fields through set.
 const RESULT_KEYS = ['pr'];
 
+// Where a ticket runs, as `set <KEY> location=…` takes it (issue-1689): `local` pins it to this
+// computer, and placement at start (pass/shared.mjs cloudAble) honours that over triage's `runs:` call
+// until `auto` clears it; `cloud` runs it in a cloud session (the pass writes it when one starts); `auto`
+// leaves it to placement at start, stored as no location. `null` says none of these, so it is refused.
+export const LOCATIONS = ['local', 'cloud', 'auto'];
+const locationOf = (raw) => {
+  if (LOCATIONS.includes(raw)) return raw === 'auto' ? null : raw;
+  throw new Error(`location=${raw} does not say where it runs: use location=local (pin it to this computer), location=cloud (run it in a cloud session) or location=auto (clear the pin: placement at start decides). Nothing written.`);
+};
+
 export function setPath(obj, path, value) {
   const parts = path.split('.');
   let node = obj;
@@ -95,7 +105,7 @@ const pairsOf = (pairs) => pairs.map((p) => {
 // `set <KEY> k=v …` on ticket `t`: every pair is checked before any is written.
 export function applySet(t, pairs, now = new Date().toISOString()) {
   const sets = pairsOf(pairs).map(([k, raw]) => {
-    const v = coerce(raw);
+    const v = k === 'location' ? locationOf(raw) : coerce(raw);
     if (k === 'state' && !STATES.includes(v)) throw new Error(`bad state "${v}" (want: ${STATES.join('|')})`);
     if (RESULT_KEYS.includes(k.split('.')[0])) throw new Error(`no ticket carries a top-level "${k}", so nothing would read it: did you mean result.${k}=${raw}? Nothing written.`);
     return [k, v];

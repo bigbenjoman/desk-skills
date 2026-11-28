@@ -65,7 +65,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish', 'withdraw'];
+const TICKET_CMDS = ['hold', 'set', 'local', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish', 'withdraw'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -909,7 +909,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish', 'withdraw'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'local', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish', 'withdraw'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -1229,6 +1229,17 @@ switch (cmd) {
     // A release still goes ahead past blockers that have not merged; it names them.
     const open = confirmed ? [] : held.filter((p) => !blockersOf(t).includes(p));
     if (open.length) console.error(`warning: ${key} is no longer held behind ${open.join(', ')}, which ${open.length === 1 ? 'has' : 'have'} not merged yet`);
+    break;
+  }
+
+  // `local <KEY>`: `set <KEY> location=local`, which pins it to this computer until `location=auto`
+  // (queue-writer.mjs LOCATIONS).
+  case 'local': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs local <TICKET>');
+    applySet(ticket(q, key), ['location=local']);
+    save(q);
+    console.log(`${key}: location=local (pinned to this computer; queue.mjs set ${key} location=auto clears it)`);
     break;
   }
 

@@ -248,7 +248,8 @@ export const logRound = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.
 // usage the row's usage, with the cloud session kept first (`cloud: true`, no cost).
 export function ticketCost(stateDir, ticket) {
   const local = localCost(stateDir, ticket);
-  if (!(ticket.location === 'cloud' && ticket.cloud)) return local;
+  // A ticket moved local after its session went idle (location=local, issue-1689) keeps that session's row.
+  if (!(['cloud', 'local'].includes(ticket.location) && ticket.cloud)) return local;
   const session = { starts: [startFields({})], cost: null, cloud: true };
   const cloud = { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) };
   if (!local) {

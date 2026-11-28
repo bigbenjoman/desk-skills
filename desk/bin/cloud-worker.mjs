@@ -481,7 +481,8 @@ export function finishedCloud(tickets, archived, done = new Set(), pending = [])
   const rows = [
     ...Object.values(tickets ?? {}).filter((t) => t?.state === 'done' && t.merged_at),
     ...Object.values(archived ?? {}),
-  ].filter((t) => t?.location === 'cloud' && t.cloud?.session && t.cloud.url)
+  // A ticket moved local after its session went idle (location=local, issue-1689) keeps that session.
+  ].filter((t) => ['cloud', 'local'].includes(t?.location) && t.cloud?.session && t.cloud.url)
     .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }));
   const seen = new Set(done);
   return [...rows, ...pending].filter((d) => !seen.has(d.session) && seen.add(d.session))

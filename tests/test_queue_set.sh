@@ -198,6 +198,18 @@ q set W-4 state=parked held_by='B-2|B-4' 'park={"question":"held"}'
 qs set W-4 --merged state=triaged park=null held_by=null
 check "DS-1045 --merged: a release whose caller confirmed the merges warns of nothing" '[ $rc -eq 0 ] && [ -z "$err" ] && [ "$out" = "W-4: state=triaged park=null held_by=null" ] && [ "$(held W-4)" = "null triaged" ]'
 
+# issue-1689: location takes local, cloud or auto; null says none of them, so it is refused.
+q add L-1; q set L-1 location=null
+check "issue-1689 AC2 location=null is refused, naming local, cloud and auto" '[ $rc -ne 0 ] && [[ "$out" == *"location=local"* ]] && [[ "$out" == *"location=cloud"* ]] && [[ "$out" == *"location=auto"* ]] && [[ "$out" == *"Nothing written"* ]]'
+loc(){ node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets["L-1"].location ?? null))' "$DESK_QUEUE"; }
+check "issue-1689 AC2 and nothing is written" '[ "$(loc)" = null ]'
+q local L-1
+check "issue-1689 AC1 queue.mjs local pins it to this computer" '[ $rc -eq 0 ] && [ "$(loc)" = "\"local\"" ] && [[ "$out" == *"location=auto clears it"* ]]'
+q set L-1 location=auto
+check "issue-1689 AC1 location=auto clears the pin" '[ $rc -eq 0 ] && [ "$(loc)" = null ]'
+q set L-1 location=local
+check "issue-1689 AC1 location=local pins it too" '[ $rc -eq 0 ] && [ "$(loc)" = "\"local\"" ]'
+
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
