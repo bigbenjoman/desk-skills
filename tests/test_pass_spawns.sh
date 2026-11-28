@@ -1873,7 +1873,7 @@ check "#1667 AC1 a front ticket above a handoff resume takes the serial file: it
   'spawned HO-12 && ! spawned HO-11 && [ "$(field HO-11 state)" = "\"triaged\"" ] && [ "$(field HO-11 handoff)" = "\"pending\"" ] && [ "$(field HO-11 handoff_stage)" = "\"4b\"" ]'
 check "#1667 AC1 the handed-off ticket keeps its briefing" '[ -s "$DESK_AUTOPILOT_STATE/handoffs/HO-11.json" ]'
 check "#1667 AC3 the pass says which ticket won the file and why" \
-  'echo "$out" | grep -qF "src/hot.ts: HO-12 takes it ahead of HO-11'"'"'s handoff to Stage 4b: placed at the front of the spawn order (--front, or a person'"'"'s move) above it, so HO-11 waits for the file with its handoff briefing kept"'
+  'echo "$out" | grep -qF "src/hot.ts: HO-12 goes first for it, ahead of HO-11'"'"'s handoff to Stage 4b: placed at the front of the spawn order (--front, or a person'"'"'s move) above it, so HO-11 waits for the file with its handoff briefing kept, and its handoff deadline keeps running until that ticket starts"'
 q set HO-12 state=done; : > "$T/fb-spawns"
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1667 AC1 once the front ticket stops running, the handoff starts from its briefing" 'spawned HO-11'
@@ -1888,6 +1888,25 @@ fbq hoh '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPIL
 hot HO-16 src/hot.ts; fbt HO-15 triaged src/hot.ts; q move HO-15 last >/dev/null
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1667 AC1 a placed ticket below the handoff does not beat it" 'spawned HO-16 && ! spawned HO-15'
+
+# A placed ticket above the handoff that cannot start (its worker already printed AUTOPILOT_DONE, so
+# eligibility drops it) holds nothing: the handoff starts.
+fbq hoi '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-17 src/hot.ts; fbt HO-18 triaged src/hot.ts; q front HO-18 --placed >/dev/null
+say "AUTOPILOT_DONE: pr=18 jira=none" > "$DESK_AUTOPILOT_STATE/logs/HO-18.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1667 a front ticket that has already finished does not hold the handoff: it starts, and no line says the finished one goes first" \
+  'spawned HO-17 && ! spawned HO-18 && ! echo "$out" | grep -qF "HO-18 goes first"'
+
+# A front ticket the spawn loop skips (its worktree is another process's working directory) fills no
+# place: the handoff waits behind it, but as no collision hold, so its deadline keeps running.
+fbq hoj '3 over 1000 lines, else 1; serial: src/hot.ts'; mkdir -p "$DESK_AUTOPILOT_STATE/handoffs"
+hot HO-19 src/hot.ts; fbt HO-20 triaged src/hot.ts; q front HO-20 --placed >/dev/null
+mkdir -p "$T/wt/HO-20"; printf 'p4243\ncclaude\nfcwd\nn%s/wt/HO-20\n' "$T" > "$T/lsof.out"
+out=$(node "$B/pass.mjs" 2>&1)
+: > "$T/lsof.out"
+check "#1667 a front ticket that does not start holds the handoff with no collision hold: its handoff wait keeps a deadline" \
+  '! spawned HO-20 && ! spawned HO-19 && echo "$out" | grep -qF "HO-20: WORKTREE IN USE" && [ "$(field HO-19 waits.handoff | jq -c "[.collision, (.deadline != null)]")" = "[null,true]" ] && ! echo "$out" | grep -qF "HO-19: held by collision"'
 
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and

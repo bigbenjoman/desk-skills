@@ -3021,14 +3021,34 @@ const reviewKeys = new Set(runningAll.filter(reviewOnlyTry).map((r) => r.key));
 // handoffs among themselves count the running alone, and start in queue order, so none holds another
 // forever. Read from the queue as the pass found it; a handoff the loop starts is running from then.
 const handedOffKeys = new Set(all.filter((t) => t.state === 'triaged' && toHandoff(t) && !reviewOnlyTry(t)).map((t) => t.key));
+// A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
+// orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
+// un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
+// completed ticket. This is a guard, not the cure: markers are never consumed.
+// A deliberate re-run is `queue.mjs requeue <TICKET>`, which moves the log aside; naming the ticket
+// here does the same at spawn: AUTOPILOT_RERUN=<TICKET> node pass.mjs
+const rerunAllowed = new Set((process.env.AUTOPILOT_RERUN ?? '').split(/[,\s]+/).filter(Boolean));
+
+const alreadyFinished = (r) => {
+  if (rerunAllowed.has(r.key)) return false;
+  const log = join(STATE, 'logs', `${r.key}.log`);
+  if (!existsSync(log)) return false;
+  // Only what the worker printed, read the way harvest reads it: a tool call or tool result that
+  // quotes the marker (a grep for it, say) is not the worker finishing.
+  try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
+};
+
 // A ticket at the front: one a person placed (`--front`, or queue.mjs move or order --placed), not yet
-// started, and ready but for its files. Above a pending handoff in the spawn order, it takes a file they
-// both need at its budget ahead of the handoff, which waits with its briefing kept (#1667); below it, or
-// unplaced, it does not, and the handoff keeps its place as above.
+// started, and ready but for its files: eligibility would admit it (not finished, no reboot wait, as a
+// resume is never at the front). Above a pending handoff in the spawn order, it goes first for a file
+// they both need at its budget, and the handoff waits with its briefing kept (#1667); below it, or
+// unplaced, it does not, and the handoff keeps its place as above. That wait is no collision hold: the
+// front ticket fills no place until it starts, and the spawn loop can still skip it (a busy worktree, no
+// login), so the handoff's deadline keeps running and a front ticket that never starts escalates it.
 const spawnPos = new Map(Object.keys(fresh.tickets).map((k, i) => [k, i]));
 const above = (a, b) => (spawnPos.get(a) ?? Infinity) < (spawnPos.get(b) ?? Infinity);
 const atFront = (t) => !!t?.placed && t.state === 'triaged' && !toHandoff(t) && !toResume(t) && !reviewOnlyTry(t)
-  && !runningKeys.has(t.key) && (t.open_questions ?? 0) === 0 && keysOf(t.cycle_link).length === 0;
+  && !runningKeys.has(t.key) && (t.open_questions ?? 0) === 0 && keysOf(t.cycle_link).length === 0 && !alreadyFinished(t);
 // Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
 // them (`by`), its handoffs waiting for their next session (`handoff`; for a ticket not itself handed
 // off, leaving out those below it where it is at the front), the tickets at the front above it that
@@ -3054,33 +3074,19 @@ const budgetHolds = (r) => {
 };
 // The files and tickets that hold a pending handoff back, as its handoff wait records them
 // (pass/deadlines.mjs): [{ file, with: [key, or "key in batch <label>"] }], or null where none does.
+// Only what fills a place counts: a file at its budget only with the front tickets above it (`front`),
+// none of them started yet, is no collision hold, so the handoff's deadline keeps running (#1667).
 const collisionHolds = (r) => {
-  const holds = budgetHolds(r);
-  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.front, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
+  const holds = budgetHolds(r).filter((h) => h.by.length + h.handoff.length + h.elsewhere.length >= h.k);
+  return holds.length ? holds.map((h) => ({ file: h.file, with: [...h.by, ...h.handoff, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)] })) : null;
 };
-// Which ticket won a file a pending handoff and a front ticket above it both need, and why (#1667):
-// one line each, said once the candidates are read.
+// Which ticket goes first for a file a pending handoff and a front ticket above it both need, and why
+// (#1667): one line each, said once the candidates are read and before the spawn loop, which can still
+// skip the front ticket, so the line says the handoff waits for it to start, not that it has.
 const frontWins = () => all.filter((t) => t.state === 'triaged' && handedOffKeys.has(t.key) && !runningKeys.has(t.key)).flatMap((t) =>
-  budgetHolds(t).filter((h) => h.front.length).map((h) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'takes' : 'take'} it ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
-    `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept`));
+  budgetHolds(t).filter((h) => h.front.length).map((h) => `${h.file}: ${andList(h.front)} ${h.front.length === 1 ? 'goes' : 'go'} first for it, ahead of ${t.key}'s handoff to Stage ${t.handoff_stage ?? '?'}: ` +
+    `placed at the front of the spawn order (--front, or a person's move) above it, so ${t.key} waits for the file with its handoff briefing kept, and its handoff deadline keeps running until ${h.front.length === 1 ? 'that ticket starts' : 'they start'}`));
 const collidesWithRunning = (r) => budgetHolds(r).length > 0;
-
-// A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
-// orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
-// un-parking is the orchestrator's decision), and this loop would spawn a SECOND worker onto a
-// completed ticket. This is a guard, not the cure: markers are never consumed.
-// A deliberate re-run is `queue.mjs requeue <TICKET>`, which moves the log aside; naming the ticket
-// here does the same at spawn: AUTOPILOT_RERUN=<TICKET> node pass.mjs
-const rerunAllowed = new Set((process.env.AUTOPILOT_RERUN ?? '').split(/[,\s]+/).filter(Boolean));
-
-const alreadyFinished = (r) => {
-  if (rerunAllowed.has(r.key)) return false;
-  const log = join(STATE, 'logs', `${r.key}.log`);
-  if (!existsSync(log)) return false;
-  // Only what the worker printed, read the way harvest reads it: a tool call or tool result that
-  // quotes the marker (a grep for it, say) is not the worker finishing.
-  try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
-};
 
 // The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The
 // tickets are this section's own, so a candidate is the same object the rest of the pass reads.
