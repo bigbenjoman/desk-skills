@@ -15,7 +15,7 @@
 // The supervisor runner, its status reader and turnOn are desk-q's too (`desk-q <repo> supervisor`).
 // DESK_SUPERVISOR_MJS and DESK_PLATFORM stand in for the script and the platform in tests.
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -43,6 +43,20 @@ export const canSupervise = () => !ready();
 export const supervisorLabel = (slug) => `com.desk-skills.supervisor.${slug}`;
 export const launchdDomain = () => `gui/${process.getuid()}`;
 export const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
+// Whether launchd has the job `label` loaded for this user.
+export const agentLoaded = (label) => launchctl('print', `${launchdDomain()}/${label}`).status === 0;
+// Unloads the job `label` and removes its plist `file`. -> { ok: true, removed } (removed: there was
+// one to remove) | { ok: false, error } when launchd would not unload it, with the plist left in place.
+export function unloadAgent(label, file) {
+  const was = agentLoaded(label);
+  if (was) {
+    const r = launchctl('bootout', `${launchdDomain()}/${label}`);
+    if (r.status !== 0) return { ok: false, error: `launchctl bootout ${launchdDomain()}/${label} failed: ${(r.stderr || r.stdout || '').trim()}` };
+  }
+  const had = existsSync(file);
+  rmSync(file, { force: true });
+  return { ok: true, removed: was || had };
+}
 // A launchd job as plist XML: what supervisor.mjs and desk-ui.mjs write to ~/Library/LaunchAgents.
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 function plistValue(v, pad) {

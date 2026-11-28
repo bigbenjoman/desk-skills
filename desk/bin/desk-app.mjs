@@ -51,9 +51,10 @@ export function sourceHash(src) {
 export const deskPaths = () => ({ configRoot: E.deskConfigRoot(), deskHome: E.deskHome() });
 // What a build is made from: the source, and the paths written into it.
 const buildKey = (src, paths) => createHash('sha256').update(`${sourceHash(src)}\0${JSON.stringify(paths)}`).digest('hex');
-const readStamp = (file) => { try { return readFileSync(file, 'utf8').trim(); } catch { return null; } };
+export const readStamp = (file) => { try { return readFileSync(file, 'utf8').trim(); } catch { return null; } };
 
-function step(log, cmd, args, cwd) {
+// The build steps below are desk-ptyd.mjs's too, for node-pty.
+export function step(log, cmd, args, cwd) {
   appendFileSync(log, `\n$ ${cmd} ${args.join(' ')}\n`);
   const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   appendFileSync(log, `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? `${r.error.message}\n` : ''}`);
@@ -63,14 +64,14 @@ function step(log, cmd, args, cwd) {
 const built = (dist) => (existsSync(dist) ? readdirSync(dist).filter((d) => /^mac/.test(d)).map((d) => join(dist, d, 'Desk.app')).find((p) => existsSync(p)) : null);
 
 // Both builds run in a fresh copy of their source, so the checkout never gets node_modules or dist.
-function stage(src, work) {
+export function stage(src, work) {
   rmSync(work, { recursive: true, force: true });
   mkdirSync(work, { recursive: true });
   for (const f of files(src)) { mkdirSync(join(work, f, '..'), { recursive: true }); cpSync(join(src, f), join(work, f)); }
 }
-const npmInstall = (log, work) => step(log, 'npm', existsSync(join(work, 'package-lock.json')) ? ['ci', '--no-audit', '--no-fund'] : ['install', '--no-audit', '--no-fund'], work);
+export const npmInstall = (log, work) => step(log, 'npm', existsSync(join(work, 'package-lock.json')) ? ['ci', '--no-audit', '--no-fund'] : ['install', '--no-audit', '--no-fund'], work);
 // Puts next where live is, moving live aside to old first: until the rename the previous one stays.
-function swapIn(next, live, old) {
+export function swapIn(next, live, old) {
   rmSync(old, { recursive: true, force: true });
   if (existsSync(live)) renameSync(live, old);
   renameSync(next, live);
@@ -78,7 +79,7 @@ function swapIn(next, live, old) {
 }
 // Runs a build into a fresh log. A failure removes its work folder, names the log and returns false,
 // leaving the previous build where it was.
-function rebuild({ label, what, src, log, work, had, kept, none }, run) {
+export function rebuild({ label, what, src, log, work, had, kept, none }, run) {
   mkdirSync(join(log, '..'), { recursive: true });
   writeFileSync(log, `${new Date().toISOString()} building ${what} from ${src}\n`);
   try {

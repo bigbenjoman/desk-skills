@@ -1,0 +1,8 @@
+{
+  "name": "desk-ptyd",
+  "private": true,
+  "description": "The native module desk-ptyd.mjs hosts Desk's terminals with, installed by install.sh into ~/.claude/desk/ptyd",
+  "dependencies": {
+    "node-pty": "1.1.0"
+  }
+}
