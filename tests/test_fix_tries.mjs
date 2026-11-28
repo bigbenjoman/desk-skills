@@ -1060,7 +1060,7 @@ const OLD = 'b'.repeat(40);
 const read433 = (payload, o = {}) => readVerdict(payload, { handle: 'ben', clean: CLEAN, ...o });
 t('DS-433 clean at the head reads clean', read433(pl(HEAD, marked(HEAD))).clean, true);
 t('DS-433 no payload is no answer', readVerdict({}, { handle: 'ben', clean: CLEAN }), null);
-t('DS-433 no verdict is a review worker\'s', JSON.stringify(read433(pl(HEAD))), JSON.stringify({ head: HEAD, clean: false, carried: null, why: 'no desk-review verdict is posted on it', settle: false, person: false }));
+t('DS-433 no verdict is a review worker\'s', JSON.stringify(read433(pl(HEAD))), JSON.stringify({ head: HEAD, clean: false, carried: null, why: 'no desk-review verdict is posted on it', settle: false, person: false, location: null }));
 t('DS-433 a stale verdict is too', `${read433(pl(HEAD, marked(OLD))).clean} ${read433(pl(HEAD, marked(OLD))).settle}`, 'false false');
 t('DS-433 someone else\'s clean verdict attests nothing', read433(pl(HEAD, marked(HEAD, CLEAN, 'mallory'))).clean, false);
 t('DS-433 the latest verdict counts: a dirty one after a clean one holds it', read433(pl(HEAD, marked(HEAD), marked(HEAD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'))).settle, true);
@@ -1087,6 +1087,20 @@ for (const clean of ['no P0, P1 or P2 findings', PULLBOT_CLEAN_COUNTS]) {
   t(`DS-544 AC3 a P1 in it under "${clean}" is a review at the head to settle, named`, `${p1.clean} ${p1.settle} ${p1.why.includes('p1=1')}`, 'false true true');
   t(`DS-544 AC6 the thread read takes it as the clean verdict under "${clean}"`, readThreads(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { handle: 'ben', clean }).verdict, PULLBOT_SHA);
 }
+// issue-1556: a cloud ticket's verdict at its current head is read as a local one is, and says where it
+// was reviewed; one at an older head does not count, as today.
+const CLOUD = 'd'.repeat(40);
+const cloudRead = read433(pl(CLOUD, marked(CLOUD)), { cloudHead: CLOUD });
+t('issue-1556 AC1 a cloud verdict at the head reads clean, as a local one does', `${cloudRead.clean} ${cloudRead.person} ${cloudRead.location}`, 'true false cloud');
+t('issue-1556 AC1 so the driver spends no review try on it', verdictTry(tk(), { ...green433, head: CLOUD }, ctx433(cloudRead)), null);
+const cloudOld = read433(pl(HEAD, marked(CLOUD)), { cloudHead: CLOUD });
+t('issue-1556 AC2 a cloud verdict at an older head does not count, and names no location', `${cloudOld.clean} ${cloudOld.settle} ${cloudOld.location}`, 'false false null');
+t('issue-1556 AC2 so the head gets a review try', verdictTry(tk(), green433, ctx433(cloudOld))?.fix?.kind, 'rereview');
+t('issue-1556 AC3 a verdict at the head that is not the cloud session\'s is local', read433(pl(HEAD, marked(HEAD)), { cloudHead: CLOUD }).location, 'local');
+t('issue-1556 AC3 and so is any verdict on a local ticket', read433(pl(HEAD, marked(HEAD))).location, 'local');
+t('issue-1556 AC3 a cloud verdict that is not clean still says cloud', read433(pl(CLOUD, marked(CLOUD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { cloudHead: CLOUD }).location, 'cloud');
+t('issue-1556 a cloud verdict carried from an older head names no location', read433(pl(HEAD, marked(CLOUD)), { cloudHead: CLOUD, carry: () => true }).location, null);
+t('issue-1556 someone else\'s verdict at the cloud head attests nothing', read433(pl(CLOUD, marked(CLOUD, CLEAN, 'mallory')), { cloudHead: CLOUD }).location, null);
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
 }
 

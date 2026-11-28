@@ -33,6 +33,7 @@ const VALID = {
   automerge_disarmed: { by: 'merge-driver', pr: 12, line: 1 },
   merged: { by: 'merge-driver', pr: 12, head_sha: SHA, base: 'main' },
   merge_stages: { pr: 12, stages: { undraft: 4, merge: 2 } },
+  verdict_read: { pr: 12, head_sha: SHA, location: 'cloud' },
   stuck: { cause: 'usage', start: '2026-11-20T10:00:00Z', end: null },
   ask_raised: { ask: 'DS-1:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: null, arm: null },
   ask_presented: { ask: 'DS-1:2026-11-20T10:00:00Z', via: 'digest', ref: null, notification: null, share: 0.25 },
@@ -397,6 +398,22 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('and writes nothing', lines(dir), before);
   t('the default wait is 2 s', L.LOCK_WAIT_MS, 2000);
   t('the default snapshot threshold is 1,000 events', L.SNAPSHOT_EVERY, 1000);
+}
+
+// issue-1556 AC3: each verdict the pass reads is recorded once per PR and head, with where it was reviewed.
+{
+  const dir = repo();
+  const once = { by: 'pass', skip: (st, e) => L.verdictRead(st.tickets[e.key], e.data) };
+  const read = (head_sha, location) => ({ ...ev('verdict_read', { pr: 12, head_sha, location }), id: `verdict_read:DS-1:12:${head_sha}` });
+  L.append(dir, [ev('admitted')], { by: 'pass' });
+  L.append(dir, [read(SHA, 'cloud')], once);
+  L.append(dir, [read(SHA, 'cloud')], once);
+  L.append(dir, [read('fed4321cba', 'local')], once);
+  const got = L.fold(dir).tickets['DS-1'];
+  t('issue-1556 AC3 the ledger shows each verdict\'s reviewer location, once per head', j(got.verdicts.map((v) => [v.head_sha, v.location])), j([[SHA, 'cloud'], ['fed4321cba', 'local']]));
+  t('issue-1556 AC3 a verdict read again on a later pass writes no second line', lines(dir).split('\n').filter((l) => l.includes('verdict_read')).length, 2);
+  t('issue-1556 AC3 a verdict is history: it leaves the ticket\'s state and batch', `${got.state} ${got.batch}`, 'queued B1');
+  t('issue-1556 AC3 a location other than cloud or local is refused', L.invalid(ev('verdict_read', { pr: 12, head_sha: SHA, location: 'moon' })), 'verdict_read: field "location" is not a valid location');
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');

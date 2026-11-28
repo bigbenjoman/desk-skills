@@ -28,7 +28,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, verdictReadAt, reviewCarries, carryComment, markerClean } from './undraft.mjs';
 import { pairs, queueFile } from './desk-env.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
@@ -102,22 +102,26 @@ export function externalReview(payload, login) {
 export const localReviewSet = rowSet;
 
 // Whether a clean review stands at the PR's head, for a merge: { head, clean, carried, range, said,
-// why, settle, person }. A clean verdict for an older head counts where it still holds at the head
+// why, settle, person, location }. A clean verdict for an older head counts where it still holds at the head
 // (carry(sha, body), as verdictCarries or restsOnCarries says; `range` is the base range the latter
 // checked, and `said` the comment that tells the PR). Not clean, `settle` is a review at the head that says so, and
 // `person` a row only the person can set; with neither, a review worker has what it needs: there is
 // no verdict, a stale one, or one the gate cannot read, and `targeted` what that review need read only
 // (scope(sha, body), as reviewScope says), when a clean review for an older head narrows it.
-export function readVerdict(payload, { handle, clean, carry, scope }) {
+// `location` is where the desk-format verdict at the head was reviewed (undraft.mjs verdictReadAt:
+// `cloud` or `local`), null where none is at the head or the verdict is carried from an older one.
+export function readVerdict(payload, { handle, clean, carry, scope, cloudHead = null }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
   const head = pr.headRefOid ?? '';
   const row = String(clean ?? '').trim();
-  if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true };
-  const { v, carried, range, targeted } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry, scope);
-  if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false };
+  if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true, location: null };
+  const reviews = pr.reviews?.nodes ?? [];
+  const { v, carried, range, targeted } = verdictAtHead(reviews, handle, head, row, carry, scope);
+  const location = carried ? null : verdictReadAt(reviews, handle, head, cloudHead)?.location ?? null;
+  if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false, location };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
-  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
+  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, location, ...(targeted ? { targeted } : {}) };
 }
 
 // When the PR last had an approval at its head: the newest of an APPROVED review of the head and a clean

@@ -36,6 +36,9 @@ export const ASK_VIA = ['push', 'digest', 'decider', 'session'];
 export const ASK_BY = ['person', 'decider', 'default'];
 // The steps an ask's tokens are measured for (ask_tokens): the parked round, its presentation, the round after.
 export const ASK_TOKEN_STEPS = ['raise', 'present', 'act'];
+// Where a verdict the pass read at a PR's head was reviewed (verdict_read): by the ticket's cloud session,
+// or on this computer (undraft.mjs verdictReadAt).
+export const REVIEWER_LOCATIONS = ['cloud', 'local'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
 
@@ -56,6 +59,7 @@ const CHECKS = {
   via: (v) => ASK_VIA.includes(v),
   answerer: (v) => ASK_BY.includes(v),
   tokenStep: (v) => ASK_TOKEN_STEPS.includes(v),
+  location: (v) => REVIEWER_LOCATIONS.includes(v),
   usd: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
   share: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1,
 };
@@ -80,6 +84,8 @@ export const EVENTS = Object.freeze({
   merged: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha', base: 'string' } },
   // stages: the merged PR's time by stage, as merge-stages.mjs records it.
   merge_stages: { scope: 'ticket', data: { pr: 'int', stages: 'object' } },
+  // A desk-format verdict the pass read at PR pr's head head_sha, and where it was reviewed (location).
+  verdict_read: { scope: 'ticket', data: { pr: 'int', head_sha: 'sha', location: 'location' } },
   // A park, hold or stall interval as stuck-time.mjs records it: opened (end null) or closed.
   stuck: { scope: 'ticket', data: { cause: 'string', start: 'string', end: 'string?' } },
   // An ask, a park handed to the person or the decider, as ask-ledger.mjs records each step of it: `ask`
@@ -110,7 +116,7 @@ export const ASK_EVENTS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_a
 // lines from the merge log, a merged PR's stages, a stuck interval, an ask's steps), naming the batch
 // that writer is in. They are history, so they never move a ticket into that batch, and queue.json
 // never owes the log one (queue-ledger.mjs).
-export const HISTORY_EVENTS = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck', ...ASK_EVENTS];
+export const HISTORY_EVENTS = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck', 'verdict_read', ...ASK_EVENTS];
 const UNFINISHED = STATES.filter((s) => !FINISHED.includes(s));
 const ANY = [null, ...STATES];
 const KEEP = Symbol('unchanged');
@@ -136,6 +142,8 @@ export const TRANSITIONS = Object.freeze({
   ...Object.fromEntries(['waiting', 'waited', 'automerge_armed', 'automerge_disarmed'].map((t) => [t, { from: STATES, to: KEEP }])),
   // A merged PR's stages are read after its merge, whatever the ticket's state by then.
   merge_stages: { from: ANY, to: KEEP },
+  // A verdict is read whatever the ticket's state by then.
+  verdict_read: { from: ANY, to: KEEP },
   // A stuck interval opens and closes whatever the ticket's state, as a pass reads it.
   stuck: { from: ANY, to: KEEP },
   // An ask's steps are recorded whatever the ticket's state by the time each is written.
@@ -231,6 +239,10 @@ function askStep(t, ev) {
   else if (ev.type === 'ask_tokens') { a.tokens ??= {}; a.tokens[tokensKey(d)] ??= { ...d, at: ev.at }; }
 }
 
+// Whether ticket `t` (a folded ledger ticket) has a verdict read at PR pr's head head_sha already: an
+// appender skips one it has (append's `skip`), so a verdict read on every pass is recorded once.
+export const verdictRead = (t, { pr, head_sha }) => !!t?.verdicts?.some((v) => v.pr === pr && v.head_sha === head_sha);
+
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
 // mode the queue write it records has already happened. Every batch an event names gets an entry in
 // `state.batches`, so a batch with none has never been written to the log.
@@ -272,6 +284,8 @@ function apply(state, ev) {
     // merged_at keeps a ticket's first merge, as queue.mjs merged does.
     case 'merged': t.merge = { ...d, at: ev.at }; t.fields.merged_at ??= ev.at; t.automerge = null; break;
     case 'merge_stages': t.merge_stages = { pr: d.pr, ...d.stages }; break;
+    // t.verdicts: each verdict read, once per PR and head, with where it was reviewed (verdictRead).
+    case 'verdict_read': t.verdicts ??= []; if (!verdictRead(t, d)) t.verdicts.push({ pr: d.pr, head_sha: d.head_sha, location: d.location, at: ev.at }); break;
     // t.stuck: each open interval's cause and its start.
     case 'stuck': t.stuck ??= {}; if (d.end == null) t.stuck[d.cause] = d.start; else delete t.stuck[d.cause]; break;
     // t.asks: each ask's record, its steps as they were written (ask-ledger.mjs readAsks). No queue field

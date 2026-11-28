@@ -92,6 +92,16 @@ export function latestReview(reviews, handle) {
   return ownReviews(reviews, handle).map((r) => ({ verdict: parseVerdict(r.body), body: r.body, id: r.id ?? null })).filter((r) => r.verdict).pop() ?? null;
 }
 
+// A cloud ticket's verdict is read as a local one is: whoever ran desk-review, it is the handle's
+// desk-format review at the head. `cloudHead` (pass/shared.mjs cloudHead) is the head its cloud session
+// left, which no local review try has reviewed: a verdict at it is the session's own, so `location`
+// says `cloud`, and any other verdict `local`.
+export function verdictReadAt(reviews, handle, head, cloudHead = null) {
+  const sha = latestReview(reviews, handle)?.verdict?.sha;
+  if (!sha || !head || !head.startsWith(sha)) return null;
+  return { sha, location: cloudHead && cloudHead.startsWith(sha) ? 'cloud' : 'local' };
+}
+
 // What a finished ticket's done line says of its review, read from its PR (gh pr view --json
 // headRefOid,reviews) rather than from its worker's marker: the round, SHA and counts of the latest
 // verdict `handle` posted when it is at the head, else that the head has none.

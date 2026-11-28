@@ -218,6 +218,17 @@ export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.k
 // start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
 export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// The head a cloud ticket's session left on its PR (advanceCloud records cloud.head), where its own
+// desk-review posted the verdict; null for a local ticket, for one recorded before the head was kept, and
+// once a local try of any kind has started at that head: a review try reviews it, and a gaps or
+// instruction try may post the verdict again there, so a verdict at it may then be the local worker's.
+// (A try that fixes something pushes a new head, which this one never is.)
+export const cloudHead = (t) => {
+  const head = t?.location === 'cloud' ? t.cloud?.head : null;
+  if (typeof head !== 'string' || !head) return null;
+  const tries = [...(t.fix_tries ?? []), ...(t.fix ? [t.fix] : [])];
+  return tries.some((f) => f?.head === head) ? null : head;
+};
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so it holds
 // no local slot and the maintenance window neither waits for one nor stops it, in any repo; a review try
 // on a cloud ticket's PR runs here.
