@@ -10,7 +10,7 @@
 // holds with nobody at it.
 //
 // The rows (machine profile Sizing, set with `desk-env machine set`; machine.mjs checks each):
-//   person-use           on | off                          on when unset
+//   person-use           on | off                          off when unset: a machine opts in
 //   person-baseline-gb   GB others hold at rest            15% of memory-gb (2 where unknown)
 //   person-baseline-cpu  cores others keep busy at rest    5% of cpu-cores, at least 0.5
 //   person-use-gb        GB over the baseline that is use  10% of memory-gb, at least 2
@@ -25,9 +25,13 @@ const round1 = (n) => Math.round(n * 10) / 10;
 
 // The rows through `get(key)` (a profile value or null), each with its default where unset:
 // -> { on, baselineGb, baselineCpu, overGb, overCpu, floor, calmMin, problems }. A row set but
-// unreadable reads as its default and is a problem naming it.
+// unreadable reads as its default and is a problem naming it. The mode is on only where `person-use`
+// is exactly `on`; while it is off the other rows are not read, so only that row can be a problem.
 export function personUseRows(get) {
-  const problems = [];
+  const raw = get('person-use');
+  const mode = raw == null ? 'off' : String(raw).trim();
+  const modeProblems = ['on', 'off', ''].includes(mode) ? [] : [`\`person-use\` is "${mode}": want on or off; read as off`];
+  const problems = [...modeProblems];
   const memGb = num(get('memory-gb'));
   const cores = num(get('cpu-cores'));
   const defaults = {
@@ -47,11 +51,10 @@ export function personUseRows(get) {
     if (Number.isFinite(n) && n >= 0 && (ok[k] ?? (() => true))(n)) v[k] = n;
     else { v[k] = d; problems.push(`\`${k}\` is "${raw}": read as ${d}`); }
   }
-  const mode = get('person-use') == null ? 'on' : String(get('person-use')).trim();
-  if (!['on', 'off'].includes(mode)) problems.push(`\`person-use\` is "${mode}": want on or off; read as on`);
+  const on = mode === 'on';
   return {
-    on: mode !== 'off', baselineGb: v['person-baseline-gb'], baselineCpu: v['person-baseline-cpu'], overGb: v['person-use-gb'],
-    overCpu: v['person-use-cpu'], floor: v['person-use-floor'], calmMin: v['person-use-calm-min'], problems,
+    on, baselineGb: v['person-baseline-gb'], baselineCpu: v['person-baseline-cpu'], overGb: v['person-use-gb'],
+    overCpu: v['person-use-cpu'], floor: v['person-use-floor'], calmMin: v['person-use-calm-min'], problems: on ? problems : modeProblems,
   };
 }
 

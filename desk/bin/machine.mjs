@@ -138,7 +138,7 @@ const BENCH_RULES = Object.freeze({
   // The person-in-use rows (person-use.mjs): each unset reads as its default, worked out from the
   // profile's memory-gb and cpu-cores.
   'person-use': onOffRule('person-use',
-    'on drops the local cap to person-use-floor while the person uses this computer, and sends cloud-able tickets only to the cloud; on when unset'),
+    'on drops the local cap to person-use-floor while the person uses this computer, and sends cloud-able tickets only to the cloud; off when unset'),
   'person-baseline-gb': { ok: (n) => n >= 0, want: 'a number of GB', why: 'GB that processes other than desk workers hold with nobody using this computer' },
   'person-baseline-cpu': { ok: (n) => n >= 0, want: 'a number of CPU cores', why: 'CPU cores that processes other than desk workers keep busy with nobody using this computer' },
   'person-use-gb': { ok: (n) => n > 0, want: 'a number of GB over 0', why: 'GB over person-baseline-gb that reads as the person using this computer' },
