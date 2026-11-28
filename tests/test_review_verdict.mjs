@@ -575,6 +575,7 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('issue-1694 AC1 its heading never names requirement gaps, so the pass reads none open', reviewGaps([render(settled), '', '### Requirement gaps', 'None', '', sec].join('\n')).length, 0)
   t('issue-1694 AC1 the section is empty when nothing is settled', settledSection(base()), '')
   t('issue-1694 AC1 a bulleted entry reads the same', settlingEntry(`* ${ENTRY}`, 'AC3')?.who, 'ben')
+  t('issue-1694 AC1 an entry settles only the criterion asked about, read as its date, who and label', JSON.stringify([settlingEntry(ENTRY, 'AC3'), settlingEntry(ENTRY), settlingEntry(ENTRY, 'ac 3')?.criterion]), JSON.stringify([{ date: '2026-11-26', who: 'ben', criterion: 'AC3' }, null, 'AC3']))
   const no = (entry, gap = 'AC3') => /settled criterion AC3: entry quotes/.test(refused(base({ settled: [{ gap, entry }] })))
   t('issue-1694 AC1 an entry with no date, no one deciding, another criterion or nothing past the label settles nothing',
     [no('ben: AC3 measured at 212'), no('2026-11-26 AC3 measured at 212'), no('2026-11-26 ben: AC4 measured at 212'), no('2026-11-26 ben: AC3.')].join(' '), 'true true true true')

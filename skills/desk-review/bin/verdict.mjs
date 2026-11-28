@@ -140,21 +140,19 @@ const DECISION_ENTRY = /^(\d{4}-\d{2}-\d{2})\s+([^:\r\n]*[^\s:])\s*:\s*(.+)$/
 const CRITERION = /\b(?:AC|DoD)\s?\d+\b/gi
 const label = (s) => String(s).replace(/\s+/g, '').toUpperCase()
 
-// A Decisions entry (`<yyyy-mm-dd> <who>: <what>`, a leading `*` or `-` allowed) read as settling a
-// criterion: { date, who, criterion, evidence }, or null. It settles `gap` (AC3), or, with no gap given,
-// the one criterion it names, only when it is dated, names who decided, names that criterion, and says
-// more than the label: the evidence or the ruling. One naming several criteria settles each it names.
-// The desk pass's own entry (`<date> desk pass: issue #<n> changed …`) reports criteria changed on the
-// issue, and settles none.
-export function settlingEntry(entry, gap = null) {
+// A Decisions entry (`<yyyy-mm-dd> <who>: <what>`, a leading `*` or `-` allowed) read as settling the
+// criterion `gap` (AC3, DoD2): { date, who, criterion }, or null. It settles it only when it is dated,
+// names who decided, names that criterion, and says more than the label: the evidence or the ruling. One
+// naming several criteria settles each it names. The desk pass's own entry (`<date> desk pass: issue
+// #<n> changed …`) reports criteria changed on the issue, and settles none.
+export function settlingEntry(entry, gap) {
   const m = DECISION_ENTRY.exec(String(entry ?? '').trim().replace(/^[-*]\s+/, ''))
   if (!m || /^desk pass$/i.test(m[2].trim())) return null
   const [, date, who, what] = m
-  const named = [...new Set((what.match(CRITERION) ?? []).map(label))]
-  const criterion = gap == null ? (named.length === 1 ? named[0] : null) : named.includes(label(gap)) ? label(gap) : null
-  if (!criterion) return null
-  const evidence = what.replace(CRITERION, ' ').replace(/[\s:;,.()"'`—–-]+/g, ' ').trim()
-  return evidence ? { date, who: who.trim(), criterion, evidence: what.trim() } : null
+  const criterion = label(gap ?? '')
+  if (!criterion || !(what.match(CRITERION) ?? []).map(label).includes(criterion)) return null
+  const said = what.replace(CRITERION, ' ').replace(/[\s:;,.()"'`—–-]+/g, ' ').trim()
+  return said ? { date, who: who.trim(), criterion } : null
 }
 // What only exists once the PR has merged: the production system, a shared staging one, a deployed
 // build, a physical device, or a third party's live service. A unit, integration or local check is none.
