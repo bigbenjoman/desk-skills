@@ -1,13 +1,15 @@
 // suite: candidates (what to admit into a free batch slot, checked against main before it is offered)
 // layer: L2
 // covers: desk/bin/candidates.mjs
-// listCandidates with stubbed Jira, GitHub and git reads; slotLines' keeping between passes; the command
-// with no Jira tracker. Scratch directories only.
+// listCandidates with stubbed Jira, GitHub and git reads; slotLines' keeping between passes; admitRun's
+// one admission a run with stubbed admit and assign, and desk-q's line for it; the command with no Jira
+// tracker. Scratch directories only.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, ownAssignee, personOf, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
+import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, ownAssignee, personOf, CANDIDATES_EVERY_MS, admitCandidatesOn, admitRefusal, admitRun, ADMIT_RETRY_MS } from '../desk/bin/candidates.mjs';
+import { admitHead } from '../desk/bin/desk-q.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -307,6 +309,75 @@ t('#1484 AC1 the §1 row read as the person, none and TODO as unset', ['712020:0
   t('#1484 AC3 the pass names the person\'s own with the row off', slotLines({ state: S, now, ownOnly: true, list: lst }), ['free slot: yours']);
   t('#1484 AC3 kept between passes', slotLines({ state: S, now: now + 1, ownOnly: true, list: lst }), ['free slot: yours']);
   t('#1484 AC3 the row turned on reads again', [slotLines({ state: S, now: now + 2, list: lst }), asked], [['free slot: all'], [true, false]]);
+}
+
+// #1710: the pass admits one checked candidate for a free slot.
+{
+  t('#1710 AC1 the admit row is off unless on', [admitCandidatesOn('on'), admitCandidatesOn('off'), admitCandidatesOn(''), admitCandidatesOn(undefined)], [true, false, false, false]);
+  const cand = (key, extra = {}) => ({ key, own: false, flags: [], overlap: [], blockers: [], ...extra });
+  const checks = (landed = {}, away = {}) => ({ landed: (k) => (k in landed ? landed[k] : true), elsewhere: (k) => away[k] ?? null });
+  t('#1710 AC1 a clean candidate passes', admitRefusal(cand('ACME-1', { blockers: [{ key: 'ACME-9', category: 'done' }] }), 'main', checks()), null);
+  t('#1710 AC1 one with no Acceptance criteria is refused', admitRefusal(cand('ACME-2', { flags: ['no Acceptance criteria'] }), 'main', checks()), 'no Acceptance criteria');
+  t('#1710 AC1 a blocker not Done is refused', admitRefusal(cand('ACME-3', { blockers: [{ key: 'ACME-9', category: 'indeterminate' }] }), 'main', checks()), 'blocker ACME-9 is not Done');
+  t('#1710 AC1 a Done blocker whose work is merged only into a feature branch is refused', admitRefusal(cand('ACME-4', { blockers: [{ key: 'ACME-9', category: 'done' }] }), 'main',
+    checks({ 'ACME-9': false }, { 'ACME-9': { branch: 'feat/ACME-100-epic', state: 'none' } })), 'blocker ACME-9 is merged into feat/ACME-100-epic, not main');
+  t('#1710 AC1 a blocker GitHub could not be read for is refused', admitRefusal(cand('ACME-5', { blockers: [{ key: 'ACME-9', category: 'done' }] }), 'main', checks({ 'ACME-9': null })),
+    'whether blocker ACME-9 is on main could not be read');
+  t('#1710 AC1 a PR naming it merged into a feature branch is refused', admitRefusal(cand('ACME-6'), 'main', checks({}, { 'ACME-6': { branch: 'feat/x', state: 'open' } })), 'a PR naming it is merged into feat/x, not main');
+  t('#1710 AC1 one whose feature branch already merged into the base passes', admitRefusal(cand('ACME-7'), 'main', checks({}, { 'ACME-7': { branch: 'feat/x', state: 'merged' } })), null);
+
+  // admitRun: the listing's offered entries, admit and assign stubbed.
+  const now = Date.parse('2026-11-28T12:00:00Z');
+  const runWith = (S, offered, { admitted = () => true, own = false, assignSelf = 'yes', at = now, dry = false, landed = {}, away = {}, on = true } = {}) => {
+    const calls = { admit: [], assign: [], list: 0 };
+    const lines = admitRun({ state: S, base: 'main', now: at, dry, assignSelf, on, checks: checks(landed, away),
+      list: () => { calls.list++; return { result: { ok: true, offered: offered.map((c) => ({ own, ...c })) } }; },
+      admit: (k) => { calls.admit.push(k); return admitted(k) ? { admitted: true } : { admitted: false, why: `not admitted ${k}: open questions` }; },
+      assign: (k) => { calls.assign.push(k); return { ok: true }; } });
+    return { lines, calls, kept: (() => { try { return JSON.parse(readFileSync(join(S, 'candidate-admit.json'), 'utf8')); } catch { return null; } })() };
+  };
+  {
+    const S = scratch('candidates-admit-');
+    const r = runWith(S, [cand('ACME-20', { flags: ['no Acceptance criteria'] }),
+      cand('ACME-21', { blockers: [{ key: 'ACME-9', category: 'done' }] }), cand('ACME-22'), cand('ACME-23')],
+    { landed: { 'ACME-9': false }, away: { 'ACME-9': { branch: 'feat/ACME-100-epic', state: 'none' } } });
+    t('#1710 AC2 one clean candidate is admitted, the first in order, and assigned', [r.calls.admit, r.calls.assign], [['ACME-22'], ['ACME-22']]);
+    t('#1710 AC3 the pass says what it admitted and refused, with why', r.lines, [
+      'free slot: admitted ACME-22 (assigned to you)',
+      'free slot: refused ACME-20 (no Acceptance criteria), ACME-21 (blocker ACME-9 is merged into feat/ACME-100-epic, not main)',
+    ]);
+    t('#1710 AC3 the run is kept for desk-q', [r.kept.at, r.kept.admitted, r.kept.refused.map((x) => x.key)], ['2026-11-28T12:00:00.000Z', { key: 'ACME-22', note: 'assigned to you' }, ['ACME-20', 'ACME-21']]);
+    t('#1710 AC3 desk-q\'s repo screen shows the last run and its reasons', admitHead({ stateDir: S }, now + 5 * 60_000), [
+      'free-slot admit 5m ago: admitted ACME-22 (assigned to you) · refused ACME-20 (no Acceptance criteria), ACME-21 (blocker ACME-9 is merged into feat/ACME-100-epic, not main)']);
+    t('#1710 AC3 and nothing before a run', admitHead({ stateDir: scratch('candidates-admit-none-') }, now), []);
+    const again = runWith(S, [cand('ACME-23')], { at: now + 60_000 });
+    t('#1710 AC2 a second pass inside the interval reads and admits nothing', [again.lines, again.calls.list, again.calls.admit], [[], 0, []]);
+  }
+  {
+    const S = scratch('candidates-admit-refused-');
+    const r = runWith(S, [cand('ACME-30'), cand('ACME-31')], { admitted: (k) => k !== 'ACME-30' });
+    t('#1710 AC2 a candidate the admit refuses stops the run: one admit a pass', [r.calls.admit, r.lines], [['ACME-30'],
+      ['free slot: refused ACME-30 (not admitted ACME-30: open questions)', 'free slot: admitted nothing: the one candidate tried this run was refused']]);
+    const next = runWith(S, [cand('ACME-30'), cand('ACME-31')], { at: now + CANDIDATES_EVERY_MS });
+    t('#1710 AC2 it is passed over next run, and the next candidate admitted', next.calls.admit, ['ACME-31']);
+    const day = runWith(S, [cand('ACME-30')], { at: now + 2 * CANDIDATES_EVERY_MS + ADMIT_RETRY_MS });
+    t('#1710 after a day it is tried again', day.calls.admit, ['ACME-30']);
+  }
+  {
+    const S = scratch('candidates-admit-assign-');
+    t('#1710 AC2 with jira-assign-self not yes it is admitted unassigned, saying so', runWith(S, [cand('ACME-40')], { assignSelf: 'no' }).lines, ['free slot: admitted ACME-40 (not assigned: config §3 jira-assign-self is no)']);
+    const S2 = scratch('candidates-admit-own-');
+    const own = runWith(S2, [cand('ACME-41')], { own: true });
+    t('#1710 AC2 the person\'s own is admitted with no assignment', [own.calls.assign, own.lines], [[], ['free slot: admitted ACME-41']]);
+    const S3 = scratch('candidates-admit-dry-');
+    const dry = runWith(S3, [cand('ACME-42')], { dry: true });
+    t('#1710 a dry run admits nothing and keeps nothing', [dry.calls.admit, dry.lines, dry.kept], [[], ['free slot: would admit ACME-42'], null]);
+  }
+  {
+    const S = scratch('candidates-admit-off-');
+    const off = runWith(S, [cand('ACME-50')], { on: false });
+    t('#1710 AC4 with the row off nothing is listed, admitted or kept', [off.lines, off.calls, off.kept], [[], { admit: [], assign: [], list: 0 }, null]);
+  }
 }
 
 // The command: no Jira tracker is exit 3, saying so.

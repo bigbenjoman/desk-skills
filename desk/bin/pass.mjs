@@ -79,7 +79,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf, FINISHED } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { slotCandidatesOn, slotLines, priorityOf } from './candidates.mjs';
+import { slotCandidatesOn, slotLines, priorityOf, admitRun } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, machineCeiling, repoCap, repoWeightRaw, repoWeights, workerWeight, takeBorrowLock, writeBeat, parseNext, queueLive, lastBeat, loopCarried, loopTick } from './borrow.mjs';
 import { listBatches, prState as batchPrState, repoTickets } from './batches.mjs';
@@ -5736,11 +5736,29 @@ runSteps({
 // ---- candidates for a free slot ---------------------------------------------
 // A standing batch the supervisor runs, with a slot free and nothing ready to take it, names the
 // person's own unstarted assigned tickets as ready to admit, and with config §3b "Propose candidates
-// for a free slot" on, the unassigned ones too (candidates.mjs slotLines). It lists only: /desk-admit
-// admits.
+// for a free slot" on, the unassigned ones too (candidates.mjs slotLines). With §3b "Admit candidates for
+// a free slot" on as well, it admits the first that passes the checks, one a run, through intake.mjs
+// admit, and assigns an unassigned one under §3 jira-assign-self (candidates.mjs admitRun).
+// The intake admit's own refusal, as its line naming the ticket.
+const admitCandidate = (key) => {
+  flushQueue();
+  const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'pass', '--json']);
+  let res = null;
+  try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
+  if (res?.admitted?.includes(key)) return { admitted: true };
+  const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
+  return { admitted: false, retry: !!res?.limited?.includes(key), why: said.filter((line) => line.includes(key)).pop() ?? said.pop() ?? `exit ${r.code}` };
+};
+const assignCandidate = (key) => {
+  const r = shOut('desk-jira', ['edit', key, 'assignee=me']);
+  return r.ok && !/assignment did not stick/.test(r.out) ? { ok: true } : { ok: false, why: r.out.split('\n').pop() || `desk-jira exited ${r.code}` };
+};
 if (onJira && !E.batchName() && queue().supervised === true && running.length < concurrency && !spawnable.length
   && !lowMemory && !MAINT.hold) {
   epicLines.push(...slotLines({ state: STATE, dry: DRY, ownOnly: !slotCandidatesOn() }));
+  epicLines.push(...admitRun({ state: STATE, base: DEFAULT_BRANCH, dry: DRY, admit: admitCandidate, assign: assignCandidate,
+    assignSelf: E.permission('jira-assign-self'),
+    checks: { landed: (k, b) => landedOn(k, b, REPO_DEFAULT), elsewhere: (k, b) => unpromotedBase(k, b) } }));
 }
 
 // ---- outside holds -------------------------------------------------------
