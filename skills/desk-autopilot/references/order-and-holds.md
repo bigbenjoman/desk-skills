@@ -14,7 +14,15 @@ radius first (two of a kind: the smaller first, then the order named); tickets t
 never chained. Config §3b "Overlap holds" (`desk-env get overlap-holds`) says what the chain holds. At
 `merge` (unset reads as `merge`) both tickets start, and the later one carries a merge-order hold,
 `merge_order`, naming the earlier one: the merge driver does not merge its PR, green or not, and the
-first pass after the earlier PR merges lifts the hold (`MERGE-ORDER HOLDS` in the plan). At `start`
+first pass after the earlier PR merges lifts the hold (`MERGE-ORDER HOLDS` in the plan). The pass
+lifts it after reading PR status, so a PR merged by hand frees its successor that same pass. An
+earlier ticket done with no PR lands nothing, so that lifts it too; one done by another ticket's PR
+waits for that PR to merge. desk-q's Merging row reads `merges after the PR of <X>` meanwhile. A
+transfer of the earlier ticket to another batch (`queue.mjs transfer`) drops a file-overlap hold,
+since the files are no longer shared on this base, but turns a Jira blocker's into `merge_after`, so
+it still merges only once that blocker is Done and landed. Every cycle check that holds a ticket
+later (a late Jira link, a triage park's missing holds) counts `merge_order` as well as `held_by`.
+At `start`
 the later one is held from starting instead, as holds in the queue and entries in the `--deps` it
 prints. Each ticket in a chain waits on every earlier one it shares a file with, not only the one
 just before it, so dropping or freeing that one by hand never lets it go ahead of the rest. Jira
@@ -73,7 +81,7 @@ chained for you: hold it with `queue.mjs hold <SUCCESSOR> <TICKET>` where its me
 
 | Blocker | What `plan-batch` does |
 |---|---|
-| in the batch, admitted or parked for its lane or size, and triage's `blocker_needs` calls it `merge`, with §3b "Overlap holds" `merge` | built now, its merge held: `merge_order` set, lifted by the pass once the blocker's PR merges |
+| in the batch, admitted or parked for its lane or size, and triage's `blocker_needs` calls it `merge`, with §3b "Overlap holds" `merge` | built now, its merge held: `merge_order` set, lifted by the pass once the blocker's PR merges (or it is done with no PR); a transfer of the blocker turns it into `merge_after` |
 | in the batch otherwise (`build`, no call, or "Overlap holds" `start`) | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
 | outside the batch, not done, and triage's `blocker_needs` calls it `build` (needed to build) | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
